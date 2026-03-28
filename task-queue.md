@@ -8,11 +8,8 @@
 
 ## Up Next
 
-1. **Fix session_patterns analytics** — Date parsing in session-log.md returns 0 sessions. The regex likely doesn't match the date format used in actual session logs.
-2. **Fix decision_graph analytics** — Returns fully-connected adjacency (every decision linked to every other). Should parse actual cross-references between decisions.
-3. **Railway GitHub integration** — Connect GitHub repo for auto-deploy on push instead of manual `railway up`.
-4. **Add automated tests** — At minimum: health endpoint, tool registration, validation rules.
-5. **Add request logging middleware** — Structured JSON logs for all MCP requests with timing.
+1. **Run test suite in CI** — vitest is added but no CI pipeline exists yet. Consider GitHub Actions.
+2. **Expand test coverage** — Add integration tests with mocked GitHub API responses for tool-level testing.
 
 ## Blocked
 
@@ -27,6 +24,11 @@
 
 ## Recently Completed
 
+- **[S10] Fixed session_patterns analytics** — KI-1 resolved. Regex now matches actual session-log header formats.
+- **[S10] Fixed decision_graph analytics** — KI-2 resolved. Removed contentBlocks complete-graph loop.
+- **[S10] Added request logging middleware** — Structured JSON logs for all HTTP requests with method, path, status, timing.
+- **[S10] Added automated test suite** — vitest with 3 test files covering summarizer utils, handoff validation, and analytics parsing.
+- **[S10] Version bumped to 2.1.0** — Reflects bug fixes and new features.
 - **[CC-S3] Deployed to Railway** — Server live at prism-mcp-server-production.up.railway.app
 - **[CC-S3] Battle tested all 7 tools** — Bootstrap, fetch, push, status, finalize, analytics, scale
 - **[CC-S3] Framework v2.0.0** — Core template updated with MCP paths
