@@ -87,31 +87,41 @@ async function decisionVelocity(projectSlug: string) {
 
 /**
  * Compute session patterns — frequency and duration trends.
+ *
+ * Handles multiple session header formats:
+ *   ### Session 7 (03-23-26 CST)
+ *   ### Session 9 (03-27-26 18:08:29 CST)
+ *   ### CC Session 3 (03-27-26 CST)
+ *   ### Session 3 (2026-02-19)
  */
 async function sessionPatterns(projectSlug: string) {
   const sessionLog = await fetchFile(projectSlug, "session-log.md");
   const content = sessionLog.content;
 
-  // Extract session entries — look for session headers
-  const sessionRegex = /##\s+Session\s+(\d+)/gi;
-  const dateRegex = /\*?\*?Date\*?\*?[:\s]*([^\n]+)/gi;
-
   const sessions: Array<{ number: number; date: string }> = [];
   const lines = content.split("\n");
 
-  let currentSession: number | null = null;
   for (const line of lines) {
-    const sessionMatch = line.match(/^##\s+Session\s+(\d+)/i);
-    if (sessionMatch) {
-      currentSession = parseInt(sessionMatch[1], 10);
+    // Match: ### Session N (...) or ### CC Session N (...)
+    const headerMatch = line.match(/^###\s+(?:CC\s+)?Session\s+(\d+)\s*\(([^)]+)\)/i);
+    if (!headerMatch) continue;
+
+    const sessionNum = parseInt(headerMatch[1], 10);
+    const dateStr = headerMatch[2].trim();
+
+    // Try MM-DD-YY format first (e.g., "03-23-26 CST" or "03-27-26 18:08:29 CST")
+    const mmddyy = dateStr.match(/^(\d{2})-(\d{2})-(\d{2})/);
+    if (mmddyy) {
+      const year = 2000 + parseInt(mmddyy[3], 10);
+      sessions.push({ number: sessionNum, date: `${year}-${mmddyy[1]}-${mmddyy[2]}` });
+      continue;
     }
 
-    if (currentSession !== null) {
-      const dateMatch = line.match(/\*?\*?Date\*?\*?[:\s]*(\d{4}-\d{2}-\d{2})/i);
-      if (dateMatch) {
-        sessions.push({ number: currentSession, date: dateMatch[1] });
-        currentSession = null; // Move to next session
-      }
+    // Try YYYY-MM-DD format (e.g., "2026-02-19")
+    const yyyymmdd = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (yyyymmdd) {
+      sessions.push({ number: sessionNum, date: `${yyyymmdd[1]}-${yyyymmdd[2]}-${yyyymmdd[3]}` });
+      continue;
     }
   }
 
@@ -278,24 +288,10 @@ async function decisionGraph(projectSlug: string) {
     }
   }
 
-  // Also scan full content for decision references
-  const contentBlocks = decisionFile.content.split(/^##\s+/m);
-  for (const block of contentBlocks) {
-    const blockRefs = block.match(/D-\d+/g) ?? [];
-    if (blockRefs.length > 1) {
-      // Multiple decisions mentioned in the same block — they're related
-      for (let i = 0; i < blockRefs.length; i++) {
-        for (let j = i + 1; j < blockRefs.length; j++) {
-          const a = blockRefs[i];
-          const b = blockRefs[j];
-          if (decisionIds.has(a) && decisionIds.has(b)) {
-            if (!adjacency[a]?.includes(b)) adjacency[a]?.push(b);
-            if (!adjacency[b]?.includes(a)) adjacency[b]?.push(a);
-          }
-        }
-      }
-    }
-  }
+  // Note: Cross-references are extracted from per-row content above.
+  // Previously, this block scanned full content split by ## headers,
+  // which created a complete graph because all D-N IDs appeared in the
+  // same table block. Removed in KI-2 fix.
 
   const totalEdges = Object.values(adjacency).reduce((sum, refs) => sum + refs.length, 0) / 2;
   const connectedDecisions = Object.entries(adjacency).filter(
