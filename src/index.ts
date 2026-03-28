@@ -11,6 +11,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { PORT, SERVER_VERSION } from "./config.js";
 import { logger } from "./utils/logger.js";
+import { requestLogger } from "./middleware/request-logger.js";
 import { registerBootstrap } from "./tools/bootstrap.js";
 import { registerFetch } from "./tools/fetch.js";
 import { registerPush } from "./tools/push.js";
@@ -21,6 +22,7 @@ import { registerScaleHandoff } from "./tools/scale.js";
 
 const app = express();
 app.use(express.json());
+app.use(requestLogger);
 
 /**
  * Create a fresh McpServer instance with all tools registered.
