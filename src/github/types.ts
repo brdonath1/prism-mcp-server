@@ -60,3 +60,34 @@ export interface GitHubRepoListItem {
   full_name: string;
   private: boolean;
 }
+
+/** Directory listing entry from GitHub Contents API */
+export interface DirectoryEntry {
+  name: string;
+  path: string;
+  size: number;
+  sha: string;
+  type: "file" | "dir" | "symlink" | "submodule";
+}
+
+/** Commit summary from GitHub Commits API */
+export interface CommitSummary {
+  sha: string;
+  message: string;
+  date: string;
+  files: string[];
+}
+
+/** GitHub commit list item */
+export interface GitHubCommitListItem {
+  sha: string;
+  commit: {
+    message: string;
+    author: {
+      date: string;
+    };
+  };
+  files?: Array<{
+    filename: string;
+  }>;
+}

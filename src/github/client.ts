@@ -13,6 +13,9 @@ import type {
   GitHubContentsResponse,
   GitHubPutResponse,
   GitHubRepoListItem,
+  DirectoryEntry,
+  CommitSummary,
+  GitHubCommitListItem,
 } from "./types.js";
 
 /** Standard headers for all GitHub API requests */
@@ -335,4 +338,127 @@ export async function listRepos(): Promise<string[]> {
 
   logger.debug("github.listRepos complete", { count: allRepos.length, ms: Date.now() - start });
   return allRepos;
+}
+
+/**
+ * List directory contents in a repo. Returns files and subdirectories.
+ */
+export async function listDirectory(repo: string, path: string): Promise<DirectoryEntry[]> {
+  const url = contentsUrl(repo, path);
+  const start = Date.now();
+  logger.debug("github.listDirectory", { repo, path });
+
+  const res = await fetch(url, { headers: headers() });
+
+  if (res.status === 404) {
+    return []; // Directory doesn't exist
+  }
+
+  if (!res.ok) {
+    throw handleApiError(res.status, await res.text(), `listDirectory ${repo}/${path}`);
+  }
+
+  const data = (await res.json()) as Array<{ name: string; path: string; size: number; sha: string; type: string }>;
+
+  if (!Array.isArray(data)) {
+    return []; // Path points to a file, not a directory
+  }
+
+  logger.debug("github.listDirectory complete", { repo, path, count: data.length, ms: Date.now() - start });
+
+  return data.map(entry => ({
+    name: entry.name,
+    path: entry.path,
+    size: entry.size,
+    sha: entry.sha,
+    type: entry.type as DirectoryEntry["type"],
+  }));
+}
+
+/**
+ * List commits for a repo, optionally filtered by path.
+ */
+export async function listCommits(
+  repo: string,
+  options?: { path?: string; since?: string; per_page?: number }
+): Promise<CommitSummary[]> {
+  const start = Date.now();
+  const params = new URLSearchParams();
+  if (options?.path) params.set("path", options.path);
+  if (options?.since) params.set("since", options.since);
+  params.set("per_page", String(options?.per_page ?? 30));
+
+  const url = `${GITHUB_API_BASE}/repos/${GITHUB_OWNER}/${repo}/commits?${params.toString()}`;
+  logger.debug("github.listCommits", { repo, ...options });
+
+  const res = await fetch(url, { headers: headers() });
+
+  if (!res.ok) {
+    throw handleApiError(res.status, await res.text(), `listCommits ${repo}`);
+  }
+
+  const data = (await res.json()) as GitHubCommitListItem[];
+
+  const commits: CommitSummary[] = data.map(item => ({
+    sha: item.sha,
+    message: item.commit.message,
+    date: item.commit.author.date,
+    files: item.files?.map(f => f.filename) ?? [],
+  }));
+
+  logger.debug("github.listCommits complete", { repo, count: commits.length, ms: Date.now() - start });
+  return commits;
+}
+
+/**
+ * Get a single commit with file details.
+ */
+export async function getCommit(
+  repo: string,
+  sha: string
+): Promise<CommitSummary> {
+  const url = `${GITHUB_API_BASE}/repos/${GITHUB_OWNER}/${repo}/commits/${sha}`;
+  const res = await fetch(url, { headers: headers() });
+
+  if (!res.ok) {
+    throw handleApiError(res.status, await res.text(), `getCommit ${repo}/${sha}`);
+  }
+
+  const data = (await res.json()) as GitHubCommitListItem;
+  return {
+    sha: data.sha,
+    message: data.commit.message,
+    date: data.commit.author.date,
+    files: data.files?.map(f => f.filename) ?? [],
+  };
+}
+
+/**
+ * Delete a file from a repo.
+ */
+export async function deleteFile(repo: string, path: string, message: string): Promise<boolean> {
+  const url = contentsUrl(repo, path);
+  const start = Date.now();
+  logger.debug("github.deleteFile", { repo, path });
+
+  try {
+    const sha = await fetchSha(repo, path);
+
+    const res = await fetch(url, {
+      method: "DELETE",
+      headers: { ...headers(), "Content-Type": "application/json" },
+      body: JSON.stringify({ message, sha }),
+    });
+
+    if (!res.ok) {
+      logger.error("github.deleteFile failed", { repo, path, status: res.status });
+      return false;
+    }
+
+    logger.debug("github.deleteFile complete", { repo, path, ms: Date.now() - start });
+    return true;
+  } catch (error) {
+    logger.error("github.deleteFile error", { repo, path, error: (error as Error).message });
+    return false;
+  }
 }

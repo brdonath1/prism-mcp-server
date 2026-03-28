@@ -15,6 +15,9 @@ import { registerBootstrap } from "./tools/bootstrap.js";
 import { registerFetch } from "./tools/fetch.js";
 import { registerPush } from "./tools/push.js";
 import { registerStatus } from "./tools/status.js";
+import { registerFinalize } from "./tools/finalize.js";
+import { registerAnalytics } from "./tools/analytics.js";
+import { registerScaleHandoff } from "./tools/scale.js";
 
 const app = express();
 app.use(express.json());
@@ -35,11 +38,14 @@ function createServer(): McpServer {
     }
   );
 
-  // Register all Session 1 tools
+  // Register all tools
   registerBootstrap(server);
   registerFetch(server);
   registerPush(server);
   registerStatus(server);
+  registerFinalize(server);
+  registerAnalytics(server);
+  registerScaleHandoff(server);
 
   return server;
 }
