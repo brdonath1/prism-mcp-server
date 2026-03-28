@@ -28,7 +28,7 @@ function identifyScalableContent(
 ): ScaleAction[] {
   const actions: ScaleAction[] = [];
 
-  // 1. Session History entries older than last 5 sessions → archive to session-log.md
+  // 1. Session History entries older than last 3 sessions → archive to session-log.md
   const sessionHistory = extractSection(handoffContent, "Session History")
     ?? extractSection(handoffContent, "Recent Sessions")
     ?? extractSection(handoffContent, "Session Log");
@@ -36,8 +36,8 @@ function identifyScalableContent(
   if (sessionHistory) {
     // Find session entries (look for session N patterns)
     const sessionEntries = sessionHistory.split(/(?=###?\s+Session\s+\d+)/i);
-    if (sessionEntries.length > 5) {
-      const oldEntries = sessionEntries.slice(0, -5);
+    if (sessionEntries.length > 3) {
+      const oldEntries = sessionEntries.slice(0, -3);
       const oldContent = oldEntries.join("\n").trim();
       if (oldContent.length > 0) {
         actions.push({
@@ -107,9 +107,11 @@ function identifyScalableContent(
   // 4. Open questions that are resolved → remove
   const openQuestions = extractSection(handoffContent, "Open Questions");
   if (openQuestions) {
-    const questions = parseNumberedList(openQuestions);
-    const resolvedQuestions = questions.filter(
+    // Detect resolved questions by [x] checkbox pattern or keywords
+    const questionLines = openQuestions.split("\n").filter((l) => l.trim().length > 0);
+    const resolvedQuestions = questionLines.filter(
       (q) =>
+        /^\s*-\s*\[x\]/i.test(q) ||
         q.toLowerCase().includes("resolved") ||
         q.toLowerCase().includes("done") ||
         q.toLowerCase().includes("answered") ||
@@ -145,6 +147,103 @@ function identifyScalableContent(
       executed: false,
       content_to_move: archSection,
     });
+  }
+
+  // 6. Artifacts Registry → move to artifacts/README.md or keep minimal pointer
+  const artifactsSection = extractSection(handoffContent, "Artifacts Registry")
+    ?? extractSection(handoffContent, "Artifacts");
+  if (artifactsSection && new TextEncoder().encode(artifactsSection).length > 500) {
+    actions.push({
+      description: "Move Artifacts Registry table to task-queue.md (Recently Completed) — keep pointer in handoff",
+      source_section: "Artifacts Registry",
+      destination_file: "task-queue.md",
+      bytes_moved: new TextEncoder().encode(artifactsSection).length,
+      executed: false,
+      content_to_move: artifactsSection,
+    });
+  }
+
+  // 7. Verbose "Where We Are" section (>1KB) → trim to essentials
+  const whereWeAre = extractSection(handoffContent, "Where We Are")
+    ?? extractSection(handoffContent, "Current State");
+  if (whereWeAre && new TextEncoder().encode(whereWeAre).length > 1000) {
+    const excess = new TextEncoder().encode(whereWeAre).length - 500;
+    actions.push({
+      description: "Trim verbose 'Where We Are' section — move detailed context to session-log.md, keep 2-3 sentence summary in handoff",
+      source_section: "Where We Are",
+      destination_file: "session-log.md",
+      bytes_moved: excess,
+      executed: false,
+      content_to_move: whereWeAre,
+    });
+  }
+
+  // 8. Verbose "Strategic Direction" section (>1KB) → move to architecture.md
+  const strategicSection = extractSection(handoffContent, "Strategic Direction")
+    ?? extractSection(handoffContent, "Strategy");
+  if (strategicSection && new TextEncoder().encode(strategicSection).length > 1000) {
+    const excess = new TextEncoder().encode(strategicSection).length - 300;
+    actions.push({
+      description: "Move verbose Strategic Direction to architecture.md — keep 1-2 sentence summary in handoff",
+      source_section: "Strategic Direction",
+      destination_file: "architecture.md",
+      bytes_moved: excess,
+      executed: false,
+      content_to_move: strategicSection,
+    });
+  }
+
+  // 9. Critical Context bloat (>10 items or >2KB) → flag for manual review
+  const criticalContext = extractSection(handoffContent, "Critical Context");
+  if (criticalContext) {
+    const items = criticalContext.split("\n").filter((l) => l.trim().startsWith("- ") || l.trim().startsWith("* "));
+    const contextBytes = new TextEncoder().encode(criticalContext).length;
+    if (items.length > 10 || contextBytes > 2000) {
+      // Items that look operational (not truly critical) can move to known-issues or architecture
+      const operationalPatterns = [
+        /secret/i, /token/i, /key.*replit/i, /prisma.*version/i, /flag/i,
+        /git.*push/i, /git.*commit/i, /git.*auto/i, /pexels/i,
+        /subscription/i, /authenticated/i, /scoped/i,
+      ];
+      const operationalItems = items.filter((item) =>
+        operationalPatterns.some((p) => p.test(item))
+      );
+      if (operationalItems.length > 0) {
+        const contentToMove = operationalItems.join("\n").trim();
+        actions.push({
+          description: `Move ${operationalItems.length} operational items from Critical Context to known-issues.md — keep only truly critical constraints in handoff`,
+          source_section: "Critical Context",
+          destination_file: "known-issues.md",
+          bytes_moved: new TextEncoder().encode(contentToMove).length,
+          executed: false,
+          content_to_move: contentToMove,
+        });
+      }
+    }
+  }
+
+  // 10. Duplicate EOF sentinels → flag as warning (content after first EOF is orphaned)
+  const eofMatches = handoffContent.match(/<!-- EOF: handoff\.md -->/g);
+  if (eofMatches && eofMatches.length > 1) {
+    // Content between first and last EOF is likely orphaned
+    const firstEofIdx = handoffContent.indexOf("<!-- EOF: handoff.md -->");
+    const lastEofIdx = handoffContent.lastIndexOf("<!-- EOF: handoff.md -->");
+    if (firstEofIdx !== lastEofIdx) {
+      const orphanedContent = handoffContent.slice(
+        firstEofIdx + "<!-- EOF: handoff.md -->".length,
+        lastEofIdx
+      ).trim();
+      if (orphanedContent.length > 0) {
+        actions.push({
+          description: `Remove ${new TextEncoder().encode(orphanedContent).length} bytes of orphaned content between duplicate EOF sentinels`,
+          source_section: "Orphaned (after first EOF)",
+          destination_file: "(remove)",
+          bytes_moved: new TextEncoder().encode(orphanedContent).length,
+          executed: false,
+          content_to_move: orphanedContent,
+        });
+      }
+    }
   }
 
   return actions;
