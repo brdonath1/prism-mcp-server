@@ -47,7 +47,9 @@ async function auditPhase(projectSlug: string, sessionNumber: number) {
 
     const lines = fileResult.content.split("\n");
     const headerLine = lines[0] ?? "";
-    const lastLine = lines[lines.length - 1]?.trim() ?? "";
+    // Files ending with trailing newline (standard) produce empty last element.
+    // trimEnd() before splitting ensures we check the actual last content line.
+    const lastLine = fileResult.content.trimEnd().split("\n").pop()?.trim() ?? "";
     const filename = doc.split("/").pop() ?? doc;
     const eofValid = lastLine === `<!-- EOF: ${filename} -->`;
     const sectionHeaders = extractHeaders(fileResult.content);
