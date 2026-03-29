@@ -88,6 +88,45 @@ export const PROJECT_DISPLAY_NAMES: Record<string, string> = {
   "chill-bar-and-grill": "Chill Bar & Grill",
 };
 
+/**
+ * Reverse map: display name (lowercase) → slug.
+ * Derived from PROJECT_DISPLAY_NAMES for server-side slug resolution (KI-15).
+ */
+export const DISPLAY_NAME_TO_SLUG: Record<string, string> = Object.fromEntries(
+  Object.entries(PROJECT_DISPLAY_NAMES).map(([slug, name]) => [name.toLowerCase(), slug])
+);
+
+/**
+ * Resolve a project identifier to a slug.
+ * Accepts: exact slug, display name (case-insensitive), or Claude project name.
+ * Returns the slug if found, or the original input if no match (let it fail downstream with a clear error).
+ */
+export function resolveProjectSlug(input: string): string {
+  const lowerInput = input.toLowerCase().trim();
+  const slugs = Object.keys(PROJECT_DISPLAY_NAMES);
+
+  // 1. Direct slug match
+  if (slugs.includes(lowerInput)) return lowerInput;
+
+  // 2. Case-sensitive slug match (for slugs like "OpenClaw")
+  if (slugs.includes(input.trim())) return input.trim();
+
+  // 3. Display name match (case-insensitive)
+  if (DISPLAY_NAME_TO_SLUG[lowerInput]) return DISPLAY_NAME_TO_SLUG[lowerInput];
+
+  // 4. Normalized match — strip spaces, hyphens, underscores for comparison
+  const normalize = (s: string) => s.toLowerCase().replace(/[-_\s]/g, "");
+  const normalizedInput = normalize(input);
+  for (const slug of slugs) {
+    if (normalize(slug) === normalizedInput) return slug;
+    const displayName = PROJECT_DISPLAY_NAMES[slug];
+    if (displayName && normalize(displayName) === normalizedInput) return slug;
+  }
+
+  // 5. No match — return original input, bootstrap will fail with a clear "repo not found" error
+  return input;
+}
+
 /** Keyword → living document mapping for bootstrap pre-fetching */
 export const PREFETCH_KEYWORDS: Record<string, string> = {
   architecture: "architecture.md",
