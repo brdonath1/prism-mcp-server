@@ -33,6 +33,9 @@ export const GITHUB_OWNER = process.env.GITHUB_OWNER ?? "brdonath1";
 /** PRISM framework repo name */
 export const FRAMEWORK_REPO = process.env.FRAMEWORK_REPO ?? "prism-framework";
 
+/** Path to the compressed MCP-mode behavioral rules template (D-31) */
+export const MCP_TEMPLATE_PATH = "_templates/core-template-mcp.md";
+
 /** HTTP port */
 export const PORT = parseInt(process.env.PORT ?? "3000", 10);
 
@@ -40,7 +43,7 @@ export const PORT = parseInt(process.env.PORT ?? "3000", 10);
 export const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
 
 /** Server version */
-export const SERVER_VERSION = "2.1.0";
+export const SERVER_VERSION = "2.2.0";
 
 /** GitHub API base URL */
 export const GITHUB_API_BASE = "https://api.github.com";
