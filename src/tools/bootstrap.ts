@@ -1,13 +1,13 @@
 /**
  * prism_bootstrap tool — Initialize a PRISM session.
- * Fetches handoff, decision index, and optionally relevant living documents.
- * Returns structured summary, NOT raw content.
+ * Fetches handoff, decision index, behavioral rules template, and optionally
+ * relevant living documents. Returns structured summary with embedded rules (D-31).
  */
 
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { fetchFile, fetchFiles } from "../github/client.js";
-import { FRAMEWORK_REPO, HANDOFF_CRITICAL_SIZE, PREFETCH_KEYWORDS } from "../config.js";
+import { FRAMEWORK_REPO, HANDOFF_CRITICAL_SIZE, MCP_TEMPLATE_PATH, PREFETCH_KEYWORDS } from "../config.js";
 import { logger } from "../utils/logger.js";
 import {
   extractSection,
@@ -73,16 +73,11 @@ export function registerBootstrap(server: McpServer): void {
         let bytesDelivered = 0;
         let filesFetched = 0;
 
-        // 1. Fetch core files in parallel
-        const coreFiles = [
-          { key: "handoff", repo: project_slug, path: "handoff.md" },
-          { key: "decisions", repo: project_slug, path: "decisions/_INDEX.md" },
-        ];
-
+        // 1. Fetch core files in parallel: handoff, decisions, and MCP behavioral rules template
         const coreResults = await Promise.allSettled([
           fetchFile(project_slug, "handoff.md"),
           fetchFile(project_slug, "decisions/_INDEX.md").catch(() => null),
-          fetchFile(FRAMEWORK_REPO, "_templates/core-template.md").catch(() => null),
+          fetchFile(FRAMEWORK_REPO, MCP_TEMPLATE_PATH).catch(() => null),
         ]);
 
         // Handoff is required
@@ -105,13 +100,20 @@ export function registerBootstrap(server: McpServer): void {
           warnings.push("decisions/_INDEX.md not found — decision tracking not initialized for this project.");
         }
 
-        // Template version check (optional)
+        // Behavioral rules template (D-31) — deliver full content so Claude skips the template fetch
         let templateVersion = "unknown";
+        let behavioralRules: string | null = null;
         if (coreResults[2].status === "fulfilled" && coreResults[2].value) {
-          const templateContent = coreResults[2].value.content;
-          // Extract version from first few lines
-          const versionMatch = templateContent.match(/version[:\s]*([\d.]+)/i);
+          const templateFile = coreResults[2].value;
+          behavioralRules = templateFile.content;
+          bytesDelivered += templateFile.size;
+          filesFetched++;
+          // Extract version from template content
+          const versionMatch = templateFile.content.match(/version[:\s]*([\d.]+)/i);
           if (versionMatch) templateVersion = versionMatch[1];
+          logger.info("behavioral rules delivered", { size: templateFile.size, version: templateVersion });
+        } else {
+          warnings.push("Behavioral rules template not found — Claude should fetch core-template-mcp.md manually.");
         }
 
         // 2. Parse handoff into structured sections
@@ -187,6 +189,7 @@ export function registerBootstrap(server: McpServer): void {
           next_steps: nextSteps,
           open_questions: openQuestions,
           prefetched_documents: prefetchedDocuments,
+          behavioral_rules: behavioralRules,
           bytes_delivered: bytesDelivered,
           files_fetched: filesFetched,
           warnings,
@@ -196,6 +199,7 @@ export function registerBootstrap(server: McpServer): void {
           project_slug,
           filesFetched,
           bytesDelivered,
+          rulesDelivered: !!behavioralRules,
           ms: Date.now() - start,
         });
 
