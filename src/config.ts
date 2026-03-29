@@ -72,12 +72,20 @@ export const VALID_COMMIT_PREFIXES = ["prism:", "fix:", "docs:", "chore:"] as co
 
 /**
  * Project slug → display name mapping for boot banner (D-34).
- * Falls back to title-cased slug if not listed here.
+ * Only entries where title-casing the slug would produce an incorrect name.
+ * Unlisted slugs fall back to title-cased slug (e.g., "allevio-systems" → "Allevio Systems").
  */
 export const PROJECT_DISPLAY_NAMES: Record<string, string> = {
   "prism": "PRISM Framework",
+  "prism-mcp-server": "PRISM MCP Server",
+  "prism-cash-plus-pawn-ftp": "Cash Plus Pawn FTP",
+  "platformforge": "PlatformForge",
   "platformforge-v2": "PlatformForge v2",
-  "snapquote": "SnapQuote",
+  "snapquote-ai": "SnapQuote",
+  "resvault": "ResVault",
+  "OpenClaw": "OpenClaw",
+  "paypal-aaa-arbitration": "PayPal AAA Arbitration",
+  "chill-bar-and-grill": "Chill Bar & Grill",
 };
 
 /** Keyword → living document mapping for bootstrap pre-fetching */
