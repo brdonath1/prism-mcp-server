@@ -43,7 +43,7 @@ export const PORT = parseInt(process.env.PORT ?? "3000", 10);
 export const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
 
 /** Server version */
-export const SERVER_VERSION = "2.2.0";
+export const SERVER_VERSION = "2.3.0";
 
 /** GitHub API base URL */
 export const GITHUB_API_BASE = "https://api.github.com";
@@ -69,6 +69,16 @@ export const LIVING_DOCUMENTS = [
 
 /** Valid commit prefixes */
 export const VALID_COMMIT_PREFIXES = ["prism:", "fix:", "docs:", "chore:"] as const;
+
+/**
+ * Project slug → display name mapping for boot banner (D-34).
+ * Falls back to title-cased slug if not listed here.
+ */
+export const PROJECT_DISPLAY_NAMES: Record<string, string> = {
+  "prism": "PRISM Framework",
+  "platformforge-v2": "PlatformForge v2",
+  "snapquote": "SnapQuote",
+};
 
 /** Keyword → living document mapping for bootstrap pre-fetching */
 export const PREFETCH_KEYWORDS: Record<string, string> = {
