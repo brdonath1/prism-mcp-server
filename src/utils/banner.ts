@@ -1,7 +1,7 @@
 /**
- * Server-side boot banner SVG renderer (D-34).
- * Produces a ready-to-render SVG matching the locked banner-spec.md v1.0.
- * Claude passes the output directly to visualize:show_widget — zero drift.
+ * Server-side boot banner HTML renderer (D-35).
+ * Produces a ready-to-render HTML+CSS string matching banner-spec.md v2.0.
+ * Claude passes the output directly to show_widget — zero drift.
  */
 
 import { logger } from "./logger.js";
@@ -17,16 +17,24 @@ export interface BannerData {
   decisionNote: string;
   docCount: number;
   docTotal: number;
-  docHealthy: boolean;
-  scalingRequired: boolean;
-  resumptionLines: string[];
-  nextSteps: string[];
+  docStatus: "ok" | "warn" | "critical";
+  docLabel: string;
+  tools: Array<{
+    label: string;
+    status: "ok" | "warn" | "critical";
+  }>;
+  resumption: string;
+  nextSteps: Array<{
+    text: string;
+    status: "priority" | "warn" | "normal";
+  }>;
   warnings: string[];
+  errors: string[];
 }
 
 // --- Helpers ---
 
-function escapeXml(str: string): string {
+function escapeHtml(str: string): string {
   return str
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -66,64 +74,16 @@ export function generateCstTimestamp(): string {
 }
 
 /**
- * Wrap text into lines that fit the banner's resumption card width.
- * Strips markdown formatting before wrapping.
- */
-export function wrapTextLines(
-  text: string,
-  maxChars: number = 80,
-  maxLines: number = 3
-): string[] {
-  if (!text.trim()) return [];
-
-  const cleaned = stripMarkdown(text);
-  const rawLines = cleaned
-    .split("\n")
-    .map((l) => l.trim())
-    .filter((l) => l.length > 0);
-
-  const result: string[] = [];
-
-  for (const line of rawLines) {
-    if (result.length >= maxLines) break;
-
-    if (line.length <= maxChars) {
-      result.push(line);
-    } else {
-      const words = line.split(/\s+/);
-      let current = "";
-      for (const word of words) {
-        if (result.length >= maxLines) break;
-        const test = current ? `${current} ${word}` : word;
-        if (test.length > maxChars && current) {
-          result.push(current);
-          current = word;
-        } else {
-          current = test;
-        }
-      }
-      if (current && result.length < maxLines) {
-        result.push(current);
-      }
-    }
-  }
-
-  return result;
-}
-
-/**
  * Extract the best resumption text for the banner from available sources.
  * Priority: explicit resumption_point > "Resumption point" paragraph in current_state > current_state.
  */
 export function parseResumptionForBanner(
   resumptionPoint: string,
   currentState: string,
-  maxChars: number = 80,
-  maxLines: number = 3
-): string[] {
+): string {
   // Priority 1: explicit resumption point from handoff
   if (resumptionPoint.trim()) {
-    return wrapTextLines(resumptionPoint, maxChars, maxLines);
+    return stripMarkdown(resumptionPoint);
   }
 
   // Priority 2: look for "Resumption point" paragraph in current state
@@ -131,129 +91,163 @@ export function parseResumptionForBanner(
     /\*?\*?Resumption point[^:]*:\*?\*?\s*([\s\S]*?)(?:\n\n|$)/i
   );
   if (resumptionMatch) {
-    const lines = wrapTextLines(resumptionMatch[1], maxChars, maxLines);
-    if (lines.length > 0) return lines;
+    const cleaned = stripMarkdown(resumptionMatch[1]);
+    if (cleaned.length > 0) return cleaned;
   }
 
   // Priority 3: first meaningful content from current state
   if (currentState.trim()) {
-    return wrapTextLines(currentState, maxChars, maxLines);
+    return stripMarkdown(currentState);
   }
 
-  return ["No specific resumption point set."];
+  return "No specific resumption point set.";
 }
 
-// --- SVG Renderer ---
+// --- HTML Renderer ---
 
-export function renderBannerSvg(data: BannerData): string {
-  // Height calculation per banner-spec.md
-  const resumptionLineCount = Math.max(data.resumptionLines.length, 1);
-  const resumptionHeight = 12 + resumptionLineCount * 22;
-  const nextStepItems =
-    data.nextSteps.length > 0 ? data.nextSteps : ["No next steps defined."];
-  const nextStepsCount = nextStepItems.length;
-  const hasWarnings = data.warnings.length > 0;
+/**
+ * Map tool status to the appropriate icon character.
+ */
+function toolIcon(status: "ok" | "warn" | "critical"): string {
+  if (status === "ok") return "\u2713";
+  if (status === "warn") return "\u26a0";
+  return "\u2717";
+}
 
-  // Y positions — computed dynamically
-  const resumptionCardY = 264;
-  const nextStepsHeaderY = resumptionCardY + resumptionHeight + 28;
-  const nextStepsStartY = nextStepsHeaderY + 24;
-  const lastNextStepY = nextStepsStartY + (nextStepsCount - 1) * 24;
-  const warningY = lastNextStepY + 28;
-  const totalHeight = hasWarnings ? warningY + 36 + 16 : lastNextStepY + 30;
+/**
+ * Render the boot banner as a self-contained HTML+CSS string.
+ * Follows banner-spec.md v2.0 exactly.
+ */
+export function renderBannerHtml(data: BannerData): string {
+  const e = (s: string) => escapeHtml(stripMarkdown(s));
 
-  // Build dynamic SVG fragments
-  const resumptionSvg = data.resumptionLines
-    .map(
-      (line, i) =>
-        `  <text x="44" y="${286 + i * 22}" fill="var(--vz-text-primary, #eee)" font-size="12">${escapeXml(line)}</text>`
-    )
-    .join("\n");
-
-  const nextStepsSvg = nextStepItems
-    .map((step, i) => {
-      const y = nextStepsStartY + i * 24;
-      const fill = i === 0 ? "#22c55e" : "var(--vz-text-primary, #eee)";
-      return `  <text x="40" y="${y}" fill="${fill}" font-size="12">\u25b8 ${escapeXml(step)}</text>`;
+  // Tools HTML
+  const toolsHtml = data.tools
+    .map((t, i) => {
+      const cls = t.status !== "ok" ? ` ${t.status}` : "";
+      const border = i < data.tools.length - 1 ? "" : "";
+      return `<div class="bn-tool${cls}">${toolIcon(t.status)} ${e(t.label)}</div>`;
     })
-    .join("\n");
+    .join("\n      ");
 
-  const scalingItem = data.scalingRequired
-    ? `<text x="594" y="211" fill="#eab308" font-size="12" font-weight="500" text-anchor="middle">\u26a0 scaling required</text>`
-    : `<text x="594" y="211" fill="#22c55e" font-size="12" font-weight="500" text-anchor="middle">\u2713 no scaling needed</text>`;
+  // Next steps HTML — first step is always priority regardless of status field
+  const stepsData = data.nextSteps.length > 0
+    ? data.nextSteps
+    : [{ text: "No next steps defined.", status: "normal" as const }];
+  const stepsHtml = stepsData
+    .map((step, i) => {
+      const cls = i === 0 ? "priority" : step.status !== "normal" ? step.status : "";
+      return `<div class="bn-step${cls ? ` ${cls}` : ""}">\u25b8 ${e(step.text)}</div>`;
+    })
+    .join("\n        ");
 
-  const docHealthSpan = data.docHealthy
-    ? `<tspan font-size="12" font-weight="600" fill="#22c55e">healthy</tspan>`
-    : `<tspan font-size="12" font-weight="600" fill="#ef4444">issues</tspan>`;
+  // Warning bars (conditional)
+  const warningsHtml = data.warnings
+    .map((w) => `<div class="bn-alert warn">\u26a0 ${e(w)}</div>`)
+    .join("\n    ");
 
-  const warningBarSvg = hasWarnings
-    ? `\n  <!-- 7. Warning Bar -->\n  <rect x="24" y="${warningY}" width="652" height="36" rx="8" fill="rgba(234,179,8,0.1)" stroke="rgba(234,179,8,0.3)" stroke-width="1"/>\n  <text x="48" y="${warningY + 23}" fill="#eab308" font-size="12" font-weight="500">\u26a0 ${escapeXml(data.warnings[0])}</text>`
-    : "";
+  // Error bars (conditional)
+  const errorsHtml = data.errors
+    .map((err) => `<div class="bn-alert critical">\u2717 ${e(err)}</div>`)
+    .join("\n    ");
 
-  logger.info("banner rendered", {
-    totalHeight,
-    resumptionLines: data.resumptionLines.length,
-    nextSteps: nextStepItems.length,
-    hasWarnings,
+  logger.info("banner HTML rendered", {
+    tools: data.tools.length,
+    nextSteps: stepsData.length,
+    warnings: data.warnings.length,
+    errors: data.errors.length,
   });
 
-  return `<svg viewBox="0 0 700 ${totalHeight}" xmlns="http://www.w3.org/2000/svg" style="font-family: system-ui, -apple-system, sans-serif;">
-  <defs>
-    <linearGradient id="headerGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" style="stop-color:#6366f1"/>
-      <stop offset="100%" style="stop-color:#8b5cf6"/>
-    </linearGradient>
-  </defs>
+  return `<style>
+:root {
+  --bn-bg: #1e1e2e;
+  --bn-surface: #2a2a3e;
+  --bn-border: #3a3a4e;
+  --bn-text: #eee;
+  --bn-text-muted: #aaa;
+  --bn-accent-start: #6366f1;
+  --bn-accent-end: #8b5cf6;
+  --bn-ok: #22c55e;
+  --bn-warn: #eab308;
+  --bn-critical: #ef4444;
+  --bn-info: #60a5fa;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+.bn { font-family: system-ui, -apple-system, sans-serif; background: var(--bn-bg); border-radius: 12px; border: 1px solid var(--bn-border); overflow: hidden; color: var(--bn-text); }
+.bn-header { background: linear-gradient(90deg, var(--bn-accent-start), var(--bn-accent-end)); padding: 14px 20px; display: flex; justify-content: space-between; align-items: center; }
+.bn-header-text { display: flex; flex-direction: column; gap: 4px; }
+.bn-version { font-size: 11px; font-weight: 600; letter-spacing: 1.5px; opacity: 0.8; color: white; }
+.bn-title { font-size: 18px; font-weight: 700; color: white; }
+.bn-badge { background: rgba(255,255,255,0.2); border-radius: 12px; padding: 4px 14px; font-size: 11px; font-weight: 600; color: white; white-space: nowrap; }
+.bn-body { padding: 16px 20px 20px; display: flex; flex-direction: column; gap: 14px; }
+.bn-timestamp { font-size: 12px; color: var(--bn-text-muted); }
+.bn-metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.bn-card { background: var(--bn-surface); border: 0.5px solid var(--bn-border); border-radius: 8px; padding: 12px 14px; }
+.bn-card-label { font-size: 10px; font-weight: 500; color: var(--bn-text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+.bn-card-value { font-size: 22px; font-weight: 700; line-height: 1.2; }
+.bn-card-sub { font-size: 12px; font-weight: 400; color: var(--bn-text-muted); margin-left: 4px; }
+.bn-card-sub.ok { color: var(--bn-ok); font-weight: 600; }
+.bn-card-sub.warn { color: var(--bn-warn); font-weight: 600; }
+.bn-card-sub.critical { color: var(--bn-critical); font-weight: 600; }
+.bn-toolbar { display: grid; grid-template-columns: repeat(4, 1fr); background: var(--bn-surface); border-radius: 8px; overflow: hidden; }
+.bn-tool { text-align: center; font-size: 12px; font-weight: 500; padding: 9px 8px; color: var(--bn-ok); border-right: 0.5px solid var(--bn-border); }
+.bn-tool:last-child { border-right: none; }
+.bn-tool.warn { color: var(--bn-warn); }
+.bn-tool.critical { color: var(--bn-critical); }
+.bn-section-label { font-size: 11px; font-weight: 600; letter-spacing: 1px; color: var(--bn-text-muted); text-transform: uppercase; margin-bottom: 6px; }
+.bn-resumption { background: var(--bn-surface); border-radius: 8px; padding: 14px 18px; font-size: 12px; line-height: 1.7; color: var(--bn-text); }
+.bn-steps { display: flex; flex-direction: column; gap: 6px; }
+.bn-step { font-size: 12px; line-height: 1.6; color: var(--bn-text); padding-left: 4px; }
+.bn-step.priority { color: var(--bn-ok); }
+.bn-step.warn { color: var(--bn-warn); }
+.bn-alert { display: flex; align-items: flex-start; gap: 10px; border-radius: 8px; padding: 9px 16px; font-size: 12px; font-weight: 500; line-height: 1.5; }
+.bn-alert.warn { background: rgba(234,179,8,0.1); border: 1px solid rgba(234,179,8,0.3); color: var(--bn-warn); }
+.bn-alert.critical { background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3); color: var(--bn-critical); }
+</style>
 
-  <!-- Background -->
-  <rect width="700" height="${totalHeight}" rx="12" fill="var(--vz-bg-secondary, #1e1e2e)" stroke="var(--vz-border, #333)" stroke-width="1"/>
-
-  <!-- 1. Header Bar -->
-  <rect width="700" height="64" rx="12" fill="url(#headerGrad)"/>
-  <rect y="40" width="700" height="24" fill="url(#headerGrad)"/>
-  <text x="24" y="28" fill="white" font-size="11" font-weight="600" letter-spacing="1.5" opacity="0.8">PRISM v${escapeXml(data.templateVersion)}</text>
-  <text x="24" y="48" fill="white" font-size="18" font-weight="700">${escapeXml(data.projectDisplayName)} \u2014 Session ${data.sessionNumber}</text>
-  <rect x="596" y="16" width="80" height="24" rx="12" fill="rgba(255,255,255,0.2)"/>
-  <text x="636" y="33" fill="white" font-size="11" font-weight="600" text-anchor="middle">MCP \u2713</text>
-
-  <!-- 2. Timestamp -->
-  <text x="24" y="90" fill="var(--vz-text-secondary, #aaa)" font-size="12">${escapeXml(data.timestamp)} CST</text>
-
-  <!-- 3. Metrics Grid -->
-  <rect x="24" y="108" width="155" height="64" rx="8" fill="var(--vz-bg-tertiary, #2a2a3e)" stroke="var(--vz-border, #444)" stroke-width="0.5"/>
-  <text x="40" y="131" fill="var(--vz-text-secondary, #aaa)" font-size="10" font-weight="500">SESSION</text>
-  <text x="40" y="156" fill="var(--vz-text-primary, #eee)" font-size="22" font-weight="700">${data.sessionNumber}</text>
-
-  <rect x="191" y="108" width="155" height="64" rx="8" fill="var(--vz-bg-tertiary, #2a2a3e)" stroke="var(--vz-border, #444)" stroke-width="0.5"/>
-  <text x="207" y="131" fill="var(--vz-text-secondary, #aaa)" font-size="10" font-weight="500">HANDOFF</text>
-  <text x="207" y="156" fill="var(--vz-text-primary, #eee)" font-size="22" font-weight="700">v${data.handoffVersion} <tspan font-size="12" font-weight="400" fill="var(--vz-text-secondary, #aaa)">${escapeXml(data.handoffSizeKb)} KB</tspan></text>
-
-  <rect x="358" y="108" width="155" height="64" rx="8" fill="var(--vz-bg-tertiary, #2a2a3e)" stroke="var(--vz-border, #444)" stroke-width="0.5"/>
-  <text x="374" y="131" fill="var(--vz-text-secondary, #aaa)" font-size="10" font-weight="500">DECISIONS</text>
-  <text x="374" y="156" fill="var(--vz-text-primary, #eee)" font-size="22" font-weight="700">${data.decisionCount} <tspan font-size="11" font-weight="400" fill="var(--vz-text-secondary, #aaa)">(${escapeXml(data.decisionNote)})</tspan></text>
-
-  <rect x="525" y="108" width="155" height="64" rx="8" fill="var(--vz-bg-tertiary, #2a2a3e)" stroke="var(--vz-border, #444)" stroke-width="0.5"/>
-  <text x="541" y="131" fill="var(--vz-text-secondary, #aaa)" font-size="10" font-weight="500">LIVING DOCS</text>
-  <text x="541" y="156" fill="var(--vz-text-primary, #eee)" font-size="22" font-weight="700">${data.docCount}/${data.docTotal} ${docHealthSpan}</text>
-
-  <!-- 4. Tool Verification Bar (4 equal cells with dividers) -->
-  <rect x="24" y="188" width="652" height="36" rx="8" fill="var(--vz-bg-tertiary, #2a2a3e)"/>
-  <line x1="187" y1="194" x2="187" y2="218" stroke="var(--vz-border, #444)" stroke-width="0.5"/>
-  <line x1="350" y1="194" x2="350" y2="218" stroke="var(--vz-border, #444)" stroke-width="0.5"/>
-  <line x1="513" y1="194" x2="513" y2="218" stroke="var(--vz-border, #444)" stroke-width="0.5"/>
-  <text x="105" y="211" fill="#22c55e" font-size="12" font-weight="500" text-anchor="middle">\u2713 bootstrap</text>
-  <text x="268" y="211" fill="#22c55e" font-size="12" font-weight="500" text-anchor="middle">\u2713 push verified</text>
-  <text x="431" y="211" fill="#22c55e" font-size="12" font-weight="500" text-anchor="middle">\u2713 template loaded</text>
-  ${scalingItem}
-
-  <!-- 5. Resumption Point -->
-  <text x="24" y="252" fill="var(--vz-text-secondary, #aaa)" font-size="11" font-weight="600" letter-spacing="1">RESUMPTION POINT</text>
-  <rect x="24" y="${resumptionCardY}" width="652" height="${resumptionHeight}" rx="8" fill="var(--vz-bg-tertiary, #2a2a3e)"/>
-${resumptionSvg}
-
-  <!-- 6. Next Steps -->
-  <text x="24" y="${nextStepsHeaderY}" fill="var(--vz-text-secondary, #aaa)" font-size="11" font-weight="600" letter-spacing="1">NEXT STEPS</text>
-${nextStepsSvg}
-${warningBarSvg}
-</svg>`;
+<div class="bn">
+  <div class="bn-header">
+    <div class="bn-header-text">
+      <div class="bn-version">PRISM v${e(data.templateVersion)}</div>
+      <div class="bn-title">${e(data.projectDisplayName)} \u2014 Session ${data.sessionNumber}</div>
+    </div>
+    <div class="bn-badge">MCP \u2713</div>
+  </div>
+  <div class="bn-body">
+    <div class="bn-timestamp">${e(data.timestamp)} CST</div>
+    <div class="bn-metrics">
+      <div class="bn-card">
+        <div class="bn-card-label">Session</div>
+        <div class="bn-card-value">${data.sessionNumber}</div>
+      </div>
+      <div class="bn-card">
+        <div class="bn-card-label">Handoff</div>
+        <div class="bn-card-value">v${data.handoffVersion} <span class="bn-card-sub">${e(data.handoffSizeKb)} KB</span></div>
+      </div>
+      <div class="bn-card">
+        <div class="bn-card-label">Decisions</div>
+        <div class="bn-card-value">${data.decisionCount} <span class="bn-card-sub">(${e(data.decisionNote)})</span></div>
+      </div>
+      <div class="bn-card">
+        <div class="bn-card-label">Living docs</div>
+        <div class="bn-card-value">${data.docCount}/${data.docTotal} <span class="bn-card-sub ${data.docStatus}">${e(data.docLabel)}</span></div>
+      </div>
+    </div>
+    <div class="bn-toolbar">
+      ${toolsHtml}
+    </div>
+    <div>
+      <div class="bn-section-label">Resumption point</div>
+      <div class="bn-resumption">${e(data.resumption)}</div>
+    </div>
+    <div>
+      <div class="bn-section-label">Next steps</div>
+      <div class="bn-steps">
+        ${stepsHtml}
+      </div>
+    </div>
+    ${warningsHtml}
+    ${errorsHtml}
+  </div>
+</div>`;
 }

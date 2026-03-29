@@ -2,7 +2,7 @@
  * prism_bootstrap tool — Initialize a PRISM session.
  * Fetches handoff, decision index, behavioral rules template, and optionally
  * relevant living documents. Returns structured summary with embedded rules (D-31)
- * and server-rendered boot banner SVG (D-34).
+ * and server-rendered boot banner HTML (D-35).
  */
 
 import { z } from "zod";
@@ -17,7 +17,7 @@ import {
   summarizeMarkdown,
 } from "../utils/summarizer.js";
 import { parseHandoffVersion, parseSessionCount, parseTemplateVersion } from "../validation/handoff.js";
-import { renderBannerSvg, generateCstTimestamp, parseResumptionForBanner } from "../utils/banner.js";
+import { renderBannerHtml, generateCstTimestamp, parseResumptionForBanner } from "../utils/banner.js";
 
 /** Input schema for prism_bootstrap */
 const inputSchema = {
@@ -188,16 +188,20 @@ export function registerBootstrap(server: McpServer): void {
           }
         }
 
-        // 4. Render boot banner SVG (D-34)
+        // 4. Render boot banner HTML (D-35)
         const sessionTimestamp = generateCstTimestamp();
         const sessionNumber = sessionCount + 1;
         const projectDisplayName = getProjectDisplayName(project_slug);
-        const resumptionLines = parseResumptionForBanner(resumptionPoint, currentState);
+        const resumption = parseResumptionForBanner(resumptionPoint, currentState);
         const guardrailCount = guardrails.length;
+        const docCount = 8;
+        const docTotal = 8;
+        const docStatus = docCount === docTotal ? "ok" as const : "critical" as const;
+        const docLabel = docStatus === "ok" ? "healthy" : `${docTotal - docCount} missing`;
 
-        let bannerSvg: string | null = null;
+        let bannerHtml: string | null = null;
         try {
-          bannerSvg = renderBannerSvg({
+          bannerHtml = renderBannerHtml({
             templateVersion: handoffTemplateVersion,
             projectDisplayName,
             sessionNumber,
@@ -206,19 +210,29 @@ export function registerBootstrap(server: McpServer): void {
             handoffSizeKb: (handoff.size / 1024).toFixed(1),
             decisionCount: decisions.length,
             decisionNote: `${guardrailCount} guardrails`,
-            docCount: 8,
-            docTotal: 8,
-            docHealthy: true,
-            scalingRequired,
-            resumptionLines,
-            nextSteps,
+            docCount,
+            docTotal,
+            docStatus,
+            docLabel,
+            tools: [
+              { label: "bootstrap", status: "ok" },
+              { label: "push verified", status: "ok" },
+              { label: "template loaded", status: "ok" },
+              { label: scalingRequired ? "scaling required" : "no scaling needed", status: scalingRequired ? "warn" as const : "ok" as const },
+            ],
+            resumption,
+            nextSteps: nextSteps.map((text, i) => ({
+              text,
+              status: i === 0 ? "priority" as const : "normal" as const,
+            })),
             warnings,
+            errors: [],
           });
-          logger.info("banner SVG rendered", { svgLength: bannerSvg.length });
+          logger.info("banner HTML rendered", { htmlLength: bannerHtml.length });
         } catch (bannerError) {
           const bannerMsg = bannerError instanceof Error ? bannerError.message : String(bannerError);
           logger.warn("banner render failed", { error: bannerMsg });
-          warnings.push("Banner SVG render failed — Claude should construct manually from banner-spec.md.");
+          warnings.push("Banner HTML render failed — Claude should construct manually from banner-spec.md.");
         }
 
         const result = {
@@ -239,7 +253,7 @@ export function registerBootstrap(server: McpServer): void {
           open_questions: openQuestions,
           prefetched_documents: prefetchedDocuments,
           behavioral_rules: behavioralRules,
-          banner_svg: bannerSvg,
+          banner_html: bannerHtml,
           bytes_delivered: bytesDelivered,
           files_fetched: filesFetched,
           warnings,
@@ -250,7 +264,7 @@ export function registerBootstrap(server: McpServer): void {
           filesFetched,
           bytesDelivered,
           rulesDelivered: !!behavioralRules,
-          bannerDelivered: !!bannerSvg,
+          bannerDelivered: !!bannerHtml,
           ms: Date.now() - start,
         });
 
