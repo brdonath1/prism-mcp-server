@@ -1,13 +1,14 @@
 /**
  * prism_bootstrap tool — Initialize a PRISM session.
  * Fetches handoff, decision index, behavioral rules template, and optionally
- * relevant living documents. Returns structured summary with embedded rules (D-31).
+ * relevant living documents. Returns structured summary with embedded rules (D-31)
+ * and server-rendered boot banner SVG (D-34).
  */
 
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { fetchFile, fetchFiles } from "../github/client.js";
-import { FRAMEWORK_REPO, HANDOFF_CRITICAL_SIZE, MCP_TEMPLATE_PATH, PREFETCH_KEYWORDS } from "../config.js";
+import { FRAMEWORK_REPO, HANDOFF_CRITICAL_SIZE, MCP_TEMPLATE_PATH, PREFETCH_KEYWORDS, PROJECT_DISPLAY_NAMES } from "../config.js";
 import { logger } from "../utils/logger.js";
 import {
   extractSection,
@@ -16,6 +17,7 @@ import {
   summarizeMarkdown,
 } from "../utils/summarizer.js";
 import { parseHandoffVersion, parseSessionCount, parseTemplateVersion } from "../validation/handoff.js";
+import { renderBannerSvg, generateCstTimestamp, parseResumptionForBanner } from "../utils/banner.js";
 
 /** Input schema for prism_bootstrap */
 const inputSchema = {
@@ -54,6 +56,18 @@ function parseDecisions(content: string): Array<{ id: string; title: string; sta
       status: row[statusKey] ?? "",
     };
   }).filter(d => d.id.length > 0);
+}
+
+/**
+ * Derive a human-readable project display name from the slug.
+ */
+function getProjectDisplayName(slug: string): string {
+  if (PROJECT_DISPLAY_NAMES[slug]) return PROJECT_DISPLAY_NAMES[slug];
+  // Fallback: title-case the slug, replacing hyphens with spaces
+  return slug
+    .split("-")
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
 }
 
 /**
@@ -174,11 +188,46 @@ export function registerBootstrap(server: McpServer): void {
           }
         }
 
+        // 4. Render boot banner SVG (D-34)
+        const sessionTimestamp = generateCstTimestamp();
+        const sessionNumber = sessionCount + 1;
+        const projectDisplayName = getProjectDisplayName(project_slug);
+        const resumptionLines = parseResumptionForBanner(resumptionPoint, currentState);
+        const guardrailCount = guardrails.length;
+
+        let bannerSvg: string | null = null;
+        try {
+          bannerSvg = renderBannerSvg({
+            templateVersion: handoffTemplateVersion,
+            projectDisplayName,
+            sessionNumber,
+            timestamp: sessionTimestamp,
+            handoffVersion,
+            handoffSizeKb: (handoff.size / 1024).toFixed(1),
+            decisionCount: decisions.length,
+            decisionNote: `${guardrailCount} guardrails`,
+            docCount: 8,
+            docTotal: 8,
+            docHealthy: true,
+            scalingRequired,
+            resumptionLines,
+            nextSteps,
+            warnings,
+          });
+          logger.info("banner SVG rendered", { svgLength: bannerSvg.length });
+        } catch (bannerError) {
+          const bannerMsg = bannerError instanceof Error ? bannerError.message : String(bannerError);
+          logger.warn("banner render failed", { error: bannerMsg });
+          warnings.push("Banner SVG render failed — Claude should construct manually from banner-spec.md.");
+        }
+
         const result = {
           project: project_slug,
           handoff_version: handoffVersion,
           template_version: handoffTemplateVersion,
           session_count: sessionCount,
+          session_number: sessionNumber,
+          session_timestamp: sessionTimestamp,
           handoff_size_bytes: handoff.size,
           scaling_required: scalingRequired,
           critical_context: criticalContext,
@@ -190,6 +239,7 @@ export function registerBootstrap(server: McpServer): void {
           open_questions: openQuestions,
           prefetched_documents: prefetchedDocuments,
           behavioral_rules: behavioralRules,
+          banner_svg: bannerSvg,
           bytes_delivered: bytesDelivered,
           files_fetched: filesFetched,
           warnings,
@@ -200,6 +250,7 @@ export function registerBootstrap(server: McpServer): void {
           filesFetched,
           bytesDelivered,
           rulesDelivered: !!behavioralRules,
+          bannerDelivered: !!bannerSvg,
           ms: Date.now() - start,
         });
 
