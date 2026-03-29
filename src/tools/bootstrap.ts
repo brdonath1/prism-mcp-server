@@ -8,7 +8,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { fetchFile, fetchFiles } from "../github/client.js";
-import { FRAMEWORK_REPO, HANDOFF_CRITICAL_SIZE, MCP_TEMPLATE_PATH, PREFETCH_KEYWORDS, PROJECT_DISPLAY_NAMES } from "../config.js";
+import { FRAMEWORK_REPO, HANDOFF_CRITICAL_SIZE, MCP_TEMPLATE_PATH, PREFETCH_KEYWORDS, PROJECT_DISPLAY_NAMES, resolveProjectSlug } from "../config.js";
 import { logger } from "../utils/logger.js";
 import {
   extractSection,
@@ -21,7 +21,7 @@ import { renderBannerHtml, generateCstTimestamp, parseResumptionForBanner } from
 
 /** Input schema for prism_bootstrap */
 const inputSchema = {
-  project_slug: z.string().describe("Project repo name (e.g., 'platformforge', 'prism', 'snapquote')"),
+  project_slug: z.string().describe("Project repo name or display name (e.g., 'platformforge-v2', 'PlatformForge v2', 'PRISM Framework', 'prism')"),
   opening_message: z.string().optional().describe("User's opening message. Enables intelligent pre-fetching of relevant living documents."),
 };
 
@@ -80,7 +80,14 @@ export function registerBootstrap(server: McpServer): void {
     inputSchema,
     async ({ project_slug, opening_message }) => {
       const start = Date.now();
-      logger.info("prism_bootstrap", { project_slug, hasOpeningMessage: !!opening_message });
+
+      // KI-15: Resolve display names, Claude project names, and fuzzy matches to slugs
+      const resolvedSlug = resolveProjectSlug(project_slug);
+      if (resolvedSlug !== project_slug) {
+        logger.info("slug resolved", { input: project_slug, resolved: resolvedSlug });
+      }
+
+      logger.info("prism_bootstrap", { project_slug: resolvedSlug, hasOpeningMessage: !!opening_message });
 
       try {
         const warnings: string[] = [];
@@ -89,14 +96,14 @@ export function registerBootstrap(server: McpServer): void {
 
         // 1. Fetch core files in parallel: handoff, decisions, and MCP behavioral rules template
         const coreResults = await Promise.allSettled([
-          fetchFile(project_slug, "handoff.md"),
-          fetchFile(project_slug, "decisions/_INDEX.md").catch(() => null),
+          fetchFile(resolvedSlug, "handoff.md"),
+          fetchFile(resolvedSlug, "decisions/_INDEX.md").catch(() => null),
           fetchFile(FRAMEWORK_REPO, MCP_TEMPLATE_PATH).catch(() => null),
         ]);
 
         // Handoff is required
         if (coreResults[0].status === "rejected") {
-          throw new Error(`Failed to fetch handoff.md for "${project_slug}": ${coreResults[0].reason?.message}`);
+          throw new Error(`Failed to fetch handoff.md for "${resolvedSlug}": ${coreResults[0].reason?.message}`);
         }
 
         const handoff = coreResults[0].value;
@@ -175,7 +182,7 @@ export function registerBootstrap(server: McpServer): void {
         if (opening_message) {
           const prefetchPaths = determinePrefetchFiles(opening_message);
           if (prefetchPaths.length > 0) {
-            const prefetchResults = await fetchFiles(project_slug, prefetchPaths);
+            const prefetchResults = await fetchFiles(resolvedSlug, prefetchPaths);
             for (const [filePath, fileResult] of prefetchResults) {
               prefetchedDocuments.push({
                 file: filePath,
@@ -191,7 +198,7 @@ export function registerBootstrap(server: McpServer): void {
         // 4. Render boot banner HTML (D-35)
         const sessionTimestamp = generateCstTimestamp();
         const sessionNumber = sessionCount + 1;
-        const projectDisplayName = getProjectDisplayName(project_slug);
+        const projectDisplayName = getProjectDisplayName(resolvedSlug);
         const resumption = parseResumptionForBanner(resumptionPoint, currentState);
         const guardrailCount = guardrails.length;
         const docCount = 8;
@@ -236,7 +243,7 @@ export function registerBootstrap(server: McpServer): void {
         }
 
         const result = {
-          project: project_slug,
+          project: resolvedSlug,
           handoff_version: handoffVersion,
           template_version: handoffTemplateVersion,
           session_count: sessionCount,
@@ -260,7 +267,7 @@ export function registerBootstrap(server: McpServer): void {
         };
 
         logger.info("prism_bootstrap complete", {
-          project_slug,
+          project_slug: resolvedSlug,
           filesFetched,
           bytesDelivered,
           rulesDelivered: !!behavioralRules,
@@ -273,9 +280,9 @@ export function registerBootstrap(server: McpServer): void {
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        logger.error("prism_bootstrap failed", { project_slug, error: message });
+        logger.error("prism_bootstrap failed", { project_slug: resolvedSlug, error: message });
         return {
-          content: [{ type: "text" as const, text: JSON.stringify({ error: message, project: project_slug }) }],
+          content: [{ type: "text" as const, text: JSON.stringify({ error: message, project: resolvedSlug }) }],
           isError: true,
         };
       }
