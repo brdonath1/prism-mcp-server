@@ -3,13 +3,18 @@
  * Fetches handoff, decision index, behavioral rules template, and optionally
  * relevant living documents. Returns structured summary with embedded rules (D-31)
  * and server-rendered boot banner HTML (D-35).
+ *
+ * Tier 1 perf optimizations (S18):
+ * - Template caching: behavioral rules cached in-memory with 5-min TTL
+ * - Boot-test folding: boot-test.md push happens inside bootstrap (eliminates 1 MCP round-trip)
  */
 
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { fetchFile, fetchFiles } from "../github/client.js";
+import { fetchFile, fetchFiles, pushFile } from "../github/client.js";
 import { FRAMEWORK_REPO, HANDOFF_CRITICAL_SIZE, MCP_TEMPLATE_PATH, PREFETCH_KEYWORDS, PROJECT_DISPLAY_NAMES, resolveProjectSlug } from "../config.js";
 import { logger } from "../utils/logger.js";
+import { templateCache } from "../utils/cache.js";
 import {
   extractSection,
   parseNumberedList,
@@ -63,11 +68,48 @@ function parseDecisions(content: string): Array<{ id: string; title: string; sta
  */
 function getProjectDisplayName(slug: string): string {
   if (PROJECT_DISPLAY_NAMES[slug]) return PROJECT_DISPLAY_NAMES[slug];
-  // Fallback: title-case the slug, replacing hyphens with spaces
   return slug
     .split("-")
     .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
     .join(" ");
+}
+
+/**
+ * Fetch the behavioral rules template with caching.
+ * Returns cached version if available and fresh, otherwise fetches from GitHub.
+ */
+async function fetchBehavioralRules(): Promise<{ content: string; size: number } | null> {
+  const cacheKey = MCP_TEMPLATE_PATH;
+  const cached = templateCache.get(cacheKey);
+  if (cached) return cached;
+
+  try {
+    const file = await fetchFile(FRAMEWORK_REPO, MCP_TEMPLATE_PATH);
+    const entry = { content: file.content, size: file.size };
+    templateCache.set(cacheKey, entry);
+    return entry;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Push boot-test.md to verify the write path. Non-blocking — failure is a warning, not an error.
+ */
+async function pushBootTest(
+  slug: string,
+  sessionNumber: number,
+  timestamp: string,
+  handoffVersion: number,
+): Promise<{ success: boolean; error?: string }> {
+  const content = `# Boot Test \u2014 Session ${sessionNumber}\nTimestamp: ${timestamp} CST\nProject: ${slug}\nHandoff: v${handoffVersion}\nMode: MCP\n\n<!-- EOF: boot-test.md -->\n`;
+  try {
+    await pushFile(slug, "boot-test.md", content, `prism: S${sessionNumber} boot test`);
+    return { success: true };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { success: false, error: msg };
+  }
 }
 
 /**
@@ -94,11 +136,11 @@ export function registerBootstrap(server: McpServer): void {
         let bytesDelivered = 0;
         let filesFetched = 0;
 
-        // 1. Fetch core files in parallel: handoff, decisions, and MCP behavioral rules template
+        // 1. Fetch core files in parallel: handoff, decisions, and cached behavioral rules
         const coreResults = await Promise.allSettled([
           fetchFile(resolvedSlug, "handoff.md"),
           fetchFile(resolvedSlug, "decisions/_INDEX.md").catch(() => null),
-          fetchFile(FRAMEWORK_REPO, MCP_TEMPLATE_PATH).catch(() => null),
+          fetchBehavioralRules(),
         ]);
 
         // Handoff is required
@@ -118,23 +160,22 @@ export function registerBootstrap(server: McpServer): void {
           bytesDelivered += decisionFile.size;
           filesFetched++;
         } else {
-          warnings.push("decisions/_INDEX.md not found — decision tracking not initialized for this project.");
+          warnings.push("decisions/_INDEX.md not found \u2014 decision tracking not initialized for this project.");
         }
 
-        // Behavioral rules template (D-31) — deliver full content so Claude skips the template fetch
+        // Behavioral rules template (D-31) \u2014 cached, deliver full content so Claude skips the template fetch
         let templateVersion = "unknown";
         let behavioralRules: string | null = null;
         if (coreResults[2].status === "fulfilled" && coreResults[2].value) {
-          const templateFile = coreResults[2].value;
-          behavioralRules = templateFile.content;
-          bytesDelivered += templateFile.size;
+          const templateData = coreResults[2].value;
+          behavioralRules = templateData.content;
+          bytesDelivered += templateData.size;
           filesFetched++;
-          // Extract version from template content
-          const versionMatch = templateFile.content.match(/version[:\s]*([\d.]+)/i);
+          const versionMatch = templateData.content.match(/version[:\\s]*([\\d.]+)/i);
           if (versionMatch) templateVersion = versionMatch[1];
-          logger.info("behavioral rules delivered", { size: templateFile.size, version: templateVersion });
+          logger.info("behavioral rules delivered", { size: templateData.size, version: templateVersion });
         } else {
-          warnings.push("Behavioral rules template not found — Claude should fetch core-template-mcp.md manually.");
+          warnings.push("Behavioral rules template not found \u2014 Claude should fetch core-template-mcp.md manually.");
         }
 
         // 2. Parse handoff into structured sections
@@ -146,7 +187,7 @@ export function registerBootstrap(server: McpServer): void {
         const scalingRequired = handoff.size > HANDOFF_CRITICAL_SIZE;
         if (scalingRequired) {
           warnings.push(
-            `Handoff is ${(handoff.size / 1024).toFixed(1)}KB — exceeds 15KB critical threshold. Scaling recommended.`
+            `Handoff is ${(handoff.size / 1024).toFixed(1)}KB \u2014 exceeds 15KB critical threshold. Scaling recommended.`
           );
         }
 
@@ -176,28 +217,37 @@ export function registerBootstrap(server: McpServer): void {
         // Recent decisions (last 5)
         const recentDecisions = decisions.slice(-5);
 
-        // 3. Intelligent pre-fetching
+        // 3. Intelligent pre-fetching + boot-test push (in parallel)
+        const sessionTimestamp = generateCstTimestamp();
+        const sessionNumber = sessionCount + 1;
+
+        // Launch boot-test push and prefetch in parallel
+        const bootTestPromise = pushBootTest(resolvedSlug, sessionNumber, sessionTimestamp, handoffVersion);
+
         const prefetchedDocuments: Array<{ file: string; size_bytes: number; summary: string }> = [];
+        let prefetchPromise: Promise<void> = Promise.resolve();
 
         if (opening_message) {
           const prefetchPaths = determinePrefetchFiles(opening_message);
           if (prefetchPaths.length > 0) {
-            const prefetchResults = await fetchFiles(resolvedSlug, prefetchPaths);
-            for (const [filePath, fileResult] of prefetchResults) {
-              prefetchedDocuments.push({
-                file: filePath,
-                size_bytes: fileResult.size,
-                summary: summarizeMarkdown(fileResult.content),
-              });
-              bytesDelivered += fileResult.size;
-              filesFetched++;
-            }
+            prefetchPromise = fetchFiles(resolvedSlug, prefetchPaths).then(results => {
+              for (const [filePath, fileResult] of results) {
+                prefetchedDocuments.push({
+                  file: filePath,
+                  size_bytes: fileResult.size,
+                  summary: summarizeMarkdown(fileResult.content),
+                });
+                bytesDelivered += fileResult.size;
+                filesFetched++;
+              }
+            });
           }
         }
 
+        // Wait for both boot-test and prefetch to complete
+        const [bootTestResult] = await Promise.all([bootTestPromise, prefetchPromise]);
+
         // 4. Render boot banner HTML (D-35)
-        const sessionTimestamp = generateCstTimestamp();
-        const sessionNumber = sessionCount + 1;
         const projectDisplayName = getProjectDisplayName(resolvedSlug);
         const resumption = parseResumptionForBanner(resumptionPoint, currentState);
         const guardrailCount = guardrails.length;
@@ -205,6 +255,13 @@ export function registerBootstrap(server: McpServer): void {
         const docTotal = 8;
         const docStatus = docCount === docTotal ? "ok" as const : "critical" as const;
         const docLabel = docStatus === "ok" ? "healthy" : `${docTotal - docCount} missing`;
+
+        // Determine push verification status from boot-test result
+        const pushToolStatus = bootTestResult.success ? "ok" as const : "warn" as const;
+        const pushToolLabel = bootTestResult.success ? "push verified" : "push failed";
+        if (!bootTestResult.success) {
+          warnings.push(`Boot-test push failed: ${bootTestResult.error}`);
+        }
 
         let bannerHtml: string | null = null;
         try {
@@ -223,7 +280,7 @@ export function registerBootstrap(server: McpServer): void {
             docLabel,
             tools: [
               { label: "bootstrap", status: "ok" },
-              { label: "push verified", status: "ok" },
+              { label: pushToolLabel, status: pushToolStatus },
               { label: "template loaded", status: "ok" },
               { label: scalingRequired ? "scaling required" : "no scaling needed", status: scalingRequired ? "warn" as const : "ok" as const },
             ],
@@ -239,7 +296,7 @@ export function registerBootstrap(server: McpServer): void {
         } catch (bannerError) {
           const bannerMsg = bannerError instanceof Error ? bannerError.message : String(bannerError);
           logger.warn("banner render failed", { error: bannerMsg });
-          warnings.push("Banner HTML render failed — Claude should construct manually from banner-spec.md.");
+          warnings.push("Banner HTML render failed \u2014 Claude should construct manually from banner-spec.md.");
         }
 
         const result = {
@@ -261,6 +318,7 @@ export function registerBootstrap(server: McpServer): void {
           prefetched_documents: prefetchedDocuments,
           behavioral_rules: behavioralRules,
           banner_html: bannerHtml,
+          boot_test_verified: bootTestResult.success,
           bytes_delivered: bytesDelivered,
           files_fetched: filesFetched,
           warnings,
@@ -271,7 +329,9 @@ export function registerBootstrap(server: McpServer): void {
           filesFetched,
           bytesDelivered,
           rulesDelivered: !!behavioralRules,
+          rulesCached: templateCache.get(MCP_TEMPLATE_PATH) !== null,
           bannerDelivered: !!bannerHtml,
+          bootTestVerified: bootTestResult.success,
           ms: Date.now() - start,
         });
 
