@@ -39,7 +39,7 @@ function escapeHtml(str: string): string {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+    .replace(/\"/g, "&quot;");
 }
 
 export function stripMarkdown(text: string): string {
@@ -50,6 +50,65 @@ export function stripMarkdown(text: string): string {
     .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
     .replace(/`([^`]+)`/g, "$1")
     .trim();
+}
+
+/**
+ * Format resumption text for HTML display.
+ * Converts markdown structure into readable HTML with line breaks,
+ * bold section headers, and styled bullet points.
+ */
+function formatResumptionHtml(text: string): string {
+  const lines = text.split("\n");
+  const htmlLines: string[] = [];
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      // Empty line = paragraph break
+      htmlLines.push('<div style="height:8px"></div>');
+      continue;
+    }
+
+    // Markdown headers (### Header) -> bold text with spacing
+    const headerMatch = trimmed.match(/^#{1,6}\s+(.+)$/);
+    if (headerMatch) {
+      htmlLines.push(`<div style="font-weight:600;margin-top:6px;color:#eee">${escapeHtml(stripMarkdown(headerMatch[1]))}</div>`);
+      continue;
+    }
+
+    // Bullet items (- text or * text) -> styled bullet
+    const bulletMatch = trimmed.match(/^[-*]\s+(.+)$/);
+    if (bulletMatch) {
+      // Convert **bold** to <strong> before escaping
+      let content = bulletMatch[1];
+      // Extract bold segments, escape, then re-wrap
+      content = content.replace(/\*\*(.+?)\*\*/g, '%%BOLD_START%%$1%%BOLD_END%%');
+      content = escapeHtml(stripMarkdown(content));
+      content = content.replace(/%%BOLD_START%%/g, '<strong style="color:#eee">').replace(/%%BOLD_END%%/g, '</strong>');
+      htmlLines.push(`<div style="padding-left:12px;margin-top:3px">\u2022 ${content}</div>`);
+      continue;
+    }
+
+    // Numbered items (1. text) -> keep numbering
+    const numberedMatch = trimmed.match(/^(\d+)\.\s+(.+)$/);
+    if (numberedMatch) {
+      let content = numberedMatch[2];
+      content = content.replace(/\*\*(.+?)\*\*/g, '%%BOLD_START%%$1%%BOLD_END%%');
+      content = escapeHtml(stripMarkdown(content));
+      content = content.replace(/%%BOLD_START%%/g, '<strong style="color:#eee">').replace(/%%BOLD_END%%/g, '</strong>');
+      htmlLines.push(`<div style="padding-left:12px;margin-top:3px">${escapeHtml(numberedMatch[1])}. ${content}</div>`);
+      continue;
+    }
+
+    // Regular text -> escape and render with bold support
+    let content = trimmed;
+    content = content.replace(/\*\*(.+?)\*\*/g, '%%BOLD_START%%$1%%BOLD_END%%');
+    content = escapeHtml(stripMarkdown(content));
+    content = content.replace(/%%BOLD_START%%/g, '<strong style="color:#eee">').replace(/%%BOLD_END%%/g, '</strong>');
+    htmlLines.push(`<div>${content}</div>`);
+  }
+
+  return htmlLines.join("\n");
 }
 
 /**
@@ -76,6 +135,7 @@ export function generateCstTimestamp(): string {
 /**
  * Extract the best resumption text for the banner from available sources.
  * Priority: explicit resumption_point > "Resumption point" paragraph in current_state > current_state.
+ * Preserves newlines and markdown structure for formatResumptionHtml to render.
  */
 export function parseResumptionForBanner(
   resumptionPoint: string,
@@ -83,7 +143,7 @@ export function parseResumptionForBanner(
 ): string {
   // Priority 1: explicit resumption point from handoff
   if (resumptionPoint.trim()) {
-    return stripMarkdown(resumptionPoint);
+    return resumptionPoint.trim();
   }
 
   // Priority 2: look for "Resumption point" paragraph in current state
@@ -91,13 +151,13 @@ export function parseResumptionForBanner(
     /\*?\*?Resumption point[^:]*:\*?\*?\s*([\s\S]*?)(?:\n\n|$)/i
   );
   if (resumptionMatch) {
-    const cleaned = stripMarkdown(resumptionMatch[1]);
+    const cleaned = resumptionMatch[1].trim();
     if (cleaned.length > 0) return cleaned;
   }
 
-  // Priority 3: first meaningful content from current state
+  // Priority 3: full current state with structure preserved
   if (currentState.trim()) {
-    return stripMarkdown(currentState);
+    return currentState.trim();
   }
 
   return "No specific resumption point set.";
@@ -120,6 +180,9 @@ function toolIcon(status: "ok" | "warn" | "critical"): string {
  */
 export function renderBannerHtml(data: BannerData): string {
   const e = (s: string) => escapeHtml(stripMarkdown(s));
+
+  // Resumption HTML — uses structured formatter instead of flat text
+  const resumptionHtml = formatResumptionHtml(data.resumption);
 
   // Tools HTML
   const toolsHtml = data.tools
@@ -195,7 +258,7 @@ export function renderBannerHtml(data: BannerData): string {
 .bn-tool.warn { color: var(--bn-warn); }
 .bn-tool.critical { color: var(--bn-critical); }
 .bn-section-label { font-size: 11px; font-weight: 600; letter-spacing: 1px; color: var(--bn-text-muted); text-transform: uppercase; margin-bottom: 6px; }
-.bn-resumption { background: var(--bn-surface); border-radius: 8px; padding: 14px 18px; font-size: 12px; line-height: 1.7; color: var(--bn-text); }
+.bn-resumption { background: var(--bn-surface); border-radius: 8px; padding: 14px 18px; font-size: 12px; line-height: 1.7; color: var(--bn-text-muted); }
 .bn-steps { display: flex; flex-direction: column; gap: 6px; }
 .bn-step { font-size: 12px; line-height: 1.6; color: var(--bn-text); padding-left: 4px; }
 .bn-step.priority { color: var(--bn-ok); }
@@ -238,7 +301,7 @@ export function renderBannerHtml(data: BannerData): string {
     </div>
     <div>
       <div class="bn-section-label">Resumption point</div>
-      <div class="bn-resumption">${e(data.resumption)}</div>
+      <div class="bn-resumption">${resumptionHtml}</div>
     </div>
     <div>
       <div class="bn-section-label">Next steps</div>
