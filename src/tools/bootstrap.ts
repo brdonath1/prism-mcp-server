@@ -181,7 +181,7 @@ export function registerBootstrap(server: McpServer): void {
         // 2. Parse handoff into structured sections
         const handoffVersion = parseHandoffVersion(handoff.content) ?? 0;
         const sessionCount = parseSessionCount(handoff.content) ?? 0;
-        const handoffTemplateVersion = parseTemplateVersion(handoff.content) ?? templateVersion;
+        const handoffTemplateVersion = templateVersion !== "unknown" ? templateVersion : (parseTemplateVersion(handoff.content) ?? "unknown");
 
         // Size check
         const scalingRequired = handoff.size > HANDOFF_CRITICAL_SIZE;
