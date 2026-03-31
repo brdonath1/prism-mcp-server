@@ -171,7 +171,7 @@ export function registerBootstrap(server: McpServer): void {
           behavioralRules = templateData.content;
           bytesDelivered += templateData.size;
           filesFetched++;
-          const versionMatch = templateData.content.match(/version[:\s]*([\d.]+)/i);
+          const versionMatch = templateData.content.match(/version[:\s*]*([\d.]+)/i);
           if (versionMatch) templateVersion = versionMatch[1];
           logger.info("behavioral rules delivered", { size: templateData.size, version: templateVersion });
         } else {
