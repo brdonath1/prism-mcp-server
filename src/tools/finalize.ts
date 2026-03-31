@@ -346,7 +346,7 @@ async function commitPhase(
     living_documents_updated: livingDocsUpdated,
     all_succeeded: allSucceeded,
     confirmation: allSucceeded
-      ? `Session ${sessionNumber} finalized. Handoff v${handoffVersion} pushed and verified. ${livingDocsUpdated}/8 living documents updated.`
+      ? `Session ${sessionNumber} finalized. Handoff v${handoffVersion} pushed and verified. ${livingDocsUpdated}/${LIVING_DOCUMENTS.length} living documents updated.`
       : `Session ${sessionNumber} finalization partially failed. ${succeeded.length}/${files.length} files pushed.`,
   };
 }

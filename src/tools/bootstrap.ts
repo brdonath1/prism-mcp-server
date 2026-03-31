@@ -12,7 +12,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { fetchFile, fetchFiles, pushFile } from "../github/client.js";
-import { FRAMEWORK_REPO, HANDOFF_CRITICAL_SIZE, MCP_TEMPLATE_PATH, PREFETCH_KEYWORDS, PROJECT_DISPLAY_NAMES, resolveProjectSlug } from "../config.js";
+import { FRAMEWORK_REPO, HANDOFF_CRITICAL_SIZE, LIVING_DOCUMENTS, MCP_TEMPLATE_PATH, PREFETCH_KEYWORDS, PROJECT_DISPLAY_NAMES, resolveProjectSlug } from "../config.js";
 import { logger } from "../utils/logger.js";
 import { templateCache } from "../utils/cache.js";
 import {
@@ -251,8 +251,8 @@ export function registerBootstrap(server: McpServer): void {
         const projectDisplayName = getProjectDisplayName(resolvedSlug);
         const resumption = parseResumptionForBanner(resumptionPoint, currentState);
         const guardrailCount = guardrails.length;
-        const docCount = 8;
-        const docTotal = 8;
+        const docCount = LIVING_DOCUMENTS.length;
+        const docTotal = LIVING_DOCUMENTS.length;
         const docStatus = docCount === docTotal ? "ok" as const : "critical" as const;
         const docLabel = docStatus === "ok" ? "healthy" : `${docTotal - docCount} missing`;
 

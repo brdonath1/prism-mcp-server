@@ -16,7 +16,7 @@ import { logger } from "../utils/logger.js";
 const inputSchema = {
   project_slug: z.string().describe("Project repo name — search is strictly limited to this single project"),
   query: z.string().describe("Search query — keywords or phrases to find across living documents"),
-  max_results: z.number().optional().default(10).describe("Maximum snippets to return (default: 10)"),
+  max_results: z.number().optional().describe("Maximum snippets to return (default: 10)"),
 };
 
 /** A single search result snippet */
@@ -179,7 +179,8 @@ export function registerSearch(server: McpServer): void {
     inputSchema,
     async ({ project_slug, query, max_results }) => {
       const start = Date.now();
-      logger.info("prism_search", { project_slug, query, max_results });
+      const limit = max_results ?? 10;
+      logger.info("prism_search", { project_slug, query, max_results: limit });
 
       try {
         // Step 1: Discover all searchable files
@@ -240,7 +241,7 @@ export function registerSearch(server: McpServer): void {
           })
           .filter((s) => s.score > 0)
           .sort((a, b) => b.score - a.score)
-          .slice(0, max_results);
+          .slice(0, limit);
 
         // Step 5: Build response
         const totalBytes = files.reduce((sum, f) => sum + f.size, 0);
