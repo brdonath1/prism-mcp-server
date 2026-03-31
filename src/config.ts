@@ -43,7 +43,7 @@ export const PORT = parseInt(process.env.PORT ?? "3000", 10);
 export const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
 
 /** Server version */
-export const SERVER_VERSION = "2.5.0";
+export const SERVER_VERSION = "2.6.0";
 
 /** GitHub API base URL */
 export const GITHUB_API_BASE = "https://api.github.com";
@@ -55,7 +55,7 @@ export const HANDOFF_CRITICAL_SIZE = 15_360;  // 15 KB — scaling required
 /** Summary mode threshold (bytes) */
 export const SUMMARY_SIZE_THRESHOLD = 5_120;  // 5 KB
 
-/** The 8 mandatory PRISM living documents */
+/** The 9 mandatory PRISM living documents (D-18, D-41) */
 export const LIVING_DOCUMENTS = [
   "handoff.md",
   "decisions/_INDEX.md",
@@ -65,6 +65,7 @@ export const LIVING_DOCUMENTS = [
   "architecture.md",
   "glossary.md",
   "known-issues.md",
+  "insights.md",
 ] as const;
 
 /** Valid commit prefixes */
@@ -157,6 +158,11 @@ export const PREFETCH_KEYWORDS: Record<string, string> = {
   history: "session-log.md",
   "last time": "session-log.md",
   previous: "session-log.md",
+  insight: "insights.md",
+  pattern: "insights.md",
+  preference: "insights.md",
+  gotcha: "insights.md",
+  learned: "insights.md",
 };
 
 if (!GITHUB_PAT) {
