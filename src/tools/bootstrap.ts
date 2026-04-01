@@ -260,10 +260,26 @@ export function registerBootstrap(server: McpServer): void {
         const prefetchedDocuments: Array<{ file: string; size_bytes: number; summary: string }> = [];
         let prefetchPromise: Promise<void> = Promise.resolve();
 
+        // Enhanced prefetching: combine opening message keywords + next steps from handoff
+        const prefetchSet = new Set<string>();
+
         if (opening_message) {
-          const prefetchPaths = determinePrefetchFiles(opening_message);
-          if (prefetchPaths.length > 0) {
-            prefetchPromise = fetchFiles(resolvedSlug, prefetchPaths).then(results => {
+          for (const f of determinePrefetchFiles(opening_message)) {
+            prefetchSet.add(f);
+          }
+        }
+
+        // Also pre-fetch based on next steps content (always available from handoff)
+        if (nextSteps.length > 0) {
+          for (const f of determinePrefetchFiles(nextSteps.join(" "))) {
+            prefetchSet.add(f);
+          }
+        }
+
+        const prefetchPaths = Array.from(prefetchSet);
+
+        if (prefetchPaths.length > 0) {
+          prefetchPromise = fetchFiles(resolvedSlug, prefetchPaths).then(results => {
               for (const [filePath, fileResult] of results) {
                 prefetchedDocuments.push({
                   file: filePath,
@@ -274,7 +290,6 @@ export function registerBootstrap(server: McpServer): void {
                 filesFetched++;
               }
             });
-          }
         }
 
         // Wait for both boot-test and prefetch to complete

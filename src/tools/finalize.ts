@@ -22,6 +22,8 @@ import { parseHandoffVersion } from "../validation/handoff.js";
 import { validateFile } from "../validation/index.js";
 import { parseMarkdownTable } from "../utils/summarizer.js";
 import { generateIntelligenceBrief } from "../ai/synthesize.js";
+import { FINALIZATION_DRAFT_PROMPT, buildFinalizationDraftMessage } from "../ai/prompts.js";
+import { synthesize } from "../ai/client.js";
 
 /**
  * Audit phase — fetch all living documents and return structured audit data.
@@ -209,6 +211,82 @@ async function auditPhase(projectSlug: string, sessionNumber: number) {
       warnings,
     },
   };
+}
+
+/**
+ * Draft phase — use Opus 4.6 to generate finalization file drafts.
+ * Returns structured content for Claude to review before commit.
+ */
+async function draftPhase(projectSlug: string, sessionNumber: number) {
+  if (!SYNTHESIS_ENABLED) {
+    return {
+      success: false,
+      error: "Draft generation requires ANTHROPIC_API_KEY — synthesis disabled on server.",
+      fallback: "Compose finalization files manually.",
+    };
+  }
+
+  // 1. Fetch all living documents
+  const docMap = await fetchFiles(projectSlug, [...LIVING_DOCUMENTS]);
+
+  // 2. Collect commit history for this session
+  const sessionCommits: string[] = [];
+  try {
+    const commits = await listCommits(projectSlug, { per_page: 50 });
+    for (const commit of commits) {
+      if (commit.message.startsWith("prism: finalize session")) break;
+      sessionCommits.push(commit.message);
+    }
+  } catch {
+    // Non-critical — drafts will be less informed but still useful
+  }
+
+  // 3. Build prompt and call Opus 4.6
+  const userMessage = buildFinalizationDraftMessage(
+    projectSlug,
+    sessionNumber,
+    docMap,
+    sessionCommits
+  );
+
+  logger.info("Finalization draft: calling Opus", {
+    projectSlug,
+    sessionNumber,
+    docCount: docMap.size,
+    commitCount: sessionCommits.length,
+  });
+
+  const result = await synthesize(FINALIZATION_DRAFT_PROMPT, userMessage, 4096);
+
+  if (!result) {
+    return {
+      success: false,
+      error: "Opus API call failed or returned null.",
+      fallback: "Compose finalization files manually.",
+    };
+  }
+
+  // 4. Parse response — expect JSON
+  try {
+    const clean = result.content.replace(/```json\n?|```\n?/g, "").trim();
+    const drafts = JSON.parse(clean);
+
+    return {
+      success: true,
+      drafts,
+      input_tokens: result.input_tokens,
+      output_tokens: result.output_tokens,
+      review_instructions: "Review each draft section. Edit as needed, then include in your commit files. These are drafts — you have full editorial control.",
+    };
+  } catch {
+    return {
+      success: true,
+      raw_content: result.content,
+      input_tokens: result.input_tokens,
+      output_tokens: result.output_tokens,
+      parse_warning: "Could not parse structured JSON — raw content included for manual extraction.",
+    };
+  }
 }
 
 /**
@@ -405,7 +483,7 @@ export function registerFinalize(server: McpServer): void {
     'Execute PRISM finalization. Use action:"audit" to fetch all living documents and detect drift. Use action:"commit" to push all composed content with backup and validation.',
     {
       project_slug: z.string().describe("Project repo name"),
-      action: z.enum(["audit", "commit"]).describe("Finalization phase"),
+      action: z.enum(["audit", "draft", "commit"]).describe("Finalization phase: 'audit' for document inventory, 'draft' for AI-generated file drafts, 'commit' to push final files"),
       session_number: z.number().describe("Current session number"),
       handoff_version: z.number().optional().describe("New handoff version (commit phase only)"),
       files: z
@@ -427,6 +505,18 @@ export function registerFinalize(server: McpServer): void {
           const result = await auditPhase(project_slug, session_number);
           logger.info("prism_finalize audit complete", {
             project_slug,
+            ms: Date.now() - start,
+          });
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+          };
+        }
+
+        if (action === "draft") {
+          const result = await draftPhase(project_slug, session_number);
+          logger.info("prism_finalize draft complete", {
+            project_slug,
+            success: result.success,
             ms: Date.now() - start,
           });
           return {

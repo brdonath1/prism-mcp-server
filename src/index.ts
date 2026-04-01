@@ -21,6 +21,9 @@ import { registerAnalytics } from "./tools/analytics.js";
 import { registerScaleHandoff } from "./tools/scale.js";
 import { registerSearch } from "./tools/search.js";
 import { registerSynthesize } from "./tools/synthesize.js";
+import { registerLogDecision } from "./tools/log-decision.js";
+import { registerLogInsight } from "./tools/log-insight.js";
+import { registerPatch } from "./tools/patch.js";
 
 const app = express();
 app.use(express.json());
@@ -52,6 +55,9 @@ function createServer(): McpServer {
   registerScaleHandoff(server);
   registerSearch(server);
   registerSynthesize(server);
+  registerLogDecision(server);
+  registerLogInsight(server);
+  registerPatch(server);
 
   return server;
 }
