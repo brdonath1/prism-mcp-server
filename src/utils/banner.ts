@@ -34,7 +34,7 @@ export interface BannerData {
 
 // --- Helpers ---
 
-function escapeHtml(str: string): string {
+export function escapeHtml(str: string): string {
   return str
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -57,7 +57,7 @@ export function stripMarkdown(text: string): string {
  * Converts markdown structure into readable HTML with line breaks,
  * bold section headers, and styled bullet points.
  */
-function formatResumptionHtml(text: string): string {
+export function formatResumptionHtml(text: string): string {
   const lines = text.split("\n");
   const htmlLines: string[] = [];
 
@@ -168,7 +168,7 @@ export function parseResumptionForBanner(
 /**
  * Map tool status to the appropriate icon character.
  */
-function toolIcon(status: "ok" | "warn" | "critical"): string {
+export function toolIcon(status: "ok" | "warn" | "critical"): string {
   if (status === "ok") return "\u2713";
   if (status === "warn") return "\u26a0";
   return "\u2717";

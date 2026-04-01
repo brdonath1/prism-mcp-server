@@ -15,13 +15,14 @@ import {
   getCommit,
   deleteFile,
 } from "../github/client.js";
-import { LIVING_DOCUMENTS, SYNTHESIS_ENABLED } from "../config.js";
+import { LIVING_DOCUMENTS, SYNTHESIS_ENABLED, SERVER_VERSION } from "../config.js";
 import { logger } from "../utils/logger.js";
 import { extractHeaders, extractSection, parseNumberedList } from "../utils/summarizer.js";
 import { parseHandoffVersion } from "../validation/handoff.js";
 import { validateFile } from "../validation/index.js";
 import { parseMarkdownTable } from "../utils/summarizer.js";
 import { generateIntelligenceBrief } from "../ai/synthesize.js";
+import { escapeHtml, stripMarkdown, formatResumptionHtml, toolIcon, generateCstTimestamp } from "../utils/banner.js";
 import { FINALIZATION_DRAFT_PROMPT, buildFinalizationDraftMessage } from "../ai/prompts.js";
 import { synthesize } from "../ai/client.js";
 
@@ -451,6 +452,146 @@ async function commitPhase(
 }
 
 /**
+ * Render a finalization banner as self-contained HTML+CSS.
+ * Mirrors boot banner architecture (D-35) with red accent and commit-specific data.
+ */
+function renderFinalizationBanner(data: {
+  version: string;
+  session: number;
+  timestamp: string;
+  handoff_version: number;
+  handoff_status: "ok" | "warn";
+  handoff_label: string;
+  docs_updated: number;
+  docs_total: number;
+  decisions_count: number;
+  decisions_note: string;
+  steps: Array<{ label: string; status: "ok" | "warn" | "critical" }>;
+  resumption: string;
+  deliverables: Array<{ text: string; status: "ok" | "warn" }>;
+  warnings: string[];
+  errors: string[];
+}): string {
+  const e = (s: string) => escapeHtml(stripMarkdown(s));
+
+  const resumptionHtml = formatResumptionHtml(data.resumption);
+
+  const stepsHtml = data.steps
+    .map((s) => {
+      const cls = s.status !== "ok" ? ` ${s.status}` : "";
+      return `<div class="bn-tool${cls}">${toolIcon(s.status)} ${e(s.label)}</div>`;
+    })
+    .join("\n      ");
+
+  const deliverablesHtml = data.deliverables
+    .map((d) => {
+      const cls = d.status === "warn" ? " warn" : "";
+      return `<div class="bn-step${cls}">\u25b8 ${e(d.text)}</div>`;
+    })
+    .join("\n        ");
+
+  const warningsHtml = data.warnings
+    .map((w) => `<div class="bn-alert warn">\u26a0 ${e(w)}</div>`)
+    .join("\n    ");
+
+  const errorsHtml = data.errors
+    .map((err) => `<div class="bn-alert critical">\u2717 ${e(err)}</div>`)
+    .join("\n    ");
+
+  return `<style>
+:root {
+  --bn-bg: #1e1e2e;
+  --bn-surface: #2a2a3e;
+  --bn-border: #3a3a4e;
+  --bn-text: #eee;
+  --bn-text-muted: #aaa;
+  --bn-accent-start: #dc2626;
+  --bn-accent-end: #ef4444;
+  --bn-ok: #22c55e;
+  --bn-warn: #eab308;
+  --bn-critical: #ef4444;
+  --bn-info: #60a5fa;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+.bn { font-family: system-ui, -apple-system, sans-serif; background: var(--bn-bg); border-radius: 12px; border: 1px solid var(--bn-border); overflow: hidden; color: var(--bn-text); }
+.bn-header { background: linear-gradient(90deg, var(--bn-accent-start), var(--bn-accent-end)); padding: 14px 20px; display: flex; justify-content: space-between; align-items: center; }
+.bn-header-text { display: flex; flex-direction: column; gap: 4px; }
+.bn-version { font-size: 11px; font-weight: 600; letter-spacing: 1.5px; opacity: 0.8; color: white; }
+.bn-title { font-size: 18px; font-weight: 700; color: white; }
+.bn-badge { background: rgba(255,255,255,0.2); border-radius: 12px; padding: 4px 14px; font-size: 11px; font-weight: 600; color: white; white-space: nowrap; }
+.bn-body { padding: 16px 20px 20px; display: flex; flex-direction: column; gap: 14px; }
+.bn-timestamp { font-size: 12px; color: var(--bn-text-muted); }
+.bn-metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.bn-card { background: var(--bn-surface); border: 0.5px solid var(--bn-border); border-radius: 8px; padding: 12px 14px; }
+.bn-card-label { font-size: 10px; font-weight: 500; color: var(--bn-text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+.bn-card-value { font-size: 22px; font-weight: 700; line-height: 1.2; }
+.bn-card-sub { font-size: 12px; font-weight: 400; color: var(--bn-text-muted); margin-left: 4px; }
+.bn-card-sub.ok { color: var(--bn-ok); font-weight: 600; }
+.bn-card-sub.warn { color: var(--bn-warn); font-weight: 600; }
+.bn-card-sub.critical { color: var(--bn-critical); font-weight: 600; }
+.bn-toolbar { display: grid; grid-template-columns: repeat(4, 1fr); background: var(--bn-surface); border-radius: 8px; overflow: hidden; }
+.bn-tool { text-align: center; font-size: 12px; font-weight: 500; padding: 9px 8px; color: var(--bn-ok); border-right: 0.5px solid var(--bn-border); }
+.bn-tool:last-child { border-right: none; }
+.bn-tool.warn { color: var(--bn-warn); }
+.bn-tool.critical { color: var(--bn-critical); }
+.bn-section-label { font-size: 11px; font-weight: 600; letter-spacing: 1px; color: var(--bn-text-muted); text-transform: uppercase; margin-bottom: 6px; }
+.bn-resumption { background: var(--bn-surface); border-radius: 8px; padding: 14px 18px; font-size: 12px; line-height: 1.7; color: var(--bn-text-muted); }
+.bn-steps { display: flex; flex-direction: column; gap: 6px; }
+.bn-step { font-size: 12px; line-height: 1.6; color: var(--bn-text); padding-left: 4px; }
+.bn-step.warn { color: var(--bn-warn); }
+.bn-alert { display: flex; align-items: flex-start; gap: 10px; border-radius: 8px; padding: 9px 16px; font-size: 12px; font-weight: 500; line-height: 1.5; }
+.bn-alert.warn { background: rgba(234,179,8,0.1); border: 1px solid rgba(234,179,8,0.3); color: var(--bn-warn); }
+.bn-alert.critical { background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3); color: var(--bn-critical); }
+</style>
+
+<div class="bn">
+  <div class="bn-header">
+    <div class="bn-header-text">
+      <div class="bn-version">PRISM v${e(data.version)}</div>
+      <div class="bn-title">Session ${data.session} \u2014 Finalized</div>
+    </div>
+    <div class="bn-badge">COMMITTED \u2713</div>
+  </div>
+  <div class="bn-body">
+    <div class="bn-timestamp">${e(data.timestamp)} CST</div>
+    <div class="bn-metrics">
+      <div class="bn-card">
+        <div class="bn-card-label">Session</div>
+        <div class="bn-card-value">${data.session}</div>
+      </div>
+      <div class="bn-card">
+        <div class="bn-card-label">Handoff</div>
+        <div class="bn-card-value">v${data.handoff_version} <span class="bn-card-sub ${data.handoff_status}">${e(data.handoff_label)}</span></div>
+      </div>
+      <div class="bn-card">
+        <div class="bn-card-label">Docs updated</div>
+        <div class="bn-card-value">${data.docs_updated}/${data.docs_total}</div>
+      </div>
+      <div class="bn-card">
+        <div class="bn-card-label">Decisions</div>
+        <div class="bn-card-value">${data.decisions_count} <span class="bn-card-sub">(${e(data.decisions_note)})</span></div>
+      </div>
+    </div>
+    <div class="bn-toolbar">
+      ${stepsHtml}
+    </div>
+    <div>
+      <div class="bn-section-label">Resumption point</div>
+      <div class="bn-resumption">${resumptionHtml}</div>
+    </div>
+    <div>
+      <div class="bn-section-label">Deliverables</div>
+      <div class="bn-steps">
+        ${deliverablesHtml}
+      </div>
+    </div>
+    ${warningsHtml}
+    ${errorsHtml}
+  </div>
+</div>`;
+}
+
+/**
  * Register the prism_finalize tool on an MCP server instance.
  */
 export function registerFinalize(server: McpServer): void {
@@ -495,8 +636,21 @@ export function registerFinalize(server: McpServer): void {
         )
         .optional()
         .describe("Files to push (commit phase only)"),
+      banner_data: z.object({
+        deliverables: z.array(z.object({
+          text: z.string(),
+          status: z.enum(["ok", "warn"]),
+        })).optional(),
+        decisions_note: z.string().optional(),
+        step_statuses: z.object({
+          audit: z.enum(["ok", "warn", "critical"]).optional(),
+          draft: z.enum(["ok", "warn", "critical"]).optional(),
+          commit: z.enum(["ok", "warn", "critical"]).optional(),
+          verified: z.enum(["ok", "warn", "critical"]).optional(),
+        }).optional(),
+      }).optional().describe("Optional banner customization data (commit phase only)"),
     },
-    async ({ project_slug, action, session_number, handoff_version, files }) => {
+    async ({ project_slug, action, session_number, handoff_version, files, banner_data }) => {
       const start = Date.now();
       logger.info("prism_finalize", { project_slug, action, session_number });
 
@@ -547,14 +701,99 @@ export function registerFinalize(server: McpServer): void {
           files
         );
 
+        // Render finalization banner (D-46)
+        let finalization_banner_html: string | null = null;
+        try {
+          // Count living docs updated from the files array
+          const livingDocPatterns = [...LIVING_DOCUMENTS, "decisions/"];
+          const docsUpdated = result.results.filter((r) =>
+            r.success && livingDocPatterns.some((ld) => r.path === ld || r.path.startsWith(ld))
+          ).length;
+
+          // Extract resumption from handoff.md content in files array
+          const handoffFile = files.find((f) => f.path === "handoff.md");
+          let resumption = "See handoff.md for resumption point.";
+          if (handoffFile) {
+            const whereWeAre = extractSection(handoffFile.content, "Where We Are")
+              ?? extractSection(handoffFile.content, "Current State")
+              ?? "";
+            if (whereWeAre.trim()) {
+              // Grab first paragraph
+              const firstParagraph = whereWeAre.split("\n\n")[0]?.trim();
+              if (firstParagraph) resumption = firstParagraph;
+            }
+          }
+
+          // Determine handoff push status
+          const handoffResult = result.results.find((r) => r.path === "handoff.md");
+          let handoffStatus: "ok" | "warn" = "ok";
+          let handoffLabel = "pushed";
+          if (!handoffResult?.success) {
+            handoffStatus = "warn";
+            handoffLabel = "push failed";
+          } else if (handoffResult && !handoffResult.verified) {
+            handoffStatus = "warn";
+            handoffLabel = "unverified";
+          }
+
+          // Count decisions from _INDEX.md in files array
+          let decisionsCount = 0;
+          const indexFile = files.find((f) => f.path === "decisions/_INDEX.md");
+          if (indexFile) {
+            const rows = parseMarkdownTable(indexFile.content);
+            decisionsCount = rows.length;
+          }
+
+          // Build deliverables
+          const deliverables = banner_data?.deliverables ?? [
+            { text: `\u2713 ${result.results.filter((r) => r.success).length} files pushed`, status: "ok" as const },
+          ];
+
+          // Build steps toolbar
+          const stepStatuses = banner_data?.step_statuses ?? {};
+          const allVerified = result.results.every((r) => r.success && r.verified);
+          const steps: Array<{ label: string; status: "ok" | "warn" | "critical" }> = [
+            { label: "audit", status: stepStatuses.audit ?? "ok" },
+            { label: "draft", status: stepStatuses.draft ?? "ok" },
+            { label: "commit", status: stepStatuses.commit ?? (result.all_succeeded ? "ok" : "critical") },
+            { label: "verified", status: stepStatuses.verified ?? (allVerified ? "ok" : "warn") },
+          ];
+
+          finalization_banner_html = renderFinalizationBanner({
+            version: SERVER_VERSION,
+            session: session_number,
+            timestamp: generateCstTimestamp(),
+            handoff_version: handoff_version ?? 1,
+            handoff_status: handoffStatus,
+            handoff_label: handoffLabel,
+            docs_updated: docsUpdated,
+            docs_total: 10,
+            decisions_count: decisionsCount,
+            decisions_note: banner_data?.decisions_note ?? "see index",
+            steps,
+            resumption,
+            deliverables,
+            warnings: result.results
+              .filter((r) => !r.success)
+              .map((r) => `Push failed: ${r.path}`),
+            errors: [],
+          });
+
+          logger.info("finalization banner rendered", { htmlLength: finalization_banner_html.length });
+        } catch (bannerError) {
+          const bannerMsg = bannerError instanceof Error ? bannerError.message : String(bannerError);
+          logger.warn("finalization banner render failed", { error: bannerMsg });
+        }
+
         logger.info("prism_finalize commit complete", {
           project_slug,
           allSucceeded: result.all_succeeded,
+          bannerRendered: !!finalization_banner_html,
           ms: Date.now() - start,
         });
 
         return {
-          content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+          content: [{ type: "text" as const, text: JSON.stringify({ ...result, finalization_banner_html }, null, 2) }],
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
