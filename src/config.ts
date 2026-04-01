@@ -43,7 +43,7 @@ export const PORT = parseInt(process.env.PORT ?? "3000", 10);
 export const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
 
 /** Server version */
-export const SERVER_VERSION = "2.7.2";
+export const SERVER_VERSION = "2.8.0";
 
 /** GitHub API base URL */
 export const GITHUB_API_BASE = "https://api.github.com";
@@ -55,7 +55,19 @@ export const HANDOFF_CRITICAL_SIZE = 15_360;  // 15 KB — scaling required
 /** Summary mode threshold (bytes) */
 export const SUMMARY_SIZE_THRESHOLD = 5_120;  // 5 KB
 
-/** The 9 mandatory PRISM living documents (D-18, D-41) */
+/** Anthropic API key for Opus 4.6 synthesis (Track 2) */
+export const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? "";
+
+/** Model to use for synthesis */
+export const SYNTHESIS_MODEL = process.env.SYNTHESIS_MODEL ?? "claude-opus-4-6";
+
+/** Whether synthesis is enabled (requires API key) */
+export const SYNTHESIS_ENABLED = !!process.env.ANTHROPIC_API_KEY;
+
+/** Max output tokens for synthesis calls */
+export const SYNTHESIS_MAX_OUTPUT_TOKENS = 4096;
+
+/** The 10 mandatory PRISM living documents (D-18, D-41, D-44) */
 export const LIVING_DOCUMENTS = [
   "handoff.md",
   "decisions/_INDEX.md",
@@ -66,6 +78,7 @@ export const LIVING_DOCUMENTS = [
   "glossary.md",
   "known-issues.md",
   "insights.md",
+  "intelligence-brief.md",
 ] as const;
 
 /** Valid commit prefixes */

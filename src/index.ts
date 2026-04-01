@@ -20,6 +20,7 @@ import { registerFinalize } from "./tools/finalize.js";
 import { registerAnalytics } from "./tools/analytics.js";
 import { registerScaleHandoff } from "./tools/scale.js";
 import { registerSearch } from "./tools/search.js";
+import { registerSynthesize } from "./tools/synthesize.js";
 
 const app = express();
 app.use(express.json());
@@ -50,6 +51,7 @@ function createServer(): McpServer {
   registerAnalytics(server);
   registerScaleHandoff(server);
   registerSearch(server);
+  registerSynthesize(server);
 
   return server;
 }

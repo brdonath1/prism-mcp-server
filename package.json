@@ -11,10 +11,15 @@
     "test": "vitest run",
     "test:watch": "vitest"
   },
-  "keywords": ["mcp", "prism", "github"],
+  "keywords": [
+    "mcp",
+    "prism",
+    "github"
+  ],
   "author": "Brian (brdonath1)",
   "license": "MIT",
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.81.0",
     "@modelcontextprotocol/sdk": "^1.28.0",
     "express": "^5.1.0",
     "zod": "^3.23.0"

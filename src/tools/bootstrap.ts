@@ -24,6 +24,39 @@ import {
 import { parseHandoffVersion, parseSessionCount, parseTemplateVersion } from "../validation/handoff.js";
 import { renderBannerHtml, generateCstTimestamp, parseResumptionForBanner } from "../utils/banner.js";
 
+interface StandingRule {
+  id: string;
+  title: string;
+  content: string;
+}
+
+/**
+ * Extract STANDING RULE entries from insights.md content.
+ */
+function extractStandingRules(insightsContent: string | null): StandingRule[] {
+  if (!insightsContent) return [];
+
+  const rules: StandingRule[] = [];
+  // Split by ### headers
+  const sections = insightsContent.split(/(?=^### )/m);
+
+  for (const section of sections) {
+    // Check if this section contains "STANDING RULE" (case-insensitive)
+    if (/standing\s+rule/i.test(section)) {
+      const headerMatch = section.match(/^### (INS-\d+):?\s*(.+)/);
+      if (headerMatch) {
+        rules.push({
+          id: headerMatch[1],
+          title: headerMatch[2].trim(),
+          content: section.trim(),
+        });
+      }
+    }
+  }
+
+  return rules;
+}
+
 /** Input schema for prism_bootstrap */
 const inputSchema = {
   project_slug: z.string().describe("Project repo name or display name (e.g., 'platformforge-v2', 'PlatformForge v2', 'PRISM Framework', 'prism')"),
@@ -247,7 +280,45 @@ export function registerBootstrap(server: McpServer): void {
         // Wait for both boot-test and prefetch to complete
         const [bootTestResult] = await Promise.all([bootTestPromise, prefetchPromise]);
 
-        // 4. Render boot banner HTML (D-35)
+        // 4. Standing rules extraction (Track 1, D-44)
+        // Fetch insights.md if not already prefetched
+        let insightsContent: string | null = null;
+        const prefetchedInsights = prefetchedDocuments.find(d => d.file === "insights.md");
+        if (prefetchedInsights) {
+          // Already prefetched — fetch full content for rule extraction
+          try {
+            const insightsFile = await fetchFile(resolvedSlug, "insights.md");
+            insightsContent = insightsFile.content;
+          } catch {
+            // insights.md may not exist for this project
+          }
+        } else {
+          try {
+            const insightsFile = await fetchFile(resolvedSlug, "insights.md");
+            insightsContent = insightsFile.content;
+          } catch {
+            // insights.md may not exist for this project
+          }
+        }
+
+        const standingRules = extractStandingRules(insightsContent);
+        if (standingRules.length > 0) {
+          logger.info("standing rules extracted", { count: standingRules.length, ids: standingRules.map(r => r.id) });
+        }
+
+        // 5. Intelligence brief loading (Track 2, D-44)
+        let intelligenceBrief: string | null = null;
+        try {
+          const briefFile = await fetchFile(resolvedSlug, "intelligence-brief.md");
+          intelligenceBrief = briefFile.content;
+          bytesDelivered += briefFile.size;
+          filesFetched++;
+          logger.info("intelligence brief loaded", { size: briefFile.size });
+        } catch {
+          // intelligence-brief.md may not exist yet — expected for new projects or pre-synthesis
+        }
+
+        // 6. Render boot banner HTML (D-35)
         const projectDisplayName = getProjectDisplayName(resolvedSlug);
         const resumption = parseResumptionForBanner(resumptionPoint, currentState);
         const guardrailCount = guardrails.length;
@@ -316,6 +387,8 @@ export function registerBootstrap(server: McpServer): void {
           next_steps: nextSteps,
           open_questions: openQuestions,
           prefetched_documents: prefetchedDocuments,
+          standing_rules: standingRules,
+          intelligence_brief: intelligenceBrief,
           behavioral_rules: behavioralRules,
           banner_html: bannerHtml,
           boot_test_verified: bootTestResult.success,
@@ -331,6 +404,8 @@ export function registerBootstrap(server: McpServer): void {
           rulesDelivered: !!behavioralRules,
           rulesCached: templateCache.get(MCP_TEMPLATE_PATH) !== null,
           bannerDelivered: !!bannerHtml,
+          standingRulesCount: standingRules.length,
+          intelligenceBriefLoaded: !!intelligenceBrief,
           bootTestVerified: bootTestResult.success,
           ms: Date.now() - start,
         });

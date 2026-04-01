@@ -15,12 +15,13 @@ import {
   getCommit,
   deleteFile,
 } from "../github/client.js";
-import { LIVING_DOCUMENTS } from "../config.js";
+import { LIVING_DOCUMENTS, SYNTHESIS_ENABLED } from "../config.js";
 import { logger } from "../utils/logger.js";
 import { extractHeaders, extractSection, parseNumberedList } from "../utils/summarizer.js";
 import { parseHandoffVersion } from "../validation/handoff.js";
 import { validateFile } from "../validation/index.js";
 import { parseMarkdownTable } from "../utils/summarizer.js";
+import { generateIntelligenceBrief } from "../ai/synthesize.js";
 
 /**
  * Audit phase — fetch all living documents and return structured audit data.
@@ -337,6 +338,25 @@ async function commitPhase(
 
   const allSucceeded = succeeded.length === files.length;
 
+  // Fire-and-forget synthesis after successful commit (D-44 Track 2)
+  if (allSucceeded && SYNTHESIS_ENABLED) {
+    generateIntelligenceBrief(projectSlug, sessionNumber)
+      .then(synthResult => {
+        logger.info("Post-finalization synthesis complete", {
+          projectSlug,
+          sessionNumber,
+          success: synthResult.success,
+          tokens: synthResult.input_tokens,
+        });
+      })
+      .catch(err => {
+        logger.error("Post-finalization synthesis failed", {
+          projectSlug,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+  }
+
   return {
     project: projectSlug,
     session_number: sessionNumber,
@@ -345,6 +365,7 @@ async function commitPhase(
     results,
     living_documents_updated: livingDocsUpdated,
     all_succeeded: allSucceeded,
+    synthesis_triggered: allSucceeded && SYNTHESIS_ENABLED,
     confirmation: allSucceeded
       ? `Session ${sessionNumber} finalized. Handoff v${handoffVersion} pushed and verified. ${livingDocsUpdated}/${LIVING_DOCUMENTS.length} living documents updated.`
       : `Session ${sessionNumber} finalization partially failed. ${succeeded.length}/${files.length} files pushed.`,
