@@ -8,6 +8,8 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { pushFile, fetchFile } from "../github/client.js";
 import { logger } from "../utils/logger.js";
 import { validateFileAndCommit } from "../validation/index.js";
+import { templateCache } from "../utils/cache.js";
+import { FRAMEWORK_REPO, MCP_TEMPLATE_PATH } from "../config.js";
 
 /** Input schema for prism_push */
 const inputSchema = {
@@ -127,6 +129,15 @@ export function registerPush(server: McpServer): void {
 
         const succeeded = results.filter(r => r.success);
         const totalBytes = succeeded.reduce((sum, r) => sum + r.size_bytes, 0);
+
+        // 3. Invalidate template cache if we just pushed an update to the core template
+        if (project_slug === FRAMEWORK_REPO) {
+          const templatePushed = succeeded.some(r => r.path === MCP_TEMPLATE_PATH);
+          if (templatePushed) {
+            templateCache.invalidate(MCP_TEMPLATE_PATH);
+            logger.info("template cache invalidated", { reason: "core template pushed via prism_push" });
+          }
+        }
 
         const result = {
           project: project_slug,
