@@ -340,8 +340,19 @@ export function registerBootstrap(server: McpServer): void {
           // intelligence-brief.md may not exist yet
         }
 
-        // 5b. Standing rules extraction (D-47)
-        const standingRules = extractStandingRules(intelligenceBriefFull);
+        // 5b. Standing rules extraction from insights.md (D-44 Track 1, D-47)
+        let insightsContent: string | null = null;
+        try {
+          const insightsFile = await fetchFile(resolvedSlug, "insights.md");
+          insightsContent = insightsFile.content;
+          // Don't add to bytesDelivered — only extracted procedures are delivered, not full file
+        } catch {
+          // insights.md may not exist for this project
+        }
+        const standingRules = extractStandingRules(insightsContent);
+        if (standingRules.length > 0) {
+          logger.info("standing rules extracted", { count: standingRules.length, ids: standingRules.map(r => r.id) });
+        }
 
         // 6. Banner data object (D-47 — replaces pre-rendered HTML)
         const projectDisplayName = getProjectDisplayName(resolvedSlug);
