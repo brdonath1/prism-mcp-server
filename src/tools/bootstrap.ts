@@ -22,40 +22,7 @@ import {
   summarizeMarkdown,
 } from "../utils/summarizer.js";
 import { parseHandoffVersion, parseSessionCount, parseTemplateVersion } from "../validation/handoff.js";
-import { renderBannerHtml, generateCstTimestamp, parseResumptionForBanner } from "../utils/banner.js";
-
-interface StandingRule {
-  id: string;
-  title: string;
-  content: string;
-}
-
-/**
- * Extract STANDING RULE entries from insights.md content.
- */
-function extractStandingRules(insightsContent: string | null): StandingRule[] {
-  if (!insightsContent) return [];
-
-  const rules: StandingRule[] = [];
-  // Split by ### headers
-  const sections = insightsContent.split(/(?=^### )/m);
-
-  for (const section of sections) {
-    // Check if this section contains "STANDING RULE" (case-insensitive)
-    if (/standing\s+rule/i.test(section)) {
-      const headerMatch = section.match(/^### (INS-\d+):?\s*(.+)/);
-      if (headerMatch) {
-        rules.push({
-          id: headerMatch[1],
-          title: headerMatch[2].trim(),
-          content: section.trim(),
-        });
-      }
-    }
-  }
-
-  return rules;
-}
+import { generateCstTimestamp, parseResumptionForBanner } from "../utils/banner.js";
 
 /** Input schema for prism_bootstrap */
 const inputSchema = {
@@ -94,6 +61,47 @@ function parseDecisions(content: string): Array<{ id: string; title: string; sta
       status: row[statusKey] ?? "",
     };
   }).filter(d => d.id.length > 0);
+}
+
+/** Standing rule extracted from insights — procedure-only (D-47) */
+interface StandingRule {
+  id: string;
+  title: string;
+  procedure: string; // D-47: procedure-only, not full content
+}
+
+/**
+ * Extract standing rules from insights content, keeping only the procedure portion.
+ */
+function extractStandingRules(insightsContent: string | null): StandingRule[] {
+  if (!insightsContent) return [];
+
+  const rules: StandingRule[] = [];
+  const sections = insightsContent.split(/(?=^### )/m);
+
+  for (const section of sections) {
+    if (/standing\s+rule/i.test(section)) {
+      const headerMatch = section.match(/^### (INS-\d+):?\s*(.+)/);
+      if (headerMatch) {
+        // D-47: Extract procedure-only — find "Standing procedure:" and take everything after
+        let procedure = '';
+        const procStart = section.search(/\*\*Standing procedure:\*\*/i);
+        if (procStart !== -1) {
+          procedure = section.slice(procStart)
+            .replace(/^\*\*Standing procedure:\*\*\s*/i, '')
+            .trim();
+        }
+
+        rules.push({
+          id: headerMatch[1],
+          title: headerMatch[2].replace(/\s*—\s*STANDING RULE\s*/i, '').trim(),
+          procedure,
+        });
+      }
+    }
+  }
+
+  return rules;
 }
 
 /**
@@ -295,45 +303,47 @@ export function registerBootstrap(server: McpServer): void {
         // Wait for both boot-test and prefetch to complete
         const [bootTestResult] = await Promise.all([bootTestPromise, prefetchPromise]);
 
-        // 4. Standing rules extraction (Track 1, D-44)
-        // Fetch insights.md if not already prefetched
-        let insightsContent: string | null = null;
-        const prefetchedInsights = prefetchedDocuments.find(d => d.file === "insights.md");
-        if (prefetchedInsights) {
-          // Already prefetched — fetch full content for rule extraction
-          try {
-            const insightsFile = await fetchFile(resolvedSlug, "insights.md");
-            insightsContent = insightsFile.content;
-          } catch {
-            // insights.md may not exist for this project
-          }
-        } else {
-          try {
-            const insightsFile = await fetchFile(resolvedSlug, "insights.md");
-            insightsContent = insightsFile.content;
-          } catch {
-            // insights.md may not exist for this project
-          }
-        }
-
-        const standingRules = extractStandingRules(insightsContent);
-        if (standingRules.length > 0) {
-          logger.info("standing rules extracted", { count: standingRules.length, ids: standingRules.map(r => r.id) });
-        }
-
         // 5. Intelligence brief loading (Track 2, D-44)
         let intelligenceBrief: string | null = null;
+        let intelligenceBriefFull: string | null = null; // D-47: keep full for size tracking
         try {
           const briefFile = await fetchFile(resolvedSlug, "intelligence-brief.md");
-          intelligenceBrief = briefFile.content;
-          bytesDelivered += briefFile.size;
+          intelligenceBriefFull = briefFile.content;
           filesFetched++;
           logger.info("intelligence brief loaded", { size: briefFile.size });
+
+          // D-47: Compact mode — extract only actionable sections
+          const projectState = extractSection(briefFile.content, "Project State");
+          const riskFlags = extractSection(briefFile.content, "Risk Flags");
+          const qualityAudit = extractSection(briefFile.content, "Quality Audit");
+
+          const compactParts: string[] = [];
+          if (projectState) {
+            // First 3 sentences only for project state context
+            const sentences = projectState.split(/(?<=[.!?])\s+/).slice(0, 3);
+            compactParts.push(`**Project State (compact):** ${sentences.join(" ")}`);
+          }
+          if (riskFlags) compactParts.push(`## Risk Flags\n${riskFlags}`);
+          if (qualityAudit) compactParts.push(`## Quality Audit\n${qualityAudit}`);
+
+          intelligenceBrief = compactParts.length > 0 ? compactParts.join("\n\n") : null;
+
+          if (intelligenceBrief) {
+            bytesDelivered += intelligenceBrief.length; // Count compact size, not full
+            logger.info("intelligence brief compacted", {
+              fullSize: briefFile.size,
+              compactSize: intelligenceBrief.length,
+              sectionsExtracted: compactParts.length,
+            });
+          }
         } catch {
-          // intelligence-brief.md may not exist yet — expected for new projects or pre-synthesis
+          // intelligence-brief.md may not exist yet
         }
 
-        // 6. Render boot banner HTML (D-35)
+        // 5b. Standing rules extraction (D-47)
+        const standingRules = extractStandingRules(intelligenceBriefFull);
+
+        // 6. Banner data object (D-47 — replaces pre-rendered HTML)
         const projectDisplayName = getProjectDisplayName(resolvedSlug);
         const resumption = parseResumptionForBanner(resumptionPoint, currentState);
         const guardrailCount = guardrails.length;
@@ -349,41 +359,43 @@ export function registerBootstrap(server: McpServer): void {
           warnings.push(`Boot-test push failed: ${bootTestResult.error}`);
         }
 
-        let bannerHtml: string | null = null;
-        try {
-          bannerHtml = renderBannerHtml({
-            templateVersion: handoffTemplateVersion,
-            projectDisplayName,
-            sessionNumber,
-            timestamp: sessionTimestamp,
-            handoffVersion,
-            handoffSizeKb: (handoff.size / 1024).toFixed(1),
-            decisionCount: decisions.length,
-            decisionNote: `${guardrailCount} guardrails`,
-            docCount,
-            docTotal,
-            docStatus,
-            docLabel,
-            tools: [
-              { label: "bootstrap", status: "ok" },
-              { label: pushToolLabel, status: pushToolStatus },
-              { label: "template loaded", status: "ok" },
-              { label: scalingRequired ? "scaling required" : "no scaling needed", status: scalingRequired ? "warn" as const : "ok" as const },
-            ],
-            resumption,
-            nextSteps: nextSteps.map((text, i) => ({
-              text,
-              status: i === 0 ? "priority" as const : "normal" as const,
-            })),
-            warnings,
-            errors: [],
-          });
-          logger.info("banner HTML rendered", { htmlLength: bannerHtml.length });
-        } catch (bannerError) {
-          const bannerMsg = bannerError instanceof Error ? bannerError.message : String(bannerError);
-          logger.warn("banner render failed", { error: bannerMsg });
-          warnings.push("Banner HTML render failed \u2014 Claude should construct manually from banner-spec.md.");
-        }
+        const bannerData = {
+          template_version: handoffTemplateVersion,
+          project: projectDisplayName,
+          session: sessionNumber,
+          timestamp: sessionTimestamp,
+          handoff_version: handoffVersion,
+          handoff_kb: (handoff.size / 1024).toFixed(1),
+          decisions: decisions.length,
+          guardrails: guardrailCount,
+          docs: `${docCount}/${docTotal}`,
+          doc_status: docStatus,
+          doc_label: docLabel,
+          tools: [
+            { label: "bootstrap", status: "ok" },
+            { label: pushToolLabel, status: pushToolStatus },
+            { label: "template loaded", status: "ok" },
+            { label: scalingRequired ? "scaling required" : "no scaling needed", status: scalingRequired ? "warn" : "ok" },
+          ],
+          resumption,
+          next_steps: nextSteps.map((text, i) => ({
+            text,
+            priority: i === 0,
+          })),
+          warnings,
+        };
+
+        // D-47: Per-component sizing for monitoring
+        const componentSizes = {
+          handoff: handoff.size,
+          decisions_index: coreResults[1].status === "fulfilled" && coreResults[1].value ? (coreResults[1].value as { size: number }).size : 0,
+          behavioral_rules: coreResults[2].status === "fulfilled" && coreResults[2].value ? (coreResults[2].value as { size: number }).size : 0,
+          intelligence_brief_full: intelligenceBriefFull?.length ?? 0,
+          intelligence_brief_compact: intelligenceBrief?.length ?? 0,
+          standing_rules: JSON.stringify(standingRules).length,
+          banner_data: JSON.stringify(bannerData).length,
+          prefetched_docs: prefetchedDocuments.reduce((sum, d) => sum + d.size_bytes, 0),
+        };
 
         const result = {
           project: resolvedSlug,
@@ -403,12 +415,14 @@ export function registerBootstrap(server: McpServer): void {
           open_questions: openQuestions,
           prefetched_documents: prefetchedDocuments,
           standing_rules: standingRules,
-          intelligence_brief: intelligenceBrief,
+          intelligence_brief: intelligenceBrief,      // D-47: compact version
           behavioral_rules: behavioralRules,
-          banner_html: bannerHtml,
+          banner_data: bannerData,                     // D-47: data object replaces banner_html
+          banner_html: null,                           // D-47: null for backward compat detection
           boot_test_verified: bootTestResult.success,
           bytes_delivered: bytesDelivered,
           files_fetched: filesFetched,
+          component_sizes: componentSizes,             // D-47: per-component monitoring
           warnings,
         };
 
@@ -418,10 +432,13 @@ export function registerBootstrap(server: McpServer): void {
           bytesDelivered,
           rulesDelivered: !!behavioralRules,
           rulesCached: templateCache.get(MCP_TEMPLATE_PATH) !== null,
-          bannerDelivered: !!bannerHtml,
+          bannerDataDelivered: true,                   // D-47
           standingRulesCount: standingRules.length,
-          intelligenceBriefLoaded: !!intelligenceBrief,
+          intelligenceBriefCompacted: !!intelligenceBrief, // D-47
+          intelligenceBriefFullSize: intelligenceBriefFull?.length ?? 0,  // D-47
+          intelligenceBriefCompactSize: intelligenceBrief?.length ?? 0,   // D-47
           bootTestVerified: bootTestResult.success,
+          componentSizes,                              // D-47
           ms: Date.now() - start,
         });
 
