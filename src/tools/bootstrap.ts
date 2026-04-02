@@ -22,7 +22,7 @@ import {
   summarizeMarkdown,
 } from "../utils/summarizer.js";
 import { parseHandoffVersion, parseSessionCount, parseTemplateVersion } from "../validation/handoff.js";
-import { generateCstTimestamp, parseResumptionForBanner } from "../utils/banner.js";
+import { generateCstTimestamp, parseResumptionForBanner, renderBannerHtml, type BannerData } from "../utils/banner.js";
 
 /** Input schema for prism_bootstrap */
 const inputSchema = {
@@ -396,6 +396,38 @@ export function registerBootstrap(server: McpServer): void {
           warnings,
         };
 
+        // --- Render boot banner HTML (D-35, restored from D-47 data-only mode) ---
+        let bannerHtml: string | null = null;
+        try {
+          const bannerInput: BannerData = {
+            templateVersion: bannerData.template_version,
+            projectDisplayName: bannerData.project,
+            sessionNumber: bannerData.session,
+            timestamp: bannerData.timestamp,
+            handoffVersion: bannerData.handoff_version,
+            handoffSizeKb: bannerData.handoff_kb,
+            decisionCount: bannerData.decisions,
+            decisionNote: `${bannerData.guardrails} guardrails`,
+            docCount: docCount,
+            docTotal: docTotal,
+            docStatus: bannerData.doc_status,
+            docLabel: bannerData.doc_label,
+            tools: bannerData.tools as BannerData["tools"],
+            resumption: resumption,
+            nextSteps: bannerData.next_steps.map((s, i) => ({
+              text: s.text,
+              status: (i === 0 ? "priority" : "normal") as "priority" | "warn" | "normal",
+            })),
+            warnings: bannerData.warnings,
+            errors: [],
+          };
+          bannerHtml = renderBannerHtml(bannerInput);
+          logger.info("boot banner HTML rendered", { htmlLength: bannerHtml.length });
+        } catch (bannerError) {
+          const msg = bannerError instanceof Error ? bannerError.message : String(bannerError);
+          logger.warn("boot banner render failed, falling back to banner_data", { error: msg });
+        }
+
         // D-47: Per-component sizing for monitoring
         const componentSizes = {
           handoff: handoff.size,
@@ -405,6 +437,7 @@ export function registerBootstrap(server: McpServer): void {
           intelligence_brief_compact: intelligenceBrief?.length ?? 0,
           standing_rules: JSON.stringify(standingRules).length,
           banner_data: JSON.stringify(bannerData).length,
+          banner_html: bannerHtml?.length ?? 0,
           prefetched_docs: prefetchedDocuments.reduce((sum, d) => sum + d.size_bytes, 0),
         };
 
@@ -429,7 +462,7 @@ export function registerBootstrap(server: McpServer): void {
           intelligence_brief: intelligenceBrief,      // D-47: compact version
           behavioral_rules: behavioralRules,
           banner_data: bannerData,                     // D-47: data object replaces banner_html
-          banner_html: null,                           // D-47: null for backward compat detection
+          banner_html: bannerHtml,                     // D-35 restored: server-rendered HTML, D-47 banner_data kept as fallback
           boot_test_verified: bootTestResult.success,
           bytes_delivered: bytesDelivered,
           files_fetched: filesFetched,
@@ -443,7 +476,8 @@ export function registerBootstrap(server: McpServer): void {
           bytesDelivered,
           rulesDelivered: !!behavioralRules,
           rulesCached: templateCache.get(MCP_TEMPLATE_PATH) !== null,
-          bannerDataDelivered: true,                   // D-47
+          bannerHtmlRendered: !!bannerHtml,            // D-35 restored
+          bannerDataDelivered: true,                   // D-47 kept as fallback
           standingRulesCount: standingRules.length,
           intelligenceBriefCompacted: !!intelligenceBrief, // D-47
           intelligenceBriefFullSize: intelligenceBriefFull?.length ?? 0,  // D-47
