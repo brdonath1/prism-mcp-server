@@ -9,6 +9,7 @@ import { logger } from "../utils/logger.js";
 import { synthesize } from "./client.js";
 import { FINALIZATION_SYNTHESIS_PROMPT, buildSynthesisUserMessage } from "./prompts.js";
 import { generateCstTimestamp } from "../utils/banner.js";
+import { recordSynthesisEvent } from "./synthesis-tracker.js";
 
 export interface SynthesisOutcome {
   success: boolean;
@@ -74,6 +75,14 @@ export async function generateIntelligenceBrief(
     const result = await synthesize(FINALIZATION_SYNTHESIS_PROMPT, userMessage);
 
     if (!result) {
+      recordSynthesisEvent({
+        project: projectSlug,
+        sessionNumber,
+        timestamp: new Date().toISOString(),
+        success: false,
+        error: "Synthesis API returned null",
+        duration_ms: Date.now() - start,
+      });
       return { success: false, error: "Synthesis API returned null" };
     }
 
@@ -121,15 +130,36 @@ export async function generateIntelligenceBrief(
       ms: Date.now() - start,
     });
 
+    recordSynthesisEvent({
+      project: projectSlug,
+      sessionNumber,
+      timestamp: new Date().toISOString(),
+      success: true,
+      input_tokens: outcome.input_tokens,
+      output_tokens: outcome.output_tokens,
+      duration_ms: Date.now() - start,
+    });
+
     return outcome;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    const duration = Date.now() - start;
     logger.error("Intelligence brief generation failed", {
       projectSlug,
       sessionNumber,
       error: message,
-      ms: Date.now() - start,
+      ms: duration,
     });
+
+    recordSynthesisEvent({
+      project: projectSlug,
+      sessionNumber,
+      timestamp: new Date().toISOString(),
+      success: false,
+      error: message,
+      duration_ms: duration,
+    });
+
     return { success: false, error: message };
   }
 }

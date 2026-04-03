@@ -10,10 +10,12 @@ import {
   LIVING_DOCUMENTS,
   HANDOFF_CRITICAL_SIZE,
   HANDOFF_WARNING_SIZE,
+  SYNTHESIS_ENABLED,
 } from "../config.js";
 import { logger } from "../utils/logger.js";
 import { parseHandoffVersion, parseSessionCount } from "../validation/handoff.js";
 import { extractSection } from "../utils/summarizer.js";
+import { getSynthesisHealth } from "../ai/synthesis-tracker.js";
 
 /** Input schema for prism_status */
 const inputSchema = {
@@ -175,6 +177,10 @@ export function registerStatus(server: McpServer): void {
           healthy: projects.filter(p => p.health === "healthy").length,
           needs_attention: projects.filter(p => p.health === "needs-attention").length,
           critical: projects.filter(p => p.health === "critical").length,
+          synthesis: {
+            enabled: SYNTHESIS_ENABLED,
+            ...getSynthesisHealth(),
+          },
           projects,
         };
 

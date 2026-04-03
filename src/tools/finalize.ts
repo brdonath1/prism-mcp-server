@@ -441,24 +441,55 @@ async function commitPhase(
 
   const allSucceeded = succeeded.length === files.length;
 
-  // Fire-and-forget synthesis after successful commit (D-44 Track 2)
+  // Synthesis after successful commit (D-44 Track 2) — now awaited with timeout
+  // so failure surfaces in the response instead of being silently lost.
+  let synthesisResult: {
+    triggered: boolean;
+    success: boolean;
+    error?: string;
+    input_tokens?: number;
+    output_tokens?: number;
+  } = { triggered: false, success: false };
+
   if (allSucceeded && SYNTHESIS_ENABLED) {
-    generateIntelligenceBrief(projectSlug, sessionNumber)
-      .then(synthResult => {
-        logger.info("Post-finalization synthesis complete", {
-          projectSlug,
-          sessionNumber,
-          success: synthResult.success,
-          tokens: synthResult.input_tokens,
-        });
-      })
-      .catch(err => {
-        logger.error("Post-finalization synthesis failed", {
-          projectSlug,
-          error: err instanceof Error ? err.message : String(err),
-        });
+    synthesisResult.triggered = true;
+    try {
+      // Race synthesis against a 25-second timeout to stay within MCP's 60s limit.
+      // The commit itself typically takes 5-15s, leaving ~25s for synthesis.
+      const synthPromise = generateIntelligenceBrief(projectSlug, sessionNumber);
+      const timeoutPromise = new Promise<{ success: false; error: string }>((resolve) =>
+        setTimeout(() => resolve({ success: false, error: "Synthesis timed out after 25s" }), 25000)
+      );
+
+      const synthOutcome = await Promise.race([synthPromise, timeoutPromise]);
+      synthesisResult.success = synthOutcome.success;
+      if (!synthOutcome.success) {
+        synthesisResult.error = synthOutcome.error;
+      }
+      if ("input_tokens" in synthOutcome) {
+        synthesisResult.input_tokens = synthOutcome.input_tokens;
+        synthesisResult.output_tokens = synthOutcome.output_tokens;
+      }
+
+      logger.info("Post-finalization synthesis complete", {
+        projectSlug,
+        sessionNumber,
+        success: synthOutcome.success,
+        error: synthOutcome.success ? undefined : synthOutcome.error,
       });
+    } catch (err) {
+      synthesisResult.success = false;
+      synthesisResult.error = err instanceof Error ? err.message : String(err);
+      logger.error("Post-finalization synthesis failed", {
+        projectSlug,
+        error: synthesisResult.error,
+      });
+    }
   }
+
+  const synthesisWarning = synthesisResult.triggered && !synthesisResult.success
+    ? `Intelligence brief synthesis failed: ${synthesisResult.error ?? "unknown error"}. The brief will be stale until next successful finalization.`
+    : undefined;
 
   return {
     project: projectSlug,
@@ -468,9 +499,10 @@ async function commitPhase(
     results,
     living_documents_updated: livingDocsUpdated,
     all_succeeded: allSucceeded,
-    synthesis_triggered: allSucceeded && SYNTHESIS_ENABLED,
+    synthesis: synthesisResult,
+    synthesis_warning: synthesisWarning,
     confirmation: allSucceeded
-      ? `Session ${sessionNumber} finalized. Handoff v${handoffVersion} pushed and verified. ${livingDocsUpdated}/${LIVING_DOCUMENTS.length} living documents updated.`
+      ? `Session ${sessionNumber} finalized. Handoff v${handoffVersion} pushed and verified. ${livingDocsUpdated}/${LIVING_DOCUMENTS.length} living documents updated.${synthesisWarning ? ` WARNING: ${synthesisWarning}` : " Intelligence brief synthesized."}`
       : `Session ${sessionNumber} finalization partially failed. ${succeeded.length}/${files.length} files pushed.`,
   };
 }
