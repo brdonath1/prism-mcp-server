@@ -181,6 +181,29 @@ export const PREFETCH_KEYWORDS: Record<string, string> = {
 /** MCP Auth Token for Bearer authentication (B.2) */
 export const MCP_AUTH_TOKEN = process.env.MCP_AUTH_TOKEN || "";
 
+/**
+ * Anthropic's published outbound IP range for MCP tool calls.
+ * Source: https://docs.anthropic.com/en/api/ip-addresses
+ * This range covers claude.ai and Claude Desktop outbound requests.
+ * Anthropic commits to advance notice before changing these IPs.
+ */
+export const ANTHROPIC_CIDRS = ["160.79.104.0/21"];
+
+/**
+ * Additional allowed CIDR ranges (comma-separated).
+ * Use to add personal IPs, VPN ranges, etc.
+ * Example: "203.0.113.0/24,198.51.100.42/32"
+ */
+export const ALLOWED_CIDRS = process.env.ALLOWED_CIDRS
+  ? process.env.ALLOWED_CIDRS.split(",").map(s => s.trim()).filter(Boolean)
+  : [];
+
+/**
+ * When true, IP allowlisting is active.
+ * Defaults to true — set to "false" to disable (e.g., local development).
+ */
+export const ENABLE_IP_ALLOWLIST = process.env.ENABLE_IP_ALLOWLIST !== "false";
+
 if (!GITHUB_PAT) {
   console.error("FATAL: GITHUB_PAT environment variable is not set.");
   process.exit(1);
