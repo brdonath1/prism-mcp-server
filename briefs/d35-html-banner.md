@@ -156,4 +156,4 @@ Railway auto-deploys on push to main.
 - **Bootstrap tool:** `src/tools/bootstrap.ts` — update import + response field
 - **Tests:** `tests/` — update references
 
-<!-- EOF: html-banner-brief.md -->
+<!-- EOF: d35-html-banner.md -->

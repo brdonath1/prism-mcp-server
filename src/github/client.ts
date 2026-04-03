@@ -3,7 +3,7 @@
  * Thin fetch-based wrapper with parallelized operations, retry logic, and structured logging.
  */
 
-import { GITHUB_PAT, GITHUB_OWNER, GITHUB_API_BASE } from "../config.js";
+import { GITHUB_PAT, GITHUB_OWNER, GITHUB_API_BASE, SERVER_VERSION } from "../config.js";
 import { logger } from "../utils/logger.js";
 import type {
   FileResult,
@@ -24,7 +24,7 @@ function headers(): Record<string, string> {
     Authorization: `Bearer ${GITHUB_PAT}`,
     Accept: "application/vnd.github+json",
     "X-GitHub-Api-Version": "2022-11-28",
-    "User-Agent": "prism-mcp-server/2.0.0",
+    "User-Agent": `prism-mcp-server/${SERVER_VERSION}`,
   };
 }
 
@@ -60,8 +60,30 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * Fetch a single file from a GitHub repo.
- * Returns content as a UTF-8 string along with SHA and size.
+ * Fetch with retry logic for rate limiting (B.7).
+ * Retries up to maxRetries times with exponential backoff on 429 responses.
+ */
+async function fetchWithRetry(url: string, options: RequestInit, maxRetries = 3): Promise<Response> {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const res = await fetch(url, options);
+    if (res.status === 429) {
+      if (attempt === maxRetries) {
+        return res; // Let caller handle final 429
+      }
+      const retryAfter = parseInt(res.headers.get("retry-after") ?? "1", 10);
+      const delay = Math.min(retryAfter * 1000, 10000) * Math.pow(2, attempt);
+      logger.warn("Rate limited, retrying", { attempt: attempt + 1, delay, url });
+      await sleep(delay);
+      continue;
+    }
+    return res;
+  }
+  throw new Error(`Rate limited after ${maxRetries} retries: ${url}`);
+}
+
+/**
+ * Fetch a single file from a GitHub repo (B.1 — single API call).
+ * Uses JSON mode to get both content (base64) and SHA in one request.
  */
 export async function fetchFile(repo: string, path: string): Promise<FileResult> {
   const url = contentsUrl(repo, path);
@@ -69,41 +91,21 @@ export async function fetchFile(repo: string, path: string): Promise<FileResult>
 
   logger.debug("github.fetchFile", { repo, path });
 
-  // Fetch raw content
-  const rawRes = await fetch(url, {
-    headers: {
-      ...headers(),
-      Accept: "application/vnd.github.raw+json",
-    },
-  });
+  const res = await fetchWithRetry(url, { headers: headers() });
 
-  if (rawRes.status === 429) {
-    const retryAfter = parseInt(rawRes.headers.get("retry-after") ?? "2", 10);
-    logger.warn("github.fetchFile rate limited, retrying", { repo, path, retryAfter });
-    await sleep(retryAfter * 1000);
-    const retryRes = await fetch(url, {
-      headers: { ...headers(), Accept: "application/vnd.github.raw+json" },
-    });
-    if (!retryRes.ok) {
-      throw handleApiError(retryRes.status, await retryRes.text(), `fetchFile ${repo}/${path}`);
-    }
-    const content = await retryRes.text();
-    // Need SHA from a separate call
-    const sha = await fetchSha(repo, path);
-    logger.debug("github.fetchFile complete (retry)", { repo, path, ms: Date.now() - start });
-    return { content, sha, size: new TextEncoder().encode(content).length };
+  if (!res.ok) {
+    throw handleApiError(res.status, await res.text(), `fetchFile ${repo}/${path}`);
   }
 
-  if (!rawRes.ok) {
-    throw handleApiError(rawRes.status, await rawRes.text(), `fetchFile ${repo}/${path}`);
+  const data = (await res.json()) as GitHubContentsResponse;
+  if (!data.content) {
+    throw new Error(`No content returned for ${repo}/${path} — file may be a directory or too large`);
   }
-
-  const content = await rawRes.text();
-  const sha = await fetchSha(repo, path);
-  const size = new TextEncoder().encode(content).length;
+  const content = Buffer.from(data.content, "base64").toString("utf-8");
+  const size = data.size;
 
   logger.debug("github.fetchFile complete", { repo, path, size, ms: Date.now() - start });
-  return { content, sha, size };
+  return { content, sha: data.sha, size };
 }
 
 /**
@@ -111,7 +113,7 @@ export async function fetchFile(repo: string, path: string): Promise<FileResult>
  */
 async function fetchSha(repo: string, path: string): Promise<string> {
   const url = contentsUrl(repo, path);
-  const res = await fetch(url, { headers: headers() });
+  const res = await fetchWithRetry(url, { headers: headers() });
   if (!res.ok) {
     throw handleApiError(res.status, await res.text(), `fetchSha ${repo}/${path}`);
   }
@@ -186,11 +188,13 @@ export async function pushFile(
     body.sha = sha;
   }
 
-  let res = await fetch(url, {
+  const putOptions = {
     method: "PUT",
     headers: { ...headers(), "Content-Type": "application/json" },
     body: JSON.stringify(body),
-  });
+  };
+
+  let res = await fetchWithRetry(url, putOptions);
 
   // Handle 409 conflict — retry once with fresh SHA
   if (res.status === 409) {
@@ -202,21 +206,8 @@ export async function pushFile(
       // File may have been deleted between attempts
       delete body.sha;
     }
-    res = await fetch(url, {
-      method: "PUT",
-      headers: { ...headers(), "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-  }
-
-  // Handle rate limit — wait and retry once
-  if (res.status === 429) {
-    const retryAfter = parseInt(res.headers.get("retry-after") ?? "2", 10);
-    logger.warn("github.pushFile rate limited, retrying", { repo, path, retryAfter });
-    await sleep(retryAfter * 1000);
-    res = await fetch(url, {
-      method: "PUT",
-      headers: { ...headers(), "Content-Type": "application/json" },
+    res = await fetchWithRetry(url, {
+      ...putOptions,
       body: JSON.stringify(body),
     });
   }
@@ -285,16 +276,25 @@ export async function pushFiles(
 }
 
 /**
- * Check if a file exists in a repo.
- * Uses GET (not HEAD) because GitHub Contents API doesn't support HEAD.
+ * Check if a file exists in a repo (B.12, B.13 — proper error handling + body consumption).
  */
 export async function fileExists(repo: string, path: string): Promise<boolean> {
   const url = contentsUrl(repo, path);
   try {
     const res = await fetch(url, { headers: headers() });
-    return res.ok;
-  } catch {
-    return false;
+    // B.13: consume response body to prevent socket leaks
+    await res.body?.cancel();
+    if (res.status === 404) return false;
+    if (res.ok) return true;
+    // Non-404 errors should propagate
+    logger.error("fileExists unexpected status", { repo, path, status: res.status });
+    throw new Error(`Unexpected status ${res.status} checking ${repo}/${path}`);
+  } catch (error) {
+    if (error instanceof TypeError && error.message.includes("fetch")) {
+      logger.error("Network error checking file existence", { repo, path, error: String(error) });
+      throw error;
+    }
+    throw error;
   }
 }
 
@@ -323,7 +323,7 @@ export async function listRepos(): Promise<string[]> {
 
   while (true) {
     const url = `${GITHUB_API_BASE}/user/repos?per_page=100&page=${page}&affiliation=owner`;
-    const res = await fetch(url, { headers: headers() });
+    const res = await fetchWithRetry(url, { headers: headers() });
 
     if (!res.ok) {
       throw handleApiError(res.status, await res.text(), "listRepos");

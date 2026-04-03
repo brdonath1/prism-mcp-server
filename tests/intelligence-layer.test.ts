@@ -3,42 +3,12 @@ process.env.GITHUB_PAT = process.env.GITHUB_PAT || "test-dummy-pat";
 
 import { describe, it, expect } from "vitest";
 import { buildSynthesisUserMessage, FINALIZATION_SYNTHESIS_PROMPT } from "../src/ai/prompts.js";
+import { extractStandingRules } from "../src/tools/bootstrap.js";
 
-// ---- Standing rules extraction ----
-// extractStandingRules is not exported, so we test the behavior by importing and
-// invoking the logic directly. Since the brief specifies it's a local function inside
-// bootstrap.ts, we replicate the extraction logic here for unit testing.
-
-interface StandingRule {
-  id: string;
-  title: string;
-  content: string;
-}
-
-function extractStandingRules(insightsContent: string | null): StandingRule[] {
-  if (!insightsContent) return [];
-
-  const rules: StandingRule[] = [];
-  const sections = insightsContent.split(/(?=^### )/m);
-
-  for (const section of sections) {
-    if (/standing\s+rule/i.test(section)) {
-      const headerMatch = section.match(/^### (INS-\d+):?\s*(.+)/);
-      if (headerMatch) {
-        rules.push({
-          id: headerMatch[1],
-          title: headerMatch[2].trim(),
-          content: section.trim(),
-        });
-      }
-    }
-  }
-
-  return rules;
-}
+// ---- Standing rules extraction (B.15 fix: uses production function, not re-implementation) ----
 
 describe("extractStandingRules", () => {
-  it("extracts a single STANDING RULE entry", () => {
+  it("extracts a single STANDING RULE entry with procedure", () => {
     const insights = `# Insights
 
 ### INS-10: CC Brief Workflow — STANDING RULE
@@ -46,7 +16,7 @@ describe("extractStandingRules", () => {
 **Type:** Standing Operating Procedure
 **Status:** STANDING RULE
 
-Steps:
+**Standing procedure:**
 1. Create brief on briefs branch via GitHub Contents API
 2. Use metadata header with session number
 3. Never use prism_push for briefs
@@ -57,8 +27,8 @@ Steps:
     expect(rules).toHaveLength(1);
     expect(rules[0].id).toBe("INS-10");
     expect(rules[0].title).toContain("CC Brief Workflow");
-    expect(rules[0].content).toContain("Steps:");
-    expect(rules[0].content).toContain("Never use prism_push for briefs");
+    expect(rules[0].procedure).toContain("Create brief on briefs branch");
+    expect(rules[0].procedure).toContain("Never use prism_push for briefs");
   });
 
   it("extracts multiple STANDING RULE entries", () => {
@@ -68,12 +38,12 @@ Steps:
 Some regular insight content.
 
 ### INS-10: CC Brief Workflow — STANDING RULE
-Steps:
+**Standing procedure:**
 1. Step one
 2. Step two
 
 ### INS-11: Finalization Procedure — STANDING RULE
-Steps:
+**Standing procedure:**
 1. Audit first
 2. Then commit
 
@@ -109,12 +79,34 @@ More content here.
 
   it("handles case-insensitive STANDING RULE matching", () => {
     const insights = `### INS-15: Deploy Checklist — Standing Rule
+**Standing procedure:**
 1. Check health endpoint
 2. Verify logs`;
 
     const rules = extractStandingRules(insights);
     expect(rules).toHaveLength(1);
     expect(rules[0].id).toBe("INS-15");
+  });
+
+  it("extracts procedure portion only (D-47)", () => {
+    const insights = `### INS-10: Brief Workflow — STANDING RULE
+
+**Type:** Standing Operating Procedure
+**Status:** STANDING RULE
+**Discovered:** S20
+
+This insight was discovered when...
+
+**Standing procedure:**
+1. Create brief file
+2. Push to branch
+3. Verify existence`;
+
+    const rules = extractStandingRules(insights);
+    expect(rules).toHaveLength(1);
+    // Should contain procedure steps, not the preamble
+    expect(rules[0].procedure).toContain("Create brief file");
+    expect(rules[0].procedure).not.toContain("This insight was discovered");
   });
 });
 

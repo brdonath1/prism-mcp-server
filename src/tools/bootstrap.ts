@@ -64,7 +64,7 @@ function parseDecisions(content: string): Array<{ id: string; title: string; sta
 }
 
 /** Standing rule extracted from insights — procedure-only (D-47) */
-interface StandingRule {
+export interface StandingRule {
   id: string;
   title: string;
   procedure: string; // D-47: procedure-only, not full content
@@ -73,7 +73,7 @@ interface StandingRule {
 /**
  * Extract standing rules from insights content, keeping only the procedure portion.
  */
-function extractStandingRules(insightsContent: string | null): StandingRule[] {
+export function extractStandingRules(insightsContent: string | null): StandingRule[] {
   if (!insightsContent) return [];
 
   const rules: StandingRule[] = [];
@@ -303,11 +303,18 @@ export function registerBootstrap(server: McpServer): void {
         // Wait for both boot-test and prefetch to complete
         const [bootTestResult] = await Promise.all([bootTestPromise, prefetchPromise]);
 
-        // 5. Intelligence brief loading (Track 2, D-44)
+        // 5. Intelligence brief + insights loaded in parallel (D.1 fix — was sequential)
         let intelligenceBrief: string | null = null;
-        let intelligenceBriefFull: string | null = null; // D-47: keep full for size tracking
-        try {
-          const briefFile = await fetchFile(resolvedSlug, "intelligence-brief.md");
+        let intelligenceBriefFull: string | null = null;
+        let insightsContent: string | null = null;
+
+        const [briefOutcome, insightsOutcome] = await Promise.allSettled([
+          fetchFile(resolvedSlug, "intelligence-brief.md"),
+          fetchFile(resolvedSlug, "insights.md"),
+        ]);
+
+        if (briefOutcome.status === "fulfilled") {
+          const briefFile = briefOutcome.value;
           intelligenceBriefFull = briefFile.content;
           filesFetched++;
           logger.info("intelligence brief loaded", { size: briefFile.size });
@@ -319,7 +326,6 @@ export function registerBootstrap(server: McpServer): void {
 
           const compactParts: string[] = [];
           if (projectState) {
-            // First 3 sentences only for project state context
             const sentences = projectState.split(/(?<=[.!?])\s+/).slice(0, 3);
             compactParts.push(`**Project State (compact):** ${sentences.join(" ")}`);
           }
@@ -329,26 +335,19 @@ export function registerBootstrap(server: McpServer): void {
           intelligenceBrief = compactParts.length > 0 ? compactParts.join("\n\n") : null;
 
           if (intelligenceBrief) {
-            bytesDelivered += intelligenceBrief.length; // Count compact size, not full
+            bytesDelivered += intelligenceBrief.length;
             logger.info("intelligence brief compacted", {
               fullSize: briefFile.size,
               compactSize: intelligenceBrief.length,
               sectionsExtracted: compactParts.length,
             });
           }
-        } catch {
-          // intelligence-brief.md may not exist yet
         }
 
-        // 5b. Standing rules extraction from insights.md (D-44 Track 1, D-47)
-        let insightsContent: string | null = null;
-        try {
-          const insightsFile = await fetchFile(resolvedSlug, "insights.md");
-          insightsContent = insightsFile.content;
-          // Don't add to bytesDelivered — only extracted procedures are delivered, not full file
-        } catch {
-          // insights.md may not exist for this project
+        if (insightsOutcome.status === "fulfilled") {
+          insightsContent = insightsOutcome.value.content;
         }
+
         const standingRules = extractStandingRules(insightsContent);
         if (standingRules.length > 0) {
           logger.info("standing rules extracted", { count: standingRules.length, ids: standingRules.map(r => r.id) });

@@ -178,6 +178,9 @@ export const PREFETCH_KEYWORDS: Record<string, string> = {
   learned: "insights.md",
 };
 
+/** MCP Auth Token for Bearer authentication (B.2) */
+export const MCP_AUTH_TOKEN = process.env.MCP_AUTH_TOKEN || "";
+
 if (!GITHUB_PAT) {
   console.error("FATAL: GITHUB_PAT environment variable is not set.");
   process.exit(1);

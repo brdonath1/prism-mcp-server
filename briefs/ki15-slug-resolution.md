@@ -109,4 +109,4 @@ git add -A && git commit -m "prism: KI-15 server-side slug resolution — bootst
 - Do NOT change the response format — only the input handling changes
 - Do NOT modify any other tools
 
-<!-- EOF: slug-resolution-brief.md -->
+<!-- EOF: ki15-slug-resolution.md -->

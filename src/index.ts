@@ -8,10 +8,10 @@
 import express, { type Request, type Response } from "express";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { PORT, SERVER_VERSION } from "./config.js";
 import { logger } from "./utils/logger.js";
 import { requestLogger } from "./middleware/request-logger.js";
+import { authMiddleware } from "./middleware/auth.js";
 import { registerBootstrap } from "./tools/bootstrap.js";
 import { registerFetch } from "./tools/fetch.js";
 import { registerPush } from "./tools/push.js";
@@ -26,8 +26,9 @@ import { registerLogInsight } from "./tools/log-insight.js";
 import { registerPatch } from "./tools/patch.js";
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: "5mb" }));
 app.use(requestLogger);
+app.use(authMiddleware);
 
 /**
  * Create a fresh McpServer instance with all tools registered.

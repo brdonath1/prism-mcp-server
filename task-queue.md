@@ -1,3 +1,5 @@
+> **ARCHIVAL NOTICE:** This document is frozen at Session 10 (CC-S4). Active development of the PRISM MCP Server is tracked in the [prism meta-project](https://github.com/brdonath1/prism) living documents. This file is retained for historical context only.
+
 # Task Queue — PRISM MCP Server
 
 > Prioritized work items.

@@ -6,7 +6,7 @@ import { parseMarkdownTable } from "../utils/summarizer.js";
 import type { ValidationResult } from "./common.js";
 
 /** Valid decision statuses */
-const VALID_STATUSES = ["SETTLED", "PENDING", "SUPERSEDED", "REVISITED"];
+const VALID_STATUSES = ["SETTLED", "PENDING", "SUPERSEDED", "REVISITED", "ACCEPTED", "OPEN"];
 
 /**
  * Validate decisions/_INDEX.md structure and content.

@@ -8,7 +8,7 @@
 
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { fetchFile } from "../github/client.js";
+import { fetchFile, fileExists } from "../github/client.js";
 import { LIVING_DOCUMENTS } from "../config.js";
 import { logger } from "../utils/logger.js";
 
@@ -139,7 +139,7 @@ function extractSnippet(body: string, queryTerms: string[], maxLength: number = 
 }
 
 /**
- * Discover decision domain files by checking which ones exist.
+ * Discover decision domain files by checking which ones exist (F.2 — use fileExists, not fetchFile).
  * Returns paths for existing domain files.
  */
 async function discoverDecisionDomainFiles(projectSlug: string): Promise<string[]> {
@@ -150,13 +150,14 @@ async function discoverDecisionDomainFiles(projectSlug: string): Promise<string[
     "decisions/onboarding.md",
     "decisions/integrity.md",
     "decisions/resilience.md",
+    "decisions/efficiency.md",
   ];
 
   const results = await Promise.allSettled(
     possibleDomains.map(async (path) => {
       try {
-        await fetchFile(projectSlug, path);
-        return path;
+        const exists = await fileExists(projectSlug, path);
+        return exists ? path : null;
       } catch {
         return null;
       }

@@ -39,7 +39,8 @@ export function escapeHtml(str: string): string {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/\"/g, "&quot;");
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 export function stripMarkdown(text: string): string {
@@ -188,7 +189,6 @@ export function renderBannerHtml(data: BannerData): string {
   const toolsHtml = data.tools
     .map((t, i) => {
       const cls = t.status !== "ok" ? ` ${t.status}` : "";
-      const border = i < data.tools.length - 1 ? "" : "";
       return `<div class="bn-tool${cls}">${toolIcon(t.status)} ${e(t.label)}</div>`;
     })
     .join("\n      ");

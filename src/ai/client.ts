@@ -47,6 +47,8 @@ export async function synthesize(
       max_tokens: maxTokens ?? SYNTHESIS_MAX_OUTPUT_TOKENS,
       system: systemPrompt,
       messages: [{ role: "user", content: userContent }],
+    }, {
+      timeout: 30000, // B.4: 30 second timeout
     });
 
     const textContent = response.content

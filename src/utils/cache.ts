@@ -29,10 +29,10 @@ export class MemoryCache<T> {
     if (!entry) return null;
     if (Date.now() > entry.expiresAt) {
       this.store.delete(key);
-      logger.info(`cache miss (expired)`, { cache: this.name, key });
+      logger.debug(`cache miss (expired)`, { cache: this.name, key });
       return null;
     }
-    logger.info(`cache hit`, { cache: this.name, key });
+    logger.debug(`cache hit`, { cache: this.name, key });
     return entry.value;
   }
 
@@ -41,7 +41,7 @@ export class MemoryCache<T> {
       value,
       expiresAt: Date.now() + this.ttlMs,
     });
-    logger.info(`cache set`, { cache: this.name, key, ttlMinutes: this.ttlMs / 60000 });
+    logger.debug(`cache set`, { cache: this.name, key, ttlMinutes: this.ttlMs / 60000 });
   }
 
   invalidate(key: string): void {

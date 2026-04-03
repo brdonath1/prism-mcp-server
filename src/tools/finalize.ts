@@ -23,6 +23,31 @@ import { validateFile } from "../validation/index.js";
 import { parseMarkdownTable } from "../utils/summarizer.js";
 import { generateIntelligenceBrief } from "../ai/synthesize.js";
 import { escapeHtml, stripMarkdown, formatResumptionHtml, toolIcon, generateCstTimestamp } from "../utils/banner.js";
+
+/**
+ * Robust JSON extraction from AI responses (B.8).
+ * Tries multiple strategies: direct parse, fence stripping, brace extraction.
+ */
+export function extractJSON(text: string): unknown {
+  // Try direct parse first
+  try { return JSON.parse(text.trim()); } catch { /* continue */ }
+  // Strip markdown fences
+  const fenceStripped = text.replace(/```(?:json)?\s*\n?/g, "").trim();
+  try { return JSON.parse(fenceStripped); } catch { /* continue */ }
+  // Find first { and last }
+  const firstBrace = text.indexOf("{");
+  const lastBrace = text.lastIndexOf("}");
+  if (firstBrace !== -1 && lastBrace > firstBrace) {
+    try { return JSON.parse(text.slice(firstBrace, lastBrace + 1)); } catch { /* continue */ }
+  }
+  // Try array extraction
+  const firstBracket = text.indexOf("[");
+  const lastBracket = text.lastIndexOf("]");
+  if (firstBracket !== -1 && lastBracket > firstBracket) {
+    try { return JSON.parse(text.slice(firstBracket, lastBracket + 1)); } catch { /* continue */ }
+  }
+  throw new Error("Failed to extract JSON from AI response");
+}
 import { FINALIZATION_DRAFT_PROMPT, buildFinalizationDraftMessage } from "../ai/prompts.js";
 import { synthesize } from "../ai/client.js";
 
@@ -267,10 +292,9 @@ async function draftPhase(projectSlug: string, sessionNumber: number) {
     };
   }
 
-  // 4. Parse response — expect JSON
+  // 4. Parse response — expect JSON (B.8: robust extraction)
   try {
-    const clean = result.content.replace(/```json\n?|```\n?/g, "").trim();
-    const drafts = JSON.parse(clean);
+    const drafts = extractJSON(result.content);
 
     return {
       success: true,
@@ -595,30 +619,6 @@ function renderFinalizationBanner(data: {
  * Register the prism_finalize tool on an MCP server instance.
  */
 export function registerFinalize(server: McpServer): void {
-  // Use a discriminated union via z.union for the two phases
-  const auditSchema = {
-    project_slug: z.string().describe("Project repo name"),
-    action: z.literal("audit").describe("Phase 1: audit living documents and detect drift"),
-    session_number: z.number().describe("Current session number for staleness detection"),
-  };
-
-  const commitSchema = {
-    project_slug: z.string().describe("Project repo name"),
-    action: z.literal("commit").describe("Phase 2: push all finalization files"),
-    session_number: z.number().describe("Current session number"),
-    handoff_version: z.number().optional().describe("New handoff version number"),
-    files: z
-      .array(
-        z.object({
-          path: z.string().describe("File path relative to repo root"),
-          content: z.string().describe("File content to push"),
-        })
-      )
-      .optional()
-      .describe("All files to push — handoff, session-log, task-queue, and any others updated"),
-  };
-
-  // Register with combined schema supporting both phases
   server.tool(
     "prism_finalize",
     'Execute PRISM finalization. Use action:"audit" to fetch all living documents and detect drift. Use action:"commit" to push all composed content with backup and validation.',

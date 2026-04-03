@@ -596,3 +596,5 @@ git add -A && git commit -m "prism: D-44 intelligence layer — Track 1 standing
 Verify Railway auto-deploys successfully. Check `/health` endpoint.
 
 After deploy, user must add `ANTHROPIC_API_KEY` to Railway environment variables for Track 2 to activate.
+
+<!-- EOF: s22-intelligence-layer.md -->
