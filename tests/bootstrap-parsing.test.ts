@@ -62,13 +62,13 @@ describe("keyword-to-document mapping for intelligent prefetch", () => {
   });
 
   it("maps bug keywords to known-issues.md", () => {
-    for (const kw of ["bug", "issue", "error", "workaround", "debt"]) {
+    for (const kw of ["bug", "workaround", "debt"]) {
       expect(PREFETCH_KEYWORDS[kw]).toBe("known-issues.md");
     }
   });
 
   it("maps task keywords to task-queue.md", () => {
-    for (const kw of ["task", "priority", "next", "queue", "backlog", "plan"]) {
+    for (const kw of ["task", "priority", "queue", "backlog"]) {
       expect(PREFETCH_KEYWORDS[kw]).toBe("task-queue.md");
     }
   });
@@ -80,7 +80,7 @@ describe("keyword-to-document mapping for intelligent prefetch", () => {
   });
 
   it("maps history keywords to session-log.md", () => {
-    for (const kw of ["session", "history", "previous"]) {
+    for (const kw of ["history"]) {
       expect(PREFETCH_KEYWORDS[kw]).toBe("session-log.md");
     }
   });
@@ -116,5 +116,67 @@ Background context here.
     expect(rules).toHaveLength(1);
     expect(rules[0].procedure).toContain("Create brief file");
     expect(rules[0].procedure).not.toContain("Background context");
+  });
+});
+
+describe("T-3: standing rule lifecycle filtering (D-48)", () => {
+  it("STANDING RULE entries are included", () => {
+    const insights = `### INS-6: ZodDefault — STANDING RULE
+**Standing procedure:** Never use .default() in MCP schemas.
+
+### INS-7: Brief Workflow — STANDING RULE
+**Standing procedure:** Use brief-on-repo workflow.`;
+
+    const rules = extractStandingRules(insights);
+    expect(rules).toHaveLength(2);
+  });
+
+  it("ARCHIVED RULE entries are excluded", () => {
+    const insights = `### INS-6: ZodDefault — STANDING RULE
+**Standing procedure:** Never use .default().
+
+### INS-99: Old Rule — ARCHIVED RULE
+**Standing procedure:** This should not appear.`;
+
+    const rules = extractStandingRules(insights);
+    expect(rules).toHaveLength(1);
+    expect(rules[0].id).toBe("INS-6");
+  });
+
+  it("DORMANT RULE entries are excluded", () => {
+    const insights = `### INS-6: ZodDefault — STANDING RULE
+**Standing procedure:** Never use .default().
+
+### INS-98: Paused Rule — DORMANT RULE
+**Standing procedure:** This is dormant.`;
+
+    const rules = extractStandingRules(insights);
+    expect(rules).toHaveLength(1);
+    expect(rules[0].id).toBe("INS-6");
+  });
+
+  it("ARCHIVED STANDING RULE entries are excluded", () => {
+    const insights = `### INS-6: ZodDefault — STANDING RULE
+**Standing procedure:** Never use .default().
+
+### INS-97: Old Standing — ARCHIVED STANDING RULE
+**Standing procedure:** This was archived.`;
+
+    const rules = extractStandingRules(insights);
+    expect(rules).toHaveLength(1);
+    expect(rules[0].id).toBe("INS-6");
+  });
+
+  it("entries with no lifecycle tag are excluded (not a standing rule)", () => {
+    const insights = `### INS-1: Cross-project context loss
+- Category: pattern
+- Description: Some insight without the required lifecycle tag.
+
+### INS-6: ZodDefault — STANDING RULE
+**Standing procedure:** Never use .default().`;
+
+    const rules = extractStandingRules(insights);
+    expect(rules).toHaveLength(1);
+    expect(rules[0].id).toBe("INS-6");
   });
 });

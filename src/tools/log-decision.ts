@@ -11,7 +11,7 @@ import { logger } from "../utils/logger.js";
 export function registerLogDecision(server: McpServer): void {
   server.tool(
     "prism_log_decision",
-    "Log a decision to both decisions/_INDEX.md and decisions/{domain}.md atomically. Handles formatting and table insertion server-side.",
+    "Log a decision atomically to _INDEX.md and domain file. Server-side formatting.",
     {
       project_slug: z.string().describe("Project repo name"),
       id: z.string().describe("Decision ID (e.g., 'D-45')"),

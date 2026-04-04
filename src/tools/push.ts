@@ -30,7 +30,7 @@ const inputSchema = {
 export function registerPush(server: McpServer): void {
   server.tool(
     "prism_push",
-    "Push one or more files to a PRISM project repo with server-side validation. Validates all files first — if any fail validation, none are pushed.",
+    "Push files to a PRISM project repo. Validates all files first — none pushed if any fail.",
     inputSchema,
     async ({ project_slug, files, skip_validation }) => {
       const start = Date.now();
@@ -157,7 +157,7 @@ export function registerPush(server: McpServer): void {
         });
 
         return {
-          content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+          content: [{ type: "text" as const, text: JSON.stringify(result) }],
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

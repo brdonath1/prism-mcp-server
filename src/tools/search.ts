@@ -176,7 +176,7 @@ async function discoverDecisionDomainFiles(projectSlug: string): Promise<string[
 export function registerSearch(server: McpServer): void {
   server.tool(
     "prism_search",
-    "Search across all living documents within a single PRISM project. Returns relevant snippets ranked by keyword match. Strictly single-project — cross-project search is prohibited.",
+    "Search living documents within a single PRISM project. Returns ranked snippets. Single-project only.",
     inputSchema,
     async ({ project_slug, query, max_results }) => {
       const start = Date.now();
@@ -268,7 +268,7 @@ export function registerSearch(server: McpServer): void {
         });
 
         return {
-          content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+          content: [{ type: "text" as const, text: JSON.stringify(result) }],
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

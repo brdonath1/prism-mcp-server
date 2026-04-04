@@ -831,10 +831,7 @@ async function executeScaling(
 export function registerScaleHandoff(server: McpServer): void {
   server.tool(
     "prism_scale_handoff",
-    "Execute handoff scaling protocol. Reduces handoff size by redistributing content to living documents. " +
-      "Three modes: 'full' (default) runs complete scaling in one call. " +
-      "'analyze' returns a plan without executing — use for large handoffs or previewing. " +
-      "'execute' runs a plan from a previous 'analyze' call.",
+    "Handoff scaling — redistributes content to living documents. Modes: full (default), analyze (preview), execute (run plan).",
     {
       project_slug: z.string().describe("Project repo name"),
       action: z

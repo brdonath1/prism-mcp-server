@@ -115,7 +115,7 @@ async function getProjectHealth(
 export function registerStatus(server: McpServer): void {
   server.tool(
     "prism_status",
-    "Get health status for a specific PRISM project or all projects. Checks living document completeness, handoff size, and reports project health.",
+    "Health status for one or all PRISM projects. Checks document completeness and handoff size.",
     inputSchema,
     async ({ project_slug, include_details }) => {
       const start = Date.now();
@@ -133,7 +133,7 @@ export function registerStatus(server: McpServer): void {
           });
 
           return {
-            content: [{ type: "text" as const, text: JSON.stringify(health, null, 2) }],
+            content: [{ type: "text" as const, text: JSON.stringify(health) }],
           };
         }
 
@@ -193,7 +193,7 @@ export function registerStatus(server: McpServer): void {
         });
 
         return {
-          content: [{ type: "text" as const, text: JSON.stringify(summary, null, 2) }],
+          content: [{ type: "text" as const, text: JSON.stringify(summary) }],
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

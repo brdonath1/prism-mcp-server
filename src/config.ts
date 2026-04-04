@@ -43,7 +43,7 @@ export const PORT = parseInt(process.env.PORT ?? "3000", 10);
 export const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
 
 /** Server version */
-export const SERVER_VERSION = "2.9.0";
+export const SERVER_VERSION = "2.10.0";
 
 /** GitHub API base URL */
 export const GITHUB_API_BASE = "https://api.github.com";
@@ -141,7 +141,9 @@ export function resolveProjectSlug(input: string): string {
   return input;
 }
 
-/** Keyword → living document mapping for bootstrap pre-fetching */
+/** Keyword → living document mapping for bootstrap pre-fetching.
+ * QW-3 (S29): Removed overly generic keywords (next, plan, session, previous, issue, error)
+ * that caused false-positive prefetches on common opening messages. */
 export const PREFETCH_KEYWORDS: Record<string, string> = {
   architecture: "architecture.md",
   stack: "architecture.md",
@@ -149,8 +151,6 @@ export const PREFETCH_KEYWORDS: Record<string, string> = {
   deploy: "architecture.md",
   integration: "architecture.md",
   bug: "known-issues.md",
-  issue: "known-issues.md",
-  error: "known-issues.md",
   workaround: "known-issues.md",
   debt: "known-issues.md",
   term: "glossary.md",
@@ -158,19 +158,15 @@ export const PREFETCH_KEYWORDS: Record<string, string> = {
   glossary: "glossary.md",
   task: "task-queue.md",
   priority: "task-queue.md",
-  next: "task-queue.md",
   queue: "task-queue.md",
   backlog: "task-queue.md",
-  plan: "task-queue.md",
   reject: "eliminated.md",
   eliminate: "eliminated.md",
   guardrail: "eliminated.md",
   "why not": "eliminated.md",
   tried: "eliminated.md",
-  session: "session-log.md",
   history: "session-log.md",
   "last time": "session-log.md",
-  previous: "session-log.md",
   insight: "insights.md",
   pattern: "insights.md",
   preference: "insights.md",

@@ -11,7 +11,7 @@ import { logger } from "../utils/logger.js";
 export function registerLogInsight(server: McpServer): void {
   server.tool(
     "prism_log_insight",
-    "Log an insight to insights.md. Handles formatting and section placement server-side. Supports STANDING RULE tagging for D-44 Track 1 auto-loading at bootstrap.",
+    "Log an insight to insights.md. Supports STANDING RULE tagging for auto-loading at bootstrap.",
     {
       project_slug: z.string().describe("Project repo name"),
       id: z.string().describe("Insight ID (e.g., 'INS-12')"),

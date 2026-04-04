@@ -15,7 +15,7 @@ import {
   getCommit,
   deleteFile,
 } from "../github/client.js";
-import { LIVING_DOCUMENTS, SYNTHESIS_ENABLED, SERVER_VERSION } from "../config.js";
+import { LIVING_DOCUMENTS, SYNTHESIS_ENABLED, SERVER_VERSION, FRAMEWORK_REPO } from "../config.js";
 import { logger } from "../utils/logger.js";
 import { extractHeaders, extractSection, parseNumberedList } from "../utils/summarizer.js";
 import { parseHandoffVersion } from "../validation/handoff.js";
@@ -653,7 +653,7 @@ function renderFinalizationBanner(data: {
 export function registerFinalize(server: McpServer): void {
   server.tool(
     "prism_finalize",
-    'Execute PRISM finalization. Use action:"audit" to fetch all living documents and detect drift. Use action:"commit" to push all composed content with backup and validation.',
+    "PRISM finalization. Actions: audit (document inventory + drift), draft (AI-generated files), commit (backup + push + validate).",
     {
       project_slug: z.string().describe("Project repo name"),
       action: z.enum(["audit", "draft", "commit"]).describe("Finalization phase: 'audit' for document inventory, 'draft' for AI-generated file drafts, 'commit' to push final files"),
@@ -689,12 +689,23 @@ export function registerFinalize(server: McpServer): void {
       try {
         if (action === "audit") {
           const result = await auditPhase(project_slug, session_number);
+
+          // ME-4: Fetch and prepend session-end rules (Rules 10-14)
+          let sessionEndRules: string | null = null;
+          try {
+            const rulesFile = await fetchFile(FRAMEWORK_REPO, "_templates/rules-session-end.md");
+            sessionEndRules = rulesFile.content;
+          } catch {
+            logger.warn("Could not fetch rules-session-end.md — session-end rules not delivered");
+          }
+
           logger.info("prism_finalize audit complete", {
             project_slug,
+            sessionEndRulesDelivered: !!sessionEndRules,
             ms: Date.now() - start,
           });
           return {
-            content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+            content: [{ type: "text" as const, text: JSON.stringify({ ...result, session_end_rules: sessionEndRules }) }],
           };
         }
 
@@ -706,7 +717,7 @@ export function registerFinalize(server: McpServer): void {
             ms: Date.now() - start,
           });
           return {
-            content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+            content: [{ type: "text" as const, text: JSON.stringify(result) }],
           };
         }
 
@@ -825,7 +836,7 @@ export function registerFinalize(server: McpServer): void {
         });
 
         return {
-          content: [{ type: "text" as const, text: JSON.stringify({ ...result, finalization_banner_html }, null, 2) }],
+          content: [{ type: "text" as const, text: JSON.stringify({ ...result, finalization_banner_html }) }],
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

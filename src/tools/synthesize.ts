@@ -12,7 +12,7 @@ import { logger } from "../utils/logger.js";
 export function registerSynthesize(server: McpServer) {
   server.tool(
     "prism_synthesize",
-    "Generate or check an AI-synthesized intelligence brief for a project. Use mode 'generate' to create/refresh the brief. Use mode 'status' to check if one exists.",
+    "Generate or check AI-synthesized intelligence brief. Modes: generate (create/refresh), status (check existence).",
     {
       project_slug: z.string().describe("Project repo name"),
       mode: z.enum(["generate", "status"]).describe("'generate' to create/refresh, 'status' to check"),
@@ -87,7 +87,7 @@ export function registerSynthesize(server: McpServer) {
         });
 
         return {
-          content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+          content: [{ type: "text" as const, text: JSON.stringify(result) }],
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

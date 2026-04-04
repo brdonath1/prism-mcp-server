@@ -57,7 +57,7 @@ function applyPatch(
 export function registerPatch(server: McpServer): void {
   server.tool(
     "prism_patch",
-    "Apply section-level operations to a living document without full-file roundtrips. Supports append (add to end of section), prepend (add to start of section), and replace (replace entire section content). Multiple patches applied sequentially — all-or-nothing (if any patch fails, file is not modified).",
+    "Section-level operations (append/prepend/replace) on living documents. All-or-nothing semantics.",
     {
       project_slug: z.string().describe("Project repo name"),
       file: z.string().describe("File path relative to repo root (e.g., 'task-queue.md')"),

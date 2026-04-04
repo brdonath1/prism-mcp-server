@@ -164,6 +164,62 @@ export function parseResumptionForBanner(
   return "No specific resumption point set.";
 }
 
+// --- Text Banner Renderer (ME-1: compact text replaces HTML) ---
+
+export interface BannerTextInput {
+  templateVersion: string;
+  sessionNumber: number;
+  timestamp: string;
+  handoffVersion: number;
+  handoffSizeKb: string;
+  decisionCount: number;
+  guardrailCount: number;
+  docCount: number;
+  docTotal: number;
+  tools: Array<{ label: string; status: "ok" | "warn" | "critical" }>;
+  resumption: string;
+  nextSteps: string[];
+  warnings: string[];
+}
+
+/**
+ * Render a compact text-based boot status (ME-1, S29).
+ * Replaces the ~5KB HTML banner with a ~200-byte text block.
+ */
+export function renderBannerText(data: BannerTextInput): string {
+  const toolStatus = data.tools
+    .map(t => `${t.status === "ok" ? "\u2713" : t.status === "warn" ? "\u26a0" : "\u2717"} ${t.label}`)
+    .join(" | ");
+
+  // Truncate resumption to 200 chars if needed
+  const resumption = data.resumption.length > 200
+    ? data.resumption.slice(0, 197) + "..."
+    : data.resumption;
+
+  const lines: string[] = [
+    `PRISM v${data.templateVersion} | Session ${data.sessionNumber} | ${data.timestamp} CST`,
+    `Handoff v${data.handoffVersion} (${data.handoffSizeKb}KB) | ${data.decisionCount} decisions (${data.guardrailCount} guardrails) | ${data.docCount}/${data.docTotal} docs healthy`,
+    toolStatus,
+    "",
+    `Resumption: ${stripMarkdown(resumption)}`,
+  ];
+
+  if (data.nextSteps.length > 0) {
+    lines.push("");
+    lines.push("Next:");
+    data.nextSteps.forEach((step, i) => {
+      lines.push(`${i === 0 ? "\u25b8" : "\u25b8"} ${stripMarkdown(step)}${i === 0 ? " [priority]" : ""}`);
+    });
+  }
+
+  if (data.warnings.length > 0) {
+    lines.push("");
+    data.warnings.forEach(w => lines.push(`\u26a0 ${w}`));
+  }
+
+  return lines.join("\n");
+}
+
 // --- HTML Renderer ---
 
 /**

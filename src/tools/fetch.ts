@@ -23,7 +23,7 @@ const inputSchema = {
 export function registerFetch(server: McpServer): void {
   server.tool(
     "prism_fetch",
-    "Fetch one or more files from a PRISM project repo. Optional summary mode returns summaries instead of full content for files exceeding 5KB.",
+    "Fetch files from a PRISM project repo. Summary mode returns summaries for files >5KB.",
     inputSchema,
     async ({ project_slug, files, summary_mode }) => {
       const start = Date.now();
@@ -118,7 +118,7 @@ export function registerFetch(server: McpServer): void {
         });
 
         return {
-          content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+          content: [{ type: "text" as const, text: JSON.stringify(result) }],
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

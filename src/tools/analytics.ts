@@ -536,7 +536,7 @@ async function freshEyesCheck(projectSlug?: string) {
 export function registerAnalytics(server: McpServer): void {
   server.tool(
     "prism_analytics",
-    "Cross-session analytics computed server-side. Metrics: decision_velocity, session_patterns, handoff_size_history, file_churn, decision_graph, health_summary, fresh_eyes_check.",
+    "Cross-session analytics. Metrics: decision_velocity, session_patterns, handoff_size_history, file_churn, decision_graph, health_summary, fresh_eyes_check.",
     {
       project_slug: z
         .string()
@@ -676,7 +676,7 @@ export function registerAnalytics(server: McpServer): void {
         });
 
         return {
-          content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+          content: [{ type: "text" as const, text: JSON.stringify(result) }],
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

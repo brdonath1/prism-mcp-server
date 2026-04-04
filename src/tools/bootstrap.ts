@@ -22,7 +22,7 @@ import {
   summarizeMarkdown,
 } from "../utils/summarizer.js";
 import { parseHandoffVersion, parseSessionCount, parseTemplateVersion } from "../validation/handoff.js";
-import { generateCstTimestamp, parseResumptionForBanner, renderBannerHtml, type BannerData } from "../utils/banner.js";
+import { generateCstTimestamp, parseResumptionForBanner, renderBannerHtml, renderBannerText, type BannerData, type BannerTextInput } from "../utils/banner.js";
 
 /** Input schema for prism_bootstrap */
 const inputSchema = {
@@ -72,6 +72,8 @@ export interface StandingRule {
 
 /**
  * Extract standing rules from insights content, keeping only the procedure portion.
+ * ME-3 (D-48): Excludes ARCHIVED RULE, DORMANT RULE, ARCHIVED STANDING RULE,
+ * and DORMANT STANDING RULE entries from the active set.
  */
 export function extractStandingRules(insightsContent: string | null): StandingRule[] {
   if (!insightsContent) return [];
@@ -80,6 +82,11 @@ export function extractStandingRules(insightsContent: string | null): StandingRu
   const sections = insightsContent.split(/(?=^### )/m);
 
   for (const section of sections) {
+    // D-48: Skip archived or dormant entries
+    if (/archived\s+(standing\s+)?rule/i.test(section) || /dormant\s+(standing\s+)?rule/i.test(section)) {
+      continue;
+    }
+
     if (/standing\s+rule/i.test(section)) {
       const headerMatch = section.match(/^### (INS-\d+):?\s*(.+)/);
       if (headerMatch) {
@@ -159,7 +166,7 @@ async function pushBootTest(
 export function registerBootstrap(server: McpServer): void {
   server.tool(
     "prism_bootstrap",
-    "Initialize a PRISM session. Fetches handoff, decision index, and optionally relevant living documents based on opening message keywords. Returns structured summary.",
+    "Initialize a PRISM session. Returns handoff, decisions, behavioral rules, intelligence brief, standing rules, and pre-fetched docs in one call.",
     inputSchema,
     async ({ project_slug, opening_message }) => {
       const start = Date.now();
@@ -284,7 +291,9 @@ export function registerBootstrap(server: McpServer): void {
           }
         }
 
-        const prefetchPaths = Array.from(prefetchSet);
+        // QW-4 (PF-3): Hard cap of 2 documents per prefetch to prevent keyword-dense
+        // opening messages from triggering excessive document fetches.
+        const prefetchPaths = Array.from(prefetchSet).slice(0, 2);
 
         if (prefetchPaths.length > 0) {
           prefetchPromise = fetchFiles(resolvedSlug, prefetchPaths).then(results => {
@@ -353,7 +362,7 @@ export function registerBootstrap(server: McpServer): void {
           logger.info("standing rules extracted", { count: standingRules.length, ids: standingRules.map(r => r.id) });
         }
 
-        // 6. Banner data object (D-47 — replaces pre-rendered HTML)
+        // 6. Banner data + text rendering (ME-1: compact text replaces HTML)
         const projectDisplayName = getProjectDisplayName(resolvedSlug);
         const resumption = parseResumptionForBanner(resumptionPoint, currentState);
         const guardrailCount = guardrails.length;
@@ -369,6 +378,39 @@ export function registerBootstrap(server: McpServer): void {
           warnings.push(`Boot-test push failed: ${bootTestResult.error}`);
         }
 
+        const toolsList: Array<{ label: string; status: "ok" | "warn" | "critical" }> = [
+          { label: "bootstrap", status: "ok" },
+          { label: pushToolLabel, status: pushToolStatus },
+          { label: "template loaded", status: "ok" },
+          { label: scalingRequired ? "scaling required" : "no scaling needed", status: scalingRequired ? "warn" : "ok" },
+        ];
+
+        // ME-1: Render compact text banner instead of HTML
+        let bannerText: string | null = null;
+        try {
+          const bannerTextInput: BannerTextInput = {
+            templateVersion: handoffTemplateVersion,
+            sessionNumber,
+            timestamp: sessionTimestamp,
+            handoffVersion,
+            handoffSizeKb: (handoff.size / 1024).toFixed(1),
+            decisionCount: decisions.length,
+            guardrailCount,
+            docCount,
+            docTotal,
+            tools: toolsList,
+            resumption,
+            nextSteps,
+            warnings,
+          };
+          bannerText = renderBannerText(bannerTextInput);
+          logger.info("boot banner text rendered", { textLength: bannerText.length });
+        } catch (bannerError) {
+          const msg = bannerError instanceof Error ? bannerError.message : String(bannerError);
+          logger.warn("boot banner text render failed", { error: msg });
+        }
+
+        // Build banner_data as fallback (only included when banner_text is null per QW-1)
         const bannerData = {
           template_version: handoffTemplateVersion,
           project: projectDisplayName,
@@ -381,12 +423,7 @@ export function registerBootstrap(server: McpServer): void {
           docs: `${docCount}/${docTotal}`,
           doc_status: docStatus,
           doc_label: docLabel,
-          tools: [
-            { label: "bootstrap", status: "ok" },
-            { label: pushToolLabel, status: pushToolStatus },
-            { label: "template loaded", status: "ok" },
-            { label: scalingRequired ? "scaling required" : "no scaling needed", status: scalingRequired ? "warn" : "ok" },
-          ],
+          tools: toolsList,
           resumption,
           next_steps: nextSteps.map((text, i) => ({
             text,
@@ -395,52 +432,19 @@ export function registerBootstrap(server: McpServer): void {
           warnings,
         };
 
-        // --- Render boot banner HTML (D-35, restored from D-47 data-only mode) ---
-        let bannerHtml: string | null = null;
-        try {
-          const bannerInput: BannerData = {
-            templateVersion: bannerData.template_version,
-            projectDisplayName: bannerData.project,
-            sessionNumber: bannerData.session,
-            timestamp: bannerData.timestamp,
-            handoffVersion: bannerData.handoff_version,
-            handoffSizeKb: bannerData.handoff_kb,
-            decisionCount: bannerData.decisions,
-            decisionNote: `${bannerData.guardrails} guardrails`,
-            docCount: docCount,
-            docTotal: docTotal,
-            docStatus: bannerData.doc_status,
-            docLabel: bannerData.doc_label,
-            tools: bannerData.tools as BannerData["tools"],
-            resumption: resumption,
-            nextSteps: bannerData.next_steps.map((s, i) => ({
-              text: s.text,
-              status: (i === 0 ? "priority" : "normal") as "priority" | "warn" | "normal",
-            })),
-            warnings: bannerData.warnings,
-            errors: [],
-          };
-          bannerHtml = renderBannerHtml(bannerInput);
-          logger.info("boot banner HTML rendered", { htmlLength: bannerHtml.length });
-        } catch (bannerError) {
-          const msg = bannerError instanceof Error ? bannerError.message : String(bannerError);
-          logger.warn("boot banner render failed, falling back to banner_data", { error: msg });
-        }
+        // ME-5: Context budget estimation
+        const responseJson = JSON.stringify({
+          project: resolvedSlug, handoff_version: handoffVersion,
+          behavioral_rules: behavioralRules, standing_rules: standingRules,
+          intelligence_brief: intelligenceBrief, banner_text: bannerText,
+        });
+        const bootstrapTokens = Math.round(responseJson.length / 3.5);
+        const platformOverheadTokens = 5000;
+        const toolSchemaTokens = 2500;
+        const totalBootTokens = bootstrapTokens + platformOverheadTokens + toolSchemaTokens;
+        const totalBootPercent = Math.round((totalBootTokens / 200000) * 1000) / 10;
 
-        // D-47: Per-component sizing for monitoring
-        const componentSizes = {
-          handoff: handoff.size,
-          decisions_index: coreResults[1].status === "fulfilled" && coreResults[1].value ? (coreResults[1].value as { size: number }).size : 0,
-          behavioral_rules: coreResults[2].status === "fulfilled" && coreResults[2].value ? (coreResults[2].value as { size: number }).size : 0,
-          intelligence_brief_full: intelligenceBriefFull?.length ?? 0,
-          intelligence_brief_compact: intelligenceBrief?.length ?? 0,
-          standing_rules: JSON.stringify(standingRules).length,
-          banner_data: JSON.stringify(bannerData).length,
-          banner_html: bannerHtml?.length ?? 0,
-          prefetched_docs: prefetchedDocuments.reduce((sum, d) => sum + d.size_bytes, 0),
-        };
-
-        const result = {
+        const result: Record<string, unknown> = {
           project: resolvedSlug,
           handoff_version: handoffVersion,
           template_version: handoffTemplateVersion,
@@ -458,15 +462,37 @@ export function registerBootstrap(server: McpServer): void {
           open_questions: openQuestions,
           prefetched_documents: prefetchedDocuments,
           standing_rules: standingRules,
-          intelligence_brief: intelligenceBrief,      // D-47: compact version
+          intelligence_brief: intelligenceBrief,
           behavioral_rules: behavioralRules,
-          banner_data: bannerData,                     // D-47: data object replaces banner_html
-          banner_html: bannerHtml,                     // D-35 restored: server-rendered HTML, D-47 banner_data kept as fallback
+          banner_html: null,                           // ME-1: HTML replaced by banner_text
+          banner_text: bannerText,                     // ME-1: compact text boot status
           boot_test_verified: bootTestResult.success,
           bytes_delivered: bytesDelivered,
           files_fetched: filesFetched,
-          component_sizes: componentSizes,             // D-47: per-component monitoring
+          context_estimate: {                          // ME-5: context budget estimation
+            bootstrap_tokens: bootstrapTokens,
+            platform_overhead_tokens: platformOverheadTokens,
+            tool_schema_tokens: toolSchemaTokens,
+            total_boot_tokens: totalBootTokens,
+            total_boot_percent: totalBootPercent,
+          },
           warnings,
+        };
+
+        // QW-1: Only include banner_data as fallback when banner_text is absent
+        if (!bannerText) {
+          result.banner_data = bannerData;
+        }
+
+        // QW-5: component_sizes removed from response (logged only)
+        const componentSizes = {
+          handoff: handoff.size,
+          decisions_index: coreResults[1].status === "fulfilled" && coreResults[1].value ? (coreResults[1].value as { size: number }).size : 0,
+          behavioral_rules: coreResults[2].status === "fulfilled" && coreResults[2].value ? (coreResults[2].value as { size: number }).size : 0,
+          intelligence_brief_compact: intelligenceBrief?.length ?? 0,
+          standing_rules: JSON.stringify(standingRules).length,
+          banner_text: bannerText?.length ?? 0,
+          prefetched_docs: prefetchedDocuments.reduce((sum, d) => sum + d.size_bytes, 0),
         };
 
         logger.info("prism_bootstrap complete", {
@@ -475,19 +501,18 @@ export function registerBootstrap(server: McpServer): void {
           bytesDelivered,
           rulesDelivered: !!behavioralRules,
           rulesCached: templateCache.get(MCP_TEMPLATE_PATH) !== null,
-          bannerHtmlRendered: !!bannerHtml,            // D-35 restored
-          bannerDataDelivered: true,                   // D-47 kept as fallback
+          bannerTextRendered: !!bannerText,
           standingRulesCount: standingRules.length,
-          intelligenceBriefCompacted: !!intelligenceBrief, // D-47
-          intelligenceBriefFullSize: intelligenceBriefFull?.length ?? 0,  // D-47
-          intelligenceBriefCompactSize: intelligenceBrief?.length ?? 0,   // D-47
+          intelligenceBriefCompacted: !!intelligenceBrief,
           bootTestVerified: bootTestResult.success,
-          componentSizes,                              // D-47
+          componentSizes,
+          contextEstimate: { totalBootTokens, totalBootPercent },
           ms: Date.now() - start,
         });
 
+        // QW-2: Compact JSON (no pretty-printing)
         return {
-          content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+          content: [{ type: "text" as const, text: JSON.stringify(result) }],
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
