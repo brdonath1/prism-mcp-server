@@ -4,7 +4,8 @@
  */
 
 import { fetchFiles, pushFile } from "../github/client.js";
-import { LIVING_DOCUMENTS, SYNTHESIS_ENABLED } from "../config.js";
+import { LEGACY_LIVING_DOCUMENTS, SYNTHESIS_ENABLED } from "../config.js";
+import { resolveDocFiles, resolveDocPushPath } from "../utils/doc-resolver.js";
 import { logger } from "../utils/logger.js";
 import { synthesize } from "./client.js";
 import { FINALIZATION_SYNTHESIS_PROMPT, buildSynthesisUserMessage } from "./prompts.js";
@@ -35,11 +36,11 @@ export async function generateIntelligenceBrief(
 
   try {
     // 1. Fetch ALL living documents (exclude intelligence-brief.md itself to avoid circular reference)
-    const docsToFetch = LIVING_DOCUMENTS.filter(d => d !== "intelligence-brief.md");
-    const docMap = await fetchFiles(projectSlug, [...docsToFetch]);
+    const docsToFetch = LEGACY_LIVING_DOCUMENTS.filter(d => d !== "intelligence-brief.md");
+    const docMap = await resolveDocFiles(projectSlug, [...docsToFetch]);
 
-    // Also fetch decision domain files if they exist
-    const decisionDomains = [
+    // Also fetch decision domain files if they exist (D-67: backward-compatible)
+    const decisionDomainNames = [
       "decisions/architecture.md",
       "decisions/operations.md",
       "decisions/optimization.md",
@@ -51,7 +52,7 @@ export async function generateIntelligenceBrief(
 
     let domainMap: Map<string, { content: string; size: number }> = new Map();
     try {
-      domainMap = await fetchFiles(projectSlug, decisionDomains);
+      domainMap = await resolveDocFiles(projectSlug, decisionDomainNames);
     } catch {
       // Domain files may not all exist — that's fine
       logger.info("Some decision domain files not found", { projectSlug });
@@ -108,10 +109,11 @@ export async function generateIntelligenceBrief(
       content += "\n\n<!-- EOF: intelligence-brief.md -->\n";
     }
 
-    // 6. Push to project repo
+    // 6. Push to project repo (D-67: resolve path)
+    const briefPushPath = await resolveDocPushPath(projectSlug, "intelligence-brief.md");
     await pushFile(
       projectSlug,
-      "intelligence-brief.md",
+      briefPushPath,
       content,
       `prism: S${sessionNumber} intelligence brief (auto-synthesized)`
     );

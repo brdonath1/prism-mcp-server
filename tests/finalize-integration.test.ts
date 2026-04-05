@@ -106,6 +106,25 @@ function buildDocMap(overrides?: Record<string, string>): Map<string, { content:
   return map;
 }
 
+/**
+ * Configure mockFetchFile to respond to .prism/-prefixed paths using a docMap.
+ * resolveDocPath() tries .prism/{docName} first, so mocks must handle those paths.
+ */
+function setupFetchFileMockFromDocMap(
+  mockFetchFileFn: ReturnType<typeof vi.mocked<typeof fetchFile>>,
+  docMap: Map<string, { content: string; sha: string; size: number }>,
+): void {
+  mockFetchFileFn.mockImplementation(async (_repo: string, path: string) => {
+    // Strip .prism/ prefix to look up in docMap (keyed by bare names)
+    const docName = path.startsWith(".prism/") ? path.slice(".prism/".length) : path;
+    const entry = docMap.get(docName);
+    if (entry) {
+      return { content: entry.content, sha: entry.sha, size: entry.size };
+    }
+    throw new Error(`Not found: ${path}`);
+  });
+}
+
 /** Helper: invoke prism_finalize via McpServer internal handler. */
 async function callFinalizeTool(
   args: Record<string, unknown>,
@@ -145,7 +164,7 @@ beforeEach(() => {
 describe("prism_finalize audit phase", () => {
   it("fetches all living documents and returns structured inventory", async () => {
     const docMap = buildDocMap();
-    mockFetchFiles.mockResolvedValue(docMap);
+    setupFetchFileMockFromDocMap(mockFetchFile, docMap);
     mockListDirectory.mockResolvedValue([]);
     mockListCommits.mockResolvedValue([]);
 
@@ -171,7 +190,7 @@ describe("prism_finalize audit phase", () => {
     // Remove insights.md and intelligence-brief.md
     docMap.delete("insights.md");
     docMap.delete("intelligence-brief.md");
-    mockFetchFiles.mockResolvedValue(docMap);
+    setupFetchFileMockFromDocMap(mockFetchFile, docMap);
     mockListDirectory.mockResolvedValue([]);
     mockListCommits.mockResolvedValue([]);
 
@@ -192,7 +211,7 @@ describe("prism_finalize audit phase", () => {
     const docMap = buildDocMap({
       "handoff.md": "# Handoff\nContent without EOF sentinel",
     });
-    mockFetchFiles.mockResolvedValue(docMap);
+    setupFetchFileMockFromDocMap(mockFetchFile, docMap);
     mockListDirectory.mockResolvedValue([]);
     mockListCommits.mockResolvedValue([]);
 
@@ -209,17 +228,25 @@ describe("prism_finalize audit phase", () => {
 
   it("detects drift in critical context between handoff versions", async () => {
     const docMap = buildDocMap();
-    mockFetchFiles.mockResolvedValue(docMap);
+    const previousHandoffContent = `## Meta\n- Handoff Version: 29\n\n## Critical Context\n1. Old critical item that was removed\n2. 17 active projects managed\n\n<!-- EOF: handoff.md -->`;
+
+    // Setup fetchFile to respond to .prism/ doc paths (via docMap) AND handoff-history path
+    mockFetchFile.mockImplementation(async (_repo: string, path: string) => {
+      if (path.includes("handoff_v29")) {
+        return { content: previousHandoffContent, sha: "old_sha", size: 200 };
+      }
+      const docName = path.startsWith(".prism/") ? path.slice(".prism/".length) : path;
+      const entry = docMap.get(docName);
+      if (entry) {
+        return { content: entry.content, sha: entry.sha, size: entry.size };
+      }
+      throw new Error(`Not found: ${path}`);
+    });
 
     // Mock handoff history with a previous version that had different critical context
     mockListDirectory.mockResolvedValue([
       { name: "handoff_v29_2026-04-01.md", path: "handoff-history/handoff_v29_2026-04-01.md", size: 500, sha: "old", type: "file" as const },
     ]);
-    mockFetchFile.mockResolvedValue({
-      content: `## Meta\n- Handoff Version: 29\n\n## Critical Context\n1. Old critical item that was removed\n2. 17 active projects managed\n\n<!-- EOF: handoff.md -->`,
-      sha: "old_sha",
-      size: 200,
-    });
     mockListCommits.mockResolvedValue([]);
 
     const result = await callFinalizeTool({
@@ -235,7 +262,7 @@ describe("prism_finalize audit phase", () => {
 
   it("counts session work products from commit history", async () => {
     const docMap = buildDocMap();
-    mockFetchFiles.mockResolvedValue(docMap);
+    setupFetchFileMockFromDocMap(mockFetchFile, docMap);
     mockListDirectory.mockResolvedValue([]);
 
     // Mock commits: 3 session commits before a finalization marker

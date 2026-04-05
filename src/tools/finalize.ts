@@ -15,7 +15,8 @@ import {
   getCommit,
   deleteFile,
 } from "../github/client.js";
-import { LIVING_DOCUMENTS, SYNTHESIS_ENABLED, SERVER_VERSION, FRAMEWORK_REPO } from "../config.js";
+import { LIVING_DOCUMENTS, LEGACY_LIVING_DOCUMENTS, SYNTHESIS_ENABLED, SERVER_VERSION, FRAMEWORK_REPO } from "../config.js";
+import { resolveDocPath, resolveDocPushPath, resolveDocFiles } from "../utils/doc-resolver.js";
 import { logger } from "../utils/logger.js";
 import { extractHeaders, extractSection, parseNumberedList } from "../utils/summarizer.js";
 import { parseHandoffVersion } from "../validation/handoff.js";
@@ -57,10 +58,10 @@ import { synthesize } from "../ai/client.js";
 async function auditPhase(projectSlug: string, sessionNumber: number) {
   const warnings: string[] = [];
 
-  // 1. Fetch all 8 living documents in parallel
-  const docMap = await fetchFiles(projectSlug, [...LIVING_DOCUMENTS]);
+  // 1. Fetch all 10 living documents in parallel with backward-compatible resolution
+  const docMap = await resolveDocFiles(projectSlug, [...LEGACY_LIVING_DOCUMENTS]);
 
-  const livingDocuments = LIVING_DOCUMENTS.map((doc) => {
+  const livingDocuments = LEGACY_LIVING_DOCUMENTS.map((doc) => {
     const fileResult = docMap.get(doc);
     if (!fileResult) {
       return {
@@ -115,9 +116,12 @@ async function auditPhase(projectSlug: string, sessionNumber: number) {
     driftDetection.decision_count_current = rows.length;
   }
 
-  // Try to fetch previous handoff from handoff-history/
+  // Try to fetch previous handoff from handoff-history/ (D-67: check .prism/ first)
   try {
-    const historyEntries = await listDirectory(projectSlug, "handoff-history");
+    let historyEntries = await listDirectory(projectSlug, ".prism/handoff-history");
+    if (historyEntries.length === 0) {
+      historyEntries = await listDirectory(projectSlug, "handoff-history");
+    }
     const handoffFiles = historyEntries
       .filter((e) => e.name.startsWith("handoff_v") && e.name.endsWith(".md"))
       .sort((a, b) => b.name.localeCompare(a.name));
@@ -217,7 +221,10 @@ async function auditPhase(projectSlug: string, sessionNumber: number) {
   const currentVersion = handoffResult ? (parseHandoffVersion(handoffResult.content) ?? 0) : 0;
 
   try {
-    const historyEntries = await listDirectory(projectSlug, "handoff-history");
+    let historyEntries = await listDirectory(projectSlug, ".prism/handoff-history");
+    if (historyEntries.length === 0) {
+      historyEntries = await listDirectory(projectSlug, "handoff-history");
+    }
     handoffBackupExists = historyEntries.some(
       (e) => e.name.includes(`handoff_v${currentVersion}`)
     );
@@ -252,8 +259,8 @@ async function draftPhase(projectSlug: string, sessionNumber: number) {
     };
   }
 
-  // 1. Fetch all living documents
-  const docMap = await fetchFiles(projectSlug, [...LIVING_DOCUMENTS]);
+  // 1. Fetch all living documents with backward-compatible resolution
+  const docMap = await resolveDocFiles(projectSlug, [...LEGACY_LIVING_DOCUMENTS]);
 
   // 2. Collect commit history for this session
   const sessionCommits: string[] = [];
@@ -326,12 +333,14 @@ async function commitPhase(
   const warnings: string[] = [];
   const today = new Date().toISOString().split("T")[0];
 
-  // 1. Backup current handoff to handoff-history/
+  // 1. Backup current handoff to handoff-history/ (D-67: resolve location)
   let backupPath = "";
   try {
-    const currentHandoff = await fetchFile(projectSlug, "handoff.md");
+    const currentHandoff = await resolveDocPath(projectSlug, "handoff.md");
     const currentVersion = parseHandoffVersion(currentHandoff.content) ?? handoffVersion - 1;
-    backupPath = `handoff-history/handoff_v${currentVersion}_${today}.md`;
+    // Backup goes alongside handoff: .prism/handoff-history/ or handoff-history/
+    const historyBase = currentHandoff.legacy ? "handoff-history" : ".prism/handoff-history";
+    backupPath = `${historyBase}/handoff_v${currentVersion}_${today}.md`;
 
     await pushFile(
       projectSlug,
@@ -346,9 +355,12 @@ async function commitPhase(
     }
   }
 
-  // 2. Prune handoff-history to keep only last 3 versions
+  // 2. Prune handoff-history to keep only last 3 versions (D-67: check .prism/ first)
   try {
-    const historyEntries = await listDirectory(projectSlug, "handoff-history");
+    let historyEntries = await listDirectory(projectSlug, ".prism/handoff-history");
+    if (historyEntries.length === 0) {
+      historyEntries = await listDirectory(projectSlug, "handoff-history");
+    }
     const handoffFiles = historyEntries
       .filter((e) => e.name.startsWith("handoff_v") && e.name.endsWith(".md"))
       .sort((a, b) => b.name.localeCompare(a.name));

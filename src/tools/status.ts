@@ -7,11 +7,14 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { fetchFile, fileExists, listRepos } from "../github/client.js";
 import {
+  DOC_ROOT,
   LIVING_DOCUMENTS,
+  LEGACY_LIVING_DOCUMENTS,
   HANDOFF_CRITICAL_SIZE,
   HANDOFF_WARNING_SIZE,
   SYNTHESIS_ENABLED,
 } from "../config.js";
+import { resolveDocExists } from "../utils/doc-resolver.js";
 import { logger } from "../utils/logger.js";
 import { parseHandoffVersion, parseSessionCount } from "../validation/handoff.js";
 import { extractSection } from "../utils/summarizer.js";
@@ -54,15 +57,19 @@ async function getProjectHealth(
   projectSlug: string,
   includeDetails: boolean
 ): Promise<ProjectHealth> {
-  // Check all 8 living documents in parallel
+  // Check all 10 living documents in parallel using backward-compatible resolution
   const docChecks = await Promise.allSettled(
-    LIVING_DOCUMENTS.map(async (doc) => {
-      try {
-        const result = await fetchFile(projectSlug, doc);
-        return { document: doc, exists: true, size_bytes: result.size, content: result.content };
-      } catch {
-        return { document: doc, exists: false, size_bytes: 0, content: null };
+    LEGACY_LIVING_DOCUMENTS.map(async (docName) => {
+      const resolved = await resolveDocExists(projectSlug, docName);
+      if (resolved.exists) {
+        try {
+          const result = await fetchFile(projectSlug, resolved.path);
+          return { document: docName, exists: true, size_bytes: result.size, content: result.content };
+        } catch {
+          return { document: docName, exists: false, size_bytes: 0, content: null };
+        }
       }
+      return { document: docName, exists: false, size_bytes: 0, content: null };
     })
   );
 
@@ -141,11 +148,11 @@ export function registerStatus(server: McpServer): void {
         const allRepos = await listRepos();
         logger.info("prism_status repos discovered", { count: allRepos.length, repos: allRepos.slice(0, 5) });
 
-        // Check which repos have a handoff.md (i.e., are PRISM projects)
+        // Check which repos have a handoff.md (i.e., are PRISM projects) — check both paths
         const prismChecks = await Promise.allSettled(
           allRepos.map(async (repo) => {
-            const exists = await fileExists(repo, "handoff.md");
-            return { repo, isPrism: exists };
+            const resolved = await resolveDocExists(repo, "handoff.md");
+            return { repo, isPrism: resolved.exists };
           })
         );
 

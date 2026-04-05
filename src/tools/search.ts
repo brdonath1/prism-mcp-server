@@ -9,7 +9,8 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { fetchFile, fileExists } from "../github/client.js";
-import { LIVING_DOCUMENTS } from "../config.js";
+import { DOC_ROOT, LEGACY_LIVING_DOCUMENTS } from "../config.js";
+import { resolveDocPath, resolveDocExists } from "../utils/doc-resolver.js";
 import { logger } from "../utils/logger.js";
 
 /** Input schema for prism_search */
@@ -153,11 +154,12 @@ async function discoverDecisionDomainFiles(projectSlug: string): Promise<string[
     "decisions/efficiency.md",
   ];
 
+  // D-67: Check both .prism/ and root paths for domain files
   const results = await Promise.allSettled(
     possibleDomains.map(async (path) => {
       try {
-        const exists = await fileExists(projectSlug, path);
-        return exists ? path : null;
+        const resolved = await resolveDocExists(projectSlug, path);
+        return resolved.exists ? resolved.path : null;
       } catch {
         return null;
       }
@@ -184,22 +186,28 @@ export function registerSearch(server: McpServer): void {
       logger.info("prism_search", { project_slug, query, max_results: limit });
 
       try {
-        // Step 1: Discover all searchable files
-        const livingDocPaths = [...LIVING_DOCUMENTS];
+        // Step 1: Discover all searchable files (D-67: use resolver for backward compat)
         const domainFiles = await discoverDecisionDomainFiles(project_slug);
-        const allPaths = [...livingDocPaths, ...domainFiles];
 
-        // Step 2: Fetch all files in parallel
-        const fetchResults = await Promise.allSettled(
-          allPaths.map(async (path) => {
+        // Step 2: Fetch all living docs via resolver + domain files directly
+        const fetchResults = await Promise.allSettled([
+          ...LEGACY_LIVING_DOCUMENTS.map(async (docName) => {
+            try {
+              const resolved = await resolveDocPath(project_slug, docName);
+              return { path: docName, content: resolved.content, size: resolved.content.length };
+            } catch {
+              return null;
+            }
+          }),
+          ...domainFiles.map(async (path) => {
             try {
               const result = await fetchFile(project_slug, path);
               return { path, content: result.content, size: result.size };
             } catch {
               return null;
             }
-          })
-        );
+          }),
+        ]);
 
         const files = fetchResults
           .filter((r): r is PromiseFulfilledResult<{ path: string; content: string; size: number } | null> =>

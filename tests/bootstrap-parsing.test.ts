@@ -57,43 +57,43 @@ describe("handoff size threshold detection", () => {
 describe("keyword-to-document mapping for intelligent prefetch", () => {
   it("maps architecture keywords to architecture.md", () => {
     for (const kw of ["architecture", "stack", "infrastructure", "deploy", "integration"]) {
-      expect(PREFETCH_KEYWORDS[kw]).toBe("architecture.md");
+      expect(PREFETCH_KEYWORDS[kw]).toBe(".prism/architecture.md");
     }
   });
 
   it("maps bug keywords to known-issues.md", () => {
     for (const kw of ["bug", "workaround", "debt"]) {
-      expect(PREFETCH_KEYWORDS[kw]).toBe("known-issues.md");
+      expect(PREFETCH_KEYWORDS[kw]).toBe(".prism/known-issues.md");
     }
   });
 
   it("maps task keywords to task-queue.md", () => {
     for (const kw of ["task", "priority", "queue", "backlog"]) {
-      expect(PREFETCH_KEYWORDS[kw]).toBe("task-queue.md");
+      expect(PREFETCH_KEYWORDS[kw]).toBe(".prism/task-queue.md");
     }
   });
 
   it("maps glossary keywords to glossary.md", () => {
     for (const kw of ["term", "definition", "glossary"]) {
-      expect(PREFETCH_KEYWORDS[kw]).toBe("glossary.md");
+      expect(PREFETCH_KEYWORDS[kw]).toBe(".prism/glossary.md");
     }
   });
 
   it("maps history keywords to session-log.md", () => {
     for (const kw of ["history"]) {
-      expect(PREFETCH_KEYWORDS[kw]).toBe("session-log.md");
+      expect(PREFETCH_KEYWORDS[kw]).toBe(".prism/session-log.md");
     }
   });
 
   it("maps elimination keywords to eliminated.md", () => {
     for (const kw of ["reject", "eliminate", "guardrail", "tried"]) {
-      expect(PREFETCH_KEYWORDS[kw]).toBe("eliminated.md");
+      expect(PREFETCH_KEYWORDS[kw]).toBe(".prism/eliminated.md");
     }
   });
 
   it("maps insight keywords to insights.md", () => {
     for (const kw of ["insight", "pattern", "preference", "gotcha", "learned"]) {
-      expect(PREFETCH_KEYWORDS[kw]).toBe("insights.md");
+      expect(PREFETCH_KEYWORDS[kw]).toBe(".prism/insights.md");
     }
   });
 });

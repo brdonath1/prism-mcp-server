@@ -43,7 +43,7 @@ export const PORT = parseInt(process.env.PORT ?? "3000", 10);
 export const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
 
 /** Server version */
-export const SERVER_VERSION = "2.10.0";
+export const SERVER_VERSION = "2.11.0";
 
 /** GitHub API base URL */
 export const GITHUB_API_BASE = "https://api.github.com";
@@ -54,6 +54,9 @@ export const HANDOFF_CRITICAL_SIZE = 15_360;  // 15 KB — scaling required
 
 /** Summary mode threshold (bytes) */
 export const SUMMARY_SIZE_THRESHOLD = 5_120;  // 5 KB
+
+/** Root directory for PRISM living documents within project repos (D-67) */
+export const DOC_ROOT = ".prism";
 
 /** Anthropic API key for Opus 4.6 synthesis (Track 2) */
 export const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? "";
@@ -67,8 +70,24 @@ export const SYNTHESIS_ENABLED = !!process.env.ANTHROPIC_API_KEY;
 /** Max output tokens for synthesis calls */
 export const SYNTHESIS_MAX_OUTPUT_TOKENS = 4096;
 
-/** The 10 mandatory PRISM living documents (D-18, D-41, D-44) */
+/** The 10 mandatory PRISM living documents (D-18, D-41, D-44, D-67) */
 export const LIVING_DOCUMENTS = [
+  `${DOC_ROOT}/handoff.md`,
+  `${DOC_ROOT}/decisions/_INDEX.md`,
+  `${DOC_ROOT}/session-log.md`,
+  `${DOC_ROOT}/task-queue.md`,
+  `${DOC_ROOT}/eliminated.md`,
+  `${DOC_ROOT}/architecture.md`,
+  `${DOC_ROOT}/glossary.md`,
+  `${DOC_ROOT}/known-issues.md`,
+  `${DOC_ROOT}/insights.md`,
+  `${DOC_ROOT}/intelligence-brief.md`,
+] as const;
+
+/** Legacy paths (pre-D-67 consolidation) for backward compatibility.
+ *  Used by resolveDocPath() to find files in repos not yet migrated.
+ *  REMOVE after all repos confirmed migrated to .prism/ structure. */
+export const LEGACY_LIVING_DOCUMENTS = [
   "handoff.md",
   "decisions/_INDEX.md",
   "session-log.md",
@@ -143,35 +162,36 @@ export function resolveProjectSlug(input: string): string {
 
 /** Keyword → living document mapping for bootstrap pre-fetching.
  * QW-3 (S29): Removed overly generic keywords (next, plan, session, previous, issue, error)
- * that caused false-positive prefetches on common opening messages. */
+ * that caused false-positive prefetches on common opening messages.
+ * D-67: Paths prefixed with DOC_ROOT. */
 export const PREFETCH_KEYWORDS: Record<string, string> = {
-  architecture: "architecture.md",
-  stack: "architecture.md",
-  infrastructure: "architecture.md",
-  deploy: "architecture.md",
-  integration: "architecture.md",
-  bug: "known-issues.md",
-  workaround: "known-issues.md",
-  debt: "known-issues.md",
-  term: "glossary.md",
-  definition: "glossary.md",
-  glossary: "glossary.md",
-  task: "task-queue.md",
-  priority: "task-queue.md",
-  queue: "task-queue.md",
-  backlog: "task-queue.md",
-  reject: "eliminated.md",
-  eliminate: "eliminated.md",
-  guardrail: "eliminated.md",
-  "why not": "eliminated.md",
-  tried: "eliminated.md",
-  history: "session-log.md",
-  "last time": "session-log.md",
-  insight: "insights.md",
-  pattern: "insights.md",
-  preference: "insights.md",
-  gotcha: "insights.md",
-  learned: "insights.md",
+  architecture: `${DOC_ROOT}/architecture.md`,
+  stack: `${DOC_ROOT}/architecture.md`,
+  infrastructure: `${DOC_ROOT}/architecture.md`,
+  deploy: `${DOC_ROOT}/architecture.md`,
+  integration: `${DOC_ROOT}/architecture.md`,
+  bug: `${DOC_ROOT}/known-issues.md`,
+  workaround: `${DOC_ROOT}/known-issues.md`,
+  debt: `${DOC_ROOT}/known-issues.md`,
+  term: `${DOC_ROOT}/glossary.md`,
+  definition: `${DOC_ROOT}/glossary.md`,
+  glossary: `${DOC_ROOT}/glossary.md`,
+  task: `${DOC_ROOT}/task-queue.md`,
+  priority: `${DOC_ROOT}/task-queue.md`,
+  queue: `${DOC_ROOT}/task-queue.md`,
+  backlog: `${DOC_ROOT}/task-queue.md`,
+  reject: `${DOC_ROOT}/eliminated.md`,
+  eliminate: `${DOC_ROOT}/eliminated.md`,
+  guardrail: `${DOC_ROOT}/eliminated.md`,
+  "why not": `${DOC_ROOT}/eliminated.md`,
+  tried: `${DOC_ROOT}/eliminated.md`,
+  history: `${DOC_ROOT}/session-log.md`,
+  "last time": `${DOC_ROOT}/session-log.md`,
+  insight: `${DOC_ROOT}/insights.md`,
+  pattern: `${DOC_ROOT}/insights.md`,
+  preference: `${DOC_ROOT}/insights.md`,
+  gotcha: `${DOC_ROOT}/insights.md`,
+  learned: `${DOC_ROOT}/insights.md`,
 };
 
 /** MCP Auth Token for Bearer authentication (B.2) */

@@ -7,6 +7,7 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { fetchFile, pushFile } from "../github/client.js";
 import { logger } from "../utils/logger.js";
+import { resolveDocPath, resolveDocPushPath } from "../utils/doc-resolver.js";
 
 export function registerLogInsight(server: McpServer): void {
   server.tool(
@@ -35,13 +36,16 @@ export function registerLogInsight(server: McpServer): void {
           };
         }
 
-        // 1. Fetch current insights.md
+        // 1. Fetch current insights.md (D-67: backward-compatible resolution)
         let content: string;
+        let insightsResolvedPath: string;
         try {
-          const file = await fetchFile(project_slug, "insights.md");
-          content = file.content;
+          const resolved = await resolveDocPath(project_slug, "insights.md");
+          content = resolved.content;
+          insightsResolvedPath = resolved.path;
         } catch {
           content = `# Insights — ${project_slug}\n\n> Institutional knowledge. Entries tagged **STANDING RULE** are auto-loaded at bootstrap (D-44 Track 1).\n\n## Active\n\n## Formalized\n\n<!-- EOF: insights.md -->\n`;
+          insightsResolvedPath = await resolveDocPushPath(project_slug, "insights.md");
         }
 
         // 2. Build the entry
@@ -73,10 +77,10 @@ export function registerLogInsight(server: McpServer): void {
           content = content.trimEnd() + `\n\n${entry}\n`;
         }
 
-        // 4. Push
+        // 4. Push to resolved path
         const result = await pushFile(
           project_slug,
-          "insights.md",
+          insightsResolvedPath,
           content,
           `prism: ${id} ${title}`
         );

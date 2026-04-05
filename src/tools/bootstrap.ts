@@ -12,7 +12,8 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { fetchFile, fetchFiles, pushFile } from "../github/client.js";
-import { FRAMEWORK_REPO, HANDOFF_CRITICAL_SIZE, LIVING_DOCUMENTS, MCP_TEMPLATE_PATH, PREFETCH_KEYWORDS, PROJECT_DISPLAY_NAMES, resolveProjectSlug } from "../config.js";
+import { DOC_ROOT, FRAMEWORK_REPO, HANDOFF_CRITICAL_SIZE, LIVING_DOCUMENTS, MCP_TEMPLATE_PATH, PREFETCH_KEYWORDS, PROJECT_DISPLAY_NAMES, resolveProjectSlug } from "../config.js";
+import { resolveDocPath, resolveDocPushPath } from "../utils/doc-resolver.js";
 import { logger } from "../utils/logger.js";
 import { templateCache } from "../utils/cache.js";
 import {
@@ -152,7 +153,8 @@ async function pushBootTest(
 ): Promise<{ success: boolean; error?: string }> {
   const content = `# Boot Test \u2014 Session ${sessionNumber}\nTimestamp: ${timestamp} CST\nProject: ${slug}\nHandoff: v${handoffVersion}\nMode: MCP\n\n<!-- EOF: boot-test.md -->\n`;
   try {
-    await pushFile(slug, "boot-test.md", content, `prism: S${sessionNumber} boot test`);
+    const bootTestPath = await resolveDocPushPath(slug, "boot-test.md");
+    await pushFile(slug, bootTestPath, content, `prism: S${sessionNumber} boot test`);
     return { success: true };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -186,8 +188,8 @@ export function registerBootstrap(server: McpServer): void {
 
         // 1. Fetch core files in parallel: handoff, decisions, and cached behavioral rules
         const coreResults = await Promise.allSettled([
-          fetchFile(resolvedSlug, "handoff.md"),
-          fetchFile(resolvedSlug, "decisions/_INDEX.md").catch(() => null),
+          resolveDocPath(resolvedSlug, "handoff.md"),
+          resolveDocPath(resolvedSlug, "decisions/_INDEX.md").catch(() => null),
           fetchBehavioralRules(),
         ]);
 
@@ -196,16 +198,17 @@ export function registerBootstrap(server: McpServer): void {
           throw new Error(`Failed to fetch handoff.md for "${resolvedSlug}": ${coreResults[0].reason?.message}`);
         }
 
-        const handoff = coreResults[0].value;
+        const handoffResolved = coreResults[0].value;
+        const handoff = { content: handoffResolved.content, sha: handoffResolved.sha, size: handoffResolved.content.length };
         bytesDelivered += handoff.size;
         filesFetched++;
 
         // Decision index is optional
         let decisions: Array<{ id: string; title: string; status: string }> = [];
         if (coreResults[1].status === "fulfilled" && coreResults[1].value) {
-          const decisionFile = coreResults[1].value;
-          decisions = parseDecisions(decisionFile.content);
-          bytesDelivered += decisionFile.size;
+          const decisionResolved = coreResults[1].value as { content: string; sha: string };
+          decisions = parseDecisions(decisionResolved.content);
+          bytesDelivered += decisionResolved.content.length;
           filesFetched++;
         } else {
           warnings.push("decisions/_INDEX.md not found \u2014 decision tracking not initialized for this project.");
@@ -296,17 +299,23 @@ export function registerBootstrap(server: McpServer): void {
         const prefetchPaths = Array.from(prefetchSet).slice(0, 2);
 
         if (prefetchPaths.length > 0) {
-          prefetchPromise = fetchFiles(resolvedSlug, prefetchPaths).then(results => {
-              for (const [filePath, fileResult] of results) {
+          prefetchPromise = Promise.all(
+            prefetchPaths.map(async (filePath) => {
+              const docName = filePath.replace(`${DOC_ROOT}/`, "");
+              try {
+                const resolved = await resolveDocPath(resolvedSlug, docName);
                 prefetchedDocuments.push({
                   file: filePath,
-                  size_bytes: fileResult.size,
-                  summary: summarizeMarkdown(fileResult.content),
+                  size_bytes: resolved.content.length,
+                  summary: summarizeMarkdown(resolved.content),
                 });
-                bytesDelivered += fileResult.size;
+                bytesDelivered += resolved.content.length;
                 filesFetched++;
+              } catch {
+                // Prefetch failure is non-critical
               }
-            });
+            })
+          ).then(() => {});
         }
 
         // Wait for both boot-test and prefetch to complete
@@ -318,15 +327,16 @@ export function registerBootstrap(server: McpServer): void {
         let insightsContent: string | null = null;
 
         const [briefOutcome, insightsOutcome] = await Promise.allSettled([
-          fetchFile(resolvedSlug, "intelligence-brief.md"),
-          fetchFile(resolvedSlug, "insights.md"),
+          resolveDocPath(resolvedSlug, "intelligence-brief.md"),
+          resolveDocPath(resolvedSlug, "insights.md"),
         ]);
 
         if (briefOutcome.status === "fulfilled") {
           const briefFile = briefOutcome.value;
           intelligenceBriefFull = briefFile.content;
           filesFetched++;
-          logger.info("intelligence brief loaded", { size: briefFile.size });
+          const briefSize = briefFile.content.length;
+          logger.info("intelligence brief loaded", { size: briefSize });
 
           // D-47: Compact mode — extract only actionable sections
           const projectState = extractSection(briefFile.content, "Project State");
@@ -346,7 +356,7 @@ export function registerBootstrap(server: McpServer): void {
           if (intelligenceBrief) {
             bytesDelivered += intelligenceBrief.length;
             logger.info("intelligence brief compacted", {
-              fullSize: briefFile.size,
+              fullSize: briefSize,
               compactSize: intelligenceBrief.length,
               sectionsExtracted: compactParts.length,
             });
@@ -502,7 +512,7 @@ export function registerBootstrap(server: McpServer): void {
         // QW-5: component_sizes removed from response (logged only)
         const componentSizes = {
           handoff: handoff.size,
-          decisions_index: coreResults[1].status === "fulfilled" && coreResults[1].value ? (coreResults[1].value as { size: number }).size : 0,
+          decisions_index: coreResults[1].status === "fulfilled" && coreResults[1].value ? (coreResults[1].value as { content: string }).content.length : 0,
           behavioral_rules: coreResults[2].status === "fulfilled" && coreResults[2].value ? (coreResults[2].value as { size: number }).size : 0,
           intelligence_brief_compact: intelligenceBrief?.length ?? 0,
           standing_rules: JSON.stringify(standingRules).length,

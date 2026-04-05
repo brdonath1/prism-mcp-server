@@ -19,6 +19,7 @@ import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/proto
 import { fetchFile, fetchFiles, pushFile } from "../github/client.js";
 import { logger } from "../utils/logger.js";
 import { extractSection } from "../utils/summarizer.js";
+import { resolveDocPath, resolveDocPushPath } from "../utils/doc-resolver.js";
 
 /** Maximum wall-clock time before returning a partial result (ms). */
 const SAFETY_TIMEOUT_MS = 50_000;
@@ -766,10 +767,28 @@ async function executeScaling(
   const destPaths = [...allDestPaths].filter((p) => p !== "(remove)");
 
   if (destPaths.length > 0) {
-    const destFiles = await fetchFiles(projectSlug, destPaths);
+    // D-67: Resolve dest file paths with backward-compatible fallback
+    const destFileResolved = await Promise.allSettled(
+      destPaths.map(async (destPath) => {
+        try {
+          const resolved = await resolveDocPath(projectSlug, destPath);
+          return { destPath, content: resolved.content, resolvedPath: resolved.path };
+        } catch {
+          return { destPath, content: null, resolvedPath: await resolveDocPushPath(projectSlug, destPath) };
+        }
+      })
+    );
+    const destFileMap = new Map<string, { content: string | null; resolvedPath: string }>();
+    for (const outcome of destFileResolved) {
+      if (outcome.status === "fulfilled") {
+        destFileMap.set(outcome.value.destPath, { content: outcome.value.content, resolvedPath: outcome.value.resolvedPath });
+      }
+    }
 
     const pushPromises = destPaths.map(async (destPath) => {
-      const destFile = destFiles.get(destPath);
+      const destInfo = destFileMap.get(destPath);
+      const resolvedPushPath = destInfo?.resolvedPath ?? destPath;
+      const destFileContent = destInfo?.content ?? null;
       const fileName = destPath.split("/").pop() || destPath;
       const eofSentinel = `<!-- EOF: ${fileName} -->`;
 
@@ -778,8 +797,8 @@ async function executeScaling(
       if (decisionMerges.has(destPath)) {
         // Decision merge: special table-aware logic
         const decisions = decisionMerges.get(destPath)!;
-        if (destFile) {
-          destContent = mergeDecisionsIntoIndex(decisions, destFile.content);
+        if (destFileContent) {
+          destContent = mergeDecisionsIntoIndex(decisions, destFileContent);
         } else {
           const tableHeader =
             "# Decision Index\n\n| ID | Title | Domain | Status | Session |\n|----|-------|--------|--------|---------|";
@@ -788,10 +807,10 @@ async function executeScaling(
             .join("\n");
           destContent = `${tableHeader}\n${rows}\n\n${eofSentinel}\n`;
         }
-      } else if (destFile) {
+      } else if (destFileContent) {
         const parts = destinationContent.get(destPath) || [];
         const newContent = parts.join("\n\n");
-        destContent = destFile.content;
+        destContent = destFileContent;
         if (destContent.includes(eofSentinel)) {
           destContent = destContent.replace(eofSentinel, newContent + "\n\n" + eofSentinel);
         } else {
@@ -804,10 +823,10 @@ async function executeScaling(
       }
 
       const result = await pushFile(
-        projectSlug, destPath, destContent,
+        projectSlug, resolvedPushPath, destContent,
         `prism: extract ${fileName}`,
       );
-      return { path: destPath, success: result.success };
+      return { path: resolvedPushPath, success: result.success };
     });
 
     const outcomes = await Promise.allSettled(pushPromises);
@@ -885,7 +904,8 @@ export function registerScaleHandoff(server: McpServer): void {
           await sendProgress(extra, progressToken, 1, "Fetching current handoff...");
           logger.info("scale: stage 1 — fetch handoff (execute)", { elapsed_ms: Date.now() - startTime });
 
-          const handoff = await fetchFile(project_slug, "handoff.md");
+          const handoffResolved = await resolveDocPath(project_slug, "handoff.md");
+          const handoff = { content: handoffResolved.content, size: handoffResolved.content.length };
 
           await sendProgress(extra, progressToken, 2, "Preparing scaling actions from plan...");
           logger.info("scale: stage 2 — prepare actions from plan", { elapsed_ms: Date.now() - startTime });
@@ -906,10 +926,11 @@ export function registerScaleHandoff(server: McpServer): void {
           await sendProgress(extra, progressToken, 6, "Pushing updated handoff...");
           logger.info("scale: stage 6 — push handoff", { elapsed_ms: Date.now() - startTime });
 
+          const handoffPushPath = handoffResolved.path;
           const handoffPush = await pushFile(
-            project_slug, "handoff.md", updatedHandoff, "prism: scale handoff",
+            project_slug, handoffPushPath, updatedHandoff, "prism: scale handoff",
           );
-          pushResults.push({ path: "handoff.md", success: handoffPush.success });
+          pushResults.push({ path: handoffPushPath, success: handoffPush.success });
 
           const afterSize = new TextEncoder().encode(updatedHandoff).length;
           const beforeSize = plan.before_size_bytes;
@@ -965,7 +986,8 @@ export function registerScaleHandoff(server: McpServer): void {
         await sendProgress(extra, progressToken, 1, "Fetching handoff...");
         logger.info("scale: stage 1 — fetch handoff", { elapsed_ms: Date.now() - startTime });
 
-        const handoff = await fetchFile(project_slug, "handoff.md");
+        const handoffResolved2 = await resolveDocPath(project_slug, "handoff.md");
+        const handoff = { content: handoffResolved2.content, size: handoffResolved2.content.length };
         const beforeSize = handoff.size;
 
         // Stage 2: Analyze sections
@@ -976,16 +998,20 @@ export function registerScaleHandoff(server: McpServer): void {
         await sendProgress(extra, progressToken, 3, "Fetching living documents for reference...");
         logger.info("scale: stage 3 — fetch living docs", { elapsed_ms: Date.now() - startTime });
 
-        const livingDocMap = await fetchFiles(project_slug, [
-          "session-log.md",
-          "decisions/_INDEX.md",
-          "eliminated.md",
-          "architecture.md",
+        const livingDocResolvedResults = await Promise.allSettled([
+          resolveDocPath(project_slug, "session-log.md"),
+          resolveDocPath(project_slug, "decisions/_INDEX.md"),
+          resolveDocPath(project_slug, "eliminated.md"),
+          resolveDocPath(project_slug, "architecture.md"),
         ]);
+        const livingDocNames = ["session-log.md", "decisions/_INDEX.md", "eliminated.md", "architecture.md"];
 
         const livingDocContents = new Map<string, string>();
-        for (const [path, result] of livingDocMap) {
-          livingDocContents.set(path, result.content);
+        for (let i = 0; i < livingDocResolvedResults.length; i++) {
+          const outcome = livingDocResolvedResults[i];
+          if (outcome.status === "fulfilled") {
+            livingDocContents.set(livingDocNames[i], outcome.value.content);
+          }
         }
 
         const actions = identifyScalableContent(handoff.content, livingDocContents);
@@ -1105,10 +1131,11 @@ export function registerScaleHandoff(server: McpServer): void {
         await sendProgress(extra, progressToken, 6, "Pushing updated handoff...");
         logger.info("scale: stage 6 — push handoff", { elapsed_ms: Date.now() - startTime });
 
+        const handoffPushPath2 = handoffResolved2.path;
         const handoffPush = await pushFile(
-          project_slug, "handoff.md", updatedHandoff, "prism: scale handoff",
+          project_slug, handoffPushPath2, updatedHandoff, "prism: scale handoff",
         );
-        pushResults.push({ path: "handoff.md", success: handoffPush.success });
+        pushResults.push({ path: handoffPushPath2, success: handoffPush.success });
 
         const afterSize = new TextEncoder().encode(updatedHandoff).length;
         const reductionPercent =

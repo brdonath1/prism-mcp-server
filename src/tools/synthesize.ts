@@ -6,6 +6,7 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SYNTHESIS_ENABLED } from "../config.js";
 import { fetchFile } from "../github/client.js";
+import { resolveDocPath } from "../utils/doc-resolver.js";
 import { generateIntelligenceBrief } from "../ai/synthesize.js";
 import { logger } from "../utils/logger.js";
 
@@ -25,16 +26,16 @@ export function registerSynthesize(server: McpServer) {
       try {
         if (mode === "status") {
           try {
-            const file = await fetchFile(project_slug, "intelligence-brief.md");
+            const resolved = await resolveDocPath(project_slug, "intelligence-brief.md");
             return {
               content: [{
                 type: "text" as const,
                 text: JSON.stringify({
                   exists: true,
-                  size_bytes: file.size,
+                  size_bytes: resolved.content.length,
                   synthesis_enabled: SYNTHESIS_ENABLED,
                   // Extract the "Last synthesized" line
-                  last_synthesized: file.content.match(/Last synthesized: (S\d+ \([^)]+\))/)?.[1] ?? "unknown",
+                  last_synthesized: resolved.content.match(/Last synthesized: (S\d+ \([^)]+\))/)?.[1] ?? "unknown",
                 }),
               }],
             };

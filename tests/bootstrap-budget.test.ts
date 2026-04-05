@@ -8,14 +8,16 @@ vi.mock("../src/github/client.js", () => ({
   fetchFile: vi.fn(),
   fetchFiles: vi.fn(),
   pushFile: vi.fn(),
+  fileExists: vi.fn(),
 }));
 
-import { fetchFile, fetchFiles, pushFile } from "../src/github/client.js";
+import { fetchFile, fetchFiles, pushFile, fileExists } from "../src/github/client.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 const mockFetchFile = vi.mocked(fetchFile);
 const mockFetchFiles = vi.mocked(fetchFiles);
 const mockPushFile = vi.mocked(pushFile);
+const mockFileExists = vi.mocked(fileExists);
 
 // Capture the registered tool handler
 let bootstrapHandler: (args: Record<string, unknown>) => Promise<{ content: Array<{ type: string; text: string }> }>;
@@ -35,16 +37,16 @@ beforeEach(() => {
   vi.clearAllMocks();
   registerBootstrap(mockServer);
 
-  // Setup standard mocks
+  // Setup standard mocks — respond to .prism/ paths (D-67)
   mockFetchFile.mockImplementation(async (repo: string, path: string) => {
-    if (path === "handoff.md") {
+    if (path === ".prism/handoff.md" || path === "handoff.md") {
       return {
         content: `# Handoff\n\n## Meta\n- Handoff Version: 33\n- Session Count: 28\n- Template Version: 2.10.0\n- Status: Active\n\n## Critical Context\n1. Item one\n2. Item two\n\n## Where We Are\nCurrent state.\n\n## Resumption Point\nResume here.\n\n## Next Steps\n1. Do thing A\n2. Do thing B\n\n<!-- EOF: handoff.md -->`,
         sha: "abc123",
         size: 350,
       };
     }
-    if (path === "decisions/_INDEX.md") {
+    if (path === ".prism/decisions/_INDEX.md" || path === "decisions/_INDEX.md") {
       return {
         content: "| ID | Title | Domain | Status | Session |\n|---|---|---|---|---|\n| D-1 | Test | arch | SETTLED | 1 |\n\n<!-- EOF: _INDEX.md -->",
         sha: "def456",
@@ -58,14 +60,14 @@ beforeEach(() => {
         size: 80,
       };
     }
-    if (path === "intelligence-brief.md") {
+    if (path === ".prism/intelligence-brief.md" || path === "intelligence-brief.md") {
       return {
         content: "# Intelligence Brief\n\n## Project State\nProject is healthy.\n\n## Risk Flags\nNone.\n\n## Quality Audit\nAll good.\n\n<!-- EOF: intelligence-brief.md -->",
         sha: "jkl012",
         size: 150,
       };
     }
-    if (path === "insights.md") {
+    if (path === ".prism/insights.md" || path === "insights.md") {
       return {
         content: "# Insights\n\n## Active\n\n### INS-6: Test — STANDING RULE\n**Standing procedure:** Do the thing.\n\n<!-- EOF: insights.md -->",
         sha: "mno345",
@@ -74,6 +76,9 @@ beforeEach(() => {
     }
     throw new Error(`Not found: ${path}`);
   });
+
+  // fileExists returns false so resolveDocPushPath returns the .prism/ path
+  mockFileExists.mockResolvedValue(false);
 
   mockFetchFiles.mockResolvedValue(new Map());
   mockPushFile.mockResolvedValue({ success: true, sha: "pushed123", size: 50 });

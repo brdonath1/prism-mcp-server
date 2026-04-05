@@ -25,13 +25,13 @@ describe("T-2: prefetch keyword accuracy", () => {
 
   it('"fix the architecture bug" triggers architecture.md and known-issues.md', () => {
     const files = determinePrefetchFiles("fix the architecture bug");
-    expect(files).toContain("architecture.md");
-    expect(files).toContain("known-issues.md");
+    expect(files).toContain(".prism/architecture.md");
+    expect(files).toContain(".prism/known-issues.md");
   });
 
   it('"review the task queue" triggers task-queue.md', () => {
     const files = determinePrefetchFiles("review the task queue");
-    expect(files).toContain("task-queue.md");
+    expect(files).toContain(".prism/task-queue.md");
   });
 
   it("message with 5+ trigger keywords results in max 2 prefetched documents", () => {

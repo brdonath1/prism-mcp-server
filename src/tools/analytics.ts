@@ -14,7 +14,8 @@ import {
   fileExists,
   listRepos,
 } from "../github/client.js";
-import { LIVING_DOCUMENTS } from "../config.js";
+import { LIVING_DOCUMENTS, LEGACY_LIVING_DOCUMENTS } from "../config.js";
+import { resolveDocPath, resolveDocExists, resolveDocFiles } from "../utils/doc-resolver.js";
 import { logger } from "../utils/logger.js";
 import {
   parseMarkdownTable,
@@ -39,7 +40,8 @@ type Metric = (typeof METRICS)[number];
  * Compute decision velocity — decisions per session over time.
  */
 async function decisionVelocity(projectSlug: string) {
-  const decisionFile = await fetchFile(projectSlug, "decisions/_INDEX.md");
+  const resolved = await resolveDocPath(projectSlug, "decisions/_INDEX.md");
+  const decisionFile = { content: resolved.content, sha: resolved.sha, size: resolved.content.length };
   const rows = parseMarkdownTable(decisionFile.content);
 
   const idKey = Object.keys(rows[0] ?? {}).find((k) => k.toLowerCase() === "id") ?? "ID";
@@ -95,7 +97,8 @@ async function decisionVelocity(projectSlug: string) {
  *   ### Session 3 (2026-02-19)
  */
 async function sessionPatterns(projectSlug: string) {
-  const sessionLog = await fetchFile(projectSlug, "session-log.md");
+  const resolved = await resolveDocPath(projectSlug, "session-log.md");
+  const sessionLog = { content: resolved.content, size: resolved.content.length };
   const content = sessionLog.content;
 
   const sessions: Array<{ number: number; date: string }> = [];
@@ -156,7 +159,10 @@ async function sessionPatterns(projectSlug: string) {
  * Compute handoff size history from handoff-history/ directory.
  */
 async function handoffSizeHistory(projectSlug: string) {
-  const historyEntries = await listDirectory(projectSlug, "handoff-history");
+  let historyEntries = await listDirectory(projectSlug, ".prism/handoff-history");
+  if (historyEntries.length === 0) {
+    historyEntries = await listDirectory(projectSlug, "handoff-history");
+  }
   const handoffFiles = historyEntries
     .filter((e) => e.name.startsWith("handoff_v") && e.name.endsWith(".md"))
     .sort((a, b) => a.name.localeCompare(b.name));
@@ -177,9 +183,9 @@ async function handoffSizeHistory(projectSlug: string) {
   let currentSize = 0;
   let currentVersion = 0;
   try {
-    const current = await fetchFile(projectSlug, "handoff.md");
-    currentSize = current.size;
-    currentVersion = parseHandoffVersion(current.content) ?? 0;
+    const resolved = await resolveDocPath(projectSlug, "handoff.md");
+    currentSize = resolved.content.length;
+    currentVersion = parseHandoffVersion(resolved.content) ?? 0;
   } catch {
     // Current handoff might not exist
   }
@@ -245,7 +251,8 @@ async function fileChurn(projectSlug: string) {
  * Compute decision graph — find cross-references between decisions.
  */
 async function decisionGraph(projectSlug: string) {
-  const decisionFile = await fetchFile(projectSlug, "decisions/_INDEX.md");
+  const resolved = await resolveDocPath(projectSlug, "decisions/_INDEX.md");
+  const decisionFile = { content: resolved.content, size: resolved.content.length };
   const rows = parseMarkdownTable(decisionFile.content);
 
   const idKey = Object.keys(rows[0] ?? {}).find((k) => k.toLowerCase() === "id") ?? "ID";
@@ -333,10 +340,10 @@ async function decisionGraph(projectSlug: string) {
  */
 async function healthSummary(projectSlug?: string) {
   if (projectSlug) {
-    // Single project health
-    const docMap = await fetchFiles(projectSlug, [...LIVING_DOCUMENTS]);
-    const present = LIVING_DOCUMENTS.filter((d) => docMap.has(d));
-    const missing = LIVING_DOCUMENTS.filter((d) => !docMap.has(d));
+    // Single project health (D-67: backward-compatible resolution)
+    const docMap = await resolveDocFiles(projectSlug, [...LEGACY_LIVING_DOCUMENTS]);
+    const present = LEGACY_LIVING_DOCUMENTS.filter((d) => docMap.has(d));
+    const missing = LEGACY_LIVING_DOCUMENTS.filter((d) => !docMap.has(d));
 
     const handoff = docMap.get("handoff.md");
     const handoffSize = handoff?.size ?? 0;
@@ -365,12 +372,12 @@ async function healthSummary(projectSlug?: string) {
     };
   }
 
-  // Cross-project health
+  // Cross-project health (D-67: backward-compatible resolution)
   const allRepos = await listRepos();
   const prismChecks = await Promise.allSettled(
     allRepos.map(async (repo) => {
-      const exists = await fileExists(repo, "handoff.md");
-      return { repo, isPrism: exists };
+      const resolved = await resolveDocExists(repo, "handoff.md");
+      return { repo, isPrism: resolved.exists };
     })
   );
 
@@ -383,30 +390,31 @@ async function healthSummary(projectSlug?: string) {
 
   const projectHealthResults = await Promise.allSettled(
     prismProjects.map(async (repo) => {
-      const handoff = await fetchFile(repo, "handoff.md");
-      const version = parseHandoffVersion(handoff.content) ?? 0;
-      const sessions = parseSessionCount(handoff.content) ?? 0;
+      const resolved = await resolveDocPath(repo, "handoff.md");
+      const version = parseHandoffVersion(resolved.content) ?? 0;
+      const sessions = parseSessionCount(resolved.content) ?? 0;
 
-      // Quick doc check
+      // Quick doc check using resolver
       const docChecks = await Promise.allSettled(
-        LIVING_DOCUMENTS.map((d) => fileExists(repo, d))
+        LEGACY_LIVING_DOCUMENTS.map((d) => resolveDocExists(repo, d))
       );
       const presentCount = docChecks.filter(
-        (r) => r.status === "fulfilled" && r.value
+        (r) => r.status === "fulfilled" && r.value.exists
       ).length;
-      const missingCount = LIVING_DOCUMENTS.length - presentCount;
+      const missingCount = LEGACY_LIVING_DOCUMENTS.length - presentCount;
 
+      const handoffSize = resolved.content.length;
       const health =
-        missingCount >= 3 || handoff.size > 15360
+        missingCount >= 3 || handoffSize > 15360
           ? "critical"
-          : missingCount >= 1 || handoff.size > 10240
+          : missingCount >= 1 || handoffSize > 10240
             ? "needs-attention"
             : "healthy";
 
       return {
         project: repo,
         health,
-        handoff_size_kb: Math.round((handoff.size / 1024) * 10) / 10,
+        handoff_size_kb: Math.round((handoffSize / 1024) * 10) / 10,
         handoff_version: version,
         session_count: sessions,
         documents_present: presentCount,
@@ -443,12 +451,12 @@ async function freshEyesCheck(projectSlug?: string) {
   if (projectSlug) {
     projectsToCheck.push(projectSlug);
   } else {
-    // Discover all PRISM projects
+    // Discover all PRISM projects (D-67: backward-compatible)
     const allRepos = await listRepos();
     const prismChecks = await Promise.allSettled(
       allRepos.map(async (repo) => {
-        const exists = await fileExists(repo, "handoff.md");
-        return { repo, isPrism: exists };
+        const resolved = await resolveDocExists(repo, "handoff.md");
+        return { repo, isPrism: resolved.exists };
       })
     );
 
@@ -465,14 +473,15 @@ async function freshEyesCheck(projectSlug?: string) {
       let lastFreshEyesSession = 0;
 
       try {
-        const handoff = await fetchFile(repo, "handoff.md");
-        sessionCount = parseSessionCount(handoff.content) ?? 0;
+        const resolved = await resolveDocPath(repo, "handoff.md");
+        sessionCount = parseSessionCount(resolved.content) ?? 0;
       } catch {
         return { project: repo, session_count: 0, sessions_since_fresh_eyes: 0, overdue: false };
       }
 
       try {
-        const sessionLog = await fetchFile(repo, "session-log.md");
+        const resolved = await resolveDocPath(repo, "session-log.md");
+        const sessionLog = { content: resolved.content };
         const content = sessionLog.content.toLowerCase();
 
         // Find last mention of "fresh-eyes" or "fresh eyes"

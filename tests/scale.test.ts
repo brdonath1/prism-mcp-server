@@ -462,6 +462,32 @@ Additional strategic considerations include the need to migrate from the legacy 
 const LARGE_HANDOFF = generateLargeHandoff(46, 16);
 const LARGE_HANDOFF_SIZE = new TextEncoder().encode(LARGE_HANDOFF).length;
 
+/** Living doc content map for KI-11 tests (mirrors what mockFetchFiles provided pre-D-67). */
+const KI11_LIVING_DOCS: Record<string, { content: string; sha: string; size: number }> = {
+  "session-log.md": { content: "# Session Log\n\n<!-- EOF: session-log.md -->", sha: "s1", size: 50 },
+  "decisions/_INDEX.md": { content: "# Decisions\n\n| ID | Title | Domain | Status | Session |\n|----|-------|--------|--------|---------|\n\n<!-- EOF: _INDEX.md -->", sha: "d1", size: 100 },
+  "eliminated.md": { content: "# Eliminated\n<!-- EOF: eliminated.md -->", sha: "e1", size: 40 },
+  "architecture.md": { content: "# Architecture\n<!-- EOF: architecture.md -->", sha: "a1", size: 40 },
+};
+
+/**
+ * Setup mockFetchFile for KI-11 tests (D-67): .prism/ paths first.
+ * The handoff returns LARGE_HANDOFF; living docs return their specific small content.
+ */
+function setupKI11Mocks(): void {
+  mockFetchFile.mockImplementation(async (_repo: string, path: string) => {
+    const docName = path.startsWith(".prism/") ? path.slice(".prism/".length) : path;
+    if (docName === "handoff.md") {
+      return { content: LARGE_HANDOFF, sha: "abc123", size: LARGE_HANDOFF_SIZE };
+    }
+    const entry = KI11_LIVING_DOCS[docName];
+    if (entry) {
+      return { content: entry.content, sha: entry.sha, size: entry.size };
+    }
+    throw new Error(`Not found: ${path}`);
+  });
+}
+
 describe("KI-11: Large handoff scaling (20KB+ with 46 decisions)", () => {
   it("generates a test handoff of appropriate size", () => {
     // Sanity check: handoff should be ~15-25KB
@@ -476,24 +502,14 @@ describe("KI-11: Large handoff scaling (20KB+ with 46 decisions)", () => {
   });
 
   it("analyze identifies all redistributable sections", async () => {
-    mockFetchFile.mockResolvedValue({
-      content: LARGE_HANDOFF,
-      sha: "abc123",
-      size: LARGE_HANDOFF_SIZE,
-    });
-    mockFetchFiles.mockResolvedValue(new Map([
-      ["session-log.md", { content: "# Session Log\n\n<!-- EOF: session-log.md -->", sha: "s1", size: 50 }],
-      ["decisions/_INDEX.md", { content: "# Decisions\n\n| ID | Title | Domain | Status | Session |\n|----|-------|--------|--------|---------|\n\n<!-- EOF: _INDEX.md -->", sha: "d1", size: 100 }],
-      ["eliminated.md", { content: "# Eliminated\n<!-- EOF: eliminated.md -->", sha: "e1", size: 40 }],
-      ["architecture.md", { content: "# Architecture\n<!-- EOF: architecture.md -->", sha: "a1", size: 40 }],
-    ]));
+    setupKI11Mocks();
 
     const result = await callScaleTool({ project_slug: "test-project", action: "analyze" });
 
     expect(result.isError).toBeUndefined();
     const data = parseResult(result);
     expect(data.action).toBe("analyze");
-    expect(data.before_size_bytes).toBe(LARGE_HANDOFF_SIZE);
+    expect(data.before_size_bytes).toBe(LARGE_HANDOFF.length);
 
     // Should identify multiple action types
     const actionDescriptions = data.plan.actions.map((a: any) => a.source_section);
@@ -508,17 +524,7 @@ describe("KI-11: Large handoff scaling (20KB+ with 46 decisions)", () => {
   });
 
   it("full mode reduces a 20KB handoff to under 8KB", async () => {
-    mockFetchFile.mockResolvedValue({
-      content: LARGE_HANDOFF,
-      sha: "abc123",
-      size: LARGE_HANDOFF_SIZE,
-    });
-    mockFetchFiles.mockResolvedValue(new Map([
-      ["session-log.md", { content: "# Session Log\n\n<!-- EOF: session-log.md -->", sha: "s1", size: 50 }],
-      ["decisions/_INDEX.md", { content: "# Decisions\n\n| ID | Title | Domain | Status | Session |\n|----|-------|--------|--------|---------|\n\n<!-- EOF: _INDEX.md -->", sha: "d1", size: 100 }],
-      ["eliminated.md", { content: "# Eliminated\n<!-- EOF: eliminated.md -->", sha: "e1", size: 40 }],
-      ["architecture.md", { content: "# Architecture\n<!-- EOF: architecture.md -->", sha: "a1", size: 40 }],
-    ]));
+    setupKI11Mocks();
     mockPushFile.mockResolvedValue({ success: true, size: 200, sha: "new-sha" });
 
     const result = await callScaleTool({ project_slug: "test-project", action: "full" });
@@ -526,7 +532,7 @@ describe("KI-11: Large handoff scaling (20KB+ with 46 decisions)", () => {
     expect(result.isError).toBeUndefined();
     const data = parseResult(result);
     expect(data.action).toBe("full");
-    expect(data.before_size_bytes).toBe(LARGE_HANDOFF_SIZE);
+    expect(data.before_size_bytes).toBe(LARGE_HANDOFF.length);
     expect(data.after_size_bytes).toBeLessThan(8192);
     expect(data.reduction_percent).toBeGreaterThan(50);
     expect(data.timed_out).toBe(false);
@@ -534,24 +540,14 @@ describe("KI-11: Large handoff scaling (20KB+ with 46 decisions)", () => {
   });
 
   it("decision extraction produces valid _INDEX.md table rows", async () => {
-    mockFetchFile.mockResolvedValue({
-      content: LARGE_HANDOFF,
-      sha: "abc123",
-      size: LARGE_HANDOFF_SIZE,
-    });
-    mockFetchFiles.mockResolvedValue(new Map([
-      ["session-log.md", { content: "# Session Log\n\n<!-- EOF: session-log.md -->", sha: "s1", size: 50 }],
-      ["decisions/_INDEX.md", { content: "# Decisions\n\n| ID | Title | Domain | Status | Session |\n|----|-------|--------|--------|---------|\n\n<!-- EOF: _INDEX.md -->", sha: "d1", size: 100 }],
-      ["eliminated.md", { content: "# Eliminated\n<!-- EOF: eliminated.md -->", sha: "e1", size: 40 }],
-      ["architecture.md", { content: "# Architecture\n<!-- EOF: architecture.md -->", sha: "a1", size: 40 }],
-    ]));
+    setupKI11Mocks();
     mockPushFile.mockResolvedValue({ success: true, size: 200, sha: "new-sha" });
 
     await callScaleTool({ project_slug: "test-project", action: "full" });
 
     // Find the pushFile call for decisions/_INDEX.md
     const indexPushCall = mockPushFile.mock.calls.find(
-      (call) => call[1] === "decisions/_INDEX.md",
+      (call) => call[1] === ".prism/decisions/_INDEX.md",
     );
     expect(indexPushCall).toBeDefined();
 
@@ -567,24 +563,14 @@ describe("KI-11: Large handoff scaling (20KB+ with 46 decisions)", () => {
   });
 
   it("session extraction produces valid session-log.md content", async () => {
-    mockFetchFile.mockResolvedValue({
-      content: LARGE_HANDOFF,
-      sha: "abc123",
-      size: LARGE_HANDOFF_SIZE,
-    });
-    mockFetchFiles.mockResolvedValue(new Map([
-      ["session-log.md", { content: "# Session Log\n\n<!-- EOF: session-log.md -->", sha: "s1", size: 50 }],
-      ["decisions/_INDEX.md", { content: "# Decisions\n\n| ID | Title | Domain | Status | Session |\n|----|-------|--------|--------|---------|\n\n<!-- EOF: _INDEX.md -->", sha: "d1", size: 100 }],
-      ["eliminated.md", { content: "# Eliminated\n<!-- EOF: eliminated.md -->", sha: "e1", size: 40 }],
-      ["architecture.md", { content: "# Architecture\n<!-- EOF: architecture.md -->", sha: "a1", size: 40 }],
-    ]));
+    setupKI11Mocks();
     mockPushFile.mockResolvedValue({ success: true, size: 200, sha: "new-sha" });
 
     await callScaleTool({ project_slug: "test-project", action: "full" });
 
     // Find the pushFile call for session-log.md
     const sessionPushCall = mockPushFile.mock.calls.find(
-      (call) => call[1] === "session-log.md",
+      (call) => call[1] === ".prism/session-log.md",
     );
     expect(sessionPushCall).toBeDefined();
 
@@ -601,24 +587,14 @@ describe("KI-11: Large handoff scaling (20KB+ with 46 decisions)", () => {
   });
 
   it("handoff retains summary pointers after scaling", async () => {
-    mockFetchFile.mockResolvedValue({
-      content: LARGE_HANDOFF,
-      sha: "abc123",
-      size: LARGE_HANDOFF_SIZE,
-    });
-    mockFetchFiles.mockResolvedValue(new Map([
-      ["session-log.md", { content: "# Session Log\n\n<!-- EOF: session-log.md -->", sha: "s1", size: 50 }],
-      ["decisions/_INDEX.md", { content: "# Decisions\n\n| ID | Title | Domain | Status | Session |\n|----|-------|--------|--------|---------|\n\n<!-- EOF: _INDEX.md -->", sha: "d1", size: 100 }],
-      ["eliminated.md", { content: "# Eliminated\n<!-- EOF: eliminated.md -->", sha: "e1", size: 40 }],
-      ["architecture.md", { content: "# Architecture\n<!-- EOF: architecture.md -->", sha: "a1", size: 40 }],
-    ]));
+    setupKI11Mocks();
     mockPushFile.mockResolvedValue({ success: true, size: 200, sha: "new-sha" });
 
     await callScaleTool({ project_slug: "test-project", action: "full" });
 
     // Find the pushFile call for handoff.md
     const handoffPushCall = mockPushFile.mock.calls.find(
-      (call) => call[1] === "handoff.md",
+      (call) => call[1] === ".prism/handoff.md",
     );
     expect(handoffPushCall).toBeDefined();
 

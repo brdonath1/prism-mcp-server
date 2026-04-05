@@ -7,6 +7,7 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { fetchFile, pushFile } from "../github/client.js";
 import { logger } from "../utils/logger.js";
+import { resolveDocPath, resolveDocPushPath } from "../utils/doc-resolver.js";
 
 export function registerLogDecision(server: McpServer): void {
   server.tool(
@@ -28,11 +29,13 @@ export function registerLogDecision(server: McpServer): void {
       logger.info("prism_log_decision", { project_slug, id, domain });
 
       try {
-        // 1. Fetch current _INDEX.md
+        // 1. Fetch current _INDEX.md (D-67: backward-compatible resolution)
         let indexContent: string;
+        let indexResolvedPath: string;
         try {
-          const indexFile = await fetchFile(project_slug, "decisions/_INDEX.md");
-          indexContent = indexFile.content;
+          const resolved = await resolveDocPath(project_slug, "decisions/_INDEX.md");
+          indexContent = resolved.content;
+          indexResolvedPath = resolved.path;
         } catch {
           return {
             content: [{ type: "text" as const, text: JSON.stringify({ error: "decisions/_INDEX.md not found" }) }],
@@ -50,14 +53,17 @@ export function registerLogDecision(server: McpServer): void {
           indexContent = indexContent.trimEnd() + `\n${newRow}\n`;
         }
 
-        // 3. Fetch or create domain file
-        const domainPath = `decisions/${domain}.md`;
+        // 3. Fetch or create domain file (D-67: backward-compatible resolution)
+        const domainDocName = `decisions/${domain}.md`;
         let domainContent: string;
+        let domainResolvedPath: string;
         try {
-          const domainFile = await fetchFile(project_slug, domainPath);
-          domainContent = domainFile.content;
+          const resolved = await resolveDocPath(project_slug, domainDocName);
+          domainContent = resolved.content;
+          domainResolvedPath = resolved.path;
         } catch {
           domainContent = `# Decisions — ${domain}\n\n> Domain: ${domain}\n> Full decision entries. See _INDEX.md for lookup table.\n\n<!-- EOF: ${domain}.md -->\n`;
+          domainResolvedPath = await resolveDocPushPath(project_slug, domainDocName);
         }
 
         // 4. Build full decision entry
@@ -80,17 +86,17 @@ export function registerLogDecision(server: McpServer): void {
           domainContent = domainContent.trimEnd() + `\n\n${entry}\n\n${domainEof}\n`;
         }
 
-        // 5. Push both files
+        // 5. Push both files to resolved paths
         const indexResult = await pushFile(
           project_slug,
-          "decisions/_INDEX.md",
+          indexResolvedPath,
           indexContent,
           `prism: ${id} ${title}`
         );
 
         const domainResult = await pushFile(
           project_slug,
-          domainPath,
+          domainResolvedPath,
           domainContent,
           `prism: ${id} full entry`
         );
@@ -112,7 +118,7 @@ export function registerLogDecision(server: McpServer): void {
               status,
               index_updated: indexResult.success,
               domain_file_updated: domainResult.success,
-              domain_file: domainPath,
+              domain_file: domainResolvedPath,
             }),
           }],
         };
