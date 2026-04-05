@@ -10,6 +10,7 @@ import { logger } from "../utils/logger.js";
 import { validateFileAndCommit } from "../validation/index.js";
 import { templateCache } from "../utils/cache.js";
 import { FRAMEWORK_REPO, MCP_TEMPLATE_PATH } from "../config.js";
+import { guardPushPath } from "../utils/doc-guard.js";
 
 /** Input schema for prism_push */
 const inputSchema = {
@@ -81,16 +82,24 @@ export function registerPush(server: McpServer): void {
           };
         }
 
-        // 2. Push all validated files in parallel
+        // 2. Guard all paths against root-level duplication (D-67 addendum)
+        const guardResults = await Promise.all(
+          files.map(file => guardPushPath(project_slug, file.path))
+        );
+
+        // 3. Push all validated files in parallel using guarded paths
         const pushResults = await Promise.allSettled(
           files.map(async (file, idx) => {
-            const pushResult = await pushFile(project_slug, file.path, file.content, file.message);
+            const guarded = guardResults[idx];
+            const pushPath = guarded.path;
+
+            const pushResult = await pushFile(project_slug, pushPath, file.content, file.message);
 
             // Verify the push by fetching the file back and checking SHA
             let verified = false;
             if (pushResult.success) {
               try {
-                const verifyResult = await fetchFile(project_slug, file.path);
+                const verifyResult = await fetchFile(project_slug, pushPath);
                 verified = verifyResult.sha === pushResult.sha;
               } catch {
                 // Verification failed but push might have succeeded
@@ -99,7 +108,9 @@ export function registerPush(server: McpServer): void {
             }
 
             return {
-              path: file.path,
+              path: pushPath,
+              original_path: guarded.redirected ? file.path : undefined,
+              redirected: guarded.redirected,
               success: pushResult.success,
               size_bytes: pushResult.size,
               sha: pushResult.sha,

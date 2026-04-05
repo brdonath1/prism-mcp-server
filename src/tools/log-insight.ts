@@ -8,6 +8,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { fetchFile, pushFile } from "../github/client.js";
 import { logger } from "../utils/logger.js";
 import { resolveDocPath, resolveDocPushPath } from "../utils/doc-resolver.js";
+import { guardPushPath } from "../utils/doc-guard.js";
 
 export function registerLogInsight(server: McpServer): void {
   server.tool(
@@ -45,7 +46,9 @@ export function registerLogInsight(server: McpServer): void {
           insightsResolvedPath = resolved.path;
         } catch {
           content = `# Insights — ${project_slug}\n\n> Institutional knowledge. Entries tagged **STANDING RULE** are auto-loaded at bootstrap (D-44 Track 1).\n\n## Active\n\n## Formalized\n\n<!-- EOF: insights.md -->\n`;
-          insightsResolvedPath = await resolveDocPushPath(project_slug, "insights.md");
+          const basePushPath = await resolveDocPushPath(project_slug, "insights.md");
+          const guarded = await guardPushPath(project_slug, basePushPath);
+          insightsResolvedPath = guarded.path;
         }
 
         // 2. Build the entry

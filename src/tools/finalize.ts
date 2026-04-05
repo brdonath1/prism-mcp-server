@@ -17,6 +17,7 @@ import {
 } from "../github/client.js";
 import { LIVING_DOCUMENTS, LEGACY_LIVING_DOCUMENTS, SYNTHESIS_ENABLED, SERVER_VERSION, FRAMEWORK_REPO } from "../config.js";
 import { resolveDocPath, resolveDocPushPath, resolveDocFiles } from "../utils/doc-resolver.js";
+import { guardPushPath } from "../utils/doc-guard.js";
 import { logger } from "../utils/logger.js";
 import { extractHeaders, extractSection, parseNumberedList } from "../utils/summarizer.js";
 import { parseHandoffVersion } from "../validation/handoff.js";
@@ -340,7 +341,10 @@ async function commitPhase(
     const currentVersion = parseHandoffVersion(currentHandoff.content) ?? handoffVersion - 1;
     // Backup goes alongside handoff: .prism/handoff-history/ or handoff-history/
     const historyBase = currentHandoff.legacy ? "handoff-history" : ".prism/handoff-history";
-    backupPath = `${historyBase}/handoff_v${currentVersion}_${today}.md`;
+    const rawBackupPath = `${historyBase}/handoff_v${currentVersion}_${today}.md`;
+    // Guard against duplication if handoff-history/ used but .prism/ version exists
+    const guardedBackup = await guardPushPath(projectSlug, rawBackupPath);
+    backupPath = guardedBackup.path;
 
     await pushFile(
       projectSlug,
@@ -403,20 +407,29 @@ async function commitPhase(
     };
   }
 
-  // 4. Push all files in parallel
+  // 4. Guard all paths against root-level duplication (D-67 addendum)
+  const guardResults = await Promise.all(
+    files.map(file => guardPushPath(projectSlug, file.path))
+  );
+
+  // 5. Push all files in parallel using guarded paths
   const pushResults = await Promise.allSettled(
-    files.map(async (file) => {
-      const message = file.path === "handoff.md"
+    files.map(async (file, idx) => {
+      const guarded = guardResults[idx];
+      const pushPath = guarded.path;
+
+      const isHandoff = file.path === "handoff.md" || file.path === ".prism/handoff.md";
+      const message = isHandoff
         ? `prism: finalize session ${sessionNumber} [${today}]`
-        : `prism: artifact ${file.path.split("/").pop()}`;
+        : `prism: artifact ${pushPath.split("/").pop()}`;
 
-      const result = await pushFile(projectSlug, file.path, file.content, message);
+      const result = await pushFile(projectSlug, pushPath, file.content, message);
 
-      // 5. Verify push
+      // 6. Verify push
       let verified = false;
       if (result.success) {
         try {
-          const verifyResult = await fetchFile(projectSlug, file.path);
+          const verifyResult = await fetchFile(projectSlug, pushPath);
           verified = verifyResult.sha === result.sha;
         } catch {
           verified = false;
@@ -424,7 +437,7 @@ async function commitPhase(
       }
 
       return {
-        path: file.path,
+        path: pushPath,
         success: result.success,
         size_bytes: result.size,
         verified,

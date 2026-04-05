@@ -8,6 +8,8 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { fetchFile, pushFile } from "../github/client.js";
 import { logger } from "../utils/logger.js";
 import { applyPatch, validateIntegrity } from "../utils/markdown-sections.js";
+import { resolveDocPath } from "../utils/doc-resolver.js";
+import { DOC_ROOT } from "../config.js";
 
 export function registerPatch(server: McpServer): void {
   server.tool(
@@ -27,8 +29,19 @@ export function registerPatch(server: McpServer): void {
       logger.info("prism_patch", { project_slug, file, patchCount: patches.length });
 
       try {
-        // 1. Fetch the current file
-        const fileResult = await fetchFile(project_slug, file);
+        // 1. Resolve file path to prevent root-level duplication (D-67 addendum)
+        const baseName = file.startsWith(`${DOC_ROOT}/`) ? file.slice(DOC_ROOT.length + 1) : file;
+        let resolvedPath: string;
+        try {
+          const resolved = await resolveDocPath(project_slug, baseName);
+          resolvedPath = resolved.path;
+        } catch {
+          // Not a living doc or doesn't exist at either location — use original path
+          resolvedPath = file;
+        }
+
+        // 2. Fetch the current file using resolved path
+        const fileResult = await fetchFile(project_slug, resolvedPath);
         let content = fileResult.content;
 
         // 2. Apply each patch
@@ -74,18 +87,19 @@ export function registerPatch(server: McpServer): void {
           };
         }
 
-        // 4. Push the updated file
+        // 4. Push the updated file to resolved path
         const pushResult = await pushFile(
           project_slug,
-          file,
+          resolvedPath,
           content,
-          `prism: patch ${file} (${patches.length} ops)`
+          `prism: patch ${resolvedPath} (${patches.length} ops)`
         );
 
         logger.info("prism_patch complete", {
-          project_slug, file,
+          project_slug, file: resolvedPath,
           success: pushResult.success,
           patchCount: patches.length,
+          redirected: resolvedPath !== file,
           ms: Date.now() - start,
         });
 
@@ -93,7 +107,9 @@ export function registerPatch(server: McpServer): void {
           content: [{
             type: "text" as const,
             text: JSON.stringify({
-              file,
+              file: resolvedPath,
+              original_path: resolvedPath !== file ? file : undefined,
+              redirected: resolvedPath !== file,
               success: pushResult.success,
               size_bytes: pushResult.size,
               patches_applied: results,

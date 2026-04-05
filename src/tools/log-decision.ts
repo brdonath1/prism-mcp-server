@@ -8,6 +8,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { fetchFile, pushFile } from "../github/client.js";
 import { logger } from "../utils/logger.js";
 import { resolveDocPath, resolveDocPushPath } from "../utils/doc-resolver.js";
+import { guardPushPath } from "../utils/doc-guard.js";
 
 export function registerLogDecision(server: McpServer): void {
   server.tool(
@@ -63,7 +64,9 @@ export function registerLogDecision(server: McpServer): void {
           domainResolvedPath = resolved.path;
         } catch {
           domainContent = `# Decisions — ${domain}\n\n> Domain: ${domain}\n> Full decision entries. See _INDEX.md for lookup table.\n\n<!-- EOF: ${domain}.md -->\n`;
-          domainResolvedPath = await resolveDocPushPath(project_slug, domainDocName);
+          const basePushPath = await resolveDocPushPath(project_slug, domainDocName);
+          const guarded = await guardPushPath(project_slug, basePushPath);
+          domainResolvedPath = guarded.path;
         }
 
         // 4. Build full decision entry
