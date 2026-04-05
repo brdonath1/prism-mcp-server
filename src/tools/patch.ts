@@ -7,52 +7,7 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { fetchFile, pushFile } from "../github/client.js";
 import { logger } from "../utils/logger.js";
-
-/**
- * Apply a single patch operation to file content.
- * Finds the target section by header and applies the operation.
- */
-function applyPatch(
-  content: string,
-  sectionHeader: string,
-  operation: "append" | "prepend" | "replace",
-  patchContent: string
-): string {
-  const headerLevel = (sectionHeader.match(/^#+/) ?? [""])[0].length;
-  if (headerLevel === 0) {
-    throw new Error(`Invalid section header: "${sectionHeader}" — must start with #`);
-  }
-
-  // Find the section: starts at the header, ends at next header of same/higher level, EOF sentinel, or end of string
-  const escapedHeader = sectionHeader.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const sectionRegex = new RegExp(
-    `(${escapedHeader}[^\\n]*\\n)([\\s\\S]*?)(?=(?:^#{1,${headerLevel}} )|<!-- EOF:|$)`,
-    "m"
-  );
-
-  const match = content.match(sectionRegex);
-  if (!match) {
-    throw new Error(`Section not found: "${sectionHeader}"`);
-  }
-
-  const [fullMatch, header, body] = match;
-  const matchIndex = content.indexOf(fullMatch);
-
-  let newSection: string;
-  switch (operation) {
-    case "append":
-      newSection = header + body.trimEnd() + "\n" + patchContent + "\n\n";
-      break;
-    case "prepend":
-      newSection = header + patchContent + "\n" + body;
-      break;
-    case "replace":
-      newSection = header + patchContent + "\n\n";
-      break;
-  }
-
-  return content.substring(0, matchIndex) + newSection + content.substring(matchIndex + fullMatch.length);
-}
+import { applyPatch, validateIntegrity } from "../utils/markdown-sections.js";
 
 export function registerPatch(server: McpServer): void {
   server.tool(
@@ -103,7 +58,23 @@ export function registerPatch(server: McpServer): void {
           };
         }
 
-        // 3. Push the updated file
+        // 3. Integrity validation before pushing
+        const integrity = validateIntegrity(content);
+        if (!integrity.valid) {
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({
+                error: "Post-patch integrity check failed — file not modified",
+                issues: integrity.issues,
+                patches_attempted: results,
+              }),
+            }],
+            isError: true,
+          };
+        }
+
+        // 4. Push the updated file
         const pushResult = await pushFile(
           project_slug,
           file,
@@ -126,6 +97,9 @@ export function registerPatch(server: McpServer): void {
               success: pushResult.success,
               size_bytes: pushResult.size,
               patches_applied: results,
+              integrity_check: integrity.issues.length > 0
+                ? { warnings: integrity.issues }
+                : { clean: true },
             }),
           }],
         };
