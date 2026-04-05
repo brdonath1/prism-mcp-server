@@ -353,6 +353,20 @@ export function registerBootstrap(server: McpServer): void {
           }
         }
 
+        // S30: Brief staleness detection — parse session number from intelligence brief header
+        let briefAgeResult: number | null = null;
+        if (intelligenceBriefFull) {
+          const briefSessionMatch = intelligenceBriefFull.match(/Last synthesized:\s*S(\d+)/);
+          if (briefSessionMatch) {
+            const briefSession = parseInt(briefSessionMatch[1], 10);
+            const briefAge = sessionCount - briefSession;
+            briefAgeResult = briefAge;
+            if (briefAge > 2) {
+              warnings.push(`Intelligence brief is ${briefAge} sessions old (last synthesized S${briefSession}). Consider running prism_synthesize to refresh.`);
+            }
+          }
+        }
+
         if (insightsOutcome.status === "fulfilled") {
           insightsContent = insightsOutcome.value.content;
         }
@@ -463,6 +477,7 @@ export function registerBootstrap(server: McpServer): void {
           prefetched_documents: prefetchedDocuments,
           standing_rules: standingRules,
           intelligence_brief: intelligenceBrief,
+          brief_age_sessions: briefAgeResult,
           behavioral_rules: behavioralRules,
           banner_html: null,                           // ME-1: HTML replaced by banner_text
           banner_text: bannerText,                     // ME-1: compact text boot status
