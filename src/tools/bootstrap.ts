@@ -11,7 +11,7 @@
 
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { fetchFile, fetchFiles, pushFile } from "../github/client.js";
+import { fetchFile, fetchFiles, pushFile, listRepos } from "../github/client.js";
 import { DOC_ROOT, FRAMEWORK_REPO, HANDOFF_CRITICAL_SIZE, LIVING_DOCUMENTS, MCP_TEMPLATE_PATH, PREFETCH_KEYWORDS, PROJECT_DISPLAY_NAMES, resolveProjectSlug } from "../config.js";
 import { resolveDocPath, resolveDocPushPath } from "../utils/doc-resolver.js";
 import { logger } from "../utils/logger.js";
@@ -163,6 +163,50 @@ async function pushBootTest(
 }
 
 /**
+ * D-68: Dynamic slug resolution — match project_slug against all repos
+ * when static PROJECT_DISPLAY_NAMES map doesn't contain a match.
+ * Uses normalized string comparison (strip hyphens, underscores, spaces, brackets).
+ * Returns the matched repo name or null.
+ */
+async function resolveSlugDynamic(input: string): Promise<string | null> {
+  const normalize = (s: string) => s.toLowerCase().replace(/[-_\s\[\]()]/g, "");
+  const normalizedInput = normalize(input);
+
+  // Skip obvious placeholders
+  if (normalizedInput === "yourprojectslug" || normalizedInput === "") {
+    return null;
+  }
+
+  try {
+    const allRepos = await listRepos();
+
+    // Exact normalized match against repo names
+    const match = allRepos.find(r => normalize(r) === normalizedInput);
+    if (match) {
+      logger.info("dynamic slug resolution: matched", { input, resolved: match });
+      return match;
+    }
+
+    // Partial match: check if input contains a repo name or vice versa
+    // (e.g., "Metaswarm Autonomous Coding Stack" → "metaswarm-autonomous-coding-stack")
+    const inputWords = normalizedInput;
+    const partialMatch = allRepos.find(r => {
+      const normalizedRepo = normalize(r);
+      return inputWords.includes(normalizedRepo) || normalizedRepo.includes(inputWords);
+    });
+    if (partialMatch) {
+      logger.info("dynamic slug resolution: partial match", { input, resolved: partialMatch });
+      return partialMatch;
+    }
+
+    return null;
+  } catch (err) {
+    logger.warn("dynamic slug resolution failed", { error: (err as Error).message });
+    return null;
+  }
+}
+
+/**
  * Register the prism_bootstrap tool on an MCP server instance.
  */
 export function registerBootstrap(server: McpServer): void {
@@ -174,7 +218,19 @@ export function registerBootstrap(server: McpServer): void {
       const start = Date.now();
 
       // KI-15: Resolve display names, Claude project names, and fuzzy matches to slugs
-      const resolvedSlug = resolveProjectSlug(project_slug);
+      let resolvedSlug = resolveProjectSlug(project_slug);
+
+      // D-68: If static resolution didn't find a known project, try dynamic matching
+      // against all repos. This handles Claude project names, display names not in the
+      // static map, and any other input that normalizes to a repo name.
+      const knownSlugs = Object.keys(PROJECT_DISPLAY_NAMES);
+      if (resolvedSlug === project_slug && !knownSlugs.includes(resolvedSlug)) {
+        const dynamicMatch = await resolveSlugDynamic(project_slug);
+        if (dynamicMatch) {
+          resolvedSlug = dynamicMatch;
+        }
+      }
+
       if (resolvedSlug !== project_slug) {
         logger.info("slug resolved", { input: project_slug, resolved: resolvedSlug });
       }
