@@ -43,7 +43,7 @@ export const PORT = parseInt(process.env.PORT ?? "3000", 10);
 export const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
 
 /** Server version */
-export const SERVER_VERSION = "2.11.0";
+export const SERVER_VERSION = "2.12.0";
 
 /** GitHub API base URL */
 export const GITHUB_API_BASE = "https://api.github.com";

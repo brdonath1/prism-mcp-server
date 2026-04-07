@@ -32,7 +32,8 @@ export interface SynthesisResult {
 export async function synthesize(
   systemPrompt: string,
   userContent: string,
-  maxTokens?: number
+  maxTokens?: number,
+  timeoutMs?: number
 ): Promise<SynthesisResult | null> {
   const anthropic = getClient();
   if (!anthropic) {
@@ -48,7 +49,7 @@ export async function synthesize(
       system: systemPrompt,
       messages: [{ role: "user", content: userContent }],
     }, {
-      timeout: 30000, // B.4: 30 second timeout
+      timeout: timeoutMs ?? 30000, // B.4: configurable timeout
     });
 
     const textContent = response.content

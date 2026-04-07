@@ -10,6 +10,7 @@ import type {
   PushResult,
   PushFileInput,
   BatchPushResult,
+  AtomicCommitResult,
   GitHubContentsResponse,
   GitHubPutResponse,
   GitHubRepoListItem,
@@ -460,5 +461,114 @@ export async function deleteFile(repo: string, path: string, message: string): P
   } catch (error) {
     logger.error("github.deleteFile error", { repo, path, error: (error as Error).message });
     return false;
+  }
+}
+
+/**
+ * Push multiple files as a single atomic commit using Git Trees API.
+ * Eliminates 409 race conditions from parallel Contents API pushes.
+ *
+ * Steps:
+ * 1. GET /repos/{owner}/{repo}/git/ref/heads/main → current HEAD SHA
+ * 2. GET /repos/{owner}/{repo}/git/commits/{sha} → base tree SHA
+ * 3. POST /repos/{owner}/{repo}/git/trees → create tree with all files
+ * 4. POST /repos/{owner}/{repo}/git/commits → create commit pointing to new tree
+ * 5. PATCH /repos/{owner}/{repo}/git/ref/heads/main → update HEAD
+ */
+export async function createAtomicCommit(
+  repo: string,
+  files: Array<{ path: string; content: string }>,
+  message: string
+): Promise<AtomicCommitResult> {
+  const start = Date.now();
+  logger.debug("github.createAtomicCommit", { repo, fileCount: files.length });
+
+  try {
+    // 1. Get current HEAD ref
+    const refUrl = `${GITHUB_API_BASE}/repos/${GITHUB_OWNER}/${repo}/git/ref/heads/main`;
+    const refRes = await fetchWithRetry(refUrl, { headers: headers() });
+    if (!refRes.ok) {
+      throw handleApiError(refRes.status, await refRes.text(), `getRef ${repo}`);
+    }
+    const refData = await refRes.json() as { object: { sha: string } };
+    const headSha = refData.object.sha;
+
+    // 2. Get base tree from HEAD commit
+    const commitUrl = `${GITHUB_API_BASE}/repos/${GITHUB_OWNER}/${repo}/git/commits/${headSha}`;
+    const commitRes = await fetchWithRetry(commitUrl, { headers: headers() });
+    if (!commitRes.ok) {
+      throw handleApiError(commitRes.status, await commitRes.text(), `getCommit ${repo}/${headSha}`);
+    }
+    const commitData = await commitRes.json() as { tree: { sha: string } };
+    const baseTreeSha = commitData.tree.sha;
+
+    // 3. Create new tree with all files
+    const treeUrl = `${GITHUB_API_BASE}/repos/${GITHUB_OWNER}/${repo}/git/trees`;
+    const treePayload = {
+      base_tree: baseTreeSha,
+      tree: files.map(f => ({
+        path: f.path,
+        mode: "100644" as const,
+        type: "blob" as const,
+        content: f.content,
+      })),
+    };
+    const treeRes = await fetchWithRetry(treeUrl, {
+      method: "POST",
+      headers: { ...headers(), "Content-Type": "application/json" },
+      body: JSON.stringify(treePayload),
+    });
+    if (!treeRes.ok) {
+      throw handleApiError(treeRes.status, await treeRes.text(), `createTree ${repo}`);
+    }
+    const treeData = await treeRes.json() as { sha: string };
+
+    // 4. Create commit
+    const newCommitUrl = `${GITHUB_API_BASE}/repos/${GITHUB_OWNER}/${repo}/git/commits`;
+    const newCommitRes = await fetchWithRetry(newCommitUrl, {
+      method: "POST",
+      headers: { ...headers(), "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message,
+        tree: treeData.sha,
+        parents: [headSha],
+      }),
+    });
+    if (!newCommitRes.ok) {
+      throw handleApiError(newCommitRes.status, await newCommitRes.text(), `createCommit ${repo}`);
+    }
+    const newCommitData = await newCommitRes.json() as { sha: string };
+
+    // 5. Update HEAD ref
+    const updateRefRes = await fetchWithRetry(refUrl, {
+      method: "PATCH",
+      headers: { ...headers(), "Content-Type": "application/json" },
+      body: JSON.stringify({ sha: newCommitData.sha }),
+    });
+    if (!updateRefRes.ok) {
+      throw handleApiError(updateRefRes.status, await updateRefRes.text(), `updateRef ${repo}`);
+    }
+
+    logger.info("github.createAtomicCommit complete", {
+      repo,
+      files: files.length,
+      sha: newCommitData.sha,
+      ms: Date.now() - start,
+    });
+
+    return {
+      success: true,
+      sha: newCommitData.sha,
+      files_committed: files.length,
+    };
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    logger.error("github.createAtomicCommit failed", { repo, error: msg, ms: Date.now() - start });
+    return {
+      success: false,
+      sha: "",
+      files_committed: 0,
+      error: msg,
+    };
   }
 }

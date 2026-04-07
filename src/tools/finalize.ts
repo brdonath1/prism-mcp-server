@@ -14,6 +14,7 @@ import {
   listCommits,
   getCommit,
   deleteFile,
+  createAtomicCommit,
 } from "../github/client.js";
 import { LIVING_DOCUMENTS, LEGACY_LIVING_DOCUMENTS, SYNTHESIS_ENABLED, SERVER_VERSION, FRAMEWORK_REPO } from "../config.js";
 import { resolveDocPath, resolveDocPushPath, resolveDocFiles } from "../utils/doc-resolver.js";
@@ -260,8 +261,12 @@ async function draftPhase(projectSlug: string, sessionNumber: number) {
     };
   }
 
-  // 1. Fetch all living documents with backward-compatible resolution
-  const docMap = await resolveDocFiles(projectSlug, [...LEGACY_LIVING_DOCUMENTS]);
+  // 1. Fetch only draft-relevant living documents (skip architecture.md and glossary.md —
+  //    they're large and irrelevant to session log / handoff / task queue drafting)
+  const DRAFT_RELEVANT_DOCS = LEGACY_LIVING_DOCUMENTS.filter(
+    d => d !== "architecture.md" && d !== "glossary.md" && d !== "intelligence-brief.md"
+  );
+  const docMap = await resolveDocFiles(projectSlug, [...DRAFT_RELEVANT_DOCS]);
 
   // 2. Collect commit history for this session
   const sessionCommits: string[] = [];
@@ -290,7 +295,7 @@ async function draftPhase(projectSlug: string, sessionNumber: number) {
     commitCount: sessionCommits.length,
   });
 
-  const result = await synthesize(FINALIZATION_DRAFT_PROMPT, userMessage, 4096);
+  const result = await synthesize(FINALIZATION_DRAFT_PROMPT, userMessage, 4096, 45000);
 
   if (!result) {
     return {
@@ -412,52 +417,27 @@ async function commitPhase(
     files.map(file => guardPushPath(projectSlug, file.path))
   );
 
-  // 5. Push all files in parallel using guarded paths
-  const pushResults = await Promise.allSettled(
-    files.map(async (file, idx) => {
-      const guarded = guardResults[idx];
-      const pushPath = guarded.path;
+  // 5. Push all files in a single atomic commit (eliminates 409 race conditions)
+  const guardedFiles = files.map((file, idx) => ({
+    path: guardResults[idx].path,
+    content: file.content,
+  }));
 
-      const isHandoff = file.path === "handoff.md" || file.path === ".prism/handoff.md";
-      const message = isHandoff
-        ? `prism: finalize session ${sessionNumber} [${today}]`
-        : `prism: artifact ${pushPath.split("/").pop()}`;
+  const isHandoff = files.some(f => f.path === "handoff.md" || f.path === ".prism/handoff.md");
+  const commitMessage = isHandoff
+    ? `prism: finalize session ${sessionNumber} [${today}]`
+    : `prism: session ${sessionNumber} artifacts`;
 
-      const result = await pushFile(projectSlug, pushPath, file.content, message);
+  const atomicResult = await createAtomicCommit(projectSlug, guardedFiles, commitMessage);
 
-      // 6. Verify push
-      let verified = false;
-      if (result.success) {
-        try {
-          const verifyResult = await fetchFile(projectSlug, pushPath);
-          verified = verifyResult.sha === result.sha;
-        } catch {
-          verified = false;
-        }
-      }
-
-      return {
-        path: pushPath,
-        success: result.success,
-        size_bytes: result.size,
-        verified,
-        validation_errors: [] as string[],
-      };
-    })
-  );
-
-  const results = pushResults.map((outcome, idx) => {
-    if (outcome.status === "fulfilled") {
-      return outcome.value;
-    }
-    return {
-      path: files[idx].path,
-      success: false,
-      size_bytes: 0,
-      verified: false,
-      validation_errors: [outcome.reason?.message ?? "Unknown push error"],
-    };
-  });
+  // 6. Build results array from atomic commit outcome
+  const results = guardedFiles.map(f => ({
+    path: f.path,
+    success: atomicResult.success,
+    size_bytes: new TextEncoder().encode(f.content).length,
+    verified: atomicResult.success, // atomic commit is all-or-nothing
+    validation_errors: atomicResult.success ? [] : [atomicResult.error ?? "Atomic commit failed"],
+  }));
 
   const succeeded = results.filter((r) => r.success);
   const livingDocsUpdated = results.filter((r) =>

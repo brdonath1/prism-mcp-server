@@ -78,6 +78,14 @@ export interface CommitSummary {
   files: string[];
 }
 
+/** Result of an atomic multi-file commit via Git Trees API */
+export interface AtomicCommitResult {
+  success: boolean;
+  sha: string;
+  files_committed: number;
+  error?: string;
+}
+
 /** GitHub commit list item */
 export interface GitHubCommitListItem {
   sha: string;
