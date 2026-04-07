@@ -73,7 +73,7 @@ export async function generateIntelligenceBrief(
     });
 
     // 3. Call Opus 4.6
-    const result = await synthesize(FINALIZATION_SYNTHESIS_PROMPT, userMessage);
+    const result = await synthesize(FINALIZATION_SYNTHESIS_PROMPT, userMessage, undefined, 120000);
 
     if (!result) {
       recordSynthesisEvent({

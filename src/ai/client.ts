@@ -49,7 +49,7 @@ export async function synthesize(
       system: systemPrompt,
       messages: [{ role: "user", content: userContent }],
     }, {
-      timeout: timeoutMs ?? 30000, // B.4: configurable timeout
+      timeout: timeoutMs ?? 60000, // Default 60s; callers can override for large inputs
     });
 
     const textContent = response.content

@@ -459,11 +459,11 @@ async function commitPhase(
   if (allSucceeded && SYNTHESIS_ENABLED) {
     synthesisResult.triggered = true;
     try {
-      // Race synthesis against a 25-second timeout to stay within MCP's 60s limit.
-      // The commit itself typically takes 5-15s, leaving ~25s for synthesis.
+      // Race synthesis against a 120-second timeout. Synthesis for large projects
+      // (PF-v2: ~130KB input) needs significant time for Opus to process.
       const synthPromise = generateIntelligenceBrief(projectSlug, sessionNumber);
       const timeoutPromise = new Promise<{ success: false; error: string }>((resolve) =>
-        setTimeout(() => resolve({ success: false, error: "Synthesis timed out after 25s" }), 25000)
+        setTimeout(() => resolve({ success: false, error: "Synthesis timed out after 120s" }), 120000)
       );
 
       const synthOutcome = await Promise.race([synthPromise, timeoutPromise]);
