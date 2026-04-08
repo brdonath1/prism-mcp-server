@@ -16,14 +16,10 @@ function safeTokenCompare(a: string, b: string): boolean {
  * Extract the real client IP from the request.
  * Railway (and most reverse proxies) set X-Forwarded-For.
  * The leftmost value is the original client IP.
+ * Note: We parse X-Forwarded-For directly rather than using Express trust proxy
+ * because Railway's proxy setup can return IPv6-mapped addresses via req.ip.
  */
 function getClientIp(req: Request): string {
-  // Prefer req.ip (respects Express 'trust proxy' setting) over manual parsing
-  if (req.ip) {
-    return req.ip;
-  }
-
-  // Fallback: manual X-Forwarded-For parsing only if req.ip is undefined
   const forwarded = req.headers["x-forwarded-for"];
   if (typeof forwarded === "string") {
     return forwarded.split(",")[0].trim();
