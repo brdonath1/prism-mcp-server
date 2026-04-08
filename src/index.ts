@@ -26,7 +26,6 @@ import { registerLogInsight } from "./tools/log-insight.js";
 import { registerPatch } from "./tools/patch.js";
 
 const app = express();
-app.set("trust proxy", 1); // Railway runs behind 1 reverse proxy
 app.use(express.json({ limit: "5mb" }));
 app.use(requestLogger);
 app.use(authMiddleware);
