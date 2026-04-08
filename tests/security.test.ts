@@ -162,17 +162,17 @@ describe("Timing-safe auth (C-2)", () => {
   });
 });
 
-describe("Trust proxy (H-5)", () => {
-  it("Express app sets trust proxy", () => {
-    const { readFileSync } = require("fs");
-    const source = readFileSync("src/index.ts", "utf-8");
-    expect(source).toContain('trust proxy');
-  });
-
-  it("auth middleware uses req.ip", () => {
+describe("Client IP extraction (H-5)", () => {
+  it("auth middleware uses req.ip as fallback", () => {
     const { readFileSync } = require("fs");
     const source = readFileSync("src/middleware/auth.ts", "utf-8");
     expect(source).toContain("req.ip");
+  });
+
+  it("auth middleware parses X-Forwarded-For", () => {
+    const { readFileSync } = require("fs");
+    const source = readFileSync("src/middleware/auth.ts", "utf-8");
+    expect(source).toContain("x-forwarded-for");
   });
 });
 
