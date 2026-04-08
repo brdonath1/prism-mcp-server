@@ -4,7 +4,7 @@
  */
 
 import Anthropic from "@anthropic-ai/sdk";
-import { ANTHROPIC_API_KEY, SYNTHESIS_MODEL, SYNTHESIS_MAX_OUTPUT_TOKENS } from "../config.js";
+import { ANTHROPIC_API_KEY, SYNTHESIS_MODEL, SYNTHESIS_MAX_OUTPUT_TOKENS, MCP_SAFE_TIMEOUT } from "../config.js";
 import { logger } from "../utils/logger.js";
 
 let client: Anthropic | null = null;
@@ -26,19 +26,27 @@ export interface SynthesisResult {
   model: string;
 }
 
+export interface SynthesisError {
+  success: false;
+  error: string;
+  error_code: "TIMEOUT" | "AUTH" | "API_ERROR" | "DISABLED";
+}
+
+export type SynthesisOutcome = (SynthesisResult & { success: true }) | SynthesisError;
+
 /**
- * Call Opus 4.6 for synthesis. Returns null on any failure.
+ * Call Opus 4.6 for synthesis. Returns structured outcome with success/error info.
  */
 export async function synthesize(
   systemPrompt: string,
   userContent: string,
   maxTokens?: number,
   timeoutMs?: number
-): Promise<SynthesisResult | null> {
+): Promise<SynthesisOutcome> {
   const anthropic = getClient();
   if (!anthropic) {
     logger.info("Synthesis skipped — ANTHROPIC_API_KEY not configured");
-    return null;
+    return { success: false, error: "ANTHROPIC_API_KEY not configured", error_code: "DISABLED" };
   }
 
   const start = Date.now();
@@ -49,7 +57,7 @@ export async function synthesize(
       system: systemPrompt,
       messages: [{ role: "user", content: userContent }],
     }, {
-      timeout: timeoutMs ?? 60000, // Default 60s; callers can override for large inputs
+      timeout: timeoutMs ?? MCP_SAFE_TIMEOUT, // Must stay under MCP's 60s client timeout
     });
 
     const textContent = response.content
@@ -57,7 +65,8 @@ export async function synthesize(
       .map((block) => block.text)
       .join("\n");
 
-    const result: SynthesisResult = {
+    const result = {
+      success: true as const,
       content: textContent,
       input_tokens: response.usage.input_tokens,
       output_tokens: response.usage.output_tokens,
@@ -76,6 +85,11 @@ export async function synthesize(
     const message = error instanceof Error ? error.message : String(error);
     const sanitized = message.replace(/sk-[a-zA-Z0-9_-]+/g, "sk-***REDACTED***");
     logger.error("Synthesis API call failed", { error: sanitized, ms: Date.now() - start });
-    return null;
+
+    const isTimeout = message.includes("timeout") || message.includes("ETIMEDOUT");
+    const isAuth = message.includes("401") || message.includes("authentication");
+    const error_code: SynthesisError["error_code"] = isTimeout ? "TIMEOUT" : isAuth ? "AUTH" : "API_ERROR";
+
+    return { success: false, error: sanitized, error_code };
   }
 }

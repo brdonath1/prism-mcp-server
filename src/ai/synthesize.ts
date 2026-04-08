@@ -73,18 +73,18 @@ export async function generateIntelligenceBrief(
     });
 
     // 3. Call Opus 4.6
-    const result = await synthesize(FINALIZATION_SYNTHESIS_PROMPT, userMessage, undefined, 120000);
+    const result = await synthesize(FINALIZATION_SYNTHESIS_PROMPT, userMessage);
 
-    if (!result) {
+    if (!result.success) {
       recordSynthesisEvent({
         project: projectSlug,
         sessionNumber,
         timestamp: new Date().toISOString(),
         success: false,
-        error: "Synthesis API returned null",
+        error: result.error,
         duration_ms: Date.now() - start,
       });
-      return { success: false, error: "Synthesis API returned null" };
+      return { success: false, error: result.error };
     }
 
     // 4. Validate the response has required sections

@@ -17,7 +17,7 @@ import {
   deleteFile,
   createAtomicCommit,
 } from "../github/client.js";
-import { LIVING_DOCUMENTS, LEGACY_LIVING_DOCUMENTS, SYNTHESIS_ENABLED, SERVER_VERSION, FRAMEWORK_REPO } from "../config.js";
+import { LIVING_DOCUMENTS, LEGACY_LIVING_DOCUMENTS, SYNTHESIS_ENABLED, SERVER_VERSION, FRAMEWORK_REPO, MCP_SAFE_TIMEOUT } from "../config.js";
 import { resolveDocPath, resolveDocPushPath, resolveDocFiles } from "../utils/doc-resolver.js";
 import { guardPushPath } from "../utils/doc-guard.js";
 import { logger } from "../utils/logger.js";
@@ -300,10 +300,8 @@ async function draftPhase(projectSlug: string, sessionNumber: number) {
     totalDocBytes += new TextEncoder().encode(doc.content).length;
   }
 
-  // Scale timeout: 45s for small projects, 90s for medium, 120s for large
-  const draftTimeoutMs = totalDocBytes > 100_000 ? 120_000
-    : totalDocBytes > 50_000 ? 90_000
-    : 45_000;
+  // Scale timeout: 45s for small projects, 50s for large (capped at MCP_SAFE_TIMEOUT)
+  const draftTimeoutMs = totalDocBytes > 50_000 ? MCP_SAFE_TIMEOUT : 45_000;
 
   logger.info("Finalization draft: calling Opus", {
     projectSlug,
@@ -316,10 +314,10 @@ async function draftPhase(projectSlug: string, sessionNumber: number) {
 
   const result = await synthesize(FINALIZATION_DRAFT_PROMPT, userMessage, 4096, draftTimeoutMs);
 
-  if (!result) {
+  if (!result.success) {
     return {
       success: false,
-      error: "Opus API call failed or returned null.",
+      error: `Opus API call failed: ${result.error} (${result.error_code})`,
       fallback: "Compose finalization files manually.",
     };
   }
@@ -524,7 +522,7 @@ async function commitPhase(
       // (PF-v2: ~130KB input) needs significant time for Opus to process.
       const synthPromise = generateIntelligenceBrief(projectSlug, sessionNumber);
       const timeoutPromise = new Promise<{ success: false; error: string }>((resolve) =>
-        setTimeout(() => resolve({ success: false, error: "Synthesis timed out after 120s" }), 120000)
+        setTimeout(() => resolve({ success: false, error: "Synthesis timed out after 50s" }), MCP_SAFE_TIMEOUT)
       );
 
       const synthOutcome = await Promise.race([synthPromise, timeoutPromise]);

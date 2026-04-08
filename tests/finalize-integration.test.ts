@@ -451,6 +451,7 @@ describe("prism_finalize draft phase", () => {
     mockListCommits.mockResolvedValue([]);
 
     mockSynthesize.mockResolvedValue({
+      success: true,
       content: '{"handoff": {"content": "draft handoff"}, "session_log": {"content": "draft log"}}',
       input_tokens: 5000,
       output_tokens: 2000,
@@ -475,7 +476,7 @@ describe("prism_finalize draft phase", () => {
     const docMap = buildDocMap();
     mockFetchFiles.mockResolvedValue(docMap);
     mockListCommits.mockResolvedValue([]);
-    mockSynthesize.mockResolvedValue(null);
+    mockSynthesize.mockResolvedValue({ success: false, error: "API returned null", error_code: "API_ERROR" });
 
     const result = await callFinalizeTool({
       project_slug: "test-project",
@@ -495,6 +496,7 @@ describe("prism_finalize draft phase", () => {
     mockListCommits.mockResolvedValue([]);
 
     mockSynthesize.mockResolvedValue({
+      success: true,
       content: "Here are my thoughts about the finalization:\n\nThe handoff should be updated...",
       input_tokens: 3000,
       output_tokens: 1000,

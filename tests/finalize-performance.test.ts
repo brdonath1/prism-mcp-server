@@ -5,16 +5,18 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "fs";
 
 describe("Draft timeout scaling", () => {
-  it("calculates correct timeout for small projects (<50KB)", () => {
+  it("calculates correct timeout capped at MCP_SAFE_TIMEOUT", () => {
     // Verify the scaling logic exists in source
     const source = readFileSync("src/tools/finalize.ts", "utf-8");
 
-    // Must have three tiers
-    expect(source).toContain("100_000");  // >100KB threshold
-    expect(source).toContain("50_000");   // >50KB threshold
-    expect(source).toContain("120_000");  // 120s timeout for large
-    expect(source).toContain("90_000");   // 90s timeout for medium
-    expect(source).toContain("45_000");   // 45s timeout for small
+    // S34b: Two tiers capped at MCP_SAFE_TIMEOUT (50s) to stay under MCP's 60s client timeout
+    expect(source).toContain("50_000");      // >50KB threshold
+    expect(source).toContain("45_000");      // 45s timeout for small
+    expect(source).toContain("MCP_SAFE_TIMEOUT"); // uses constant, not hardcoded
+
+    // Old uncapped values must be gone
+    expect(source).not.toContain("120_000");
+    expect(source).not.toContain("90_000");
   });
 
   it("timeout variable is used in synthesize call, not a hardcoded value", () => {

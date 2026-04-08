@@ -43,7 +43,12 @@ export const PORT = parseInt(process.env.PORT ?? "3000", 10);
 export const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
 
 /** Server version */
-export const SERVER_VERSION = "2.13.0";
+export const SERVER_VERSION = "2.14.0";
+
+/** MCP client timeout is ~60s. All server-side operations must complete within 50s
+ *  to leave 10s buffer for transport overhead. This constrains synthesis, draft,
+ *  and any long-running operations. */
+export const MCP_SAFE_TIMEOUT = 50_000;
 
 /** GitHub API base URL */
 export const GITHUB_API_BASE = "https://api.github.com";

@@ -47,6 +47,9 @@ function handleApiError(status: number, body: string, context: string): Error {
   if (status === 404) {
     return new Error(`Not found: ${context}`);
   }
+  if (status === 422) {
+    return new Error(`GitHub validation failed: ${body} (${context})`);
+  }
   if (status === 429) {
     return new Error(`GitHub rate limit exceeded. (${context})`);
   }
@@ -71,8 +74,9 @@ async function fetchWithRetry(url: string, options: RequestInit, maxRetries = 3)
       if (attempt === maxRetries) {
         return res; // Let caller handle final 429
       }
+      await res.body?.cancel(); // Prevent response body leak on retry
       const retryAfter = parseInt(res.headers.get("retry-after") ?? "1", 10);
-      const delay = Math.min(retryAfter * 1000, 10000) * Math.pow(2, attempt);
+      const delay = Math.min(retryAfter * 1000 * Math.pow(2, attempt), 120_000);
       logger.warn("Rate limited, retrying", { attempt: attempt + 1, delay, url });
       await sleep(delay);
       continue;
@@ -282,7 +286,10 @@ export async function pushFiles(
 export async function fileExists(repo: string, path: string): Promise<boolean> {
   const url = contentsUrl(repo, path);
   try {
-    const res = await fetch(url, { headers: headers() });
+    const res = await fetchWithRetry(url, {
+      headers: headers(),
+      signal: AbortSignal.timeout(10_000),
+    });
     // B.13: consume response body to prevent socket leaks
     await res.body?.cancel();
     if (res.status === 404) return false;
@@ -291,6 +298,11 @@ export async function fileExists(repo: string, path: string): Promise<boolean> {
     logger.error("fileExists unexpected status", { repo, path, status: res.status });
     throw new Error(`Unexpected status ${res.status} checking ${repo}/${path}`);
   } catch (error) {
+    // Treat timeout as "file does not exist"
+    if (error instanceof DOMException && error.name === "AbortError") {
+      logger.warn("fileExists timed out, treating as not found", { repo, path });
+      return false;
+    }
     if (error instanceof TypeError && error.message.includes("fetch")) {
       logger.error("Network error checking file existence", { repo, path, error: String(error) });
       throw error;
@@ -304,7 +316,7 @@ export async function fileExists(repo: string, path: string): Promise<boolean> {
  */
 export async function getFileSize(repo: string, path: string): Promise<number> {
   const url = contentsUrl(repo, path);
-  const res = await fetch(url, { headers: headers() });
+  const res = await fetchWithRetry(url, { headers: headers() });
   if (!res.ok) {
     throw handleApiError(res.status, await res.text(), `getFileSize ${repo}/${path}`);
   }
@@ -349,7 +361,7 @@ export async function listDirectory(repo: string, path: string): Promise<Directo
   const start = Date.now();
   logger.debug("github.listDirectory", { repo, path });
 
-  const res = await fetch(url, { headers: headers() });
+  const res = await fetchWithRetry(url, { headers: headers() });
 
   if (res.status === 404) {
     return []; // Directory doesn't exist
@@ -392,7 +404,7 @@ export async function listCommits(
   const url = `${GITHUB_API_BASE}/repos/${GITHUB_OWNER}/${repo}/commits?${params.toString()}`;
   logger.debug("github.listCommits", { repo, ...options });
 
-  const res = await fetch(url, { headers: headers() });
+  const res = await fetchWithRetry(url, { headers: headers() });
 
   if (!res.ok) {
     throw handleApiError(res.status, await res.text(), `listCommits ${repo}`);
@@ -419,7 +431,7 @@ export async function getCommit(
   sha: string
 ): Promise<CommitSummary> {
   const url = `${GITHUB_API_BASE}/repos/${GITHUB_OWNER}/${repo}/commits/${sha}`;
-  const res = await fetch(url, { headers: headers() });
+  const res = await fetchWithRetry(url, { headers: headers() });
 
   if (!res.ok) {
     throw handleApiError(res.status, await res.text(), `getCommit ${repo}/${sha}`);
@@ -437,7 +449,7 @@ export async function getCommit(
 /**
  * Delete a file from a repo.
  */
-export async function deleteFile(repo: string, path: string, message: string): Promise<boolean> {
+export async function deleteFile(repo: string, path: string, message: string): Promise<{ success: boolean; error?: string }> {
   const url = contentsUrl(repo, path);
   const start = Date.now();
   logger.debug("github.deleteFile", { repo, path });
@@ -445,22 +457,25 @@ export async function deleteFile(repo: string, path: string, message: string): P
   try {
     const sha = await fetchSha(repo, path);
 
-    const res = await fetch(url, {
+    const res = await fetchWithRetry(url, {
       method: "DELETE",
       headers: { ...headers(), "Content-Type": "application/json" },
       body: JSON.stringify({ message, sha }),
     });
 
     if (!res.ok) {
-      logger.error("github.deleteFile failed", { repo, path, status: res.status });
-      return false;
+      const errText = await res.text();
+      const errMsg = handleApiError(res.status, errText, `deleteFile ${repo}/${path}`).message;
+      logger.error("github.deleteFile failed", { repo, path, status: res.status, error: errMsg });
+      return { success: false, error: errMsg };
     }
 
     logger.debug("github.deleteFile complete", { repo, path, ms: Date.now() - start });
-    return true;
+    return { success: true };
   } catch (error) {
-    logger.error("github.deleteFile error", { repo, path, error: (error as Error).message });
-    return false;
+    const errMsg = (error as Error).message;
+    logger.error("github.deleteFile error", { repo, path, error: errMsg });
+    return { success: false, error: errMsg };
   }
 }
 
