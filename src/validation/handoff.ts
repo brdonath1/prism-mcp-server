@@ -80,40 +80,59 @@ export function validateHandoff(content: string): ValidationResult {
 
 /**
  * Parse handoff version from Meta section.
- * Handles both plain ("Handoff Version: 19") and bold ("**Handoff Version:** 78") formats.
+ * Handles list format ("Handoff Version: 19"), bold ("**Handoff Version:** 78"),
+ * table format ("| Handoff Version | v2 |"), and v-prefix ("Handoff Version: v42").
+ * Falls back to searching entire content for blockquote/inline formats.
  */
 export function parseHandoffVersion(content: string): number | null {
   const meta = extractSection(content, "Meta");
-  if (!meta) return null;
+  if (meta) {
+    const clean = stripBold(meta);
+    // Handle list format: "Handoff Version: 40" and table format: "| Handoff Version | v2 |"
+    const listMatch = clean.match(/Handoff Version[:\s|]*v?(\d+)/i);
+    if (listMatch) return parseInt(listMatch[1], 10);
+  }
 
-  const clean = stripBold(meta);
-  const match = clean.match(/Handoff Version[:\s]*(\d+)/i);
-  return match ? parseInt(match[1], 10) : null;
+  // Fallback: search entire content for blockquote or inline format
+  const fallback = stripBold(content).match(/Handoff Version[:\s|]*v?(\d+)/i);
+  return fallback ? parseInt(fallback[1], 10) : null;
 }
 
 /**
  * Parse session count from Meta section.
- * Handles both plain and bold formats.
+ * Handles list, bold, table, and v-prefix formats.
+ * Falls back to searching entire content, then to "Last updated: S{N}" pattern.
  */
 export function parseSessionCount(content: string): number | null {
   const meta = extractSection(content, "Meta");
-  if (!meta) return null;
+  if (meta) {
+    const clean = stripBold(meta);
+    const listMatch = clean.match(/Session Count[:\s|]*v?(\d+)/i);
+    if (listMatch) return parseInt(listMatch[1], 10);
+  }
 
-  const clean = stripBold(meta);
-  const match = clean.match(/Session Count[:\s]*(\d+)/i);
-  return match ? parseInt(match[1], 10) : null;
+  // Fallback 1: search entire content
+  const fallback1 = stripBold(content).match(/Session Count[:\s|]*v?(\d+)/i);
+  if (fallback1) return parseInt(fallback1[1], 10);
+
+  // Fallback 2: "Last updated: S134" pattern
+  const fallback2 = content.match(/Last updated[:\s]*S(\d+)/i);
+  return fallback2 ? parseInt(fallback2[1], 10) : null;
 }
 
 /**
  * Parse template version from Meta section.
- * Handles formats like "2.2.0", "PRISM v2.1.1", "v2.3.0".
+ * Handles list, bold, table formats, and "PRISM v2.1.1" prefix.
+ * Falls back to searching entire content.
  */
 export function parseTemplateVersion(content: string): string | null {
   const meta = extractSection(content, "Meta");
-  if (!meta) return null;
+  if (meta) {
+    const clean = stripBold(meta);
+    const match = clean.match(/Template Version[:\s|]*(?:PRISM\s+)?v?([\d.]+)/i);
+    if (match) return match[1];
+  }
 
-  const clean = stripBold(meta);
-  // Match version number, optionally preceded by "PRISM" and/or "v"
-  const match = clean.match(/Template Version[:\s]*(?:PRISM\s+)?v?([\d.]+)/i);
-  return match ? match[1] : null;
+  const fallback = stripBold(content).match(/Template Version[:\s|]*(?:PRISM\s+)?v?([\d.]+)/i);
+  return fallback ? fallback[1] : null;
 }

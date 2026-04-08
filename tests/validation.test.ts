@@ -110,7 +110,7 @@ Some text
 });
 
 describe("parseHandoffVersion", () => {
-  it("extracts version number from Meta", () => {
+  it("extracts version number from list format", () => {
     const content = `## Meta
 - Handoff Version: 13
 - Session Count: 9`;
@@ -118,26 +118,107 @@ describe("parseHandoffVersion", () => {
     expect(parseHandoffVersion(content)).toBe(13);
   });
 
-  it("returns null when no Meta section", () => {
-    expect(parseHandoffVersion("No meta here")).toBeNull();
+  it("extracts version from table format", () => {
+    const content = `## Meta
+| Field | Value |
+|-------|-------|
+| Handoff Version | v2 |
+| Session Count | 5 |`;
+
+    expect(parseHandoffVersion(content)).toBe(2);
+  });
+
+  it("handles v prefix", () => {
+    const content = `## Meta
+- Handoff Version: v42
+- Session Count: 10`;
+
+    expect(parseHandoffVersion(content)).toBe(42);
+  });
+
+  it("falls back to blockquote when no ## Meta section", () => {
+    const content = `# Handoff
+> **Handoff version:** 148
+> **Session Count:** 100`;
+
+    expect(parseHandoffVersion(content)).toBe(148);
+  });
+
+  it("returns null when no version info anywhere", () => {
+    expect(parseHandoffVersion("No meta here, no version anywhere")).toBeNull();
   });
 });
 
 describe("parseSessionCount", () => {
-  it("extracts session count from Meta", () => {
+  it("extracts session count from list format", () => {
     const content = `## Meta
 - Handoff Version: 5
 - Session Count: 42`;
 
     expect(parseSessionCount(content)).toBe(42);
   });
+
+  it("extracts session count from table format", () => {
+    const content = `## Meta
+| Field | Value |
+|-------|-------|
+| Session Count | 77 |`;
+
+    expect(parseSessionCount(content)).toBe(77);
+  });
+
+  it("falls back to blockquote when no ## Meta section", () => {
+    const content = `# Handoff
+> **Session Count:** 100`;
+
+    expect(parseSessionCount(content)).toBe(100);
+  });
+
+  it("falls back to Last updated: S{N} pattern", () => {
+    const content = `# Handoff
+Last updated: S134
+Some other content here.`;
+
+    expect(parseSessionCount(content)).toBe(134);
+  });
+
+  it("returns null when no session count info anywhere", () => {
+    expect(parseSessionCount("Nothing useful here")).toBeNull();
+  });
 });
 
 describe("parseTemplateVersion", () => {
-  it("extracts template version from Meta", () => {
+  it("extracts template version from list format", () => {
     const content = `## Meta
 - Template Version: 2.0.0`;
 
     expect(parseTemplateVersion(content)).toBe("2.0.0");
+  });
+
+  it("extracts template version from table format", () => {
+    const content = `## Meta
+| Field | Value |
+|-------|-------|
+| Template Version | v2.9.0 |`;
+
+    expect(parseTemplateVersion(content)).toBe("2.9.0");
+  });
+
+  it("handles PRISM prefix", () => {
+    const content = `## Meta
+- Template Version: PRISM v2.1.1`;
+
+    expect(parseTemplateVersion(content)).toBe("2.1.1");
+  });
+
+  it("falls back to content search when no ## Meta section", () => {
+    const content = `# Handoff
+> **Template Version:** 2.5.0`;
+
+    expect(parseTemplateVersion(content)).toBe("2.5.0");
+  });
+
+  it("returns null when no template version anywhere", () => {
+    expect(parseTemplateVersion("No version here")).toBeNull();
   });
 });
