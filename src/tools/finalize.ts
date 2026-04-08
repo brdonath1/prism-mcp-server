@@ -61,6 +61,17 @@ import { synthesize } from "../ai/client.js";
 async function auditPhase(projectSlug: string, sessionNumber: number) {
   const warnings: string[] = [];
 
+  // Cache handoff-history listing — used by both drift detection and backup check
+  let cachedHistoryEntries: Awaited<ReturnType<typeof listDirectory>> | null = null;
+  async function getHistoryEntries(): Promise<Awaited<ReturnType<typeof listDirectory>>> {
+    if (cachedHistoryEntries !== null) return cachedHistoryEntries;
+    cachedHistoryEntries = await listDirectory(projectSlug, ".prism/handoff-history");
+    if (cachedHistoryEntries.length === 0) {
+      cachedHistoryEntries = await listDirectory(projectSlug, "handoff-history");
+    }
+    return cachedHistoryEntries;
+  }
+
   // 1. Fetch all 10 living documents in parallel with backward-compatible resolution
   const docMap = await resolveDocFiles(projectSlug, [...LEGACY_LIVING_DOCUMENTS]);
 
@@ -121,10 +132,7 @@ async function auditPhase(projectSlug: string, sessionNumber: number) {
 
   // Try to fetch previous handoff from handoff-history/ (D-67: check .prism/ first)
   try {
-    let historyEntries = await listDirectory(projectSlug, ".prism/handoff-history");
-    if (historyEntries.length === 0) {
-      historyEntries = await listDirectory(projectSlug, "handoff-history");
-    }
+    const historyEntries = await getHistoryEntries();
     const handoffFiles = historyEntries
       .filter((e) => e.name.startsWith("handoff_v") && e.name.endsWith(".md"))
       .sort((a, b) => b.name.localeCompare(a.name));
@@ -199,7 +207,7 @@ async function auditPhase(projectSlug: string, sessionNumber: number) {
     // Need to fetch individual commits for file details since list endpoint doesn't include them
     const filesSet = new Set<string>();
     await Promise.allSettled(
-      sessionCommits.slice(0, 20).map(async (c) => {
+      sessionCommits.slice(0, 5).map(async (c) => {
         try {
           const detail = await getCommit(projectSlug, c.sha);
           for (const f of detail.files) {
@@ -224,10 +232,7 @@ async function auditPhase(projectSlug: string, sessionNumber: number) {
   const currentVersion = handoffResult ? (parseHandoffVersion(handoffResult.content) ?? 0) : 0;
 
   try {
-    let historyEntries = await listDirectory(projectSlug, ".prism/handoff-history");
-    if (historyEntries.length === 0) {
-      historyEntries = await listDirectory(projectSlug, "handoff-history");
-    }
+    const historyEntries = await getHistoryEntries();
     handoffBackupExists = historyEntries.some(
       (e) => e.name.includes(`handoff_v${currentVersion}`)
     );
@@ -353,52 +358,60 @@ async function commitPhase(
   const warnings: string[] = [];
   const today = new Date().toISOString().split("T")[0];
 
-  // 1. Backup current handoff to handoff-history/ (D-67: resolve location)
-  let backupPath = "";
-  try {
-    const currentHandoff = await resolveDocPath(projectSlug, "handoff.md");
-    const currentVersion = parseHandoffVersion(currentHandoff.content) ?? handoffVersion - 1;
-    // Backup goes alongside handoff: .prism/handoff-history/ or handoff-history/
-    const historyBase = currentHandoff.legacy ? "handoff-history" : ".prism/handoff-history";
-    const rawBackupPath = `${historyBase}/handoff_v${currentVersion}_${today}.md`;
-    // Guard against duplication if handoff-history/ used but .prism/ version exists
-    const guardedBackup = await guardPushPath(projectSlug, rawBackupPath);
-    backupPath = guardedBackup.path;
+  // 1 & 2. Backup current handoff and prune old versions — run in parallel
+  const [backupOutcome, pruneOutcome] = await Promise.allSettled([
+    // 1. Backup
+    (async () => {
+      try {
+        const currentHandoff = await resolveDocPath(projectSlug, "handoff.md");
+        const currentVersion = parseHandoffVersion(currentHandoff.content) ?? handoffVersion - 1;
+        const historyBase = currentHandoff.legacy ? "handoff-history" : ".prism/handoff-history";
+        const rawBackupPath = `${historyBase}/handoff_v${currentVersion}_${today}.md`;
+        const guardedBackup = await guardPushPath(projectSlug, rawBackupPath);
+        const backupPath = guardedBackup.path;
 
-    await pushFile(
-      projectSlug,
-      backupPath,
-      currentHandoff.content,
-      `prism: handoff-backup v${currentVersion}`
-    );
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    if (!msg.includes("Not found")) {
-      warnings.push(`Failed to backup current handoff: ${msg}`);
-    }
-  }
+        await pushFile(
+          projectSlug,
+          backupPath,
+          currentHandoff.content,
+          `prism: handoff-backup v${currentVersion}`
+        );
+        return backupPath;
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        if (!msg.includes("Not found")) {
+          warnings.push(`Failed to backup current handoff: ${msg}`);
+        }
+        return "";
+      }
+    })(),
 
-  // 2. Prune handoff-history to keep only last 3 versions (D-67: check .prism/ first)
-  try {
-    let historyEntries = await listDirectory(projectSlug, ".prism/handoff-history");
-    if (historyEntries.length === 0) {
-      historyEntries = await listDirectory(projectSlug, "handoff-history");
-    }
-    const handoffFiles = historyEntries
-      .filter((e) => e.name.startsWith("handoff_v") && e.name.endsWith(".md"))
-      .sort((a, b) => b.name.localeCompare(a.name));
+    // 2. Prune handoff-history to keep only last 3 versions
+    (async () => {
+      try {
+        let historyEntries = await listDirectory(projectSlug, ".prism/handoff-history");
+        if (historyEntries.length === 0) {
+          historyEntries = await listDirectory(projectSlug, "handoff-history");
+        }
+        const handoffFiles = historyEntries
+          .filter((e) => e.name.startsWith("handoff_v") && e.name.endsWith(".md"))
+          .sort((a, b) => b.name.localeCompare(a.name));
 
-    if (handoffFiles.length > 3) {
-      const toDelete = handoffFiles.slice(3);
-      await Promise.allSettled(
-        toDelete.map((f) =>
-          deleteFile(projectSlug, f.path, `chore: prune old handoff backup ${f.name}`)
-        )
-      );
-    }
-  } catch {
-    // handoff-history may not exist or pruning failed — non-critical
-  }
+        if (handoffFiles.length > 3) {
+          const toDelete = handoffFiles.slice(3);
+          await Promise.allSettled(
+            toDelete.map((f) =>
+              deleteFile(projectSlug, f.path, `chore: prune old handoff backup ${f.name}`)
+            )
+          );
+        }
+      } catch {
+        // handoff-history may not exist or pruning failed — non-critical
+      }
+    })(),
+  ]);
+
+  const backupPath = backupOutcome.status === "fulfilled" ? backupOutcome.value : "";
 
   // 3. Validate all files
   const validationResults = files.map((file) => {
@@ -741,7 +754,12 @@ export function registerFinalize(server: McpServer): void {
 
       try {
         if (action === "audit") {
+          const phaseStart = Date.now();
           const result = await auditPhase(project_slug, session_number);
+          logger.info("prism_finalize audit timing", {
+            projectSlug: project_slug,
+            ms: Date.now() - phaseStart,
+          });
 
           // ME-4: Fetch and prepend session-end rules (Rules 10-14)
           let sessionEndRules: string | null = null;
@@ -763,7 +781,12 @@ export function registerFinalize(server: McpServer): void {
         }
 
         if (action === "draft") {
+          const phaseStart = Date.now();
           const result = await draftPhase(project_slug, session_number);
+          logger.info("prism_finalize draft timing", {
+            projectSlug: project_slug,
+            ms: Date.now() - phaseStart,
+          });
           logger.info("prism_finalize draft complete", {
             project_slug,
             success: result.success,
@@ -790,12 +813,17 @@ export function registerFinalize(server: McpServer): void {
           };
         }
 
+        const phaseStart = Date.now();
         const result = await commitPhase(
           project_slug,
           session_number,
           handoff_version ?? 1,
           files
         );
+        logger.info("prism_finalize commit timing", {
+          projectSlug: project_slug,
+          ms: Date.now() - phaseStart,
+        });
 
         // Render finalization banner (D-46)
         let finalization_banner_html: string | null = null;

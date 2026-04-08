@@ -55,3 +55,25 @@ describe("extractJSON (B.8 — robust AI output parsing)", () => {
     expect(result.decisions.count).toBe(48);
   });
 });
+
+describe("extractJSON stress tests (S33b)", () => {
+  it("handles JSON with 1000 keys", () => {
+    const obj: Record<string, number> = {};
+    for (let i = 0; i < 1000; i++) obj[`key_${i}`] = i;
+    const input = JSON.stringify(obj);
+    const result = extractJSON(input) as Record<string, number>;
+    expect(result.key_0).toBe(0);
+    expect(result.key_999).toBe(999);
+  });
+
+  it("handles markdown fences with extra whitespace", () => {
+    const input = '  ```json  \n  {"key": "value"}  \n  ```  ';
+    const result = extractJSON(input) as Record<string, string>;
+    expect(result.key).toBe("value");
+  });
+
+  it("handles broken JSON gracefully", () => {
+    expect(() => extractJSON('{"key": "value"')).toThrow();
+    expect(() => extractJSON('{"key": undefined}')).toThrow();
+  });
+});
