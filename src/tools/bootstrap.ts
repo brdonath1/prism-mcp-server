@@ -7,6 +7,12 @@
  * Tier 1 perf optimizations (S18):
  * - Template caching: behavioral rules cached in-memory with 5-min TTL
  * - Boot-test folding: boot-test.md push happens inside bootstrap (eliminates 1 MCP round-trip)
+ *
+ * Standard MCP tool response contract (L-5):
+ * - Success: { content: [{ type: "text", text: JSON.stringify(result) }] }
+ * - Error:   { content: [{ type: "text", text: JSON.stringify({ error }) }], isError: true }
+ * - All tools return the same envelope shape. Consumer should JSON.parse the text field.
+ * - Response size must stay under ~25K tokens (~100KB JSON). Monitor via responseBytes log.
  */
 
 import { z } from "zod";
@@ -592,8 +598,16 @@ export function registerBootstrap(server: McpServer): void {
         });
 
         // QW-2: Compact JSON (no pretty-printing)
+        const responseText = JSON.stringify(result);
+        const responseBytes = new TextEncoder().encode(responseText).length;
+        if (responseBytes > 100_000) {
+          logger.error("bootstrap response exceeds 100KB", { project_slug: resolvedSlug, responseBytes });
+        } else if (responseBytes > 80_000) {
+          logger.warn("bootstrap response exceeds 80KB", { project_slug: resolvedSlug, responseBytes });
+        }
+
         return {
-          content: [{ type: "text" as const, text: JSON.stringify(result) }],
+          content: [{ type: "text" as const, text: responseText }],
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

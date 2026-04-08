@@ -89,9 +89,10 @@ export const LIVING_DOCUMENTS = [
   `${DOC_ROOT}/intelligence-brief.md`,
 ] as const;
 
-/** Legacy paths (pre-D-67 consolidation) for backward compatibility.
+/** @deprecated Legacy paths (pre-D-67 consolidation) for backward compatibility.
  *  Used by resolveDocPath() to find files in repos not yet migrated.
- *  REMOVE after all repos confirmed migrated to .prism/ structure. */
+ *  REMOVE after all repos confirmed migrated to .prism/ structure.
+ *  Prefer resolveDocFilesOptimized() which auto-detects .prism/ vs root. */
 export const LEGACY_LIVING_DOCUMENTS = [
   "handoff.md",
   "decisions/_INDEX.md",

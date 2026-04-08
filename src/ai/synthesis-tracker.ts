@@ -18,17 +18,28 @@ export interface SynthesisEvent {
   duration_ms?: number;
 }
 
-const MAX_EVENTS = 50;
-const events: SynthesisEvent[] = [];
+const MAX_EVENTS_PER_PROJECT = 20;
+const TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const projectEvents = new Map<string, SynthesisEvent[]>();
+
+/** Drop events older than TTL from a project's list */
+function pruneStale(events: SynthesisEvent[]): SynthesisEvent[] {
+  const cutoff = Date.now() - TTL_MS;
+  return events.filter(e => new Date(e.timestamp).getTime() > cutoff);
+}
 
 /**
- * Record a synthesis outcome (success or failure).
+ * Record a synthesis outcome (success or failure), scoped by project.
  */
 export function recordSynthesisEvent(event: SynthesisEvent): void {
+  const slug = event.project;
+  let events = projectEvents.get(slug) ?? [];
+  events = pruneStale(events);
   events.push(event);
-  if (events.length > MAX_EVENTS) {
-    events.shift();
+  if (events.length > MAX_EVENTS_PER_PROJECT) {
+    events = events.slice(-MAX_EVENTS_PER_PROJECT);
   }
+  projectEvents.set(slug, events);
 
   if (!event.success) {
     logger.error("SYNTHESIS ALERT: Intelligence brief generation failed", {
@@ -40,10 +51,23 @@ export function recordSynthesisEvent(event: SynthesisEvent): void {
   }
 }
 
+/** Get all events, optionally filtered by project */
+function getAllEvents(projectSlug?: string): SynthesisEvent[] {
+  if (projectSlug) {
+    return pruneStale(projectEvents.get(projectSlug) ?? []);
+  }
+  const all: SynthesisEvent[] = [];
+  for (const [, events] of projectEvents) {
+    all.push(...pruneStale(events));
+  }
+  return all;
+}
+
 /**
  * Get synthesis health summary for status reporting.
+ * Optionally scoped to a specific project.
  */
-export function getSynthesisHealth(): {
+export function getSynthesisHealth(projectSlug?: string): {
   total_attempts: number;
   recent_successes: number;
   recent_failures: number;
@@ -52,6 +76,7 @@ export function getSynthesisHealth(): {
   last_success: SynthesisEvent | null;
   status: "healthy" | "degraded" | "failing";
 } {
+  const events = getAllEvents(projectSlug);
   const total = events.length;
   const successes = events.filter(e => e.success).length;
   const failures = events.filter(e => !e.success).length;
@@ -60,7 +85,6 @@ export function getSynthesisHealth(): {
   const lastFailure = [...events].reverse().find(e => !e.success) ?? null;
   const lastSuccess = [...events].reverse().find(e => e.success) ?? null;
 
-  // Status: healthy if no failures, degraded if <50% failure rate, failing if >=50%
   let status: "healthy" | "degraded" | "failing" = "healthy";
   if (failures > 0 && total > 0) {
     status = failures / total >= 0.5 ? "failing" : "degraded";
@@ -78,8 +102,8 @@ export function getSynthesisHealth(): {
 }
 
 /**
- * Get recent failures for alerting.
+ * Get recent failures for alerting, optionally scoped by project.
  */
-export function getRecentFailures(limit = 5): SynthesisEvent[] {
-  return events.filter(e => !e.success).slice(-limit);
+export function getRecentFailures(limit = 5, projectSlug?: string): SynthesisEvent[] {
+  return getAllEvents(projectSlug).filter(e => !e.success).slice(-limit);
 }

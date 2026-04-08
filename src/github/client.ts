@@ -133,7 +133,7 @@ async function fetchSha(repo: string, path: string): Promise<string> {
 export async function fetchFiles(
   repo: string,
   paths: string[]
-): Promise<Map<string, FileResult>> {
+): Promise<{ files: Map<string, FileResult>; failed: string[]; incomplete: boolean }> {
   const start = Date.now();
   logger.debug("github.fetchFiles", { repo, count: paths.length, paths });
 
@@ -142,11 +142,14 @@ export async function fetchFiles(
   );
 
   const fileMap = new Map<string, FileResult>();
+  const failedPaths: string[] = [];
   for (const outcome of results) {
     if (outcome.status === "fulfilled") {
       fileMap.set(outcome.value.path, outcome.value.result);
     } else {
-      logger.warn("github.fetchFiles partial failure", { error: outcome.reason?.message });
+      const failedPath = paths[results.indexOf(outcome)];
+      failedPaths.push(failedPath);
+      logger.warn("github.fetchFiles partial failure", { path: failedPath, error: outcome.reason?.message });
     }
   }
 
@@ -154,10 +157,11 @@ export async function fetchFiles(
     repo,
     requested: paths.length,
     fetched: fileMap.size,
+    failed: failedPaths.length,
     ms: Date.now() - start,
   });
 
-  return fileMap;
+  return { files: fileMap, failed: failedPaths, incomplete: failedPaths.length > 0 };
 }
 
 /**
@@ -246,18 +250,18 @@ export async function pushFile(
 export async function pushFiles(
   repo: string,
   files: PushFileInput[]
-): Promise<BatchPushResult[]> {
+): Promise<{ results: BatchPushResult[]; failed_count: number; incomplete: boolean }> {
   const start = Date.now();
   logger.debug("github.pushFiles", { repo, count: files.length });
 
-  const results = await Promise.allSettled(
+  const outcomes = await Promise.allSettled(
     files.map(async (file) => {
       const result = await pushFile(repo, file.path, file.content, file.message);
       return { path: file.path, ...result };
     })
   );
 
-  const batchResults: BatchPushResult[] = results.map((outcome, idx) => {
+  const batchResults: BatchPushResult[] = outcomes.map((outcome, idx) => {
     if (outcome.status === "fulfilled") {
       return outcome.value;
     }
@@ -270,14 +274,17 @@ export async function pushFiles(
     };
   });
 
+  const failedCount = batchResults.filter(r => !r.success).length;
+
   logger.debug("github.pushFiles complete", {
     repo,
     total: files.length,
-    succeeded: batchResults.filter(r => r.success).length,
+    succeeded: batchResults.length - failedCount,
+    failed: failedCount,
     ms: Date.now() - start,
   });
 
-  return batchResults;
+  return { results: batchResults, failed_count: failedCount, incomplete: failedCount > 0 };
 }
 
 /**
@@ -505,6 +512,7 @@ export async function getDefaultBranch(repo: string): Promise<string> {
     }
     const data = (await res.json()) as { default_branch: string };
     const branch = data.default_branch ?? "main";
+    if (defaultBranchCache.size >= 100) defaultBranchCache.clear();
     defaultBranchCache.set(repo, branch);
     logger.debug("getDefaultBranch resolved", { repo, branch });
     return branch;

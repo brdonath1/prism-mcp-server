@@ -26,7 +26,7 @@ describe("synthesis tracker", () => {
     recordSynthesisEvent({
       project: "test-project",
       sessionNumber: 26,
-      timestamp: "2026-04-03T00:00:00Z",
+      timestamp: new Date().toISOString(),
       success: true,
       input_tokens: 5000,
       output_tokens: 2000,
@@ -46,7 +46,7 @@ describe("synthesis tracker", () => {
     recordSynthesisEvent({
       project: "failing-project",
       sessionNumber: 10,
-      timestamp: "2026-04-03T01:00:00Z",
+      timestamp: new Date().toISOString(),
       success: false,
       error: "Anthropic API timeout",
       duration_ms: 30000,
@@ -63,20 +63,20 @@ describe("synthesis tracker", () => {
     recordSynthesisEvent({
       project: "p1",
       sessionNumber: 1,
-      timestamp: "2026-04-03T02:00:00Z",
+      timestamp: new Date().toISOString(),
       success: true,
     });
     recordSynthesisEvent({
       project: "p2",
       sessionNumber: 2,
-      timestamp: "2026-04-03T02:01:00Z",
+      timestamp: new Date().toISOString(),
       success: false,
       error: "timeout",
     });
     recordSynthesisEvent({
       project: "p3",
       sessionNumber: 3,
-      timestamp: "2026-04-03T02:02:00Z",
+      timestamp: new Date().toISOString(),
       success: false,
       error: "API key expired",
     });

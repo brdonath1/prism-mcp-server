@@ -14,9 +14,10 @@ describe("Atomic commit fallback architecture", () => {
       source.indexOf("// Synthesis after")
     );
 
-    // Atomic commit should be called before pushFiles
+    // Atomic commit should be called before sequential pushFile fallback
     const atomicIdx = commitSection.indexOf("await createAtomicCommit(");
-    const fallbackIdx = commitSection.indexOf("await pushFiles(");
+    // Look for the fallback comment specifically, not backup pushFile calls
+    const fallbackIdx = commitSection.indexOf("Sequential pushFile");
 
     expect(atomicIdx).toBeGreaterThan(-1);
     expect(fallbackIdx).toBeGreaterThan(-1);
@@ -29,9 +30,9 @@ describe("Atomic commit fallback architecture", () => {
       source.indexOf("// Synthesis after")
     );
 
-    // pushFiles should be inside an else/failure branch
+    // pushFile fallback should be inside a failure branch
     expect(commitSection).toContain("atomicResult.success");
-    expect(commitSection).toContain("falling back to parallel pushFiles");
+    expect(commitSection).toContain("falling back to sequential pushFile");
   });
 
   it("fallback logs a warning when triggered", () => {
@@ -51,7 +52,7 @@ describe("Atomic commit fallback architecture", () => {
     );
 
     expect(commitSection).toContain("warnings.push");
-    expect(commitSection).toContain("Fell back to individual file pushes");
+    expect(commitSection).toContain("Fell back to sequential file pushes");
   });
 
   it("createAtomicCommit returns structured error on failure", () => {

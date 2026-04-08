@@ -65,6 +65,15 @@ I hope these look good!`;
     expect(() => extractJSON(input)).toThrow();
   });
 
+  it("extracts array from surrounding prose (L-6)", () => {
+    const input = 'Here are the results:\n\n[{"id": 1}, {"id": 2}, {"id": 3}]\n\nThat is all.';
+    const result = extractJSON(input) as any[];
+    expect(Array.isArray(result)).toBe(true);
+    expect(result).toHaveLength(3);
+    expect(result[0].id).toBe(1);
+    expect(result[2].id).toBe(3);
+  });
+
   it("handles very large JSON strings without crashing", () => {
     const bigValue = "x".repeat(100_000);
     const input = `{"big": "${bigValue}"}`;

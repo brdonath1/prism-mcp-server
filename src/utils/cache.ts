@@ -22,6 +22,25 @@ export class MemoryCache<T> {
   constructor(name: string, ttlMinutes = 5) {
     this.name = name;
     this.ttlMs = ttlMinutes * 60 * 1000;
+
+    // Proactive eviction every 5 minutes — .unref() allows process to exit cleanly
+    const interval = setInterval(() => this.evictExpired(), 5 * 60 * 1000);
+    interval.unref();
+  }
+
+  /** Remove all expired entries */
+  private evictExpired(): void {
+    const now = Date.now();
+    let evicted = 0;
+    for (const [key, entry] of this.store) {
+      if (now > entry.expiresAt) {
+        this.store.delete(key);
+        evicted++;
+      }
+    }
+    if (evicted > 0) {
+      logger.debug("cache eviction", { cache: this.name, evicted, remaining: this.store.size });
+    }
   }
 
   get(key: string): T | null {

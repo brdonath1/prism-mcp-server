@@ -16,8 +16,9 @@ import {
   getCommit,
   deleteFile,
   createAtomicCommit,
+  getDefaultBranch,
 } from "../github/client.js";
-import { LIVING_DOCUMENTS, LEGACY_LIVING_DOCUMENTS, SYNTHESIS_ENABLED, SERVER_VERSION, FRAMEWORK_REPO, MCP_SAFE_TIMEOUT } from "../config.js";
+import { LIVING_DOCUMENTS, LEGACY_LIVING_DOCUMENTS, SYNTHESIS_ENABLED, SERVER_VERSION, FRAMEWORK_REPO, MCP_SAFE_TIMEOUT, GITHUB_PAT, GITHUB_OWNER } from "../config.js";
 import { resolveDocPath, resolveDocPushPath, resolveDocFiles } from "../utils/doc-resolver.js";
 import { guardPushPath } from "../utils/doc-guard.js";
 import { logger } from "../utils/logger.js";
@@ -453,7 +454,23 @@ async function commitPhase(
     ? `prism: finalize session ${sessionNumber} [${today}]`
     : `prism: session ${sessionNumber} artifacts`;
 
-  // 5a. Try atomic commit first (single Git Trees API commit — no race conditions)
+  // 5a. Capture HEAD SHA before atomic attempt for H-6 safety check
+  let headShaBefore: string | undefined;
+  try {
+    const branch = await getDefaultBranch(projectSlug);
+    const refUrl = `https://api.github.com/repos/${GITHUB_OWNER}/${projectSlug}/git/ref/heads/${branch}`;
+    const refRes = await fetch(refUrl, {
+      headers: { Authorization: `Bearer ${GITHUB_PAT}`, Accept: "application/vnd.github+json" },
+    });
+    if (refRes.ok) {
+      const refData = await refRes.json() as { object: { sha: string } };
+      headShaBefore = refData.object.sha;
+    }
+  } catch {
+    // Non-critical — proceed without safety check
+  }
+
+  // 5b. Try atomic commit first (single Git Trees API commit — no race conditions)
   const atomicResult = await createAtomicCommit(projectSlug, guardedFiles, commitMessage);
 
   let results: Array<{
@@ -474,28 +491,59 @@ async function commitPhase(
       validation_errors: [],
     }));
   } else {
-    // 5b. Atomic commit failed — fall back to parallel pushFiles
-    logger.warn("Atomic commit failed, falling back to parallel pushFiles", {
-      repo: projectSlug,
-      atomicError: atomicResult.error,
-    });
-    warnings.push(`Atomic commit failed (${atomicResult.error}). Fell back to individual file pushes.`);
+    // 5c. Atomic commit failed — check if HEAD moved (partial write)
+    let headChanged = false;
+    if (headShaBefore) {
+      try {
+        const branch = await getDefaultBranch(projectSlug);
+        const refUrl = `https://api.github.com/repos/${GITHUB_OWNER}/${projectSlug}/git/ref/heads/${branch}`;
+        const refRes = await fetch(refUrl, {
+          headers: { Authorization: `Bearer ${GITHUB_PAT}`, Accept: "application/vnd.github+json" },
+        });
+        if (refRes.ok) {
+          const refData = await refRes.json() as { object: { sha: string } };
+          headChanged = refData.object.sha !== headShaBefore;
+        }
+      } catch {
+        // Assume not changed if we can't check
+      }
+    }
 
-    const pushInputs = guardedFiles.map(f => ({
-      path: f.path,
-      content: f.content,
-      message: commitMessage,
-    }));
+    if (headChanged) {
+      // HEAD moved — partial atomic write occurred, do NOT fall back
+      logger.error("Atomic commit failed but HEAD changed — partial state detected", {
+        repo: projectSlug,
+        atomicError: atomicResult.error,
+      });
+      warnings.push(`Atomic commit failed with partial state (HEAD changed). Manual verification required.`);
+      results = guardedFiles.map(f => ({
+        path: f.path,
+        success: false,
+        size_bytes: 0,
+        verified: false,
+        validation_errors: ["Partial atomic commit — state may be inconsistent"],
+      }));
+    } else {
+      // HEAD unchanged — safe to fall back to sequential pushFile calls
+      logger.warn("Atomic commit failed, falling back to sequential pushFile", {
+        repo: projectSlug,
+        atomicError: atomicResult.error,
+      });
+      warnings.push(`Atomic commit failed (${atomicResult.error}). Fell back to sequential file pushes.`);
 
-    const pushResults = await pushFiles(projectSlug, pushInputs);
-
-    results = pushResults.map(pr => ({
-      path: pr.path,
-      success: pr.success,
-      size_bytes: pr.size,
-      verified: pr.success,
-      validation_errors: pr.success ? [] : [pr.error ?? "Push failed"],
-    }));
+      // Sequential pushFile (not parallel pushFiles) to avoid 409 conflicts
+      results = [];
+      for (const f of guardedFiles) {
+        const pr = await pushFile(projectSlug, f.path, f.content, commitMessage);
+        results.push({
+          path: f.path,
+          success: pr.success,
+          size_bytes: pr.size,
+          verified: pr.success,
+          validation_errors: pr.success ? [] : [pr.error ?? "Push failed"],
+        });
+      }
+    }
   }
 
   const succeeded = results.filter((r) => r.success);

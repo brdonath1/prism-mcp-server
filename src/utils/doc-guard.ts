@@ -10,9 +10,50 @@
  * This function is called before EVERY file push across ALL tools.
  */
 
-import { fileExists } from "../github/client.js";
+import { fileExists, listDirectory } from "../github/client.js";
 import { DOC_ROOT } from "../config.js";
 import { logger } from "./logger.js";
+
+/**
+ * Pre-check which .prism/ paths exist via a single listDirectory call.
+ * Returns a Set of existing .prism/ paths for fast lookup.
+ */
+export async function preloadPrismPaths(projectSlug: string): Promise<Set<string>> {
+  try {
+    const entries = await listDirectory(projectSlug, DOC_ROOT);
+    const paths = new Set<string>();
+    for (const entry of entries) {
+      paths.add(`${DOC_ROOT}/${entry.name}`);
+      if (entry.type === "dir") {
+        const subEntries = await listDirectory(projectSlug, `${DOC_ROOT}/${entry.name}`);
+        for (const sub of subEntries) {
+          paths.add(`${DOC_ROOT}/${entry.name}/${sub.name}`);
+        }
+      }
+    }
+    return paths;
+  } catch {
+    return new Set();
+  }
+}
+
+/**
+ * Batch guard resolution using preloaded .prism/ paths.
+ * Eliminates N+1 fileExists calls by using a pre-fetched set.
+ */
+export function guardPushPathBatch(
+  path: string,
+  prismPaths: Set<string>
+): { path: string; redirected: boolean } {
+  if (!isRootLevelPrismPath(path)) {
+    return { path, redirected: false };
+  }
+  const newPath = `${DOC_ROOT}/${path}`;
+  if (prismPaths.has(newPath)) {
+    return { path: newPath, redirected: true };
+  }
+  return { path, redirected: false };
+}
 
 /**
  * Known PRISM living document base names (without DOC_ROOT prefix).
