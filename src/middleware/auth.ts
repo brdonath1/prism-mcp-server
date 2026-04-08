@@ -1,7 +1,16 @@
 import { type Request, type Response, type NextFunction } from "express";
 import { MCP_AUTH_TOKEN, ANTHROPIC_CIDRS, ALLOWED_CIDRS, ENABLE_IP_ALLOWLIST } from "../config.js";
+import { timingSafeEqual } from "crypto";
 import { isIpInAnyCidr } from "../utils/cidr.js";
 import { logger } from "../utils/logger.js";
+
+/**
+ * Timing-safe string comparison — prevents character-by-character brute force.
+ */
+function safeTokenCompare(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(Buffer.from(a), Buffer.from(b));
+}
 
 /**
  * Extract the real client IP from the request.
@@ -9,6 +18,12 @@ import { logger } from "../utils/logger.js";
  * The leftmost value is the original client IP.
  */
 function getClientIp(req: Request): string {
+  // Prefer req.ip (respects Express 'trust proxy' setting) over manual parsing
+  if (req.ip) {
+    return req.ip;
+  }
+
+  // Fallback: manual X-Forwarded-For parsing only if req.ip is undefined
   const forwarded = req.headers["x-forwarded-for"];
   if (typeof forwarded === "string") {
     return forwarded.split(",")[0].trim();
@@ -31,7 +46,7 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
     const authHeader = req.headers.authorization;
     if (authHeader?.startsWith("Bearer ")) {
       const token = authHeader.slice(7);
-      if (token === MCP_AUTH_TOKEN) {
+      if (safeTokenCompare(token, MCP_AUTH_TOKEN)) {
         next();
         return;
       }

@@ -16,9 +16,9 @@ export function registerLogInsight(server: McpServer): void {
     "Log an insight to insights.md. Supports STANDING RULE tagging for auto-loading at bootstrap.",
     {
       project_slug: z.string().describe("Project repo name"),
-      id: z.string().describe("Insight ID (e.g., 'INS-12')"),
-      title: z.string().describe("Insight title"),
-      category: z.string().describe("Category (e.g., 'pattern', 'gotcha', 'preference', 'exploration', 'operations')"),
+      id: z.string().regex(/^INS-\d{1,4}$/, "Insight ID must match INS-N format (e.g., 'INS-12')").describe("Insight ID (e.g., 'INS-12')"),
+      title: z.string().min(1).max(200).describe("Insight title"),
+      category: z.string().min(1).max(50).describe("Category (e.g., 'pattern', 'gotcha', 'preference', 'exploration', 'operations')"),
       description: z.string().describe("Full description of the insight"),
       session: z.number().describe("Session number where insight was discovered"),
       standing_rule: z.boolean().optional().describe("Whether this is a STANDING RULE (auto-loaded at bootstrap via D-44 Track 1)"),

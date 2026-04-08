@@ -18,6 +18,12 @@ function parseCidr(cidr: string): { network: number; mask: number } {
 
 export function isIpInCidr(ip: string, cidr: string): boolean {
   try {
+    // IPv6 addresses contain ':' — not yet supported for CIDR matching.
+    // Return false gracefully; add full IPv6 CIDR support if Anthropic publishes IPv6 ranges.
+    if (ip.includes(":") || cidr.includes(":")) {
+      return false;
+    }
+
     const ipLong = ipToLong(ip);
     const { network, mask } = parseCidr(cidr);
     return (ipLong & mask) === network;

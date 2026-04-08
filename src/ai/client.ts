@@ -74,7 +74,8 @@ export async function synthesize(
     return result;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    logger.error("Synthesis API call failed", { error: message, ms: Date.now() - start });
+    const sanitized = message.replace(/sk-[a-zA-Z0-9_-]+/g, "sk-***REDACTED***");
+    logger.error("Synthesis API call failed", { error: sanitized, ms: Date.now() - start });
     return null;
   }
 }

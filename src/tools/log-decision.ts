@@ -16,9 +16,9 @@ export function registerLogDecision(server: McpServer): void {
     "Log a decision atomically to _INDEX.md and domain file. Server-side formatting.",
     {
       project_slug: z.string().describe("Project repo name"),
-      id: z.string().describe("Decision ID (e.g., 'D-45')"),
-      title: z.string().describe("Decision title"),
-      domain: z.string().describe("Decision domain (e.g., 'architecture', 'operations', 'optimization')"),
+      id: z.string().regex(/^D-\d{1,4}$/, "Decision ID must match D-N format (e.g., 'D-45')").describe("Decision ID (e.g., 'D-45')"),
+      title: z.string().min(1).max(200).describe("Decision title"),
+      domain: z.string().min(1).max(50).describe("Decision domain (e.g., 'architecture', 'operations', 'optimization')"),
       status: z.string().describe("Decision status (e.g., 'SETTLED', 'OPEN')"),
       reasoning: z.string().describe("Full reasoning text for the decision entry"),
       assumptions: z.string().optional().describe("Assumptions (if any)"),
