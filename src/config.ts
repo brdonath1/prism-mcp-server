@@ -75,6 +75,10 @@ export const SYNTHESIS_ENABLED = !!process.env.ANTHROPIC_API_KEY;
 /** Max output tokens for synthesis calls */
 export const SYNTHESIS_MAX_OUTPUT_TOKENS = 4096;
 
+/** Timeout for post-finalization synthesis (S34d). Separate from MCP_SAFE_TIMEOUT
+ *  because synthesis runs after commit succeeds and is best-effort/non-fatal. */
+export const SYNTHESIS_TIMEOUT_MS = 120_000;
+
 /** The 10 mandatory PRISM living documents (D-18, D-41, D-44, D-67) */
 export const LIVING_DOCUMENTS = [
   `${DOC_ROOT}/handoff.md`,

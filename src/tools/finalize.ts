@@ -18,7 +18,7 @@ import {
   createAtomicCommit,
   getDefaultBranch,
 } from "../github/client.js";
-import { LIVING_DOCUMENTS, LEGACY_LIVING_DOCUMENTS, SYNTHESIS_ENABLED, SERVER_VERSION, FRAMEWORK_REPO, MCP_SAFE_TIMEOUT, GITHUB_PAT, GITHUB_OWNER } from "../config.js";
+import { LIVING_DOCUMENTS, LEGACY_LIVING_DOCUMENTS, SYNTHESIS_ENABLED, SERVER_VERSION, FRAMEWORK_REPO, MCP_SAFE_TIMEOUT, SYNTHESIS_TIMEOUT_MS, GITHUB_PAT, GITHUB_OWNER } from "../config.js";
 import { resolveDocPath, resolveDocPushPath, resolveDocFiles } from "../utils/doc-resolver.js";
 import { guardPushPath } from "../utils/doc-guard.js";
 import { logger } from "../utils/logger.js";
@@ -352,7 +352,8 @@ async function commitPhase(
   projectSlug: string,
   sessionNumber: number,
   handoffVersion: number,
-  files: Array<{ path: string; content: string }>
+  files: Array<{ path: string; content: string }>,
+  skipSynthesis: boolean = false,
 ) {
   const warnings: string[] = [];
   const today = new Date().toISOString().split("T")[0];
@@ -558,23 +559,31 @@ async function commitPhase(
   let synthesisResult: {
     triggered: boolean;
     success: boolean;
+    brief_updated: boolean;
+    duration_ms?: number;
     error?: string;
+    skipped?: boolean;
     input_tokens?: number;
     output_tokens?: number;
-  } = { triggered: false, success: false };
+  } = { triggered: false, success: false, brief_updated: false };
 
-  if (allSucceeded && SYNTHESIS_ENABLED) {
+  if (skipSynthesis) {
+    synthesisResult = { triggered: false, success: true, brief_updated: false, skipped: true };
+    logger.info("Synthesis: skipped", { projectSlug });
+  } else if (allSucceeded && SYNTHESIS_ENABLED) {
     synthesisResult.triggered = true;
+    const synthStart = Date.now();
     try {
-      // Race synthesis against a 120-second timeout. Synthesis for large projects
-      // (PF-v2: ~130KB input) needs significant time for Opus to process.
       const synthPromise = generateIntelligenceBrief(projectSlug, sessionNumber);
       const timeoutPromise = new Promise<{ success: false; error: string }>((resolve) =>
-        setTimeout(() => resolve({ success: false, error: "Synthesis timed out after 50s" }), MCP_SAFE_TIMEOUT)
+        setTimeout(() => resolve({ success: false, error: `Synthesis timed out after ${SYNTHESIS_TIMEOUT_MS / 1000}s` }), SYNTHESIS_TIMEOUT_MS)
       );
 
       const synthOutcome = await Promise.race([synthPromise, timeoutPromise]);
+      const synthDuration = Date.now() - synthStart;
       synthesisResult.success = synthOutcome.success;
+      synthesisResult.brief_updated = synthOutcome.success;
+      synthesisResult.duration_ms = synthDuration;
       if (!synthOutcome.success) {
         synthesisResult.error = synthOutcome.error;
       }
@@ -583,19 +592,19 @@ async function commitPhase(
         synthesisResult.output_tokens = synthOutcome.output_tokens;
       }
 
-      logger.info("Post-finalization synthesis complete", {
-        projectSlug,
-        sessionNumber,
-        success: synthOutcome.success,
-        error: synthOutcome.success ? undefined : synthOutcome.error,
-      });
+      if (synthOutcome.success) {
+        logger.info(`Synthesis: success in ${synthDuration}ms`, { projectSlug, sessionNumber });
+      } else {
+        logger.warn(`Synthesis: failed (non-fatal) — ${synthOutcome.error}`, { projectSlug, sessionNumber });
+      }
     } catch (err) {
+      const synthDuration = Date.now() - synthStart;
+      const errMsg = err instanceof Error ? err.message : String(err);
       synthesisResult.success = false;
-      synthesisResult.error = err instanceof Error ? err.message : String(err);
-      logger.error("Post-finalization synthesis failed", {
-        projectSlug,
-        error: synthesisResult.error,
-      });
+      synthesisResult.brief_updated = false;
+      synthesisResult.duration_ms = synthDuration;
+      synthesisResult.error = errMsg;
+      logger.warn(`Synthesis: failed (non-fatal) — ${errMsg}`, { projectSlug, sessionNumber });
     }
   }
 
@@ -780,6 +789,7 @@ export function registerFinalize(server: McpServer): void {
         )
         .optional()
         .describe("Files to push (commit phase only)"),
+      skip_synthesis: z.boolean().optional().describe("Skip post-finalization synthesis (default: false)"),
       banner_data: z.object({
         deliverables: z.array(z.object({
           text: z.string(),
@@ -794,7 +804,7 @@ export function registerFinalize(server: McpServer): void {
         }).optional(),
       }).optional().describe("Optional banner customization data (commit phase only)"),
     },
-    async ({ project_slug, action, session_number, handoff_version, files, banner_data }) => {
+    async ({ project_slug, action, session_number, handoff_version, files, skip_synthesis, banner_data }) => {
       const start = Date.now();
       logger.info("prism_finalize", { project_slug, action, session_number });
 
@@ -860,11 +870,13 @@ export function registerFinalize(server: McpServer): void {
         }
 
         const phaseStart = Date.now();
+        const skipSynthesis = skip_synthesis ?? false;
         const result = await commitPhase(
           project_slug,
           session_number,
           handoff_version ?? 1,
-          files
+          files,
+          skipSynthesis,
         );
         logger.info("prism_finalize commit timing", {
           projectSlug: project_slug,

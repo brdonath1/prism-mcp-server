@@ -15,16 +15,17 @@ describe("Timeout architecture (C-3)", () => {
     expect(source).toContain("export const MCP_SAFE_TIMEOUT = 50_000");
   });
 
-  it("no timeout exceeds 50000ms in finalize.ts", () => {
+  it("no inline timeout exceeds 50000ms in finalize.ts (synthesis uses SYNTHESIS_TIMEOUT_MS from config)", () => {
     const source = readFileSync("src/tools/finalize.ts", "utf-8");
 
-    // Should not contain old timeout values
+    // Should not contain old inline timeout values
     expect(source).not.toContain("90_000");
-    expect(source).not.toContain("120_000");
-    expect(source).not.toContain("120000");
 
-    // Should use MCP_SAFE_TIMEOUT
+    // Should use MCP_SAFE_TIMEOUT for draft phase
     expect(source).toContain("MCP_SAFE_TIMEOUT");
+
+    // Post-finalization synthesis uses SYNTHESIS_TIMEOUT_MS (120s, imported from config — S34d)
+    expect(source).toContain("SYNTHESIS_TIMEOUT_MS");
   });
 
   it("ai/client.ts uses MCP_SAFE_TIMEOUT as default", () => {

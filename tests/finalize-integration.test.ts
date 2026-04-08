@@ -442,6 +442,125 @@ Completed audit remediation.
   });
 });
 
+// ── Auto-Synthesis on Finalization (S34d) ─────────────────────────────────────
+
+describe("prism_finalize auto-synthesis (S34d)", () => {
+  it("Test A: synthesis called after successful commit with brief_updated: true", async () => {
+    mockFetchFile.mockResolvedValue({
+      content: HANDOFF_CONTENT,
+      sha: "new_sha",
+      size: HANDOFF_CONTENT.length,
+    });
+    mockListDirectory.mockResolvedValue([]);
+    mockPushFile.mockResolvedValue({ success: true, size: 100, sha: "new_sha" });
+    mockCreateAtomicCommit.mockResolvedValue({ success: true, sha: "atomic_sha", files_committed: 1 });
+    mockGenerateIntelligenceBrief.mockResolvedValue({ success: true, input_tokens: 1000, output_tokens: 500 });
+
+    const result = await callFinalizeTool({
+      project_slug: "test-project",
+      action: "commit",
+      session_number: 26,
+      handoff_version: 31,
+      files: [
+        { path: "glossary.md", content: "# Glossary\nTerms\n<!-- EOF: glossary.md -->" },
+      ],
+    });
+
+    const data = parseResult(result);
+    expect(data.all_succeeded).toBe(true);
+    expect(data.synthesis.success).toBe(true);
+    expect(data.synthesis.brief_updated).toBe(true);
+    expect(data.synthesis.duration_ms).toBeTypeOf("number");
+    expect(mockGenerateIntelligenceBrief).toHaveBeenCalledWith("test-project", 26);
+  });
+
+  it("Test B: synthesis failure does NOT cause finalize to throw — returns success with synthesis.success: false", async () => {
+    mockFetchFile.mockResolvedValue({
+      content: HANDOFF_CONTENT,
+      sha: "new_sha",
+      size: HANDOFF_CONTENT.length,
+    });
+    mockListDirectory.mockResolvedValue([]);
+    mockPushFile.mockResolvedValue({ success: true, size: 100, sha: "new_sha" });
+    mockCreateAtomicCommit.mockResolvedValue({ success: true, sha: "atomic_sha", files_committed: 1 });
+    mockGenerateIntelligenceBrief.mockRejectedValue(new Error("Anthropic API unavailable"));
+
+    const result = await callFinalizeTool({
+      project_slug: "test-project",
+      action: "commit",
+      session_number: 26,
+      handoff_version: 31,
+      files: [
+        { path: "glossary.md", content: "# Glossary\nTerms\n<!-- EOF: glossary.md -->" },
+      ],
+    });
+
+    expect(result.isError).toBeUndefined();
+    const data = parseResult(result);
+    expect(data.all_succeeded).toBe(true);
+    expect(data.synthesis.success).toBe(false);
+    expect(data.synthesis.brief_updated).toBe(false);
+    expect(data.synthesis.error).toContain("Anthropic API unavailable");
+  });
+
+  it("Test C: skip_synthesis: true skips synthesis, returns synthesis.skipped: true", async () => {
+    mockFetchFile.mockResolvedValue({
+      content: HANDOFF_CONTENT,
+      sha: "new_sha",
+      size: HANDOFF_CONTENT.length,
+    });
+    mockListDirectory.mockResolvedValue([]);
+    mockPushFile.mockResolvedValue({ success: true, size: 100, sha: "new_sha" });
+    mockCreateAtomicCommit.mockResolvedValue({ success: true, sha: "atomic_sha", files_committed: 1 });
+
+    const result = await callFinalizeTool({
+      project_slug: "test-project",
+      action: "commit",
+      session_number: 26,
+      handoff_version: 31,
+      skip_synthesis: true,
+      files: [
+        { path: "glossary.md", content: "# Glossary\nTerms\n<!-- EOF: glossary.md -->" },
+      ],
+    });
+
+    const data = parseResult(result);
+    expect(data.all_succeeded).toBe(true);
+    expect(data.synthesis.skipped).toBe(true);
+    expect(data.synthesis.brief_updated).toBe(false);
+    expect(mockGenerateIntelligenceBrief).not.toHaveBeenCalled();
+  });
+
+  it("Test D: skip_synthesis defaults to false — synthesis runs by default", async () => {
+    mockFetchFile.mockResolvedValue({
+      content: HANDOFF_CONTENT,
+      sha: "new_sha",
+      size: HANDOFF_CONTENT.length,
+    });
+    mockListDirectory.mockResolvedValue([]);
+    mockPushFile.mockResolvedValue({ success: true, size: 100, sha: "new_sha" });
+    mockCreateAtomicCommit.mockResolvedValue({ success: true, sha: "atomic_sha", files_committed: 1 });
+    mockGenerateIntelligenceBrief.mockResolvedValue({ success: true, input_tokens: 800, output_tokens: 300 });
+
+    const result = await callFinalizeTool({
+      project_slug: "test-project",
+      action: "commit",
+      session_number: 26,
+      handoff_version: 31,
+      // skip_synthesis NOT provided — should default to false
+      files: [
+        { path: "glossary.md", content: "# Glossary\nTerms\n<!-- EOF: glossary.md -->" },
+      ],
+    });
+
+    const data = parseResult(result);
+    expect(data.synthesis.triggered).toBe(true);
+    expect(data.synthesis.success).toBe(true);
+    expect(data.synthesis.brief_updated).toBe(true);
+    expect(mockGenerateIntelligenceBrief).toHaveBeenCalledOnce();
+  });
+});
+
 // ── Draft Phase ─────────────────────────────────────────────────────────────────
 
 describe("prism_finalize draft phase", () => {
