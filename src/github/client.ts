@@ -465,15 +465,53 @@ export async function deleteFile(repo: string, path: string, message: string): P
 }
 
 /**
+ * Cache for default branch lookups. Branch name won't change mid-session,
+ * so we cache indefinitely per repo.
+ */
+const defaultBranchCache = new Map<string, string>();
+
+/**
+ * Get the default branch for a repo. Cached after first lookup.
+ * Falls back to "main" if the API call fails.
+ */
+export async function getDefaultBranch(repo: string): Promise<string> {
+  const cached = defaultBranchCache.get(repo);
+  if (cached) return cached;
+
+  try {
+    const url = `${GITHUB_API_BASE}/repos/${GITHUB_OWNER}/${repo}`;
+    const res = await fetchWithRetry(url, { headers: headers() });
+    if (!res.ok) {
+      logger.warn("getDefaultBranch failed, falling back to 'main'", {
+        repo,
+        status: res.status,
+      });
+      return "main";
+    }
+    const data = (await res.json()) as { default_branch: string };
+    const branch = data.default_branch ?? "main";
+    defaultBranchCache.set(repo, branch);
+    logger.debug("getDefaultBranch resolved", { repo, branch });
+    return branch;
+  } catch (error) {
+    logger.warn("getDefaultBranch error, falling back to 'main'", {
+      repo,
+      error: (error as Error).message,
+    });
+    return "main";
+  }
+}
+
+/**
  * Push multiple files as a single atomic commit using Git Trees API.
  * Eliminates 409 race conditions from parallel Contents API pushes.
  *
  * Steps:
- * 1. GET /repos/{owner}/{repo}/git/ref/heads/main → current HEAD SHA
+ * 1. GET /repos/{owner}/{repo}/git/ref/heads/{branch} → current HEAD SHA
  * 2. GET /repos/{owner}/{repo}/git/commits/{sha} → base tree SHA
  * 3. POST /repos/{owner}/{repo}/git/trees → create tree with all files
  * 4. POST /repos/{owner}/{repo}/git/commits → create commit pointing to new tree
- * 5. PATCH /repos/{owner}/{repo}/git/ref/heads/main → update HEAD
+ * 5. PATCH /repos/{owner}/{repo}/git/ref/heads/{branch} → update HEAD
  */
 export async function createAtomicCommit(
   repo: string,
@@ -484,8 +522,9 @@ export async function createAtomicCommit(
   logger.debug("github.createAtomicCommit", { repo, fileCount: files.length });
 
   try {
-    // 1. Get current HEAD ref
-    const refUrl = `${GITHUB_API_BASE}/repos/${GITHUB_OWNER}/${repo}/git/ref/heads/main`;
+    // 1. Get current HEAD ref (dynamic branch detection — KI-17)
+    const branch = await getDefaultBranch(repo);
+    const refUrl = `${GITHUB_API_BASE}/repos/${GITHUB_OWNER}/${repo}/git/ref/heads/${branch}`;
     const refRes = await fetchWithRetry(refUrl, { headers: headers() });
     if (!refRes.ok) {
       throw handleApiError(refRes.status, await refRes.text(), `getRef ${repo}`);

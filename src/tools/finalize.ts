@@ -10,6 +10,7 @@ import {
   fetchFile,
   fetchFiles,
   pushFile,
+  pushFiles,
   listDirectory,
   listCommits,
   getCommit,
@@ -288,14 +289,27 @@ async function draftPhase(projectSlug: string, sessionNumber: number) {
     sessionCommits
   );
 
+  // Calculate total doc size for timeout scaling
+  let totalDocBytes = 0;
+  for (const [, doc] of docMap) {
+    totalDocBytes += new TextEncoder().encode(doc.content).length;
+  }
+
+  // Scale timeout: 45s for small projects, 90s for medium, 120s for large
+  const draftTimeoutMs = totalDocBytes > 100_000 ? 120_000
+    : totalDocBytes > 50_000 ? 90_000
+    : 45_000;
+
   logger.info("Finalization draft: calling Opus", {
     projectSlug,
     sessionNumber,
     docCount: docMap.size,
     commitCount: sessionCommits.length,
+    totalDocKB: (totalDocBytes / 1024).toFixed(1),
+    timeoutMs: draftTimeoutMs,
   });
 
-  const result = await synthesize(FINALIZATION_DRAFT_PROMPT, userMessage, 4096, 45000);
+  const result = await synthesize(FINALIZATION_DRAFT_PROMPT, userMessage, 4096, draftTimeoutMs);
 
   if (!result) {
     return {
@@ -417,7 +431,7 @@ async function commitPhase(
     files.map(file => guardPushPath(projectSlug, file.path))
   );
 
-  // 5. Push all files in a single atomic commit (eliminates 409 race conditions)
+  // 5. Push all files — atomic commit primary, parallel pushFiles fallback
   const guardedFiles = files.map((file, idx) => ({
     path: guardResults[idx].path,
     content: file.content,
@@ -428,16 +442,50 @@ async function commitPhase(
     ? `prism: finalize session ${sessionNumber} [${today}]`
     : `prism: session ${sessionNumber} artifacts`;
 
+  // 5a. Try atomic commit first (single Git Trees API commit — no race conditions)
   const atomicResult = await createAtomicCommit(projectSlug, guardedFiles, commitMessage);
 
-  // 6. Build results array from atomic commit outcome
-  const results = guardedFiles.map(f => ({
-    path: f.path,
-    success: atomicResult.success,
-    size_bytes: new TextEncoder().encode(f.content).length,
-    verified: atomicResult.success, // atomic commit is all-or-nothing
-    validation_errors: atomicResult.success ? [] : [atomicResult.error ?? "Atomic commit failed"],
-  }));
+  let results: Array<{
+    path: string;
+    success: boolean;
+    size_bytes: number;
+    verified: boolean;
+    validation_errors: string[];
+  }>;
+
+  if (atomicResult.success) {
+    // Atomic commit succeeded — build results from atomic outcome
+    results = guardedFiles.map(f => ({
+      path: f.path,
+      success: true,
+      size_bytes: new TextEncoder().encode(f.content).length,
+      verified: true,
+      validation_errors: [],
+    }));
+  } else {
+    // 5b. Atomic commit failed — fall back to parallel pushFiles
+    logger.warn("Atomic commit failed, falling back to parallel pushFiles", {
+      repo: projectSlug,
+      atomicError: atomicResult.error,
+    });
+    warnings.push(`Atomic commit failed (${atomicResult.error}). Fell back to individual file pushes.`);
+
+    const pushInputs = guardedFiles.map(f => ({
+      path: f.path,
+      content: f.content,
+      message: commitMessage,
+    }));
+
+    const pushResults = await pushFiles(projectSlug, pushInputs);
+
+    results = pushResults.map(pr => ({
+      path: pr.path,
+      success: pr.success,
+      size_bytes: pr.size,
+      verified: pr.success,
+      validation_errors: pr.success ? [] : [pr.error ?? "Push failed"],
+    }));
+  }
 
   const succeeded = results.filter((r) => r.success);
   const livingDocsUpdated = results.filter((r) =>

@@ -11,11 +11,14 @@ vi.mock("../src/github/client.js", () => ({
   fetchFile: vi.fn(),
   fetchFiles: vi.fn(),
   pushFile: vi.fn(),
+  pushFiles: vi.fn(),
   listDirectory: vi.fn(),
   listCommits: vi.fn(),
   getCommit: vi.fn(),
   deleteFile: vi.fn(),
   fileExists: vi.fn(),
+  createAtomicCommit: vi.fn(),
+  getDefaultBranch: vi.fn(),
 }));
 
 // Mock the AI synthesis modules
@@ -40,10 +43,12 @@ import {
   fetchFile,
   fetchFiles,
   pushFile,
+  pushFiles,
   listDirectory,
   listCommits,
   getCommit,
   deleteFile,
+  createAtomicCommit,
 } from "../src/github/client.js";
 import { synthesize } from "../src/ai/client.js";
 import { generateIntelligenceBrief } from "../src/ai/synthesize.js";
@@ -52,10 +57,12 @@ import { registerFinalize } from "../src/tools/finalize.js";
 const mockFetchFile = vi.mocked(fetchFile);
 const mockFetchFiles = vi.mocked(fetchFiles);
 const mockPushFile = vi.mocked(pushFile);
+const mockPushFiles = vi.mocked(pushFiles);
 const mockListDirectory = vi.mocked(listDirectory);
 const mockListCommits = vi.mocked(listCommits);
 const mockGetCommit = vi.mocked(getCommit);
 const mockDeleteFile = vi.mocked(deleteFile);
+const mockCreateAtomicCommit = vi.mocked(createAtomicCommit);
 const mockSynthesize = vi.mocked(synthesize);
 const mockGenerateIntelligenceBrief = vi.mocked(generateIntelligenceBrief);
 
@@ -308,6 +315,9 @@ describe("prism_finalize commit phase", () => {
     // Mock: all pushes succeed
     mockPushFile.mockResolvedValue({ success: true, size: 100, sha: "new_sha" });
 
+    // Mock: atomic commit succeeds
+    mockCreateAtomicCommit.mockResolvedValue({ success: true, sha: "atomic_sha", files_committed: 2 });
+
     // Mock: synthesis succeeds
     mockGenerateIntelligenceBrief.mockResolvedValue({ success: true, input_tokens: 1000, output_tokens: 500 });
 
@@ -386,6 +396,7 @@ Completed audit remediation.
     ]);
 
     mockPushFile.mockResolvedValue({ success: true, size: 100, sha: "new" });
+    mockCreateAtomicCommit.mockResolvedValue({ success: true, sha: "atomic_sha", files_committed: 1 });
     mockDeleteFile.mockResolvedValue(true);
 
     const result = await callFinalizeTool({
@@ -411,6 +422,7 @@ Completed audit remediation.
     });
     mockListDirectory.mockResolvedValue([]);
     mockPushFile.mockResolvedValue({ success: true, size: 100, sha: "new_sha" });
+    mockCreateAtomicCommit.mockResolvedValue({ success: true, sha: "atomic_sha", files_committed: 1 });
     mockGenerateIntelligenceBrief.mockResolvedValue({ success: true, input_tokens: 500, output_tokens: 200 });
 
     const result = await callFinalizeTool({
