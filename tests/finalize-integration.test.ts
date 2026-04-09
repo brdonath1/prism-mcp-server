@@ -574,7 +574,7 @@ describe("prism_finalize draft phase", () => {
       content: '{"handoff": {"content": "draft handoff"}, "session_log": {"content": "draft log"}}',
       input_tokens: 5000,
       output_tokens: 2000,
-      model: "claude-opus-4-6",
+      model: "claude-sonnet-4-6",
     });
 
     const result = await callFinalizeTool({
@@ -619,7 +619,7 @@ describe("prism_finalize draft phase", () => {
       content: "Here are my thoughts about the finalization:\n\nThe handoff should be updated...",
       input_tokens: 3000,
       output_tokens: 1000,
-      model: "claude-opus-4-6",
+      model: "claude-sonnet-4-6",
     });
 
     const result = await callFinalizeTool({
