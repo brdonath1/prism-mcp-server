@@ -1,6 +1,6 @@
 /**
  * Intelligence synthesis pipeline.
- * Loads all living documents, calls Sonnet 4.6, pushes intelligence-brief.md.
+ * Loads all living documents, calls Opus 4.6, pushes intelligence-brief.md.
  */
 
 import { fetchFiles, pushFile } from "../github/client.js";
@@ -22,7 +22,7 @@ export interface SynthesisOutcome {
 
 /**
  * Generate an intelligence brief for a project.
- * Loads all living documents, synthesizes via Sonnet 4.6, pushes result.
+ * Loads all living documents, synthesizes via Opus 4.6, pushes result.
  */
 export async function generateIntelligenceBrief(
   projectSlug: string,
@@ -72,7 +72,7 @@ export async function generateIntelligenceBrief(
       totalBytes: Array.from(allDocs.values()).reduce((sum, d) => sum + d.size, 0),
     });
 
-    // 3. Call Sonnet 4.6
+    // 3. Call Opus 4.6
     const result = await synthesize(FINALIZATION_SYNTHESIS_PROMPT, userMessage, undefined, SYNTHESIS_TIMEOUT_MS);
 
     if (!result.success) {

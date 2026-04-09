@@ -67,7 +67,7 @@ export const DOC_ROOT = ".prism";
 export const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? "";
 
 /** Model to use for synthesis */
-export const SYNTHESIS_MODEL = process.env.SYNTHESIS_MODEL ?? "claude-sonnet-4-6";
+export const SYNTHESIS_MODEL = process.env.SYNTHESIS_MODEL ?? "claude-opus-4-6";
 
 /** Whether synthesis is enabled (requires API key) */
 export const SYNTHESIS_ENABLED = !!process.env.ANTHROPIC_API_KEY;
