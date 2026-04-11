@@ -42,8 +42,8 @@ export const PORT = parseInt(process.env.PORT ?? "3000", 10);
 /** Log level */
 export const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
 
-/** Server version */
-export const SERVER_VERSION = "2.14.0";
+/** Server version. Bumped to 3.0.0 for Railway operations gateway (brief-103). */
+export const SERVER_VERSION = "3.0.0";
 
 /** MCP client timeout is ~60s. All server-side operations must complete within 50s
  *  to leave 10s buffer for transport overhead. This constrains synthesis, draft,
@@ -206,6 +206,16 @@ export const PREFETCH_KEYWORDS: Record<string, string> = {
 
 /** MCP Auth Token for Bearer authentication (B.2) */
 export const MCP_AUTH_TOKEN = process.env.MCP_AUTH_TOKEN || "";
+
+/** Railway API token (workspace-scoped). Required to enable Railway tools. */
+export const RAILWAY_API_TOKEN = process.env.RAILWAY_API_TOKEN ?? "";
+
+/** Railway GraphQL API endpoint */
+export const RAILWAY_API_ENDPOINT =
+  process.env.RAILWAY_API_ENDPOINT ?? "https://backboard.railway.app/graphql/v2";
+
+/** Whether Railway tools are enabled. Requires RAILWAY_API_TOKEN to be set. */
+export const RAILWAY_ENABLED = !!RAILWAY_API_TOKEN;
 
 /**
  * Anthropic's published outbound IP range for MCP tool calls.

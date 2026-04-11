@@ -8,7 +8,7 @@
 import express, { type Request, type Response } from "express";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { PORT, SERVER_VERSION } from "./config.js";
+import { PORT, RAILWAY_ENABLED, SERVER_VERSION } from "./config.js";
 import { logger } from "./utils/logger.js";
 import { requestLogger } from "./middleware/request-logger.js";
 import { authMiddleware } from "./middleware/auth.js";
@@ -24,6 +24,10 @@ import { registerSynthesize } from "./tools/synthesize.js";
 import { registerLogDecision } from "./tools/log-decision.js";
 import { registerLogInsight } from "./tools/log-insight.js";
 import { registerPatch } from "./tools/patch.js";
+import { registerRailwayLogs } from "./tools/railway-logs.js";
+import { registerRailwayDeploy } from "./tools/railway-deploy.js";
+import { registerRailwayEnv } from "./tools/railway-env.js";
+import { registerRailwayStatus } from "./tools/railway-status.js";
 
 const app = express();
 app.use(express.json({ limit: "5mb" }));
@@ -59,6 +63,16 @@ function createServer(): McpServer {
   registerLogDecision(server);
   registerLogInsight(server);
   registerPatch(server);
+
+  // Railway operations gateway (brief-103). Tools only register when the
+  // RAILWAY_API_TOKEN environment variable is set, so existing deployments
+  // without the token are unaffected.
+  if (RAILWAY_ENABLED) {
+    registerRailwayLogs(server);
+    registerRailwayDeploy(server);
+    registerRailwayEnv(server);
+    registerRailwayStatus(server);
+  }
 
   return server;
 }
@@ -136,5 +150,6 @@ app.listen(PORT, () => {
     version: SERVER_VERSION,
     mode: "stateless",
     transport: "streamable-http",
+    railway_enabled: RAILWAY_ENABLED,
   });
 });
