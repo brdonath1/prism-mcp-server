@@ -1,0 +1,79 @@
+{
+  "brief": "brief-104-operations-gateway-full-stack",
+  "status": "completed",
+  "started_at": "2026-04-11T20:34:00Z",
+  "completed_at": "2026-04-11T20:41:00Z",
+  "agent": "claude-code",
+  "session_id": null,
+  "version_bump": "3.0.0 -> 4.0.0",
+  "workstreams": {
+    "A.1_log_decision_dedup": {
+      "status": "completed",
+      "files": ["src/tools/log-decision.ts"],
+      "tests": ["tests/log-decision-dedup.test.ts"]
+    },
+    "A.2_fetch_path_resolution": {
+      "status": "completed",
+      "files": ["src/tools/fetch.ts"],
+      "tests": ["tests/fetch-path-resolution.test.ts"]
+    },
+    "B.1_agent_sdk_install": {
+      "status": "completed",
+      "files": ["package.json", "package-lock.json"],
+      "dependencies_added": [
+        "@anthropic-ai/claude-agent-sdk@^0.2.101",
+        "@anthropic-ai/claude-code@latest"
+      ]
+    },
+    "B.2_claude_code_client": {
+      "status": "completed",
+      "files": ["src/claude-code/client.ts"]
+    },
+    "B.3_repo_helpers": {
+      "status": "completed",
+      "files": ["src/claude-code/repo.ts"]
+    },
+    "B.4_cc_dispatch": {
+      "status": "completed",
+      "files": ["src/tools/cc-dispatch.ts"],
+      "tests": ["tests/cc-dispatch.test.ts"]
+    },
+    "B.5_cc_status": {
+      "status": "completed",
+      "files": ["src/tools/cc-status.ts"],
+      "tests": ["tests/cc-status.test.ts"]
+    },
+    "C.1_brief_status_tracking": {
+      "status": "completed",
+      "convention_documented_in": "CLAUDE.md"
+    },
+    "C.2_claude_md": {
+      "status": "completed",
+      "files": ["CLAUDE.md"]
+    },
+    "C.3_config": {
+      "status": "completed",
+      "files": ["src/config.ts"],
+      "added_exports": [
+        "CC_DISPATCH_ENABLED",
+        "CC_DISPATCH_MODEL",
+        "CC_DISPATCH_MAX_TURNS",
+        "CC_DISPATCH_STATE_REPO",
+        "CC_DISPATCH_STATE_DIR"
+      ]
+    },
+    "C.4_index_registration": {
+      "status": "completed",
+      "files": ["src/index.ts"],
+      "note": "cc_dispatch and cc_status register conditionally on CC_DISPATCH_ENABLED (i.e., when ANTHROPIC_API_KEY is set)"
+    }
+  },
+  "build": "passing (tsc clean)",
+  "tests": "38 test files, 471 tests, 0 failures",
+  "pr_url": null,
+  "commits": [],
+  "notes": [
+    "Working tree is dirty — changes are source-only. The PRISM session is expected to review, commit, and push per the coordination rules in INS-69.",
+    "No PRISM decisions were logged by this brief, per the critical coordination rules at the top of brief-104."
+  ]
+}

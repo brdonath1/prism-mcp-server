@@ -42,8 +42,10 @@ export const PORT = parseInt(process.env.PORT ?? "3000", 10);
 /** Log level */
 export const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
 
-/** Server version. Bumped to 3.0.0 for Railway operations gateway (brief-103). */
-export const SERVER_VERSION = "3.0.0";
+/** Server version. Bumped to 4.0.0 for Operations Gateway full stack (brief-104):
+ *  server-side dedup for prism_log_decision, fetch path resolution, and the
+ *  Claude Code orchestration layer (cc_dispatch + cc_status). */
+export const SERVER_VERSION = "4.0.0";
 
 /** MCP client timeout is ~60s. All server-side operations must complete within 50s
  *  to leave 10s buffer for transport overhead. This constrains synthesis, draft,
@@ -216,6 +218,34 @@ export const RAILWAY_API_ENDPOINT =
 
 /** Whether Railway tools are enabled. Requires RAILWAY_API_TOKEN to be set. */
 export const RAILWAY_ENABLED = !!RAILWAY_API_TOKEN;
+
+/**
+ * Claude Code orchestration layer (brief-104 / workstream B).
+ *
+ * The `cc_dispatch` and `cc_status` tools use `@anthropic-ai/claude-agent-sdk`
+ * to programmatically dispatch tasks to Claude Code from claude.ai sessions.
+ * They require an Anthropic API key for billing (the same key used for the
+ * synthesis layer). When the key is unset the tools are simply not registered,
+ * so existing deployments are unaffected.
+ */
+export const CC_DISPATCH_ENABLED = !!ANTHROPIC_API_KEY;
+
+/** Default model for Claude Code dispatch. "opus" resolves to the latest Opus. */
+export const CC_DISPATCH_MODEL = process.env.CC_DISPATCH_MODEL ?? "opus";
+
+/** Max turns for Claude Code dispatch (default). Can be overridden per-call. */
+export const CC_DISPATCH_MAX_TURNS = parseInt(
+  process.env.CC_DISPATCH_MAX_TURNS ?? "50",
+  10,
+);
+
+/**
+ * Root directory for dispatch state files in the prism-mcp-server repo.
+ * Dispatch records are persisted to GitHub so cc_status can read them
+ * across stateless server requests.
+ */
+export const CC_DISPATCH_STATE_REPO = "prism-mcp-server";
+export const CC_DISPATCH_STATE_DIR = ".dispatch";
 
 /**
  * Anthropic's published outbound IP range for MCP tool calls.

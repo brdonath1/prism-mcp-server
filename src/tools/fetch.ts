@@ -6,9 +6,36 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { fetchFile } from "../github/client.js";
-import { SUMMARY_SIZE_THRESHOLD } from "../config.js";
+import { DOC_ROOT, LEGACY_LIVING_DOCUMENTS, SUMMARY_SIZE_THRESHOLD } from "../config.js";
 import { logger } from "../utils/logger.js";
 import { summarizeMarkdown } from "../utils/summarizer.js";
+import { resolveDocPath } from "../utils/doc-resolver.js";
+
+/**
+ * Known PRISM living-document names that should be resolved through the
+ * doc-resolver (A.2 — brief 104). Callers can request these by bare name
+ * (e.g., "decisions/_INDEX.md") and the server will resolve to the actual
+ * path (".prism/decisions/_INDEX.md" or legacy root).
+ */
+const KNOWN_LIVING_DOC_NAMES = new Set<string>(LEGACY_LIVING_DOCUMENTS);
+
+/**
+ * Determine whether a requested path should go through doc-resolver.
+ *
+ * Rules:
+ * - Paths already prefixed with ".prism/" are passed through as-is
+ *   (existing callers and arbitrary files under .prism/ keep working).
+ * - Paths matching a known living-document name are resolved.
+ * - Decisions domain files ("decisions/foo.md") are resolved — they live
+ *   under .prism/decisions/ in migrated repos.
+ * - Any other path is passed through literally (arbitrary repo files).
+ */
+export function shouldResolveDocPath(filePath: string): boolean {
+  if (filePath.startsWith(`${DOC_ROOT}/`)) return false;
+  if (KNOWN_LIVING_DOC_NAMES.has(filePath)) return true;
+  if (filePath.startsWith("decisions/") && filePath.endsWith(".md")) return true;
+  return false;
+}
 
 /** Input schema for prism_fetch */
 const inputSchema = {
@@ -33,10 +60,27 @@ export function registerFetch(server: McpServer): void {
         let bytesDelivered = 0;
         let filesFetched = 0;
 
-        // Fetch all files in parallel
+        // Fetch all files in parallel. For known living-document names that
+        // were requested without a ".prism/" prefix, route through
+        // resolveDocPath() so both migrated (.prism/) and legacy (root) repos
+        // resolve correctly (A.2 — brief 104).
         const results = await Promise.allSettled(
           files.map(async (filePath) => {
             try {
+              if (shouldResolveDocPath(filePath)) {
+                const resolved = await resolveDocPath(project_slug, filePath);
+                return {
+                  // Preserve the requested path in the response so the caller
+                  // can correlate inputs and outputs without having to know
+                  // which variant the server picked.
+                  path: filePath,
+                  exists: true,
+                  content: resolved.content,
+                  sha: resolved.sha,
+                  size: new TextEncoder().encode(resolved.content).length,
+                };
+              }
+
               const result = await fetchFile(project_slug, filePath);
               return { path: filePath, exists: true, ...result };
             } catch (error) {

@@ -236,8 +236,10 @@ describe("Railway tools — source-level contract", () => {
     expect(source).toContain("https://backboard.railway.app/graphql/v2");
   });
 
-  it("SERVER_VERSION is bumped to 3.0.0", () => {
+  it("SERVER_VERSION reflects the current release (>= 3.0.0)", () => {
     const source = readFileSync("src/config.ts", "utf-8");
-    expect(source).toMatch(/SERVER_VERSION\s*=\s*"3\.0\.0"/);
+    // Brief-104 bumped this to 4.0.0; keep the assertion tolerant of future
+    // minor/patch bumps so it doesn't have to be touched every release.
+    expect(source).toMatch(/SERVER_VERSION\s*=\s*"[4-9]\.\d+\.\d+"/);
   });
 });

@@ -9,6 +9,27 @@ import { fetchFile, pushFile } from "../github/client.js";
 import { logger } from "../utils/logger.js";
 import { resolveDocPath, resolveDocPushPath } from "../utils/doc-resolver.js";
 import { guardPushPath } from "../utils/doc-guard.js";
+import { parseMarkdownTable } from "../utils/summarizer.js";
+
+/**
+ * Parse existing decision IDs from a decisions/_INDEX.md content string.
+ * Reads the markdown table and collects any value in the ID column
+ * (case-insensitive) that matches the D-N format.
+ */
+export function parseExistingDecisionIds(indexContent: string): Map<string, string> {
+  const ids = new Map<string, string>();
+  const rows = parseMarkdownTable(indexContent);
+  for (const row of rows) {
+    const idKey = Object.keys(row).find((k) => k.toLowerCase() === "id");
+    const titleKey = Object.keys(row).find((k) => k.toLowerCase() === "title");
+    if (!idKey) continue;
+    const id = row[idKey]?.trim();
+    if (id && /^D-\d+$/.test(id)) {
+      ids.set(id, titleKey ? (row[titleKey] ?? "").trim() : "");
+    }
+  }
+  return ids;
+}
 
 export function registerLogDecision(server: McpServer): void {
   server.tool(
@@ -44,7 +65,40 @@ export function registerLogDecision(server: McpServer): void {
           };
         }
 
-        // 2. Insert new row into the table (before EOF sentinel)
+        // 2. Dedup guard (A.1 — brief 104): reject if the requested D-N ID
+        // already exists in _INDEX.md. The concurrent-write race (two requests
+        // passing the check simultaneously) is a known edge case — resolved
+        // downstream by GitHub's SHA-based optimistic concurrency (409 →
+        // retry with fresh SHA, which re-reads _INDEX.md and re-checks).
+        const existingIds = parseExistingDecisionIds(indexContent);
+        if (existingIds.has(id)) {
+          const existingTitle = existingIds.get(id) ?? "";
+          const msg =
+            `Decision ID ${id} already exists in _INDEX.md` +
+            (existingTitle ? ` (title: "${existingTitle}")` : "") +
+            `. Use a different ID or update the existing entry via prism_patch.`;
+          logger.warn("prism_log_decision duplicate rejected", {
+            project_slug,
+            id,
+            existingTitle,
+          });
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  error: msg,
+                  duplicate: true,
+                  id,
+                  existing_title: existingTitle,
+                }),
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        // 3. Insert new row into the table (before EOF sentinel)
         const newRow = `| ${id} | ${title} | ${domain} | ${status} | ${session} |`;
         const eofSentinel = "<!-- EOF: _INDEX.md -->";
 
@@ -54,7 +108,7 @@ export function registerLogDecision(server: McpServer): void {
           indexContent = indexContent.trimEnd() + `\n${newRow}\n`;
         }
 
-        // 3. Fetch or create domain file (D-67: backward-compatible resolution)
+        // 4. Fetch or create domain file (D-67: backward-compatible resolution)
         const domainDocName = `decisions/${domain}.md`;
         let domainContent: string;
         let domainResolvedPath: string;
@@ -69,7 +123,7 @@ export function registerLogDecision(server: McpServer): void {
           domainResolvedPath = guarded.path;
         }
 
-        // 4. Build full decision entry
+        // 5. Build full decision entry
         const entryLines = [
           `### ${id}: ${title}`,
           `- Domain: ${domain}`,
@@ -89,7 +143,7 @@ export function registerLogDecision(server: McpServer): void {
           domainContent = domainContent.trimEnd() + `\n\n${entry}\n\n${domainEof}\n`;
         }
 
-        // 5. Push both files to resolved paths
+        // 6. Push both files to resolved paths
         const indexResult = await pushFile(
           project_slug,
           indexResolvedPath,

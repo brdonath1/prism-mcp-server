@@ -6,7 +6,7 @@ This is the **PRISM MCP Server** — a custom remote MCP (Model Context Protocol
 
 **Owner:** Brian (brdonath1 on GitHub)
 **Framework:** PRISM v2.9.0
-**Server Version:** 2.9.0
+**Server Version:** 4.0.0
 **Status:** Production — deployed on Railway, serving 17 PRISM projects
 
 ## What PRISM Is
@@ -18,29 +18,33 @@ The MCP server is the v2 evolution — separating Claude into a pure reasoning a
 ## Architecture
 
 ```
-┌─────────────────────────────────────────┐
-│  Claude.ai Chat Session (Brian + Opus)  │
-│  - Brainstorming, planning, decisions   │
-│  - Full conversational experience       │
-│  - Calls PRISM MCP tools as needed      │
-└────────────────┬────────────────────────┘
-                 │ MCP Protocol (HTTPS)
-┌────────────────▼────────────────────────┐
-│  PRISM MCP Server (Railway)             │
-│  12 MCP tools — stateless proxy         │
-│  Parallelized GitHub API operations     │
-│  Server-side validation + synthesis     │
-│  Returns structured summaries           │
-└────────────────┬────────────────────────┘
-                 │ GitHub API
-┌────────────────▼────────────────────────┐
-│  GitHub Repos (brdonath1/*)             │
-│  10 living documents per project        │
-│  Framework: brdonath1/prism-framework   │
-└─────────────────────────────────────────┘
+┌───────────────────────────────────────────────┐
+│  Claude.ai Chat Session (Brian + Opus)        │
+│  - Brainstorming, planning, decisions         │
+│  - Calls PRISM MCP tools as needed            │
+└───────────────┬───────────────────────────────┘
+                │ MCP Protocol (HTTPS)
+┌───────────────▼───────────────────────────────┐
+│  PRISM MCP Server (Railway) — v4.0.0          │
+│  18 MCP tools — stateless proxy               │
+│  ├── 12 PRISM  (bootstrap/fetch/push/...)     │
+│  ├──  4 Railway (logs/deploy/env/status)      │
+│  └──  2 Claude Code (cc_dispatch/cc_status)   │
+│  Parallelized GitHub API operations           │
+│  Server-side validation + synthesis + dedup   │
+└──┬──────────────────────┬──────────────────┬──┘
+   │ GitHub API           │ Railway API      │ Agent SDK
+   ▼                      ▼                  ▼
+┌──────────────┐ ┌──────────────────┐ ┌───────────────┐
+│ GitHub Repos │ │ Railway Platform │ │ Claude Code   │
+│ brdonath1/*  │ │ (prod observ.)   │ │ (Agent SDK    │
+│ .prism/ docs │ │                  │ │  subprocess)  │
+└──────────────┘ └──────────────────┘ └───────────────┘
 ```
 
 **Note:** The MemoryCache singleton and Anthropic client singleton are intentional performance optimizations — safe in stateless mode since they are read-only/config-only (A.6).
+
+**Claude Code orchestration (brief-104):** `cc_dispatch` clones a target repo into /tmp, runs `@anthropic-ai/claude-agent-sdk` query() against it, and (in execute mode) commits results to a feature branch and opens a PR. Dispatch state is persisted to `brdonath1/prism-mcp-server/.dispatch/{id}.json` so `cc_status` can read it across stateless requests. Tools only register when `ANTHROPIC_API_KEY` is set.
 
 ## Technology Stack
 
@@ -50,6 +54,7 @@ The MCP server is the v2 evolution — separating Claude into a pure reasoning a
 - **Transport:** MCP Streamable HTTP, **stateless mode** (`sessionIdGenerator: undefined`)
 - **Validation:** Zod
 - **AI Synthesis:** `@anthropic-ai/sdk` (Opus 4.6 for intelligence briefs)
+- **Claude Code orchestration:** `@anthropic-ai/claude-agent-sdk` + `@anthropic-ai/claude-code` (subprocess)
 - **GitHub API client:** Plain `fetch` (Node.js 18+ built-in) — no Octokit
 - **Hosting:** Railway (persistent Node.js service)
 - **Package manager:** npm
@@ -61,6 +66,18 @@ The MCP server is the v2 evolution — separating Claude into a pure reasoning a
 - **Auth Token:** Set as `MCP_AUTH_TOKEN` for Bearer authentication
 - **Framework repo:** prism-framework
 - **Project repos:** brdonath1/[project-slug] (e.g., prism, platformforge, snapquote)
+
+## Environment Variables (Railway)
+
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `GITHUB_PAT` | ✅ | GitHub API auth for all read/write operations |
+| `MCP_AUTH_TOKEN` | ✅ | Bearer token for MCP client auth |
+| `ANTHROPIC_API_KEY` | optional | Enables intelligence-brief synthesis AND `cc_dispatch`/`cc_status` |
+| `RAILWAY_API_TOKEN` | optional | Enables `railway_*` tools (brief-103) |
+| `SYNTHESIS_MODEL` | optional | Override Opus model for intelligence briefs |
+| `CC_DISPATCH_MODEL` | optional | Override model for Claude Code dispatches (default: `opus`) |
+| `CC_DISPATCH_MAX_TURNS` | optional | Default agent turn cap (default: 50) |
 
 ## Key Technical Constraints
 
@@ -80,16 +97,15 @@ prism-mcp-server/
 ├── src/
 │   ├── index.ts                  # Express app + MCP server setup + transport
 │   ├── config.ts                 # Environment variables, constants
-│   ├── github/
-│   │   ├── client.ts             # GitHub API wrapper (fetch-based, parallelized)
-│   │   └── types.ts              # GitHub API response types
-│   ├── ai/
-│   │   ├── client.ts             # Anthropic SDK client for synthesis
-│   │   ├── prompts.ts            # Synthesis prompt templates
-│   │   └── synthesize.ts         # Intelligence brief generation
+│   ├── github/                   # GitHub API wrapper (fetch-based, parallelized)
+│   ├── ai/                       # Anthropic SDK client for synthesis
+│   ├── railway/                  # Railway GraphQL client (brief-103)
+│   ├── claude-code/              # Agent SDK wrapper + repo clone helpers (brief-104)
+│   │   ├── client.ts             # dispatchTask() — Agent SDK query() wrapper
+│   │   └── repo.ts               # cloneRepo(), commitAndPushBranch()
 │   ├── tools/
 │   │   ├── bootstrap.ts          # prism_bootstrap
-│   │   ├── fetch.ts              # prism_fetch
+│   │   ├── fetch.ts              # prism_fetch (bare-path resolution — brief-104 A.2)
 │   │   ├── push.ts               # prism_push
 │   │   ├── status.ts             # prism_status
 │   │   ├── finalize.ts           # prism_finalize
@@ -97,31 +113,17 @@ prism-mcp-server/
 │   │   ├── scale.ts              # prism_scale_handoff
 │   │   ├── search.ts             # prism_search
 │   │   ├── synthesize.ts         # prism_synthesize
-│   │   ├── log-decision.ts       # prism_log_decision
+│   │   ├── log-decision.ts       # prism_log_decision (dedup — brief-104 A.1)
 │   │   ├── log-insight.ts        # prism_log_insight
-│   │   └── patch.ts              # prism_patch
-│   ├── middleware/
-│   │   ├── auth.ts               # Bearer token authentication
-│   │   └── request-logger.ts     # Request logging middleware
-│   ├── validation/
-│   │   ├── index.ts              # Validation orchestrator
-│   │   ├── handoff.ts            # Handoff-specific validation rules
-│   │   ├── decisions.ts          # Decision index validation rules
-│   │   ├── common.ts             # EOF sentinel, commit prefix, general rules
-│   │   └── slug.ts               # Project slug + file path sanitization
-│   └── utils/
-│       ├── summarizer.ts         # Content summarization for context efficiency
-��       ├── banner.ts             # Server-rendered boot banner HTML (D-35)
-│       ├── cache.ts              # In-memory cache with TTL
-│       └── logger.ts             # Structured logging
-├── tests/
-│   ├── intelligence-layer.test.ts
-│   ├── scale.test.ts
-│   ├── push-validation.test.ts
-│   ├── finalize.test.ts
-│   ├── bootstrap-parsing.test.ts
-│   └── validation-extended.test.ts
-└── briefs/                       # Session brief files
+│   │   ├── patch.ts              # prism_patch
+│   │   ├── railway-*.ts          # 4 Railway tools (brief-103)
+│   │   ├── cc-dispatch.ts        # cc_dispatch (brief-104)
+│   │   └── cc-status.ts          # cc_status (brief-104)
+│   ├── middleware/               # auth + request logging
+│   ├── validation/               # Server-side push validation
+│   └── utils/                    # doc-resolver, doc-guard, logger, etc.
+├── tests/                        # vitest unit + integration tests
+└── docs/briefs/                  # Session brief files
 ```
 
 ## PRISM Living Documents (10 Mandatory Per Project)
@@ -159,7 +161,7 @@ All .md files MUST end with `<!-- EOF: {filename} -->`.
 - Must contain a markdown table with columns: ID, Title, Domain, Status, Session
 - Each decision must have D-N format ID
 - Status must be: SETTLED, PENDING, SUPERSEDED, REVISITED, ACCEPTED, or OPEN
-- No duplicate decision IDs
+- No duplicate decision IDs — `prism_log_decision` rejects with a clear error when a D-N ID already exists (brief-104 A.1)
 
 ### Commit messages:
 - Must start with: `prism:`, `fix:`, `docs:`, or `chore:`
@@ -184,5 +186,48 @@ All .md files MUST end with `<!-- EOF: {filename} -->`.
 - **Log everything useful** — structured JSON to stdout, Railway captures it
 - **Parallelize everything** — use `Promise.allSettled` for multi-file operations
 - **Test with MCP Inspector** — `npx @modelcontextprotocol/inspector` connecting to `http://localhost:3000/mcp`
+
+## Concurrent-write Protocol (INS-69)
+
+Two Claudes may be operating on the same project at the same time — the
+claude.ai PRISM session AND a Claude Code instance dispatched via
+`cc_dispatch`. To prevent ID collisions and duplicated living-document
+updates, follow these rules:
+
+1. **Decision IDs are owned by the claude.ai session.** Only the PRISM
+   session logs new D-N entries via `prism_log_decision`. Claude Code dispatches
+   MUST NOT log decisions — the server-side dedup guard (brief-104 A.1) will
+   reject duplicate IDs, but the contract is "don't log from two places."
+2. **Living documents are updated by exactly one actor at a time.** If a
+   brief targets `repo X`, the dispatched Claude Code only touches files
+   under that repo. The claude.ai session updates *its* own project's
+   living documents (handoff, session-log, etc.) — never the dispatched
+   repo's.
+3. **Briefs carry explicit scope.** Every brief lists the document scopes
+   it MAY update. Claude Code treats files outside that scope as read-only.
+4. **GitHub optimistic concurrency is the last line of defense.** If two
+   writes race, the second one gets a 409 and the retry path re-reads the
+   SHA. This works for any single file but does not solve semantic
+   conflicts — the rules above do.
+
+## Brief Status Tracking
+
+When Claude Code starts executing a brief, it writes a status file alongside
+the brief at `docs/briefs/{brief-name}.status.json`:
+
+```json
+{
+  "brief": "brief-104-operations-gateway-full-stack",
+  "status": "executing",
+  "started_at": "2026-04-11T12:00:00Z",
+  "agent": "claude-code",
+  "dispatch_id": "cc-1712834400-abcdef12"
+}
+```
+
+On completion, the file is updated with `"status": "completed"`, the
+terminal `completed_at`, any `pr_url`, and the list of commits. The
+`cc_status` tool exposes the same information for async dispatches via its
+`.dispatch/{id}.json` records in this repo.
 
 <!-- EOF: CLAUDE.md -->

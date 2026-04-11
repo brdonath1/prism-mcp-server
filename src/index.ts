@@ -8,7 +8,12 @@
 import express, { type Request, type Response } from "express";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { PORT, RAILWAY_ENABLED, SERVER_VERSION } from "./config.js";
+import {
+  CC_DISPATCH_ENABLED,
+  PORT,
+  RAILWAY_ENABLED,
+  SERVER_VERSION,
+} from "./config.js";
 import { logger } from "./utils/logger.js";
 import { requestLogger } from "./middleware/request-logger.js";
 import { authMiddleware } from "./middleware/auth.js";
@@ -28,6 +33,8 @@ import { registerRailwayLogs } from "./tools/railway-logs.js";
 import { registerRailwayDeploy } from "./tools/railway-deploy.js";
 import { registerRailwayEnv } from "./tools/railway-env.js";
 import { registerRailwayStatus } from "./tools/railway-status.js";
+import { registerCCDispatch } from "./tools/cc-dispatch.js";
+import { registerCCStatus } from "./tools/cc-status.js";
 
 const app = express();
 app.use(express.json({ limit: "5mb" }));
@@ -72,6 +79,13 @@ function createServer(): McpServer {
     registerRailwayDeploy(server);
     registerRailwayEnv(server);
     registerRailwayStatus(server);
+  }
+
+  // Claude Code orchestration (brief-104). Tools only register when an
+  // ANTHROPIC_API_KEY is available to pay for the Agent SDK subprocess.
+  if (CC_DISPATCH_ENABLED) {
+    registerCCDispatch(server);
+    registerCCStatus(server);
   }
 
   return server;
@@ -151,5 +165,6 @@ app.listen(PORT, () => {
     mode: "stateless",
     transport: "streamable-http",
     railway_enabled: RAILWAY_ENABLED,
+    cc_dispatch_enabled: CC_DISPATCH_ENABLED,
   });
 });
