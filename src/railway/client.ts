@@ -357,6 +357,12 @@ export async function getDeploymentLogs(
 /**
  * Fetch environment-wide logs (across all services). Railway accepts a
  * filter expression here (e.g. `@level:error`).
+ *
+ * NOTE: Railway's `environmentLogs` query does NOT accept a `limit` argument
+ * — only `environmentId` and `filter`. Verified 2026-04-11 against the live
+ * API via `Unknown argument "limit" on field "Query.environmentLogs"
+ * (GRAPHQL_VALIDATION_FAILED)`. The cap is enforced client-side by slicing
+ * the response to the most recent `limit` entries.
  */
 export async function getEnvironmentLogs(
   environmentId: string,
@@ -364,8 +370,8 @@ export async function getEnvironmentLogs(
   filter?: string,
 ): Promise<RailwayLog[]> {
   const capped = Math.max(1, Math.min(limit, 200));
-  const params: string[] = ["$environmentId: String!", "$limit: Int!"];
-  const args: string[] = ["environmentId: $environmentId", "limit: $limit"];
+  const params: string[] = ["$environmentId: String!"];
+  const args: string[] = ["environmentId: $environmentId"];
   if (filter) {
     params.push("$filter: String!");
     args.push("filter: $filter");
@@ -379,10 +385,13 @@ export async function getEnvironmentLogs(
       }
     }
   }`;
-  const vars: Record<string, unknown> = { environmentId, limit: capped };
+  const vars: Record<string, unknown> = { environmentId };
   if (filter) vars.filter = filter;
   const data = await railwayQuery<{ environmentLogs: RailwayLog[] }>(query, vars);
-  return data.environmentLogs ?? [];
+  const all = data.environmentLogs ?? [];
+  // Railway returns logs in chronological order (oldest → newest). Take the
+  // most recent `capped` entries to match user intent ("last N logs").
+  return all.length > capped ? all.slice(-capped) : all;
 }
 
 /**

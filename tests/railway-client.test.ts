@@ -241,6 +241,37 @@ describe("Railway client — source-level contract", () => {
     expect(source).toContain("... on Log");
   });
 
+  it("does not pass `limit` as a GraphQL argument to environmentLogs", () => {
+    // Regression (2026-04-11 smoke test): Railway's environmentLogs query
+    // does NOT accept a `limit` argument — only `environmentId` and `filter`.
+    // Passing limit causes GRAPHQL_VALIDATION_FAILED. The cap must be
+    // applied client-side by slicing the response array.
+    const envLogsCall = source.match(/environmentLogs\(\$\{args\.join[^)]*\)/);
+    expect(envLogsCall).not.toBeNull();
+    // The args builder must not include a limit-bearing entry.
+    const getEnvFn = source.match(
+      /export async function getEnvironmentLogs[\s\S]*?^}/m,
+    );
+    expect(getEnvFn).not.toBeNull();
+    const body = getEnvFn![0];
+    // args array seeded with environmentId only (no "limit: $limit")
+    expect(body).not.toMatch(/args[^=]*=[^;]*limit:\s*\$limit/);
+    expect(body).not.toMatch(/params[^=]*=[^;]*\$limit:\s*Int/);
+    // Client-side cap must be applied via slice.
+    expect(body).toMatch(/\.slice\(/);
+  });
+
+  it("still passes `limit` as a GraphQL argument to deploymentLogs", () => {
+    // Positive control: deploymentLogs DOES accept limit server-side.
+    // This asserts we didn't accidentally strip it from the wrong query.
+    const getDepFn = source.match(
+      /export async function getDeploymentLogs[\s\S]*?^}/m,
+    );
+    expect(getDepFn).not.toBeNull();
+    const body = getDepFn![0];
+    expect(body).toMatch(/deploymentLogs\(deploymentId: \$deploymentId, limit: \$limit\)/);
+  });
+
   it("has a resolver class with project/service/environment resolution", () => {
     expect(source).toContain("export class RailwayResolver");
     expect(source).toContain("resolveProject");
