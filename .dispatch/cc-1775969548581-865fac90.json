@@ -1,0 +1,11 @@
+{
+  "dispatch_id": "cc-1775969548581-865fac90",
+  "repo": "platformforge-v2",
+  "branch": "main",
+  "mode": "query",
+  "prompt": "List the top-level files and directories in this repository. Just output the listing.",
+  "status": "running",
+  "started_at": "2026-04-12T04:52:28.581Z",
+  "agent": "claude-code",
+  "server_version": "4.0.0"
+}
