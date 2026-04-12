@@ -17,6 +17,8 @@
  * - The SDK spawns the `claude` CLI as a subprocess, so `pathToClaudeCodeExecutable`
  *   must resolve to the binary installed via `@anthropic-ai/claude-code`. The
  *   subprocess inherits `ANTHROPIC_API_KEY` for auth.
+ * - Container MUST run as non-root user (INS-73, D-118). Claude Code CLI
+ *   v2.1+ rejects bypassPermissions when running as root.
  */
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
@@ -118,37 +120,6 @@ function findClaudeExecutable(): {
 
   // Strategy 3: Bare fallback — let the SDK try
   return { path: "claude", error: "not found locally or on PATH — using bare name" };
-}
-
-/**
- * Run a direct CLI smoke test to capture stdout/stderr.
- * This bypasses the Agent SDK to get raw error output when the SDK's
- * error messages are too opaque.
- */
-function runCliDiagnostic(executablePath: string, cwd: string): string {
-  try {
-    // Try a minimal print-mode invocation that should return quickly
-    const output = execSync(
-      `${executablePath} -p "Say hello" --output-format json --max-turns 1 --dangerously-skip-permissions 2>&1`,
-      {
-        timeout: 15_000,
-        encoding: "utf-8",
-        cwd,
-        env: {
-          ...process.env,
-          ANTHROPIC_API_KEY,
-          HOME: process.env.HOME ?? "/root",
-        },
-      },
-    );
-    return `CLI test OK: ${output.slice(0, 200)}`;
-  } catch (err: any) {
-    // execSync throws on non-zero exit — capture stderr/stdout from the error
-    const stderr = err?.stderr?.toString?.()?.slice(0, 500) ?? "";
-    const stdout = err?.stdout?.toString?.()?.slice(0, 500) ?? "";
-    const code = err?.status ?? "unknown";
-    return `CLI test FAILED (exit ${code}): stderr=[${stderr}] stdout=[${stdout}]`;
-  }
 }
 
 /**
@@ -301,20 +272,15 @@ export async function dispatchTask(
     if (timer) clearTimeout(timer);
     const message = error instanceof Error ? error.message : String(error);
     const stack = error instanceof Error ? error.stack : undefined;
-
-    // Run direct CLI diagnostic to capture the actual error output
-    const diagnostic = runCliDiagnostic(executable.path, workingDirectory);
-
     logger.error("dispatchTask failed", {
       error: message,
       stack: stack?.slice(0, 500),
-      diagnostic,
       workingDirectory,
       executablePath: executable.path,
       executableVersion: executable.version ?? "unknown",
+      executableError: executable.error ?? "none",
       model,
     });
-
     return {
       success: false,
       result: "",
@@ -322,7 +288,7 @@ export async function dispatchTask(
       usage: { input_tokens: 0, output_tokens: 0 },
       cost_usd: 0,
       duration_ms: Date.now() - start,
-      error: `${message} | executable: ${executable.path} (${executable.version ?? "version unknown"}) | diagnostic: ${diagnostic}`,
+      error: `${message} | executable: ${executable.path} (${executable.version ?? "version unknown"})${executable.error ? " | pre-flight: " + executable.error : ""}`,
       timed_out: timedOut,
     };
   }
