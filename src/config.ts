@@ -239,6 +239,14 @@ export const CC_DISPATCH_MAX_TURNS = parseInt(
   10,
 );
 
+/** Effort level for Claude Code dispatch.
+ *  Controls reasoning depth via the Anthropic API effort parameter.
+ *  Accepted values: "low", "medium", "high", "max".
+ *  "max" is only supported on Claude Opus 4.6 — it enables the absolute
+ *  highest reasoning capability with no constraints on token spending.
+ *  Defaults to "max" for maximum intelligence. Override via env var. */
+export const CC_DISPATCH_EFFORT = process.env.CC_DISPATCH_EFFORT ?? "max";
+
 /**
  * Root directory for dispatch state files in the prism-mcp-server repo.
  * Dispatch records are persisted to GitHub so cc_status can read them

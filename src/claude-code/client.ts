@@ -25,7 +25,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import { execSync } from "child_process";
 import { existsSync } from "fs";
 import { join } from "path";
-import { ANTHROPIC_API_KEY, CC_DISPATCH_MODEL } from "../config.js";
+import { ANTHROPIC_API_KEY, CC_DISPATCH_EFFORT, CC_DISPATCH_MODEL } from "../config.js";
 import { logger } from "../utils/logger.js";
 
 /** Options accepted by dispatchTask. Mirrors the subset of Agent SDK
@@ -162,6 +162,7 @@ export async function dispatchTask(
     version: executable.version ?? "unknown",
     error: executable.error ?? "none",
     model,
+    effort: CC_DISPATCH_EFFORT,
     workingDirectory,
     maxTurns,
     allowedTools,
@@ -202,9 +203,16 @@ export async function dispatchTask(
         abortController,
         pathToClaudeCodeExecutable: executable.path,
         persistSession: false,
+        // D-124: Pass effort level for max reasoning depth on Opus 4.6.
+        // The Agent SDK may or may not forward this to the underlying API.
+        // If ignored, Opus 4.6 defaults to "high" effort which is still
+        // excellent. "max" is an experimental upgrade for maximum capability.
+        effort: CC_DISPATCH_EFFORT,
         env: {
           ...process.env,
           ANTHROPIC_API_KEY,
+          // Also set as env var in case the Claude CLI reads it directly
+          CLAUDE_CODE_EFFORT: CC_DISPATCH_EFFORT,
         },
       } as any,
     });
