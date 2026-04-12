@@ -20,6 +20,9 @@
  */
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
+import { execSync } from "child_process";
+import { existsSync } from "fs";
+import { join } from "path";
 import { ANTHROPIC_API_KEY, CC_DISPATCH_MODEL } from "../config.js";
 import { logger } from "../utils/logger.js";
 
@@ -65,6 +68,59 @@ export interface DispatchResult {
 }
 
 /**
+ * Locate the claude CLI binary. Tries multiple strategies:
+ * 1. node_modules/.bin/claude (npm local install)
+ * 2. `which claude` (global PATH lookup)
+ * 3. Falls back to "claude" and lets the SDK resolve it.
+ *
+ * Returns { path, version?, error? } so callers can log diagnostics.
+ */
+function findClaudeExecutable(): {
+  path: string;
+  version?: string;
+  error?: string;
+} {
+  // Strategy 1: Check node_modules/.bin relative to cwd (/app on Railway)
+  const localBin = join(process.cwd(), "node_modules", ".bin", "claude");
+  if (existsSync(localBin)) {
+    try {
+      const version = execSync(`${localBin} --version 2>&1`, {
+        timeout: 10_000,
+        encoding: "utf-8",
+      }).trim();
+      return { path: localBin, version };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { path: localBin, error: `binary exists but --version failed: ${msg}` };
+    }
+  }
+
+  // Strategy 2: Global PATH lookup
+  try {
+    const globalPath = execSync("which claude 2>/dev/null", {
+      timeout: 5_000,
+      encoding: "utf-8",
+    }).trim();
+    if (globalPath) {
+      try {
+        const version = execSync(`${globalPath} --version 2>&1`, {
+          timeout: 10_000,
+          encoding: "utf-8",
+        }).trim();
+        return { path: globalPath, version };
+      } catch {
+        return { path: globalPath, error: "found via PATH but --version failed" };
+      }
+    }
+  } catch {
+    // which failed — claude not on PATH
+  }
+
+  // Strategy 3: Bare fallback — let the SDK try
+  return { path: "claude", error: "not found locally or on PATH — using bare name" };
+}
+
+/**
  * Dispatch a task to Claude Code and wait for the result.
  *
  * The function resolves when the SDK emits a terminal `result` message, when
@@ -97,6 +153,27 @@ export async function dispatchTask(
     timeoutMs,
   } = options;
 
+  // Pre-flight: find and validate the claude binary
+  const executable = findClaudeExecutable();
+  logger.info("dispatchTask pre-flight", {
+    executablePath: executable.path,
+    version: executable.version ?? "unknown",
+    error: executable.error ?? "none",
+    model,
+    workingDirectory,
+    maxTurns,
+    allowedTools,
+  });
+
+  if (executable.error && !executable.version) {
+    // Binary either doesn't exist or can't run --version
+    // Still try — the SDK might find it differently — but log a warning
+    logger.warn("dispatchTask: claude binary pre-flight issue", {
+      path: executable.path,
+      error: executable.error,
+    });
+  }
+
   const start = Date.now();
   const abortController = new AbortController();
   let timedOut = false;
@@ -125,6 +202,9 @@ export async function dispatchTask(
         // intent and disables the built-in "you sure?" guard.
         allowDangerouslySkipPermissions: true,
         abortController,
+        // Explicit path to the claude binary — don't rely on SDK auto-discovery
+        // in containerized environments (Railway). See S146 investigation.
+        pathToClaudeCodeExecutable: executable.path,
         // We run inside a Railway Node container with no persistent volume.
         // Session files on disk are useless and waste space.
         persistSession: false,
@@ -202,7 +282,16 @@ export async function dispatchTask(
   } catch (error) {
     if (timer) clearTimeout(timer);
     const message = error instanceof Error ? error.message : String(error);
-    logger.error("dispatchTask failed", { error: message, workingDirectory });
+    const stack = error instanceof Error ? error.stack : undefined;
+    logger.error("dispatchTask failed", {
+      error: message,
+      stack: stack?.slice(0, 500),
+      workingDirectory,
+      executablePath: executable.path,
+      executableVersion: executable.version ?? "unknown",
+      executableError: executable.error ?? "none",
+      model,
+    });
     return {
       success: false,
       result: "",
@@ -210,7 +299,7 @@ export async function dispatchTask(
       usage: { input_tokens: 0, output_tokens: 0 },
       cost_usd: 0,
       duration_ms: Date.now() - start,
-      error: message,
+      error: `${message} | executable: ${executable.path} (${executable.version ?? "version unknown"})${executable.error ? " | pre-flight: " + executable.error : ""}`,
       timed_out: timedOut,
     };
   }
