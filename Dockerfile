@@ -7,7 +7,8 @@ FROM node:22-slim
 
 # Install system dependencies required by cc_dispatch
 # git: needed by cloneRepo to clone target repos
-RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+# ca-certificates: needed for HTTPS (git clone from GitHub)
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user for running the server
 RUN groupadd -r prism && useradd -r -g prism -m -d /home/prism prism
