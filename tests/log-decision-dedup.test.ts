@@ -76,6 +76,33 @@ const EMPTY_INDEX = `# Decisions Index
 <!-- EOF: _INDEX.md -->
 `;
 
+/**
+ * Multi-table fixture that mirrors a real production `_INDEX.md`: a
+ * Domain Files reference table leads the file, and the Decision
+ * Summary table follows it. This shape is what exposed the brief-105
+ * dedup bug — the previous implementation read pipe lines from the
+ * entire file as a single table, so it parsed the wrong columns.
+ */
+const MULTI_TABLE_INDEX = `# Decisions Index
+
+## Domain Files
+
+| File | Decisions | Scope |
+|------|-----------|-------|
+| architecture.md | D-1..D-50 | Stack, system design |
+| operations.md   | D-51..D-120 | Runtime, deploys, incidents |
+| optimization.md | D-121..D-140 | Perf, budgets, caching |
+
+## Decision Summary
+
+| ID | Title | Domain | Status | Session |
+|----|-------|--------|--------|---------|
+| D-115 | Something earlier | architecture | SETTLED | 142 |
+| D-116 | Existing decision | operations | SETTLED | 143 |
+
+<!-- EOF: _INDEX.md -->
+`;
+
 beforeEach(() => {
   vi.clearAllMocks();
 });
@@ -102,6 +129,28 @@ describe("parseExistingDecisionIds", () => {
     const ids = parseExistingDecisionIds(junk);
     expect(ids.has("D-9")).toBe(true);
     expect(ids.size).toBe(1);
+  });
+
+  it("finds D-N IDs in the Decision Summary table of a multi-table index (brief 105)", () => {
+    const ids = parseExistingDecisionIds(MULTI_TABLE_INDEX);
+    // Must NOT be fooled by the leading Domain Files table. The rows
+    // there ("architecture.md", "operations.md", …) have no D-N prefix
+    // so they should be ignored, and the real decision rows must land
+    // in the map with their real titles intact.
+    expect(ids.size).toBe(2);
+    expect(ids.get("D-115")).toBe("Something earlier");
+    expect(ids.get("D-116")).toBe("Existing decision");
+  });
+
+  it("normalizes legacy hyphenless D-N IDs so dedup still matches", () => {
+    const legacy = `| ID | Title | Domain | Status | Session |
+|----|-------|--------|--------|---------|
+| D116 | Legacy hyphenless | operations | SETTLED | 143 |
+`;
+    const ids = parseExistingDecisionIds(legacy);
+    // The Zod schema enforces the hyphenated form on incoming requests,
+    // so the stored key must also be hyphenated for `has()` to hit.
+    expect(ids.has("D-116")).toBe(true);
   });
 });
 
@@ -137,6 +186,80 @@ describe("prism_log_decision dedup guard (A.1)", () => {
     expect(payload.error).toContain("D-116 already exists");
     // Guard must fire BEFORE any GitHub write happens.
     expect(mockPushFile).not.toHaveBeenCalled();
+  });
+
+  it("rejects a duplicate ID from the second table of a multi-table index (brief 105)", async () => {
+    // Regression: before brief 105 the dedup parser read the Domain
+    // Files table and never reached the real Decision Summary table,
+    // so duplicate IDs slipped past the guard.
+    mockResolveDocPath.mockResolvedValueOnce({
+      path: ".prism/decisions/_INDEX.md",
+      content: MULTI_TABLE_INDEX,
+      sha: "idx-sha",
+      legacy: false,
+    });
+
+    const { server, handlers } = createServerStub();
+    registerLogDecision(server as any);
+    const handler = handlers.prism_log_decision;
+
+    const result = await handler({
+      project_slug: "platformforge-v2",
+      id: "D-116",
+      title: "Attempted duplicate in multi-table doc",
+      domain: "operations",
+      status: "SETTLED",
+      reasoning: "Should still be rejected even with a leading table.",
+      session: 145,
+    });
+
+    expect(result.isError).toBe(true);
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.duplicate).toBe(true);
+    expect(payload.id).toBe("D-116");
+    expect(payload.existing_title).toBe("Existing decision");
+    expect(mockPushFile).not.toHaveBeenCalled();
+  });
+
+  it("accepts a new ID against a multi-table index (brief 105)", async () => {
+    mockResolveDocPath
+      .mockResolvedValueOnce({
+        path: ".prism/decisions/_INDEX.md",
+        content: MULTI_TABLE_INDEX,
+        sha: "idx-sha",
+        legacy: false,
+      })
+      .mockResolvedValueOnce({
+        path: ".prism/decisions/operations.md",
+        content: "# Operations\n\n<!-- EOF: operations.md -->\n",
+        sha: "domain-sha",
+        legacy: false,
+      });
+    mockGuardPushPath.mockResolvedValue({
+      path: ".prism/decisions/operations.md",
+      redirected: false,
+    });
+    mockPushFile.mockResolvedValue({ success: true, size: 100, sha: "new" });
+
+    const { server, handlers } = createServerStub();
+    registerLogDecision(server as any);
+
+    const result = await handler_ok(handlers, {
+      project_slug: "platformforge-v2",
+      id: "D-117",
+      title: "Brand new decision in a multi-table index",
+      domain: "operations",
+      status: "SETTLED",
+      reasoning: "Unique ID even against a file with a leading reference table.",
+      session: 145,
+    });
+
+    expect(result.isError).toBeUndefined();
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.id).toBe("D-117");
+    expect(payload.index_updated).toBe(true);
+    expect(payload.domain_file_updated).toBe(true);
+    expect(mockPushFile).toHaveBeenCalledTimes(2);
   });
 
   it("proceeds with the write when the ID is unique", async () => {

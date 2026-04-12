@@ -2,7 +2,7 @@
  * Decision index validation rules for decisions/_INDEX.md.
  */
 
-import { parseMarkdownTable } from "../utils/summarizer.js";
+import { parseMarkdownTable, extractSection } from "../utils/summarizer.js";
 import type { ValidationResult } from "./common.js";
 
 /** Valid decision statuses */
@@ -10,6 +10,16 @@ const VALID_STATUSES = ["SETTLED", "PENDING", "SUPERSEDED", "REVISITED", "ACCEPT
 
 /**
  * Validate decisions/_INDEX.md structure and content.
+ *
+ * Real `_INDEX.md` files start with a Domain Files reference table
+ * (File/Decisions/Scope) and only then get to the Decision Summary
+ * table (ID/Title/Domain/Status/Session). `parseMarkdownTable()` reads
+ * every pipe line in the file as a single table, so validating the raw
+ * content would pull the Domain Files header row and fail with a
+ * spurious "missing required column: ID" error (brief 105). We extract
+ * the Decision Summary section first so only the right table is fed
+ * into the parser; when the section header is absent (older fixtures
+ * or tests that pass a bare table) we fall back to the whole content.
  */
 export function validateDecisionIndex(content: string): ValidationResult {
   const errors: string[] = [];
@@ -21,7 +31,9 @@ export function validateDecisionIndex(content: string): ValidationResult {
     return { errors, warnings };
   }
 
-  const rows = parseMarkdownTable(content);
+  const decisionSection = extractSection(content, "Decision Summary");
+  const tableContent = decisionSection ?? content;
+  const rows = parseMarkdownTable(tableContent);
 
   if (rows.length === 0) {
     warnings.push("Decision index table has no data rows.");

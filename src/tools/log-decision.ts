@@ -9,23 +9,44 @@ import { fetchFile, pushFile } from "../github/client.js";
 import { logger } from "../utils/logger.js";
 import { resolveDocPath, resolveDocPushPath } from "../utils/doc-resolver.js";
 import { guardPushPath } from "../utils/doc-guard.js";
-import { parseMarkdownTable } from "../utils/summarizer.js";
 
 /**
  * Parse existing decision IDs from a decisions/_INDEX.md content string.
- * Reads the markdown table and collects any value in the ID column
- * (case-insensitive) that matches the D-N format.
+ *
+ * Scans the raw markdown with a regex so we remain correct on multi-table
+ * documents. Historically this function leaned on `parseMarkdownTable()`,
+ * but that utility treated every pipe-containing line in the file as one
+ * table — so in a real `_INDEX.md` (which leads with a Domain Files
+ * reference table before the Decision Summary table) the dedup check
+ * always returned an empty map and never rejected duplicates (brief 105).
+ *
+ * The regex below matches any table row whose first cell is a D-N format
+ * decision ID (with or without the hyphen, so legacy `| D101 |` entries
+ * are still detected) and records the accompanying title cell for the
+ * rejection message.
  */
 export function parseExistingDecisionIds(indexContent: string): Map<string, string> {
   const ids = new Map<string, string>();
-  const rows = parseMarkdownTable(indexContent);
-  for (const row of rows) {
-    const idKey = Object.keys(row).find((k) => k.toLowerCase() === "id");
-    const titleKey = Object.keys(row).find((k) => k.toLowerCase() === "title");
-    if (!idKey) continue;
-    const id = row[idKey]?.trim();
-    if (id && /^D-\d+$/.test(id)) {
-      ids.set(id, titleKey ? (row[titleKey] ?? "").trim() : "");
+  // Match table rows shaped like `| D-NNN | Title | ... |`. We accept an
+  // optional hyphen (`D-?\d+`) so legacy `| D101 | ... |` rows are still
+  // detected. The first capture is the ID, the second is everything up to
+  // the next `|`, which we treat as the title cell. `gm` lets us scan
+  // every line of the file independently of which table it belongs to.
+  const rowPattern = /^\|\s*(D-?\d+)\s*\|\s*([^|]*)\|/gm;
+  let match: RegExpExecArray | null;
+  while ((match = rowPattern.exec(indexContent)) !== null) {
+    const rawId = match[1].trim();
+    const title = match[2].trim();
+    // Normalize to the canonical `D-N` form for the map key so lookups
+    // still hit when the incoming request uses the hyphenated format
+    // (enforced upstream by the Zod schema) but the stored row was
+    // written in the legacy hyphenless form. Keep the first occurrence
+    // so the stored title matches whatever the canonical row says.
+    const id = /^D-\d+$/.test(rawId)
+      ? rawId
+      : rawId.replace(/^D(\d+)$/, "D-$1");
+    if (!ids.has(id)) {
+      ids.set(id, title);
     }
   }
   return ids;

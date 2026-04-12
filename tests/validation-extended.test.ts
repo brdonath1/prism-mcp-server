@@ -66,6 +66,58 @@ describe("validateDecisionIndex with all statuses", () => {
     const result = validateDecisionIndex(table);
     expect(result.errors.some(e => e.includes("D-N format"))).toBe(true);
   });
+
+  it("accepts a real multi-table _INDEX.md with a leading Domain Files table (brief 105)", () => {
+    // Regression for brief 105: the push validator previously parsed
+    // every pipe line in the file as a single table, saw the Domain
+    // Files header row first (columns: File, Decisions, Scope), and
+    // bailed with "missing required column: ID" on valid content. It
+    // must now extract the Decision Summary section and validate just
+    // that table.
+    const multiTable = `# Decisions Index
+
+## Domain Files
+
+| File | Decisions | Scope |
+|------|-----------|-------|
+| architecture.md | D-1..D-50 | Stack, system design |
+| operations.md   | D-51..D-120 | Runtime, deploys, incidents |
+
+## Decision Summary
+
+| ID | Title | Domain | Status | Session |
+|---|---|---|---|---|
+| D-1 | First decision | architecture | SETTLED | S1 |
+| D-2 | Second decision | operations | ACCEPTED | S2 |
+
+<!-- EOF: _INDEX.md -->`;
+    const result = validateDecisionIndex(multiTable);
+    expect(
+      result.errors,
+      `expected no errors, got: ${JSON.stringify(result.errors)}`
+    ).toHaveLength(0);
+  });
+
+  it("still catches duplicate IDs inside a multi-table _INDEX.md", () => {
+    const multiTable = `# Decisions Index
+
+## Domain Files
+
+| File | Decisions | Scope |
+|------|-----------|-------|
+| architecture.md | D-1..D-50 | Stack, system design |
+
+## Decision Summary
+
+| ID | Title | Domain | Status | Session |
+|---|---|---|---|---|
+| D-1 | First | architecture | SETTLED | S1 |
+| D-1 | Duplicate | operations | PENDING | S2 |
+
+<!-- EOF: _INDEX.md -->`;
+    const result = validateDecisionIndex(multiTable);
+    expect(result.errors.some(e => e.includes("Duplicate"))).toBe(true);
+  });
 });
 
 describe("validateEofSentinel", () => {
