@@ -4,8 +4,16 @@
   "branch": "main",
   "mode": "query",
   "prompt": "Read the file src/tools/cc-dispatch.ts (or similar — find the cc_dispatch implementation). Show me the full dispatchTask function, especially how it spawns the Claude Code process. I need to see the exact command it runs and how errors are handled.",
-  "status": "running",
+  "status": "failed",
   "started_at": "2026-04-12T04:27:28.822Z",
+  "completed_at": "2026-04-12T04:27:31.351Z",
   "agent": "claude-code",
-  "server_version": "4.0.0"
+  "server_version": "4.0.0",
+  "turns": 0,
+  "usage": {
+    "input_tokens": 0,
+    "output_tokens": 0
+  },
+  "cost_usd": 0,
+  "error": "Claude Code process exited with code 1"
 }
