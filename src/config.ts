@@ -244,7 +244,7 @@ export const CC_DISPATCH_MAX_TURNS = parseInt(
  * Dispatch records are persisted to GitHub so cc_status can read them
  * across stateless server requests.
  */
-export const CC_DISPATCH_STATE_REPO = "prism-mcp-server";
+export const CC_DISPATCH_STATE_REPO = "prism-dispatch-state";
 export const CC_DISPATCH_STATE_DIR = ".dispatch";
 
 /**

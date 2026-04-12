@@ -1,135 +1,32 @@
 /**
  * cc_status — Check status / retrieve results of Claude Code dispatches.
  *
- * Dispatches are persisted as JSON files under
- *   brdonath1/prism-mcp-server/.dispatch/{dispatch_id}.json
- * so that async-mode results survive server restarts and can be read by any
- * stateless request handler. (The server itself has no memory between
- * requests.)
+ * State management has been moved to ../dispatch-store.ts (D-123).
+ * This module only contains the MCP tool registration.
  *
- * This module exports both the MCP tool registration and the helpers
- * (`writeDispatchRecord`, `readDispatchRecord`, `DispatchRecord`) that
- * cc_dispatch uses internally.
+ * The dispatch store uses an in-memory Map as the primary read source,
+ * with GitHub (brdonath1/prism-dispatch-state) as a durable backup.
+ * This decouples state writes from the prism-mcp-server repo, preventing
+ * Railway auto-deploy triggers that previously killed in-flight dispatches.
  */
 
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
-  CC_DISPATCH_STATE_DIR,
   CC_DISPATCH_STATE_REPO,
   GITHUB_OWNER,
 } from "../config.js";
 import {
-  fetchFile,
-  listDirectory,
-  pushFile,
-} from "../github/client.js";
+  readDispatchRecord,
+  listDispatchIds,
+  type DispatchRecord,
+} from "../dispatch-store.js";
 import { logger } from "../utils/logger.js";
 
-/**
- * Shape of a dispatch record. `started_at` is set at dispatch start and
- * preserved across subsequent writes so a completed record still reflects
- * the original start time.
- */
-export interface DispatchRecord {
-  dispatch_id: string;
-  repo: string;
-  branch: string;
-  mode: "query" | "execute";
-  prompt: string;
-  status: "running" | "completed" | "failed";
-  started_at: string;
-  completed_at?: string;
-  agent: string;
-  server_version: string;
-  result?: string;
-  turns?: number;
-  usage?: Record<string, number>;
-  cost_usd?: number;
-  pr_url?: string;
-  error?: string;
-}
-
-/** Path to a specific dispatch record in the state repo. */
-function recordPath(dispatchId: string): string {
-  return `${CC_DISPATCH_STATE_DIR}/${dispatchId}.json`;
-}
-
-/**
- * Read a dispatch record from GitHub. Returns null if the record does not
- * exist. Other errors are rethrown.
- */
-export async function readDispatchRecord(
-  dispatchId: string,
-): Promise<DispatchRecord | null> {
-  try {
-    const file = await fetchFile(CC_DISPATCH_STATE_REPO, recordPath(dispatchId));
-    return JSON.parse(file.content) as DispatchRecord;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (msg.includes("Not found")) return null;
-    throw err;
-  }
-}
-
-/**
- * Persist a dispatch record to GitHub. If a prior record exists, the
- * `started_at` field from the prior record is preserved (so the completion
- * write doesn't overwrite the original start time).
- */
-export async function writeDispatchRecord(
-  record: DispatchRecord,
-): Promise<void> {
-  let finalRecord = record;
-  try {
-    const existing = await readDispatchRecord(record.dispatch_id);
-    if (existing?.started_at) {
-      finalRecord = { ...record, started_at: existing.started_at };
-    }
-  } catch {
-    // Non-fatal — first write.
-  }
-
-  const body = JSON.stringify(finalRecord, null, 2) + "\n";
-  const commit = `prism: cc_dispatch ${record.dispatch_id} ${record.status}`;
-  const result = await pushFile(
-    CC_DISPATCH_STATE_REPO,
-    recordPath(record.dispatch_id),
-    body,
-    commit,
-  );
-  if (!result.success) {
-    throw new Error(
-      `writeDispatchRecord failed for ${record.dispatch_id}: ${result.error}`,
-    );
-  }
-  logger.debug("cc_dispatch record persisted", {
-    dispatch_id: record.dispatch_id,
-    status: record.status,
-  });
-}
-
-/**
- * List recent dispatch IDs by enumerating .dispatch/*.json in the state repo.
- * Returns IDs sorted by filename (which includes a timestamp prefix from
- * cc-dispatch's ID generator, so lexical sort ≈ reverse chronological).
- */
-async function listDispatchIds(limit: number): Promise<string[]> {
-  try {
-    const entries = await listDirectory(
-      CC_DISPATCH_STATE_REPO,
-      CC_DISPATCH_STATE_DIR,
-    );
-    const ids = entries
-      .filter((e) => e.type === "file" && e.name.endsWith(".json"))
-      .map((e) => e.name.replace(/\.json$/, ""))
-      .sort()
-      .reverse();
-    return ids.slice(0, limit);
-  } catch {
-    return [];
-  }
-}
+// Re-export for backward compatibility — cc-dispatch.ts previously imported
+// these from this module. New code should import from dispatch-store directly.
+export type { DispatchRecord } from "../dispatch-store.js";
+export { writeDispatchRecord } from "../dispatch-store.js";
 
 const inputSchema = {
   dispatch_id: z

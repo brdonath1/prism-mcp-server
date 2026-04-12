@@ -43,7 +43,7 @@ import {
 import { logger } from "../utils/logger.js";
 import { dispatchTask } from "../claude-code/client.js";
 import { cloneRepo, commitAndPushBranch } from "../claude-code/repo.js";
-import { writeDispatchRecord, type DispatchRecord } from "./cc-status.js";
+import { writeDispatchRecord, type DispatchRecord } from "../dispatch-store.js";
 
 /** Tool allowlists per mode. Keep these narrow by default — the caller can
  *  widen them via the `allowed_tools` argument if they know what they need. */

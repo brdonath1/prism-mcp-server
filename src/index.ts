@@ -35,6 +35,7 @@ import { registerRailwayEnv } from "./tools/railway-env.js";
 import { registerRailwayStatus } from "./tools/railway-status.js";
 import { registerCCDispatch } from "./tools/cc-dispatch.js";
 import { registerCCStatus } from "./tools/cc-status.js";
+import { hydrateStore } from "./dispatch-store.js";
 
 const app = express();
 app.use(express.json({ limit: "5mb" }));
@@ -167,4 +168,16 @@ app.listen(PORT, () => {
     railway_enabled: RAILWAY_ENABLED,
     cc_dispatch_enabled: CC_DISPATCH_ENABLED,
   });
+
+  // Hydrate dispatch store from GitHub (non-blocking).
+  // Loads recent dispatch records into memory so cc_status works across
+  // server restarts. Does NOT block request handling — the server accepts
+  // requests immediately while hydration runs in the background.
+  if (CC_DISPATCH_ENABLED) {
+    void hydrateStore().catch((err) => {
+      // Non-fatal — server operates in memory-only mode if hydration fails.
+      // New dispatches still work; only pre-restart records are inaccessible.
+      console.error("dispatch-store hydration failed:", err);
+    });
+  }
 });
