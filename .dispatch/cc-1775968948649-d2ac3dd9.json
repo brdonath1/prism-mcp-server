@@ -4,8 +4,16 @@
   "branch": "main",
   "mode": "query",
   "prompt": "List the top-level files and directories in this repository. Just output the listing, nothing else.",
-  "status": "running",
+  "status": "failed",
   "started_at": "2026-04-12T04:42:28.649Z",
+  "completed_at": "2026-04-12T04:42:31.830Z",
   "agent": "claude-code",
-  "server_version": "4.0.0"
+  "server_version": "4.0.0",
+  "turns": 0,
+  "usage": {
+    "input_tokens": 0,
+    "output_tokens": 0
+  },
+  "cost_usd": 0,
+  "error": "Claude Code process exited with code 1 | executable: /app/node_modules/.bin/claude (2.1.101 (Claude Code))"
 }
