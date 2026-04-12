@@ -1,0 +1,11 @@
+{
+  "dispatch_id": "cc-1775968048822-ae998c55",
+  "repo": "prism-mcp-server",
+  "branch": "main",
+  "mode": "query",
+  "prompt": "Read the file src/tools/cc-dispatch.ts (or similar — find the cc_dispatch implementation). Show me the full dispatchTask function, especially how it spawns the Claude Code process. I need to see the exact command it runs and how errors are handled.",
+  "status": "running",
+  "started_at": "2026-04-12T04:27:28.822Z",
+  "agent": "claude-code",
+  "server_version": "4.0.0"
+}
