@@ -4,8 +4,13 @@
   "branch": "main",
   "mode": "query",
   "prompt": "List the top-level files and directories in this repository. Just output the listing.",
-  "status": "running",
+  "status": "failed",
   "started_at": "2026-04-12T04:51:00.597Z",
+  "completed_at": "2026-04-12T04:51:01.158Z",
   "agent": "claude-code",
-  "server_version": "4.0.0"
+  "server_version": "4.0.0",
+  "turns": 0,
+  "usage": {},
+  "cost_usd": 0,
+  "error": "cloneRepo failed: Command failed: git clone --depth 1 --single-branch --branch main https://x-access-token:***@github.com/brdonath1/platformforge-v2.git /tmp/cc-dispatch-UWqPhR\nCloning into '/tmp/cc-dispatch-UWqPhR'...\nfatal: unable to access 'https://github.com/brdonath1/platformforge-v2.git/': server certificate verification failed. CAfile: none CRLfile: none\n"
 }
