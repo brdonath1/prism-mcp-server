@@ -1,0 +1,11 @@
+{
+  "dispatch_id": "cc-1776017573384-f72fee4d",
+  "repo": "platformforge-v2",
+  "branch": "main",
+  "mode": "execute",
+  "prompt": "Create a new file at docs/cc-dispatch-smoke-test.md with this exact content:\n\n# cc_dispatch Smoke Test\nDispatched from PRISM Session 149 on 2026-04-12.\nThis file validates that execute-mode cc_dispatch can create PRs successfully.\nSafe to delete after verification.\n\nThen commit and create a PR.",
+  "status": "running",
+  "started_at": "2026-04-12T18:12:53.384Z",
+  "agent": "claude-code",
+  "server_version": "4.0.0"
+}
