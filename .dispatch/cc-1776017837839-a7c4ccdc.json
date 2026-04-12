@@ -1,0 +1,11 @@
+{
+  "dispatch_id": "cc-1776017837839-a7c4ccdc",
+  "repo": "prism-mcp-server",
+  "branch": "main",
+  "mode": "query",
+  "prompt": "I need to understand the cc_dispatch state management architecture. Do the following:\n\n1. Find all files related to dispatch state management — search for \"state_repo\", \"dispatch_state\", \"status\", \"running\", \"completed\" in the src/ directory related to cc_dispatch.\n\n2. Show me the complete cc_dispatch handler code — the function that processes dispatch requests.\n\n3. Show me how dispatch state is persisted — where does it write \"running\", \"completed\", \"failed\" status? Is it pushing to a GitHub repo?\n\n4. Show me any configuration related to state storage — env vars, repo references, file paths.\n\n5. Show me the async_mode implementation — how does it differ from synchronous mode?\n\nReturn the FULL source code of every relevant file. Do not summarize.",
+  "status": "running",
+  "started_at": "2026-04-12T18:17:17.839Z",
+  "agent": "claude-code",
+  "server_version": "4.0.0"
+}
