@@ -121,6 +121,37 @@ function findClaudeExecutable(): {
 }
 
 /**
+ * Run a direct CLI smoke test to capture stdout/stderr.
+ * This bypasses the Agent SDK to get raw error output when the SDK's
+ * error messages are too opaque.
+ */
+function runCliDiagnostic(executablePath: string, cwd: string): string {
+  try {
+    // Try a minimal print-mode invocation that should return quickly
+    const output = execSync(
+      `${executablePath} -p "Say hello" --output-format json --max-turns 1 --dangerously-skip-permissions 2>&1`,
+      {
+        timeout: 15_000,
+        encoding: "utf-8",
+        cwd,
+        env: {
+          ...process.env,
+          ANTHROPIC_API_KEY,
+          HOME: process.env.HOME ?? "/root",
+        },
+      },
+    );
+    return `CLI test OK: ${output.slice(0, 200)}`;
+  } catch (err: any) {
+    // execSync throws on non-zero exit — capture stderr/stdout from the error
+    const stderr = err?.stderr?.toString?.()?.slice(0, 500) ?? "";
+    const stdout = err?.stdout?.toString?.()?.slice(0, 500) ?? "";
+    const code = err?.status ?? "unknown";
+    return `CLI test FAILED (exit ${code}): stderr=[${stderr}] stdout=[${stdout}]`;
+  }
+}
+
+/**
  * Dispatch a task to Claude Code and wait for the result.
  *
  * The function resolves when the SDK emits a terminal `result` message, when
@@ -166,8 +197,6 @@ export async function dispatchTask(
   });
 
   if (executable.error && !executable.version) {
-    // Binary either doesn't exist or can't run --version
-    // Still try — the SDK might find it differently — but log a warning
     logger.warn("dispatchTask: claude binary pre-flight issue", {
       path: executable.path,
       error: executable.error,
@@ -198,21 +227,15 @@ export async function dispatchTask(
         allowedTools,
         maxTurns,
         permissionMode: "bypassPermissions",
-        // Required by the SDK when bypassPermissions is used — documents
-        // intent and disables the built-in "you sure?" guard.
         allowDangerouslySkipPermissions: true,
         abortController,
-        // Explicit path to the claude binary — don't rely on SDK auto-discovery
-        // in containerized environments (Railway). See S146 investigation.
         pathToClaudeCodeExecutable: executable.path,
-        // We run inside a Railway Node container with no persistent volume.
-        // Session files on disk are useless and waste space.
         persistSession: false,
         env: {
           ...process.env,
           ANTHROPIC_API_KEY,
         },
-      } as any, // SDK Options has more fields than we care about; cast for readability.
+      } as any,
     });
 
     let resultText = "";
@@ -228,13 +251,10 @@ export async function dispatchTask(
     for await (const message of q) {
       switch (message.type) {
         case "assistant": {
-          // Count each assistant turn. Usage is reported on the final result,
-          // but partial usage shows up here for streaming observability.
           turns += 1;
           break;
         }
         case "result": {
-          // Terminal message — always the last event in a successful run.
           turns = message.num_turns ?? turns;
           usageInput = message.usage?.input_tokens ?? usageInput;
           usageOutput = message.usage?.output_tokens ?? usageOutput;
@@ -256,8 +276,6 @@ export async function dispatchTask(
           break;
         }
         default:
-          // system / partial / tool events — we don't forward them, but the
-          // Agent SDK will emit useful diagnostics via its own logger.
           break;
       }
     }
@@ -283,15 +301,20 @@ export async function dispatchTask(
     if (timer) clearTimeout(timer);
     const message = error instanceof Error ? error.message : String(error);
     const stack = error instanceof Error ? error.stack : undefined;
+
+    // Run direct CLI diagnostic to capture the actual error output
+    const diagnostic = runCliDiagnostic(executable.path, workingDirectory);
+
     logger.error("dispatchTask failed", {
       error: message,
       stack: stack?.slice(0, 500),
+      diagnostic,
       workingDirectory,
       executablePath: executable.path,
       executableVersion: executable.version ?? "unknown",
-      executableError: executable.error ?? "none",
       model,
     });
+
     return {
       success: false,
       result: "",
@@ -299,7 +322,7 @@ export async function dispatchTask(
       usage: { input_tokens: 0, output_tokens: 0 },
       cost_usd: 0,
       duration_ms: Date.now() - start,
-      error: `${message} | executable: ${executable.path} (${executable.version ?? "version unknown"})${executable.error ? " | pre-flight: " + executable.error : ""}`,
+      error: `${message} | executable: ${executable.path} (${executable.version ?? "version unknown"}) | diagnostic: ${diagnostic}`,
       timed_out: timedOut,
     };
   }
