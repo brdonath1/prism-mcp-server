@@ -1,0 +1,11 @@
+{
+  "dispatch_id": "cc-1775970664731-04d1baa2",
+  "repo": "platformforge-v2",
+  "branch": "main",
+  "mode": "execute",
+  "prompt": "Fix two bugs in `scripts/brief-watcher.sh` (INS-72):\n\n**Bug 1: Work report misdetection**\nThe brief detection line at the bottom of the main loop is:\n```\ndone < <(git ls-tree --name-only \"origin/main\" \"$BRIEFS_DIR/\" 2>/dev/null | grep 'brief-.*\\.md$' | sort)\n```\nThis matches files like `brief-103-work-report.md` and `brief-104-implementation-status.md` which are NOT executable briefs.\n\nFix: Add exclusion filters after the grep:\n```\ngrep 'brief-.*\\.md$' | grep -v '\\-work-report' | grep -v '\\-status' | grep -v '\\-implementation'\n```\n\n**Bug 2: Cross-repo PR blind spot**\nThe `check_for_pr` function only checks `$GITHUB_REPO` which is hardcoded to `brdonath1/platformforge-v2`. Briefs targeting `prism-mcp-server` (or other repos) create PRs in those repos, so the watcher never detects them.\n\nFix: After detecting a new brief, parse the brief file for a `Target Repo:` line. If found, use that repo for PR detection instead of the default. Add a new helper function:\n```bash\nget_brief_target_repo() {\n    local brief_path=\"$1\"\n    local target\n    target=$(git show \"origin/main:${brief_path}\" 2>/dev/null | grep -m1 '^Target Repo:' | sed 's/Target Repo:[[:space:]]*//' | tr -d '[:space:]')\n    if [ -n \"$target\" ]; then\n        echo \"$target\"\n    else\n        echo \"$GITHUB_REPO\"\n    fi\n}\n```\nThen use this in the main loop after detecting a new brief:\n```bash\nTARGET_REPO=$(get_brief_target_repo \"$brief_rel_path\")\n```\nAnd pass `TARGET_REPO` to `check_for_pr` and `auto_merge_pr` instead of using `$GITHUB_REPO` directly.\n\n**Also update the comments:**\n- Replace `(D101)` references in comments with `(D-119/D-120)` since D101 was renumbered.\n- Add a v6.1 changelog entry in the header comments noting the INS-72 fix.\n\nMake ONLY these changes. Do not restructure or reformat the script.",
+  "status": "running",
+  "started_at": "2026-04-12T05:11:04.731Z",
+  "agent": "claude-code",
+  "server_version": "4.0.0"
+}
