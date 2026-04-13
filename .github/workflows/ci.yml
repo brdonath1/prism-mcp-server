@@ -1,10 +1,44 @@
 name: CI
 
+# WHITELIST PATTERN (D-76 / PF-v2 D-131)
+# ─────────────────────────────────────────────────────────────────────
+# PRISM-managed repos generate high commit volume from state management
+# (handoff updates, decisions, session logs, boot tests, intelligence
+# briefs). A paths-ignore (blacklist) approach requires manually adding
+# every new non-code directory and fails silently when you miss one.
+#
+# This paths (whitelist) approach is self-maintaining: CI only triggers
+# when files that affect the build actually change. New non-code
+# directories are excluded by default. No manual upkeep required.
+#
+# DO NOT revert to paths-ignore. See: prism-framework/_templates/reference/ci-best-practices.md
+# ─────────────────────────────────────────────────────────────────────
+
 on:
   push:
     branches: [main]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.json'
+      - 'vitest.config.ts'
+      - 'Dockerfile'
+      - 'railway.json'
+      - '.github/workflows/ci.yml'
   pull_request:
     branches: [main]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.json'
+      - 'vitest.config.ts'
+      - 'Dockerfile'
+      - 'railway.json'
+      - '.github/workflows/ci.yml'
 
 jobs:
   build-and-test:
