@@ -18,7 +18,7 @@ import {
   createAtomicCommit,
   getDefaultBranch,
 } from "../github/client.js";
-import { LIVING_DOCUMENTS, LEGACY_LIVING_DOCUMENTS, SYNTHESIS_ENABLED, SERVER_VERSION, FRAMEWORK_REPO, MCP_SAFE_TIMEOUT, SYNTHESIS_TIMEOUT_MS, GITHUB_PAT, GITHUB_OWNER } from "../config.js";
+import { LIVING_DOCUMENTS, LEGACY_LIVING_DOCUMENTS, SYNTHESIS_ENABLED, SERVER_VERSION, FRAMEWORK_REPO, MCP_SAFE_TIMEOUT, GITHUB_PAT, GITHUB_OWNER } from "../config.js";
 import { resolveDocPath, resolveDocPushPath, resolveDocFiles } from "../utils/doc-resolver.js";
 import { guardPushPath } from "../utils/doc-guard.js";
 import { logger } from "../utils/logger.js";
@@ -554,63 +554,47 @@ async function commitPhase(
 
   const allSucceeded = succeeded.length === files.length;
 
-  // Synthesis after successful commit (D-44 Track 2) — now awaited with timeout
-  // so failure surfaces in the response instead of being silently lost.
-  let synthesisResult: {
-    triggered: boolean;
-    success: boolean;
-    brief_updated: boolean;
-    duration_ms?: number;
-    error?: string;
-    skipped?: boolean;
-    input_tokens?: number;
-    output_tokens?: number;
-  } = { triggered: false, success: false, brief_updated: false };
+  // Synthesis after successful commit (D-78, FINDING-5) — fire-and-forget.
+  // Synthesis takes 60-100s on mature projects, which exceeds the MCP client timeout
+  // (~60s). Blocking the commit response on synthesis caused apparent hangs in the
+  // claude.ai UI. We now return immediately and let synthesis complete in the
+  // background; operators check status via `prism_synthesize mode=status` or see
+  // the refreshed brief on the next bootstrap.
+  let synthesisOutcome: "completed" | "timed_out" | "skipped" | "background";
+  let synthesisStatusHint: string | null = null;
 
   if (skipSynthesis) {
-    synthesisResult = { triggered: false, success: true, brief_updated: false, skipped: true };
+    synthesisOutcome = "skipped";
     logger.info("Synthesis: skipped", { projectSlug });
   } else if (allSucceeded && SYNTHESIS_ENABLED) {
-    synthesisResult.triggered = true;
+    synthesisOutcome = "background";
+    synthesisStatusHint =
+      "Synthesis running in background. Check via prism_synthesize mode=status or wait for next session bootstrap.";
     const synthStart = Date.now();
-    try {
-      const synthPromise = generateIntelligenceBrief(projectSlug, sessionNumber);
-      const timeoutPromise = new Promise<{ success: false; error: string }>((resolve) =>
-        setTimeout(() => resolve({ success: false, error: `Synthesis timed out after ${SYNTHESIS_TIMEOUT_MS / 1000}s` }), SYNTHESIS_TIMEOUT_MS)
-      );
-
-      const synthOutcome = await Promise.race([synthPromise, timeoutPromise]);
-      const synthDuration = Date.now() - synthStart;
-      synthesisResult.success = synthOutcome.success;
-      synthesisResult.brief_updated = synthOutcome.success;
-      synthesisResult.duration_ms = synthDuration;
-      if (!synthOutcome.success) {
-        synthesisResult.error = synthOutcome.error;
-      }
-      if ("input_tokens" in synthOutcome) {
-        synthesisResult.input_tokens = synthOutcome.input_tokens;
-        synthesisResult.output_tokens = synthOutcome.output_tokens;
-      }
-
-      if (synthOutcome.success) {
-        logger.info(`Synthesis: success in ${synthDuration}ms`, { projectSlug, sessionNumber });
-      } else {
-        logger.warn(`Synthesis: failed (non-fatal) — ${synthOutcome.error}`, { projectSlug, sessionNumber });
-      }
-    } catch (err) {
-      const synthDuration = Date.now() - synthStart;
-      const errMsg = err instanceof Error ? err.message : String(err);
-      synthesisResult.success = false;
-      synthesisResult.brief_updated = false;
-      synthesisResult.duration_ms = synthDuration;
-      synthesisResult.error = errMsg;
-      logger.warn(`Synthesis: failed (non-fatal) — ${errMsg}`, { projectSlug, sessionNumber });
-    }
+    // Fire synthesis in background; do not await. Failures are logged but do not
+    // affect the commit response (which has already been constructed by the time
+    // this resolves).
+    void generateIntelligenceBrief(projectSlug, sessionNumber)
+      .then((result) => {
+        logger.info("background synthesis complete", {
+          projectSlug,
+          sessionNumber,
+          success: result.success ?? false,
+          durationMs: Date.now() - synthStart,
+        });
+      })
+      .catch((err) => {
+        logger.error("background synthesis failed", {
+          projectSlug,
+          sessionNumber,
+          err: err instanceof Error ? err.message : String(err),
+          durationMs: Date.now() - synthStart,
+        });
+      });
+  } else {
+    // Commit did not fully succeed, or synthesis is disabled on this server.
+    synthesisOutcome = "skipped";
   }
-
-  const synthesisWarning = synthesisResult.triggered && !synthesisResult.success
-    ? `Intelligence brief synthesis failed: ${synthesisResult.error ?? "unknown error"}. The brief will be stale until next successful finalization.`
-    : undefined;
 
   return {
     project: projectSlug,
@@ -620,10 +604,12 @@ async function commitPhase(
     results,
     living_documents_updated: livingDocsUpdated,
     all_succeeded: allSucceeded,
-    synthesis: synthesisResult,
-    synthesis_warning: synthesisWarning,
+    synthesis_outcome: synthesisOutcome,
+    synthesis_banner_html: null as string | null,
+    synthesis_warning: null as string | null,
+    synthesis_status_hint: synthesisStatusHint,
     confirmation: allSucceeded
-      ? `Session ${sessionNumber} finalized. Handoff v${handoffVersion} pushed and verified. ${livingDocsUpdated}/${LIVING_DOCUMENTS.length} living documents updated.${synthesisWarning ? ` WARNING: ${synthesisWarning}` : " Intelligence brief synthesized."}`
+      ? `Session ${sessionNumber} finalized. Handoff v${handoffVersion} pushed and verified. ${livingDocsUpdated}/${LIVING_DOCUMENTS.length} living documents updated.${synthesisOutcome === "background" ? " Intelligence brief synthesizing in background." : synthesisOutcome === "skipped" ? " Synthesis skipped." : ""}`
       : `Session ${sessionNumber} finalization partially failed. ${succeeded.length}/${files.length} files pushed.`,
   };
 }

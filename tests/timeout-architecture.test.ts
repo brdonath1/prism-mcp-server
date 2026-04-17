@@ -15,7 +15,7 @@ describe("Timeout architecture (C-3)", () => {
     expect(source).toContain("export const MCP_SAFE_TIMEOUT = 50_000");
   });
 
-  it("no inline timeout exceeds 50000ms in finalize.ts (synthesis uses SYNTHESIS_TIMEOUT_MS from config)", () => {
+  it("no inline timeout exceeds 50000ms in finalize.ts (D-78: synthesis runs in background, no inline timeout)", () => {
     const source = readFileSync("src/tools/finalize.ts", "utf-8");
 
     // Should not contain old inline timeout values
@@ -24,8 +24,10 @@ describe("Timeout architecture (C-3)", () => {
     // Should use MCP_SAFE_TIMEOUT for draft phase
     expect(source).toContain("MCP_SAFE_TIMEOUT");
 
-    // Post-finalization synthesis uses SYNTHESIS_TIMEOUT_MS (120s, imported from config — S34d)
-    expect(source).toContain("SYNTHESIS_TIMEOUT_MS");
+    // Post-finalization synthesis is fire-and-forget (D-78) — finalize.ts no longer
+    // imports SYNTHESIS_TIMEOUT_MS. The constant lives in config.ts and is still
+    // used by generateIntelligenceBrief as a per-API-call safety net.
+    expect(source).not.toContain("SYNTHESIS_TIMEOUT_MS");
   });
 
   it("ai/client.ts uses MCP_SAFE_TIMEOUT as default", () => {

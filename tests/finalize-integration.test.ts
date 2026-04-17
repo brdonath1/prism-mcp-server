@@ -414,7 +414,7 @@ Completed audit remediation.
     expect(mockDeleteFile).toHaveBeenCalledTimes(2);
   });
 
-  it("includes synthesis status in response", async () => {
+  it("includes synthesis status in response (D-78: fire-and-forget)", async () => {
     mockFetchFile.mockResolvedValue({
       content: HANDOFF_CONTENT,
       sha: "new_sha",
@@ -436,16 +436,20 @@ Completed audit remediation.
     });
 
     const data = parseResult(result);
-    expect(data).toHaveProperty("synthesis");
-    expect(data.synthesis).toHaveProperty("triggered");
-    expect(data.synthesis).toHaveProperty("success");
+    expect(data).toHaveProperty("synthesis_outcome");
+    expect(data.synthesis_outcome).toBe("background");
+    expect(data).toHaveProperty("synthesis_banner_html");
+    expect(data.synthesis_banner_html).toBeNull();
+    expect(data).toHaveProperty("synthesis_status_hint");
+    expect(data.synthesis_status_hint).toContain("background");
   });
 });
 
-// ── Auto-Synthesis on Finalization (S34d) ─────────────────────────────────────
+// ── Background Synthesis on Finalization (D-78, FINDING-5) ─────────────────────
 
-describe("prism_finalize auto-synthesis (S34d)", () => {
-  it("Test A: synthesis called after successful commit with brief_updated: true", async () => {
+describe("prism_finalize background synthesis (D-78, FINDING-5)", () => {
+  /** Helper: setup common mocks for a successful commit. */
+  function setupHappyPathMocks(): void {
     mockFetchFile.mockResolvedValue({
       content: HANDOFF_CONTENT,
       sha: "new_sha",
@@ -454,8 +458,16 @@ describe("prism_finalize auto-synthesis (S34d)", () => {
     mockListDirectory.mockResolvedValue([]);
     mockPushFile.mockResolvedValue({ success: true, size: 100, sha: "new_sha" });
     mockCreateAtomicCommit.mockResolvedValue({ success: true, sha: "atomic_sha", files_committed: 1 });
-    mockGenerateIntelligenceBrief.mockResolvedValue({ success: true, input_tokens: 1000, output_tokens: 500 });
+  }
 
+  it("Test 1: commit returns immediately without waiting for synthesis", async () => {
+    setupHappyPathMocks();
+    // Synthesis takes 5 seconds — commit response must return well before that.
+    mockGenerateIntelligenceBrief.mockImplementation(
+      () => new Promise((resolve) => setTimeout(() => resolve({ success: true }), 5000)),
+    );
+
+    const start = Date.now();
     const result = await callFinalizeTool({
       project_slug: "test-project",
       action: "commit",
@@ -465,25 +477,43 @@ describe("prism_finalize auto-synthesis (S34d)", () => {
         { path: "glossary.md", content: "# Glossary\nTerms\n<!-- EOF: glossary.md -->" },
       ],
     });
+    const elapsedMs = Date.now() - start;
+
+    // Commit response must return in well under the 5s synthesis mock.
+    expect(elapsedMs).toBeLessThan(1000);
 
     const data = parseResult(result);
-    expect(data.all_succeeded).toBe(true);
-    expect(data.synthesis.success).toBe(true);
-    expect(data.synthesis.brief_updated).toBe(true);
-    expect(data.synthesis.duration_ms).toBeTypeOf("number");
-    expect(mockGenerateIntelligenceBrief).toHaveBeenCalledWith("test-project", 26);
+    expect(data.synthesis_outcome).toBe("background");
+    expect(data.synthesis_banner_html).toBeNull();
   });
 
-  it("Test B: synthesis failure does NOT cause finalize to throw — returns success with synthesis.success: false", async () => {
-    mockFetchFile.mockResolvedValue({
-      content: HANDOFF_CONTENT,
-      sha: "new_sha",
-      size: HANDOFF_CONTENT.length,
+  it("Test 2: synthesis still runs after commit returns", async () => {
+    setupHappyPathMocks();
+    mockGenerateIntelligenceBrief.mockResolvedValue({ success: true, input_tokens: 800, output_tokens: 300 });
+
+    await callFinalizeTool({
+      project_slug: "test-project",
+      action: "commit",
+      session_number: 42,
+      handoff_version: 7,
+      files: [
+        { path: "glossary.md", content: "# Glossary\nTerms\n<!-- EOF: glossary.md -->" },
+      ],
     });
-    mockListDirectory.mockResolvedValue([]);
-    mockPushFile.mockResolvedValue({ success: true, size: 100, sha: "new_sha" });
-    mockCreateAtomicCommit.mockResolvedValue({ success: true, sha: "atomic_sha", files_committed: 1 });
+
+    // Flush microtasks so the background .then() has a chance to execute.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(mockGenerateIntelligenceBrief).toHaveBeenCalledWith("test-project", 42);
+  });
+
+  it("Test 3: synthesis failure does not affect commit response", async () => {
+    setupHappyPathMocks();
     mockGenerateIntelligenceBrief.mockRejectedValue(new Error("Anthropic API unavailable"));
+
+    // Spy on logger.error to verify the background failure is logged.
+    const loggerModule = await import("../src/utils/logger.js");
+    const loggerErrorSpy = vi.spyOn(loggerModule.logger, "error");
 
     const result = await callFinalizeTool({
       project_slug: "test-project",
@@ -498,20 +528,22 @@ describe("prism_finalize auto-synthesis (S34d)", () => {
     expect(result.isError).toBeUndefined();
     const data = parseResult(result);
     expect(data.all_succeeded).toBe(true);
-    expect(data.synthesis.success).toBe(false);
-    expect(data.synthesis.brief_updated).toBe(false);
-    expect(data.synthesis.error).toContain("Anthropic API unavailable");
+    // Commit response cannot observe the eventual synthesis outcome — always "background".
+    expect(data.synthesis_outcome).toBe("background");
+
+    // Flush microtasks so the background .catch() handler runs.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(loggerErrorSpy).toHaveBeenCalledWith(
+      "background synthesis failed",
+      expect.objectContaining({ projectSlug: "test-project", sessionNumber: 26 }),
+    );
+
+    loggerErrorSpy.mockRestore();
   });
 
-  it("Test C: skip_synthesis: true skips synthesis, returns synthesis.skipped: true", async () => {
-    mockFetchFile.mockResolvedValue({
-      content: HANDOFF_CONTENT,
-      sha: "new_sha",
-      size: HANDOFF_CONTENT.length,
-    });
-    mockListDirectory.mockResolvedValue([]);
-    mockPushFile.mockResolvedValue({ success: true, size: 100, sha: "new_sha" });
-    mockCreateAtomicCommit.mockResolvedValue({ success: true, sha: "atomic_sha", files_committed: 1 });
+  it("Test 4: skip_synthesis: true path unchanged — synthesis not invoked", async () => {
+    setupHappyPathMocks();
 
     const result = await callFinalizeTool({
       project_slug: "test-project",
@@ -526,20 +558,12 @@ describe("prism_finalize auto-synthesis (S34d)", () => {
 
     const data = parseResult(result);
     expect(data.all_succeeded).toBe(true);
-    expect(data.synthesis.skipped).toBe(true);
-    expect(data.synthesis.brief_updated).toBe(false);
+    expect(data.synthesis_outcome).toBe("skipped");
     expect(mockGenerateIntelligenceBrief).not.toHaveBeenCalled();
   });
 
-  it("Test D: skip_synthesis defaults to false — synthesis runs by default", async () => {
-    mockFetchFile.mockResolvedValue({
-      content: HANDOFF_CONTENT,
-      sha: "new_sha",
-      size: HANDOFF_CONTENT.length,
-    });
-    mockListDirectory.mockResolvedValue([]);
-    mockPushFile.mockResolvedValue({ success: true, size: 100, sha: "new_sha" });
-    mockCreateAtomicCommit.mockResolvedValue({ success: true, sha: "atomic_sha", files_committed: 1 });
+  it("Test 5: full finalize cycle returns synthesis_outcome: background", async () => {
+    setupHappyPathMocks();
     mockGenerateIntelligenceBrief.mockResolvedValue({ success: true, input_tokens: 800, output_tokens: 300 });
 
     const result = await callFinalizeTool({
@@ -547,16 +571,15 @@ describe("prism_finalize auto-synthesis (S34d)", () => {
       action: "commit",
       session_number: 26,
       handoff_version: 31,
-      // skip_synthesis NOT provided — should default to false
       files: [
         { path: "glossary.md", content: "# Glossary\nTerms\n<!-- EOF: glossary.md -->" },
       ],
     });
 
     const data = parseResult(result);
-    expect(data.synthesis.triggered).toBe(true);
-    expect(data.synthesis.success).toBe(true);
-    expect(data.synthesis.brief_updated).toBe(true);
+    expect(data.all_succeeded).toBe(true);
+    expect(data.synthesis_outcome).toBe("background");
+    expect(data.synthesis_status_hint).toMatch(/background/i);
     expect(mockGenerateIntelligenceBrief).toHaveBeenCalledOnce();
   });
 });
