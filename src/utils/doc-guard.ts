@@ -77,6 +77,7 @@ const KNOWN_PRISM_PATHS: string[] = [
   "session-log-archive.md",
   "known-issues-archive.md",
   "build-history-archive.md",
+  "insights-archive.md",
 ];
 
 /**

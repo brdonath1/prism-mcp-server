@@ -2,7 +2,11 @@
 process.env.GITHUB_PAT = process.env.GITHUB_PAT || "test-dummy-pat";
 
 import { describe, it, expect } from "vitest";
-import { extractJSON } from "../src/tools/finalize.js";
+import {
+  extractJSON,
+  DRAFT_RELEVANT_DOCS,
+  ARCHIVE_FILE_SUFFIX,
+} from "../src/tools/finalize.js";
 
 describe("extractJSON (B.8 — robust AI output parsing)", () => {
   it("parses raw JSON directly", () => {
@@ -75,5 +79,26 @@ describe("extractJSON stress tests (S33b)", () => {
   it("handles broken JSON gracefully", () => {
     expect(() => extractJSON('{"key": "value"')).toThrow();
     expect(() => extractJSON('{"key": undefined}')).toThrow();
+  });
+});
+
+describe("DRAFT_RELEVANT_DOCS archive exclusion (S40 FINDING-14 C3)", () => {
+  it("never contains a string ending in -archive.md", () => {
+    for (const doc of DRAFT_RELEVANT_DOCS) {
+      expect(doc.endsWith(ARCHIVE_FILE_SUFFIX)).toBe(false);
+    }
+  });
+
+  it("excludes architecture.md, glossary.md, intelligence-brief.md (pre-existing behavior)", () => {
+    expect(DRAFT_RELEVANT_DOCS).not.toContain("architecture.md");
+    expect(DRAFT_RELEVANT_DOCS).not.toContain("glossary.md");
+    expect(DRAFT_RELEVANT_DOCS).not.toContain("intelligence-brief.md");
+  });
+
+  it("retains core draft-relevant docs", () => {
+    expect(DRAFT_RELEVANT_DOCS).toContain("handoff.md");
+    expect(DRAFT_RELEVANT_DOCS).toContain("session-log.md");
+    expect(DRAFT_RELEVANT_DOCS).toContain("task-queue.md");
+    expect(DRAFT_RELEVANT_DOCS).toContain("insights.md");
   });
 });

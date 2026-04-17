@@ -76,6 +76,14 @@ describe("guardPushPath", () => {
     expect(result.redirected).toBe(true);
   });
 
+  it("redirects insights-archive.md to .prism/ (S40 FINDING-14 C3)", async () => {
+    mockFileExists.mockResolvedValueOnce(true);
+
+    const result = await guardPushPath("test-project", "insights-archive.md");
+    expect(result.path).toBe(".prism/insights-archive.md");
+    expect(result.redirected).toBe(true);
+  });
+
   it("redirects decisions/_INDEX.md correctly", async () => {
     mockFileExists.mockResolvedValueOnce(true);
 

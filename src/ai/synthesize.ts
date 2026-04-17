@@ -35,7 +35,10 @@ export async function generateIntelligenceBrief(
   const start = Date.now();
 
   try {
-    // 1. Fetch ALL living documents (exclude intelligence-brief.md itself to avoid circular reference)
+    // 1. Fetch ALL living documents (exclude intelligence-brief.md itself to avoid circular reference).
+    //    Invariant (S40 FINDING-14): archives MUST NOT be synthesis input. LEGACY_LIVING_DOCUMENTS
+    //    contains only the 10 mandatory docs (no `-archive.md` entries), so the filter below is
+    //    archive-safe by construction. If new doc sources are added here, preserve that invariant.
     const docsToFetch = LEGACY_LIVING_DOCUMENTS.filter(d => d !== "intelligence-brief.md");
     const docMap = await resolveDocFiles(projectSlug, [...docsToFetch]);
 

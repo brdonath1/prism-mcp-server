@@ -60,6 +60,24 @@ const INSIGHTS_ARCHIVE_CONFIG: ArchiveConfig = {
     "## Archived\n",
   mostRecentAt: "bottom",
 };
+
+/** Suffix identifying archive files. Used to exclude archives from synthesis input. */
+export const ARCHIVE_FILE_SUFFIX = "-archive.md";
+
+/**
+ * Documents included in the draft-phase synthesis input.
+ *
+ * Invariant: archives MUST NOT be synthesis input. They are cold storage.
+ * Synthesis cost scales with input size (S40 FINDING-14) — adding archive
+ * files here would regress the whole reason archiving exists.
+ */
+export const DRAFT_RELEVANT_DOCS = LEGACY_LIVING_DOCUMENTS.filter(
+  d =>
+    d !== "architecture.md" &&
+    d !== "glossary.md" &&
+    d !== "intelligence-brief.md" &&
+    !d.endsWith(ARCHIVE_FILE_SUFFIX),
+);
 import { resolveDocPath, resolveDocPushPath, resolveDocFiles } from "../utils/doc-resolver.js";
 import { guardPushPath } from "../utils/doc-guard.js";
 import { logger } from "../utils/logger.js";
@@ -310,10 +328,8 @@ async function draftPhase(projectSlug: string, sessionNumber: number) {
   }
 
   // 1. Fetch only draft-relevant living documents (skip architecture.md and glossary.md —
-  //    they're large and irrelevant to session log / handoff / task queue drafting)
-  const DRAFT_RELEVANT_DOCS = LEGACY_LIVING_DOCUMENTS.filter(
-    d => d !== "architecture.md" && d !== "glossary.md" && d !== "intelligence-brief.md"
-  );
+  //    they're large and irrelevant to session log / handoff / task queue drafting).
+  //    Archive files are also excluded — synthesis must never read cold storage (FINDING-14).
   const docMap = await resolveDocFiles(projectSlug, [...DRAFT_RELEVANT_DOCS]);
 
   // 2. Collect commit history for this session
