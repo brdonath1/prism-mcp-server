@@ -93,6 +93,20 @@ export const PUSH_WALL_CLOCK_DEADLINE_MS =
 export const FINALIZE_COMMIT_DEADLINE_MS =
   parseInt(process.env.FINALIZE_COMMIT_DEADLINE_MS ?? "90000", 10) || 90_000;
 
+/** Per-attempt timeout for the Opus call inside prism_finalize draft phase.
+ *  Accommodates large-project single-attempt latency (S41 — observed ~100s
+ *  ceiling on PF-v2-scale inputs). Configurable via env for per-deployment
+ *  tuning. */
+export const FINALIZE_DRAFT_TIMEOUT_MS =
+  parseInt(process.env.FINALIZE_DRAFT_TIMEOUT_MS ?? "150000", 10) || 150_000;
+
+/** Tool-level wall-clock deadline for the prism_finalize draft phase (S41).
+ *  Hard backstop on top of the per-attempt timeout — prevents any retry logic
+ *  or unexpected blocking from holding the MCP client connection
+ *  indefinitely. Mirrors FINALIZE_COMMIT_DEADLINE_MS pattern. */
+export const FINALIZE_DRAFT_DEADLINE_MS =
+  parseInt(process.env.FINALIZE_DRAFT_DEADLINE_MS ?? "180000", 10) || 180_000;
+
 /** The 10 mandatory PRISM living documents (D-18, D-41, D-44, D-67) */
 export const LIVING_DOCUMENTS = [
   `${DOC_ROOT}/handoff.md`,

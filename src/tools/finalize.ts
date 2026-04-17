@@ -26,12 +26,17 @@ import {
   FRAMEWORK_REPO,
   MCP_SAFE_TIMEOUT,
   FINALIZE_COMMIT_DEADLINE_MS,
+  FINALIZE_DRAFT_TIMEOUT_MS,
+  FINALIZE_DRAFT_DEADLINE_MS,
   DOC_ROOT,
 } from "../config.js";
 import { splitForArchive, type ArchiveConfig } from "../utils/archive.js";
 
 /** Sentinel used to signal that the finalize-commit deadline fired (S40 C4). */
 const FINALIZE_COMMIT_DEADLINE_SENTINEL = Symbol("finalize.commit.deadline");
+
+/** Sentinel used to signal that the finalize-draft deadline fired (S41). */
+const FINALIZE_DRAFT_DEADLINE_SENTINEL = Symbol("finalize.draft.deadline");
 
 /** Archive lifecycle configs (S40 FINDING-14). Applied during commitPhase
  *  before the atomic commit so live + archive changes land together. */
@@ -358,8 +363,10 @@ async function draftPhase(projectSlug: string, sessionNumber: number) {
     totalDocBytes += new TextEncoder().encode(doc.content).length;
   }
 
-  // Scale timeout: 45s for small projects, 50s for large (capped at MCP_SAFE_TIMEOUT)
-  const draftTimeoutMs = totalDocBytes > 50_000 ? MCP_SAFE_TIMEOUT : 45_000;
+  // S41 — single env-configurable timeout. The prior size-branching was
+  // vestigial (both branches aimed under a 50s MCP_SAFE_TIMEOUT ceiling that
+  // no longer matches empirical client timeout behavior).
+  const draftTimeoutMs = FINALIZE_DRAFT_TIMEOUT_MS;
 
   logger.info("Finalization draft: calling Opus", {
     projectSlug,
@@ -370,7 +377,13 @@ async function draftPhase(projectSlug: string, sessionNumber: number) {
     timeoutMs: draftTimeoutMs,
   });
 
-  const result = await synthesize(FINALIZATION_DRAFT_PROMPT, userMessage, 4096, draftTimeoutMs);
+  const result = await synthesize(
+    FINALIZATION_DRAFT_PROMPT,
+    userMessage,
+    4096,
+    draftTimeoutMs,
+    0, // maxRetries — retry storms on draft are worse than fast failure (S41)
+  );
 
   if (!result.success) {
     return {
@@ -920,7 +933,42 @@ export function registerFinalize(server: McpServer): void {
 
         if (action === "draft") {
           const phaseStart = Date.now();
-          const result = await draftPhase(project_slug, session_number);
+
+          let draftDeadlineTimer: ReturnType<typeof setTimeout> | undefined;
+          const draftDeadlinePromise = new Promise<typeof FINALIZE_DRAFT_DEADLINE_SENTINEL>((resolve) => {
+            draftDeadlineTimer = setTimeout(
+              () => resolve(FINALIZE_DRAFT_DEADLINE_SENTINEL),
+              FINALIZE_DRAFT_DEADLINE_MS,
+            );
+          });
+          const draftWork = draftPhase(project_slug, session_number);
+          const raced = await Promise.race([draftWork, draftDeadlinePromise]);
+          if (draftDeadlineTimer) clearTimeout(draftDeadlineTimer);
+
+          if (raced === FINALIZE_DRAFT_DEADLINE_SENTINEL) {
+            const deadlineSec = Math.round(FINALIZE_DRAFT_DEADLINE_MS / 1000);
+            logger.error("prism_finalize draft deadline exceeded", {
+              project_slug,
+              deadlineMs: FINALIZE_DRAFT_DEADLINE_MS,
+              elapsedMs: Date.now() - phaseStart,
+            });
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: JSON.stringify({
+                    project: project_slug,
+                    action: "draft",
+                    error: `prism_finalize draft deadline exceeded (${deadlineSec}s)`,
+                    fallback: "Compose finalization files manually.",
+                  }),
+                },
+              ],
+              isError: true,
+            };
+          }
+          const result = raced;
+
           logger.info("prism_finalize draft timing", {
             projectSlug: project_slug,
             ms: Date.now() - phaseStart,

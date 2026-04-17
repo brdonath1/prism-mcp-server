@@ -6,15 +6,20 @@ import { readFileSync } from "fs";
 
 describe("Draft timeout scaling", () => {
   it("calculates correct timeout capped at MCP_SAFE_TIMEOUT", () => {
-    // Verify the scaling logic exists in source
+    // Verify the draft timeout contract exists in source
     const source = readFileSync("src/tools/finalize.ts", "utf-8");
 
-    // S34b: Two tiers capped at MCP_SAFE_TIMEOUT (50s) to stay under MCP's 60s client timeout
-    expect(source).toContain("50_000");      // >50KB threshold
-    expect(source).toContain("45_000");      // 45s timeout for small
-    expect(source).toContain("MCP_SAFE_TIMEOUT"); // uses constant, not hardcoded
+    // S41: Single env-configurable timeout (replaces S34b size-branching).
+    expect(source).toContain("FINALIZE_DRAFT_TIMEOUT_MS");
+    // Draft call site must disable retries — retry storms are worse than
+    // fast failure for the draft phase.
+    expect(source).toContain("retry storms on draft are worse than fast failure");
+    expect(source).toMatch(/synthesize\([^)]*\b0\b[^)]*\)/s);
+    // MCP_SAFE_TIMEOUT still imported for other call sites but not used by draft.
+    expect(source).toContain("MCP_SAFE_TIMEOUT");
 
-    // Old uncapped values must be gone
+    // 120_000 is SYNTHESIS_TIMEOUT_MS (background synthesis) — draft path
+    // must not reference it directly, and neither should S34b's 90_000.
     expect(source).not.toContain("120_000");
     expect(source).not.toContain("90_000");
   });

@@ -41,7 +41,8 @@ export async function synthesize(
   systemPrompt: string,
   userContent: string,
   maxTokens?: number,
-  timeoutMs?: number
+  timeoutMs?: number,
+  maxRetries?: number,
 ): Promise<SynthesisOutcome> {
   const anthropic = getClient();
   if (!anthropic) {
@@ -51,14 +52,22 @@ export async function synthesize(
 
   const start = Date.now();
   try {
-    const response = await anthropic.messages.create({
-      model: SYNTHESIS_MODEL,
-      max_tokens: maxTokens ?? SYNTHESIS_MAX_OUTPUT_TOKENS,
-      system: systemPrompt,
-      messages: [{ role: "user", content: userContent }],
-    }, {
-      timeout: timeoutMs ?? MCP_SAFE_TIMEOUT, // Must stay under MCP's 60s client timeout
-    });
+    const requestOptions: { timeout: number; maxRetries?: number } = {
+      timeout: timeoutMs ?? MCP_SAFE_TIMEOUT,
+    };
+    if (maxRetries !== undefined) {
+      requestOptions.maxRetries = maxRetries;
+    }
+
+    const response = await anthropic.messages.create(
+      {
+        model: SYNTHESIS_MODEL,
+        max_tokens: maxTokens ?? SYNTHESIS_MAX_OUTPUT_TOKENS,
+        system: systemPrompt,
+        messages: [{ role: "user", content: userContent }],
+      },
+      requestOptions,
+    );
 
     const textContent = response.content
       .filter((block): block is Anthropic.TextBlock => block.type === "text")
