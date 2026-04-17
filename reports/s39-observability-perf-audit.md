@@ -39,6 +39,17 @@ The two CRITICAL findings both relate to blind spots that actively mislead diagn
 - **Risk if unfixed:** Future incidents continue to be triaged from `logger.error(msg)` top-lines with all structured context invisible. The already-reported INS-125 keeps biting. Operator frustration compounds across 17 projects.
 
 ### FINDING-2: Logger writes `level`, Railway filter matches `severity` — mismatched field names
+> **STATUS: INVALIDATED (S41 live verification — 2026-04-17)**
+>
+> The core mechanical claim of this finding is false in the current deployment. S41 ran `railway_logs project:prism-mcp-server filter:"@level:warn"` against production and got 10 correct matches, every one with `severity: "warn"` at the top level. Railway's JSON log parser IS promoting the emitted `level` field to the top-level `severity` — stream classification (stderr → `error`, stdout → `info`) is only the fallback for non-JSON lines. The auditor reasoned from a code read without running the tool against Railway.
+>
+> **No fix is needed.** Both the server-side filter (environment-scoped `getEnvironmentLogs`) and the client-side `filterLogs()` function (service-scoped path) work correctly for `@level:warn` because `l.severity` is populated from the parsed JSON.
+>
+> Minor residual items NOT worth a fix brief: (a) the tool description at `railway-logs.ts:43-45` could explicitly state that the filter works because Railway parses JSON log lines; (b) `attributes.level` values come through with literal surrounding quotes (`"\"warn\""`) which is cosmetic and does not affect filtering. Neither is severity-worthy.
+>
+> See INS-29 (STANDING RULE): audit claims about tool output must be verified against live tool behavior, not inferred from code reads.
+
+
 - **Severity:** HIGH
 - **Dimension:** 1
 - **File(s):** `src/utils/logger.ts:19-42`, `src/railway/client.ts:404-417`
