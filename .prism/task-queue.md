@@ -23,6 +23,8 @@
 2. **Rate limit dashboard** — Monitor GitHub API usage across all tool calls. (CC-S3)
 3. **Webhook auto-deploy** — GitHub webhook triggers Railway redeploy on push. (CC-S3)
 4. **Performance metrics** — Track response times per tool, GitHub API latency. (CC-S3)
+- **Opus 4.7 model bump** _(parked from PRISM S39, 04-17-26, D-77)_ — Opus 4.7 released 2026-04-16; PRISM bumped its own INS-7 launch command and logged D-77. Cross-repo `search_code` surfaced stale `claude-opus-4-6` references in this repo (9 file hits). When this project's next session opens, verify scope and update the active runtime/operational references only — skip historical archives and completed briefs. Specific hits to audit: `src/config.ts` (likely live default), `src/claude-code/client.ts` (CC dispatch client), `docs/intelligence-layer-design.md` (verify if active), `mega-prompt-s3.md` (likely historical). Skip: `.prism/briefs/*`, `briefs/s35-fix-synthesis-timeout.md` (completed briefs). Synthesis model stays on `claude-sonnet-4-6` per D-73 until Sonnet 4.7 ships. Reference: brdonath1/prism D-77.
+
 
 ## Recently Completed
 
