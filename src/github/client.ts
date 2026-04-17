@@ -29,6 +29,9 @@ function headers(): Record<string, string> {
   };
 }
 
+/** Per-request timeout for GitHub API calls. A stuck socket aborts after this. */
+export const GITHUB_REQUEST_TIMEOUT_MS = 15_000;
+
 /** Build the full API URL for a repo contents path */
 function contentsUrl(repo: string, path: string): string {
   return `${GITHUB_API_BASE}/repos/${GITHUB_OWNER}/${repo}/contents/${path}`;
@@ -64,12 +67,36 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * Fetch with retry logic for rate limiting (B.7).
- * Retries up to maxRetries times with exponential backoff on 429 responses.
+ * Fetch with retry logic for rate limiting (B.7) and per-request timeouts (S40 C1).
+ *
+ * Each attempt applies a {@link GITHUB_REQUEST_TIMEOUT_MS} deadline via
+ * AbortSignal. If the caller already passed a signal, we combine it with our
+ * timeout via AbortSignal.any so either source can abort. On timeout we throw
+ * a clear error and do NOT retry — retrying a hung socket just wastes wall
+ * clock. 429 responses still trigger exponential backoff as before.
  */
-async function fetchWithRetry(url: string, options: RequestInit, maxRetries = 3): Promise<Response> {
+async function fetchWithRetry(url: string, options: RequestInit = {}, maxRetries = 3): Promise<Response> {
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    const res = await fetch(url, options);
+    const timeoutSignal = AbortSignal.timeout(GITHUB_REQUEST_TIMEOUT_MS);
+    const signal = options.signal
+      ? AbortSignal.any([options.signal, timeoutSignal])
+      : timeoutSignal;
+    let res: Response;
+    try {
+      res = await fetch(url, { ...options, signal });
+    } catch (error) {
+      const name = (error as { name?: string })?.name;
+      const isAbort = name === "AbortError" || name === "TimeoutError";
+      if (isAbort) {
+        if (timeoutSignal.aborted) {
+          logger.warn("github fetch timed out", { url, timeoutMs: GITHUB_REQUEST_TIMEOUT_MS, attempt });
+          throw new Error(`GitHub API request timed out after ${GITHUB_REQUEST_TIMEOUT_MS}ms: ${url}`);
+        }
+        // Caller aborted — propagate unchanged.
+        throw error;
+      }
+      throw error;
+    }
     if (res.status === 429) {
       if (attempt === maxRetries) {
         return res; // Let caller handle final 429

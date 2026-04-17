@@ -17,6 +17,7 @@ import {
   deleteFile,
   createAtomicCommit,
   getDefaultBranch,
+  GITHUB_REQUEST_TIMEOUT_MS,
 } from "../github/client.js";
 import { LIVING_DOCUMENTS, LEGACY_LIVING_DOCUMENTS, SYNTHESIS_ENABLED, SERVER_VERSION, FRAMEWORK_REPO, MCP_SAFE_TIMEOUT, GITHUB_PAT, GITHUB_OWNER } from "../config.js";
 import { resolveDocPath, resolveDocPushPath, resolveDocFiles } from "../utils/doc-resolver.js";
@@ -462,6 +463,7 @@ async function commitPhase(
     const refUrl = `https://api.github.com/repos/${GITHUB_OWNER}/${projectSlug}/git/ref/heads/${branch}`;
     const refRes = await fetch(refUrl, {
       headers: { Authorization: `Bearer ${GITHUB_PAT}`, Accept: "application/vnd.github+json" },
+      signal: AbortSignal.timeout(GITHUB_REQUEST_TIMEOUT_MS),
     });
     if (refRes.ok) {
       const refData = await refRes.json() as { object: { sha: string } };
@@ -500,6 +502,7 @@ async function commitPhase(
         const refUrl = `https://api.github.com/repos/${GITHUB_OWNER}/${projectSlug}/git/ref/heads/${branch}`;
         const refRes = await fetch(refUrl, {
           headers: { Authorization: `Bearer ${GITHUB_PAT}`, Accept: "application/vnd.github+json" },
+          signal: AbortSignal.timeout(GITHUB_REQUEST_TIMEOUT_MS),
         });
         if (refRes.ok) {
           const refData = await refRes.json() as { object: { sha: string } };
