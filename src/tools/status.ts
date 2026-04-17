@@ -14,7 +14,7 @@ import {
   HANDOFF_WARNING_SIZE,
   SYNTHESIS_ENABLED,
 } from "../config.js";
-import { resolveDocExists } from "../utils/doc-resolver.js";
+import { resolveDocExists, resolveDocPath } from "../utils/doc-resolver.js";
 import { logger } from "../utils/logger.js";
 import { parseHandoffVersion, parseSessionCount } from "../validation/handoff.js";
 import { extractSection } from "../utils/summarizer.js";
@@ -28,6 +28,21 @@ const inputSchema = {
 
 type HealthLevel = "healthy" | "needs-attention" | "critical";
 
+/** Archive files tracked by prism_status (S40 FINDING-14 C4).
+ *  Writers exist for session-log-archive.md and insights-archive.md; the other
+ *  two are reserved in doc-guard for future lifecycle tools. All four are
+ *  reported regardless so operators can see when any writer kicks in. */
+export const STATUS_ARCHIVE_FILES = [
+  "session-log-archive.md",
+  "insights-archive.md",
+  "known-issues-archive.md",
+  "build-history-archive.md",
+] as const;
+
+type ArchiveFileName = (typeof STATUS_ARCHIVE_FILES)[number];
+type ArchiveStatus = { exists: boolean; sizeBytes: number | null };
+type ArchiveMap = Record<ArchiveFileName, ArchiveStatus>;
+
 interface ProjectHealth {
   project: string;
   health: HealthLevel;
@@ -38,6 +53,8 @@ interface ProjectHealth {
   documents_total: number;
   missing_documents: string[];
   current_status: string;
+  archives: ArchiveMap;
+  archives_summary?: string;
   details?: Array<{ document: string; exists: boolean; size_bytes: number }>;
 }
 
@@ -48,6 +65,21 @@ function computeHealth(missingCount: number, handoffSize: number): HealthLevel {
   if (missingCount >= 3 || handoffSize > HANDOFF_CRITICAL_SIZE) return "critical";
   if (missingCount >= 1 || handoffSize > HANDOFF_WARNING_SIZE) return "needs-attention";
   return "healthy";
+}
+
+/** Fetch an archive file (if present) and report existence + size. Errors are
+ *  absorbed into `exists: false` so one missing/inaccessible archive does not
+ *  break the overall status call. */
+async function getArchiveStatus(
+  projectSlug: string,
+  archiveName: ArchiveFileName,
+): Promise<ArchiveStatus> {
+  try {
+    const resolved = await resolveDocPath(projectSlug, archiveName);
+    return { exists: true, sizeBytes: resolved.content.length };
+  } catch {
+    return { exists: false, sizeBytes: null };
+  }
 }
 
 /**
@@ -72,6 +104,20 @@ async function getProjectHealth(
       return { document: docName, exists: false, size_bytes: 0, content: null };
     })
   );
+
+  // Probe archive files in parallel (S40 FINDING-14 C4). Each probe is wrapped
+  // to absorb errors so one failure does not break the whole status call.
+  const archiveOutcomes = await Promise.allSettled(
+    STATUS_ARCHIVE_FILES.map(name => getArchiveStatus(projectSlug, name)),
+  );
+  const archives = STATUS_ARCHIVE_FILES.reduce((acc, name, idx) => {
+    const outcome = archiveOutcomes[idx];
+    acc[name] =
+      outcome.status === "fulfilled"
+        ? outcome.value
+        : { exists: false, sizeBytes: null };
+    return acc;
+  }, {} as ArchiveMap);
 
   const documents = docChecks.map((outcome) => {
     if (outcome.status === "fulfilled") return outcome.value;
@@ -103,6 +149,7 @@ async function getProjectHealth(
     documents_total: LIVING_DOCUMENTS.length,
     missing_documents: missingDocs,
     current_status: currentStatus,
+    archives,
   };
 
   if (includeDetails) {
@@ -111,9 +158,24 @@ async function getProjectHealth(
       exists: d.exists,
       size_bytes: d.size_bytes,
     }));
+    result.archives_summary = formatArchivesLine(archives);
   }
 
   return result;
+}
+
+/**
+ * Format archives section for human-readable output (include_details=true).
+ * Returns a one-line summary suitable for inclusion in a status report.
+ */
+export function formatArchivesLine(archives: ArchiveMap): string {
+  const parts = STATUS_ARCHIVE_FILES.map(name => {
+    const status = archives[name];
+    if (!status.exists) return `${name} (not yet created)`;
+    const kb = status.sizeBytes !== null ? (status.sizeBytes / 1024).toFixed(1) : "?";
+    return `${name} (${kb} KB)`;
+  });
+  return `Archives: ${parts.join(", ")}`;
 }
 
 /**
