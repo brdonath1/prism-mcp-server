@@ -26,7 +26,7 @@ import { logger } from "../utils/logger.js";
 // Re-export for backward compatibility — cc-dispatch.ts previously imported
 // these from this module. New code should import from dispatch-store directly.
 export type { DispatchRecord } from "../dispatch-store.js";
-export { writeDispatchRecord } from "../dispatch-store.js";
+export { writeDispatchRecord, readDispatchRecord } from "../dispatch-store.js";
 
 const inputSchema = {
   dispatch_id: z

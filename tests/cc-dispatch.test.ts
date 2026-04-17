@@ -19,18 +19,16 @@ vi.mock("../src/claude-code/repo.js", () => ({
   commitAndPushBranch: vi.fn(),
 }));
 
-// Mock the cc-status module's persistence helpers — cc_dispatch writes
-// records there, but we don't need real GitHub pushes for unit tests.
-vi.mock("../src/tools/cc-status.js", async () => {
-  const actual = await vi.importActual<
-    typeof import("../src/tools/cc-status.js")
-  >("../src/tools/cc-status.js");
-  return {
-    ...actual,
-    writeDispatchRecord: vi.fn().mockResolvedValue(undefined),
-    readDispatchRecord: vi.fn().mockResolvedValue(null),
-  };
-});
+// Mock the dispatch-store module — cc_dispatch imports writeDispatchRecord
+// directly from there (D-123). The tool-level cc-status module is a thin
+// re-export surface and not on the cc_dispatch code path, so mocking there
+// would not intercept the real call.
+vi.mock("../src/dispatch-store.js", () => ({
+  writeDispatchRecord: vi.fn().mockResolvedValue(undefined),
+  readDispatchRecord: vi.fn().mockResolvedValue(null),
+  listDispatchIds: vi.fn().mockResolvedValue([]),
+  hydrateStore: vi.fn().mockResolvedValue(undefined),
+}));
 
 // Mock global fetch so createPullRequest() (inlined in cc-dispatch) doesn't
 // try to hit github.com.
@@ -41,7 +39,7 @@ import {
   cloneRepo,
   commitAndPushBranch,
 } from "../src/claude-code/repo.js";
-import { writeDispatchRecord } from "../src/tools/cc-status.js";
+import { writeDispatchRecord } from "../src/dispatch-store.js";
 import { registerCCDispatch } from "../src/tools/cc-dispatch.js";
 
 const mockDispatchTask = vi.mocked(dispatchTask);
