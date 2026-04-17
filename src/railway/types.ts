@@ -29,11 +29,26 @@ export interface RailwayDeployment {
   staticUrl?: string;
 }
 
-/** Railway log entry */
+/** A single key/value pair from Railway's structured log attributes. */
+export interface RailwayLogAttribute {
+  key: string;
+  value: string;
+}
+
+/**
+ * Railway log entry.
+ *
+ * `attributes` carries the structured payload written by the logger
+ * (`logger.error(msg, { err, stack, repo, path, ... })`). Railway's GraphQL
+ * `Log.attributes` is `[LogAttribute!]!` — shape `{ key, value }`. Optional on
+ * this interface for backward compatibility with callers that mock logs
+ * without it.
+ */
 export interface RailwayLog {
   message: string;
   timestamp: string;
   severity: string;
+  attributes?: RailwayLogAttribute[];
 }
 
 /** Railway environment variables are returned as a flat key→value object, not an array. */

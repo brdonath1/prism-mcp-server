@@ -332,7 +332,14 @@ export async function listDeployments(
   return (data.deployments?.edges ?? []).map((e) => e.node);
 }
 
-/** Fetch deployment logs. Filter is applied client-side (see filterLogs). */
+/**
+ * Fetch deployment logs. Filter is applied client-side (see filterLogs).
+ *
+ * Selects `attributes { key value }` so structured payloads emitted by
+ * `logger.error(msg, { ... })` survive the round trip through the tool
+ * response (S40 C2, FINDING-1 + FINDING-3). Introspection 2026-04-17
+ * confirmed `Log.attributes: [LogAttribute!]!` with shape `{ key, value }`.
+ */
 export async function getDeploymentLogs(
   deploymentId: string,
   limit: number,
@@ -344,6 +351,7 @@ export async function getDeploymentLogs(
         message
         timestamp
         severity
+        attributes { key value }
       }
     }
   }`;
@@ -382,6 +390,7 @@ export async function getEnvironmentLogs(
         message
         timestamp
         severity
+        attributes { key value }
       }
     }
   }`;
