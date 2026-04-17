@@ -658,3 +658,183 @@ describe("prism_finalize draft phase", () => {
     expect(data.parse_warning).toContain("Could not parse");
   });
 });
+
+// ── Archive Lifecycle (S40 FINDING-14 C2) ───────────────────────────────────────
+
+describe("prism_finalize archive lifecycle (S40 FINDING-14 C2)", () => {
+  /** Build a session-log.md exceeding a given size with a given entry count. */
+  function buildLargeSessionLog(entryCount: number, bodyChars = 600): string {
+    const lines = ["# Session Log -- PRISM Framework", ""];
+    for (let n = entryCount; n >= 1; n--) {
+      lines.push(`### Session ${n} (2026-04-${String(((n - 1) % 28) + 1).padStart(2, "0")})`);
+      lines.push("x".repeat(bodyChars));
+      lines.push("");
+    }
+    lines.push("<!-- EOF: session-log.md -->");
+    return lines.join("\n");
+  }
+
+  it("over-threshold session-log triggers archive, both files land in atomic commit", async () => {
+    const bigSessionLog = buildLargeSessionLog(30, 600);
+    expect(bigSessionLog.length).toBeGreaterThan(15_000);
+
+    // Handoff backup fetch succeeds; archive fetch throws (no existing archive)
+    mockFetchFile.mockImplementation(async (_repo: string, path: string) => {
+      if (path.includes("-archive.md")) throw new Error("Not found");
+      return { content: HANDOFF_CONTENT, sha: "sha", size: HANDOFF_CONTENT.length };
+    });
+    mockListDirectory.mockResolvedValue([]);
+    mockPushFile.mockResolvedValue({ success: true, size: 100, sha: "new" });
+
+    let capturedFiles: Array<{ path: string; content: string }> = [];
+    mockCreateAtomicCommit.mockImplementation(async (_repo, files, _msg) => {
+      capturedFiles = files;
+      return { success: true, sha: "atomic_sha", files_committed: files.length };
+    });
+
+    await callFinalizeTool({
+      project_slug: "test-project",
+      action: "commit",
+      session_number: 40,
+      handoff_version: 31,
+      skip_synthesis: true,
+      files: [{ path: "session-log.md", content: bigSessionLog }],
+    });
+
+    const paths = capturedFiles.map(f => f.path);
+    expect(paths).toContain("session-log.md");
+    expect(paths).toContain(".prism/session-log-archive.md");
+
+    const liveFile = capturedFiles.find(f => f.path === "session-log.md")!;
+    const archiveFile = capturedFiles.find(f => f.path === ".prism/session-log-archive.md")!;
+
+    expect(liveFile.content.length).toBeLessThan(bigSessionLog.length);
+    expect(liveFile.content).toContain("<!-- EOF: session-log.md -->");
+    expect(archiveFile.content).toContain("# Session Log Archive");
+    expect(archiveFile.content).toContain("### Session 1");
+  });
+
+  it("under-threshold session-log — archive does not fire, files[] unchanged", async () => {
+    const smallSessionLog =
+      "# Session Log -- PRISM Framework\n\n### Session 1 (2026-04-17)\nbody\n\n<!-- EOF: session-log.md -->";
+
+    mockFetchFile.mockImplementation(async (_repo: string, path: string) => {
+      if (path.includes("-archive.md")) throw new Error("Not found");
+      return { content: HANDOFF_CONTENT, sha: "sha", size: HANDOFF_CONTENT.length };
+    });
+    mockListDirectory.mockResolvedValue([]);
+    mockPushFile.mockResolvedValue({ success: true, size: 100, sha: "new" });
+
+    let capturedFiles: Array<{ path: string; content: string }> = [];
+    mockCreateAtomicCommit.mockImplementation(async (_repo, files, _msg) => {
+      capturedFiles = files;
+      return { success: true, sha: "atomic_sha", files_committed: files.length };
+    });
+
+    await callFinalizeTool({
+      project_slug: "test-project",
+      action: "commit",
+      session_number: 26,
+      handoff_version: 31,
+      skip_synthesis: true,
+      files: [{ path: "session-log.md", content: smallSessionLog }],
+    });
+
+    expect(capturedFiles).toHaveLength(1);
+    expect(capturedFiles[0].path).toBe("session-log.md");
+    expect(capturedFiles[0].content).toBe(smallSessionLog);
+  });
+
+  it("archive processing throws — finalize commits live docs anyway (fail-open)", async () => {
+    // Insights.md over threshold but without "## Active" section → parseEntries throws.
+    const lines = ["# Insights — PRISM Framework", ""];
+    for (let n = 1; n <= 30; n++) {
+      lines.push(`### INS-${n}: entry ${n}`);
+      lines.push("x".repeat(800));
+      lines.push("");
+    }
+    lines.push("<!-- EOF: insights.md -->");
+    const badInsights = lines.join("\n");
+    expect(badInsights.length).toBeGreaterThan(20_000);
+    expect(badInsights).not.toContain("## Active");
+
+    mockFetchFile.mockImplementation(async (_repo: string, path: string) => {
+      if (path.includes("-archive.md")) throw new Error("Not found");
+      return { content: HANDOFF_CONTENT, sha: "sha", size: HANDOFF_CONTENT.length };
+    });
+    mockListDirectory.mockResolvedValue([]);
+    mockPushFile.mockResolvedValue({ success: true, size: 100, sha: "new" });
+
+    let capturedFiles: Array<{ path: string; content: string }> = [];
+    mockCreateAtomicCommit.mockImplementation(async (_repo, files, _msg) => {
+      capturedFiles = files;
+      return { success: true, sha: "atomic_sha", files_committed: files.length };
+    });
+
+    const result = await callFinalizeTool({
+      project_slug: "test-project",
+      action: "commit",
+      session_number: 26,
+      handoff_version: 31,
+      skip_synthesis: true,
+      files: [{ path: "insights.md", content: badInsights }],
+    });
+
+    const data = parseResult(result);
+    expect(data.all_succeeded).toBe(true);
+    // No archive added — live doc committed unchanged
+    expect(capturedFiles.map(f => f.path)).not.toContain(".prism/insights-archive.md");
+    const insightsFile = capturedFiles.find(f => f.path === "insights.md")!;
+    expect(insightsFile.content).toBe(badInsights);
+  });
+
+  it("appends to existing insights-archive when already present", async () => {
+    // Build insights with active section that exceeds 20KB
+    const lines = ["# Insights — PRISM Framework", "", "## Active", ""];
+    for (let n = 1; n <= 25; n++) {
+      lines.push(`### INS-${n}: entry ${n}`);
+      lines.push("x".repeat(800));
+      lines.push("");
+    }
+    lines.push("## Formalized", "");
+    lines.push("<!-- EOF: insights.md -->");
+    const bigInsights = lines.join("\n");
+    expect(bigInsights.length).toBeGreaterThan(20_000);
+
+    const existingArchive =
+      "# Insights Archive — PRISM Framework\n\n## Archived\n\n### INS-0: pre-existing\nold body\n";
+
+    mockFetchFile.mockImplementation(async (_repo: string, path: string) => {
+      if (path === ".prism/insights-archive.md") {
+        return { content: existingArchive, sha: "archsha", size: existingArchive.length };
+      }
+      if (path.includes("-archive.md")) throw new Error("Not found");
+      return { content: HANDOFF_CONTENT, sha: "sha", size: HANDOFF_CONTENT.length };
+    });
+    mockListDirectory.mockResolvedValue([]);
+    mockPushFile.mockResolvedValue({ success: true, size: 100, sha: "new" });
+
+    let capturedFiles: Array<{ path: string; content: string }> = [];
+    mockCreateAtomicCommit.mockImplementation(async (_repo, files, _msg) => {
+      capturedFiles = files;
+      return { success: true, sha: "atomic_sha", files_committed: files.length };
+    });
+
+    await callFinalizeTool({
+      project_slug: "test-project",
+      action: "commit",
+      session_number: 26,
+      handoff_version: 31,
+      skip_synthesis: true,
+      files: [{ path: "insights.md", content: bigInsights }],
+    });
+
+    const archiveFile = capturedFiles.find(f => f.path === ".prism/insights-archive.md");
+    expect(archiveFile).toBeDefined();
+    // Pre-existing entry preserved
+    expect(archiveFile!.content).toContain("### INS-0: pre-existing");
+    // Header appears exactly once (no duplication)
+    const headerMatches = archiveFile!.content.match(/# Insights Archive/g) ?? [];
+    expect(headerMatches).toHaveLength(1);
+  });
+});

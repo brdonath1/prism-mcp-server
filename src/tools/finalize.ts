@@ -26,10 +26,40 @@ import {
   FRAMEWORK_REPO,
   MCP_SAFE_TIMEOUT,
   FINALIZE_COMMIT_DEADLINE_MS,
+  DOC_ROOT,
 } from "../config.js";
+import { splitForArchive, type ArchiveConfig } from "../utils/archive.js";
 
 /** Sentinel used to signal that the finalize-commit deadline fired (S40 C4). */
 const FINALIZE_COMMIT_DEADLINE_SENTINEL = Symbol("finalize.commit.deadline");
+
+/** Archive lifecycle configs (S40 FINDING-14). Applied during commitPhase
+ *  before the atomic commit so live + archive changes land together. */
+const SESSION_LOG_ARCHIVE_CONFIG: ArchiveConfig = {
+  thresholdBytes: 15_000,
+  retentionCount: 20,
+  entryMarker: /^### Session (\d+)/m,
+  archiveHeader:
+    "# Session Log Archive — PRISM Framework\n\n" +
+    "> Archived sessions moved here during finalization when session-log.md exceeds 15KB.\n" +
+    "> Archives are NEVER read by synthesis.\n",
+  mostRecentAt: "top",
+};
+
+const INSIGHTS_ARCHIVE_CONFIG: ArchiveConfig = {
+  thresholdBytes: 20_000,
+  retentionCount: 15,
+  entryMarker: /^### INS-(\d+):/m,
+  protectedMarkers: ["STANDING RULE"],
+  activeSection: "## Active",
+  archiveHeader:
+    "# Insights Archive — PRISM Framework\n\n" +
+    "> Archived insights moved here during finalization when insights.md exceeds 20KB.\n" +
+    "> Only non-STANDING-RULE insights are archived.\n" +
+    "> Archives are NEVER read by synthesis.\n\n" +
+    "## Archived\n",
+  mostRecentAt: "bottom",
+};
 import { resolveDocPath, resolveDocPushPath, resolveDocFiles } from "../utils/doc-resolver.js";
 import { guardPushPath } from "../utils/doc-guard.js";
 import { logger } from "../utils/logger.js";
@@ -449,6 +479,67 @@ async function commitPhase(
       confirmation: `Session ${sessionNumber} finalization FAILED — validation errors detected.`,
     };
   }
+
+  // 3b. Archive lifecycle (S40 FINDING-14).
+  // Apply size-triggered archiving to session-log.md and insights.md BEFORE the
+  // atomic commit so live + archive changes land in a single commit. Fail-open:
+  // any error is logged and skipped — a finalize that commits the live docs
+  // without archiving is still a success.
+  async function applyArchive(
+    liveFileName: string,
+    archiveFileName: string,
+    config: ArchiveConfig,
+  ): Promise<void> {
+    try {
+      const liveIdx = files.findIndex(
+        f => f.path === liveFileName || f.path === `${DOC_ROOT}/${liveFileName}`,
+      );
+      if (liveIdx === -1) return; // Not being written this session — nothing to do
+
+      let existingArchive: string | null = null;
+      try {
+        const archivePath = `${DOC_ROOT}/${archiveFileName}`;
+        const fetched = await fetchFile(projectSlug, archivePath);
+        existingArchive = fetched.content;
+      } catch {
+        existingArchive = null; // First-time archive
+      }
+
+      const result = splitForArchive(files[liveIdx].content, existingArchive, config);
+
+      if (result.archiveContent !== null && result.archivedCount > 0) {
+        files[liveIdx] = { ...files[liveIdx], content: result.liveContent };
+        files.push({
+          path: `${DOC_ROOT}/${archiveFileName}`,
+          content: result.archiveContent,
+        });
+        logger.info("archive applied", {
+          projectSlug,
+          live: liveFileName,
+          archive: archiveFileName,
+          archivedCount: result.archivedCount,
+          liveSizeBytes: result.liveContent.length,
+        });
+      } else if (result.skipReason) {
+        logger.debug("archive skipped", {
+          projectSlug,
+          live: liveFileName,
+          reason: result.skipReason,
+        });
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error("archive processing failed — continuing without archiving", {
+        projectSlug,
+        live: liveFileName,
+        archive: archiveFileName,
+        err: msg,
+      });
+    }
+  }
+
+  await applyArchive("session-log.md", "session-log-archive.md", SESSION_LOG_ARCHIVE_CONFIG);
+  await applyArchive("insights.md", "insights-archive.md", INSIGHTS_ARCHIVE_CONFIG);
 
   // 4. Guard all paths against root-level duplication (D-67 addendum)
   const guardResults = await Promise.all(
