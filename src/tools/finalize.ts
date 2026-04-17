@@ -18,7 +18,18 @@ import {
   createAtomicCommit,
   getHeadSha,
 } from "../github/client.js";
-import { LIVING_DOCUMENTS, LEGACY_LIVING_DOCUMENTS, SYNTHESIS_ENABLED, SERVER_VERSION, FRAMEWORK_REPO, MCP_SAFE_TIMEOUT } from "../config.js";
+import {
+  LIVING_DOCUMENTS,
+  LEGACY_LIVING_DOCUMENTS,
+  SYNTHESIS_ENABLED,
+  SERVER_VERSION,
+  FRAMEWORK_REPO,
+  MCP_SAFE_TIMEOUT,
+  FINALIZE_COMMIT_DEADLINE_MS,
+} from "../config.js";
+
+/** Sentinel used to signal that the finalize-commit deadline fired (S40 C4). */
+const FINALIZE_COMMIT_DEADLINE_SENTINEL = Symbol("finalize.commit.deadline");
 import { resolveDocPath, resolveDocPushPath, resolveDocFiles } from "../utils/doc-resolver.js";
 import { guardPushPath } from "../utils/doc-guard.js";
 import { logger } from "../utils/logger.js";
@@ -835,13 +846,52 @@ export function registerFinalize(server: McpServer): void {
 
         const phaseStart = Date.now();
         const skipSynthesis = skip_synthesis ?? false;
-        const result = await commitPhase(
+
+        // S40 C4 — Tool-level wall-clock deadline on the commit phase.
+        // commitPhase does the GitHub I/O (backup, prune, atomic commit,
+        // optional fallback pushes). If it hangs past the deadline, return
+        // a structured error instead of waiting for the MCP client timeout.
+        let commitDeadlineTimer: ReturnType<typeof setTimeout> | undefined;
+        const commitDeadlinePromise = new Promise<typeof FINALIZE_COMMIT_DEADLINE_SENTINEL>((resolve) => {
+          commitDeadlineTimer = setTimeout(
+            () => resolve(FINALIZE_COMMIT_DEADLINE_SENTINEL),
+            FINALIZE_COMMIT_DEADLINE_MS,
+          );
+        });
+        const commitWork = commitPhase(
           project_slug,
           session_number,
           handoff_version ?? 1,
           files,
           skipSynthesis,
         );
+        const raced = await Promise.race([commitWork, commitDeadlinePromise]);
+        if (commitDeadlineTimer) clearTimeout(commitDeadlineTimer);
+
+        if (raced === FINALIZE_COMMIT_DEADLINE_SENTINEL) {
+          const deadlineSec = Math.round(FINALIZE_COMMIT_DEADLINE_MS / 1000);
+          logger.error("prism_finalize commit deadline exceeded", {
+            project_slug,
+            deadlineMs: FINALIZE_COMMIT_DEADLINE_MS,
+            elapsedMs: Date.now() - phaseStart,
+          });
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  project: project_slug,
+                  action: "commit",
+                  error: `prism_finalize commit deadline exceeded (${deadlineSec}s)`,
+                  partial_state_warning:
+                    "Atomic commit may have partially succeeded — verify repo state manually",
+                }),
+              },
+            ],
+            isError: true,
+          };
+        }
+        const result = raced;
         logger.info("prism_finalize commit timing", {
           projectSlug: project_slug,
           ms: Date.now() - phaseStart,

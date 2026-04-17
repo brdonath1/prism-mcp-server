@@ -17,8 +17,15 @@ import { createAtomicCommit, getHeadSha, pushFile } from "../github/client.js";
 import { logger } from "../utils/logger.js";
 import { validateFileAndCommit } from "../validation/index.js";
 import { templateCache } from "../utils/cache.js";
-import { FRAMEWORK_REPO, MCP_TEMPLATE_PATH } from "../config.js";
+import {
+  FRAMEWORK_REPO,
+  MCP_TEMPLATE_PATH,
+  PUSH_WALL_CLOCK_DEADLINE_MS,
+} from "../config.js";
 import { guardPushPath } from "../utils/doc-guard.js";
+
+/** Sentinel used to signal that the tool-level deadline fired (S40 C4). */
+const PUSH_DEADLINE_SENTINEL = Symbol("push.deadline");
 
 /** Input schema for prism_push */
 const inputSchema = {
@@ -58,7 +65,16 @@ export function registerPush(server: McpServer): void {
       const start = Date.now();
       logger.info("prism_push", { project_slug, fileCount: files.length, skip_validation });
 
-      try {
+      // S40 C4 — Tool-level wall-clock deadline. Hard backstop on top of the
+      // per-request GitHub timeout. If we hit this, something is wrong enough
+      // that the user deserves a visible error instead of a silent hang.
+      let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+      const deadlinePromise = new Promise<typeof PUSH_DEADLINE_SENTINEL>((resolve) => {
+        deadlineTimer = setTimeout(() => resolve(PUSH_DEADLINE_SENTINEL), PUSH_WALL_CLOCK_DEADLINE_MS);
+      });
+
+      const workPromise = (async () => {
+        try {
         // 1. Validate ALL files first
         const validationResults = files.map((file) => {
           if (skip_validation) {
@@ -265,6 +281,36 @@ export function registerPush(server: McpServer): void {
           ],
           isError: true,
         };
+      }
+      })();
+
+      try {
+        const raced = await Promise.race([workPromise, deadlinePromise]);
+        if (raced === PUSH_DEADLINE_SENTINEL) {
+          const deadlineSec = Math.round(PUSH_WALL_CLOCK_DEADLINE_MS / 1000);
+          logger.error("prism_push deadline exceeded", {
+            project_slug,
+            deadlineMs: PUSH_WALL_CLOCK_DEADLINE_MS,
+            elapsedMs: Date.now() - start,
+          });
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  project: project_slug,
+                  error: `prism_push deadline exceeded (${deadlineSec}s)`,
+                  partial_state_warning:
+                    "Atomic commit may have partially succeeded — verify repo state manually",
+                }),
+              },
+            ],
+            isError: true,
+          };
+        }
+        return raced;
+      } finally {
+        if (deadlineTimer) clearTimeout(deadlineTimer);
       }
     },
   );

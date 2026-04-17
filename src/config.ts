@@ -81,6 +81,18 @@ export const SYNTHESIS_MAX_OUTPUT_TOKENS = 4096;
  *  because synthesis runs after commit succeeds and is best-effort/non-fatal. */
 export const SYNTHESIS_TIMEOUT_MS = 120_000;
 
+/** Tool-level wall-clock deadline for prism_push (S40 C4). Hard backstop on
+ *  top of the per-request GitHub fetch timeout. Configurable via env var so
+ *  tests can inject a much smaller value without waiting 60s in CI. */
+export const PUSH_WALL_CLOCK_DEADLINE_MS =
+  parseInt(process.env.PUSH_WALL_CLOCK_DEADLINE_MS ?? "60000", 10) || 60_000;
+
+/** Tool-level wall-clock deadline for prism_finalize commit phase (S40 C4).
+ *  Longer than prism_push because commit has extra work — backup handoff,
+ *  prune history, validate, doc-guard, then the atomic commit. */
+export const FINALIZE_COMMIT_DEADLINE_MS =
+  parseInt(process.env.FINALIZE_COMMIT_DEADLINE_MS ?? "90000", 10) || 90_000;
+
 /** The 10 mandatory PRISM living documents (D-18, D-41, D-44, D-67) */
 export const LIVING_DOCUMENTS = [
   `${DOC_ROOT}/handoff.md`,
