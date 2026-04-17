@@ -135,21 +135,33 @@ describe("S40 C1 — fetchWithRetry still retries on 429 (regression)", () => {
   }, 5_000);
 });
 
-describe("S40 C1 — direct fetch() calls in finalize.ts have timeouts", () => {
-  it("finalize.ts HEAD-sha checks pass AbortSignal.timeout", () => {
+describe("S40 C1/C3 — finalize.ts HEAD-sha checks route through getHeadSha (which uses fetchWithRetry)", () => {
+  it("finalize.ts no longer issues raw fetch(refUrl, ...) calls", () => {
+    // S40 C3 moved the HEAD-SHA lookup into the shared getHeadSha() helper
+    // in src/github/client.ts, which routes through fetchWithRetry() and
+    // therefore inherits the C1 timeout automatically. The finalize tool
+    // must not fall back to a raw fetch() here.
     const source = readFileSync("src/tools/finalize.ts", "utf-8");
     const rawFetchMatches = source.match(/await fetch\(refUrl/g) ?? [];
-    expect(rawFetchMatches.length).toBeGreaterThanOrEqual(1);
+    expect(rawFetchMatches.length).toBe(0);
+  });
 
-    // Every raw `fetch(refUrl, ...)` block must include a signal: AbortSignal.timeout(...)
-    // We scan each block for the signal line.
-    const blocks = source.split(/await fetch\(refUrl,/).slice(1);
-    for (const block of blocks) {
-      const firstClose = block.indexOf(");");
-      expect(firstClose).toBeGreaterThan(-1);
-      const blockHead = block.slice(0, firstClose);
-      expect(blockHead).toContain("AbortSignal.timeout");
-      expect(blockHead).toContain("GITHUB_REQUEST_TIMEOUT_MS");
-    }
+  it("finalize.ts imports and uses getHeadSha from the github client", () => {
+    const source = readFileSync("src/tools/finalize.ts", "utf-8");
+    expect(source).toContain("getHeadSha");
+    // At least one call site for before/after HEAD capture
+    const callMatches = source.match(/getHeadSha\(projectSlug\)/g) ?? [];
+    expect(callMatches.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("getHeadSha implementation routes through fetchWithRetry (timeout-bearing)", () => {
+    const source = readFileSync("src/github/client.ts", "utf-8");
+    const start = source.indexOf("export async function getHeadSha");
+    expect(start).toBeGreaterThan(-1);
+    const nextExport = source.indexOf("\nexport ", start + 1);
+    const body = source.slice(start, nextExport === -1 ? source.length : nextExport);
+    expect(body).toContain("fetchWithRetry");
+    // And must NOT issue its own raw fetch() — that would bypass the C1 timeout.
+    expect(body).not.toMatch(/await fetch\(/);
   });
 });

@@ -1,11 +1,19 @@
 /**
  * prism_push tool — Push files with server-side validation.
- * Validates ALL files first; if any fail, pushes NONE.
+ *
+ * Validates ALL files first; if any fail, pushes NONE. Uses a single atomic
+ * Git Trees commit by default (S40 C3): one GitHub operation for N files,
+ * no 409 race conditions from parallel Contents API calls, and a single
+ * commit SHA shared by every file in the batch. On atomic-commit failure
+ * the tool inspects the HEAD SHA — if HEAD moved, a partial write happened
+ * and we return without falling back; if HEAD is unchanged, we fall back to
+ * *sequential* pushFile calls (never parallel — that was the original 409
+ * cause).
  */
 
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { pushFile, fetchFile } from "../github/client.js";
+import { createAtomicCommit, getHeadSha, pushFile } from "../github/client.js";
 import { logger } from "../utils/logger.js";
 import { validateFileAndCommit } from "../validation/index.js";
 import { templateCache } from "../utils/cache.js";
@@ -24,6 +32,19 @@ const inputSchema = {
   ).describe("Files to push"),
   skip_validation: z.boolean().optional().default(false).describe("Skip validation (not recommended)"),
 };
+
+interface PushFileResult {
+  path: string;
+  original_path?: string;
+  redirected?: boolean;
+  success: boolean;
+  size_bytes: number;
+  sha: string;
+  verified: boolean;
+  validation_errors: string[];
+  validation_warnings: string[];
+  error?: string;
+}
 
 /**
  * Register the prism_push tool on an MCP server instance.
@@ -47,12 +68,10 @@ export function registerPush(server: McpServer): void {
           return { path: file.path, ...result };
         });
 
-        // Check if any validations failed
-        const hasErrors = validationResults.some(r => r.errors.length > 0);
+        const hasErrors = validationResults.some((r) => r.errors.length > 0);
 
         if (hasErrors) {
-          // Return all validation errors without pushing anything
-          const results = validationResults.map(r => ({
+          const results = validationResults.map((r) => ({
             path: r.path,
             success: false,
             size_bytes: 0,
@@ -68,85 +87,147 @@ export function registerPush(server: McpServer): void {
           });
 
           return {
-            content: [{
-              type: "text" as const,
-              text: JSON.stringify({
-                project: project_slug,
-                results,
-                all_succeeded: false,
-                files_pushed: 0,
-                files_failed: files.length,
-                total_bytes: 0,
-              }, null, 2),
-            }],
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify(
+                  {
+                    project: project_slug,
+                    results,
+                    all_succeeded: false,
+                    files_pushed: 0,
+                    files_failed: files.length,
+                    total_bytes: 0,
+                  },
+                  null,
+                  2,
+                ),
+              },
+            ],
           };
         }
 
         // 2. Guard all paths against root-level duplication (D-67 addendum)
         const guardResults = await Promise.all(
-          files.map(file => guardPushPath(project_slug, file.path))
+          files.map((file) => guardPushPath(project_slug, file.path)),
         );
 
-        // 3. Push all validated files in parallel using guarded paths
-        const pushResults = await Promise.allSettled(
-          files.map(async (file, idx) => {
-            const guarded = guardResults[idx];
-            const pushPath = guarded.path;
+        // 3. Derive the single commit message for the atomic commit. Atomic
+        //    commits can only carry one message — if callers passed different
+        //    strings, use the first and log a warning so the mismatch is not
+        //    silent.
+        const messages = files.map((f) => f.message);
+        const uniqueMessages = new Set(messages);
+        const commitMessage = messages[0];
+        if (uniqueMessages.size > 1) {
+          logger.warn("prism_push received differing messages; using first", {
+            project_slug,
+            count: uniqueMessages.size,
+            used: commitMessage,
+          });
+        }
 
-            const pushResult = await pushFile(project_slug, pushPath, file.content, file.message);
+        // 4. Try atomic commit first
+        const atomicFiles = files.map((file, idx) => ({
+          path: guardResults[idx].path,
+          content: file.content,
+        }));
+        const headShaBefore = await getHeadSha(project_slug);
+        const atomicResult = await createAtomicCommit(project_slug, atomicFiles, commitMessage);
 
-            // Verify the push by fetching the file back and checking SHA
-            let verified = false;
-            if (pushResult.success) {
-              try {
-                const verifyResult = await fetchFile(project_slug, pushPath);
-                verified = verifyResult.sha === pushResult.sha;
-              } catch {
-                // Verification failed but push might have succeeded
-                verified = false;
-              }
-            }
+        let results: PushFileResult[];
 
-            return {
-              path: pushPath,
-              original_path: guarded.redirected ? file.path : undefined,
-              redirected: guarded.redirected,
-              success: pushResult.success,
-              size_bytes: pushResult.size,
-              sha: pushResult.sha,
-              verified,
-              validation_errors: validationResults[idx].errors,
-              validation_warnings: validationResults[idx].warnings,
-              error: pushResult.error,
-            };
-          })
-        );
-
-        const results = pushResults.map((outcome, idx) => {
-          if (outcome.status === "fulfilled") {
-            return outcome.value;
+        if (atomicResult.success) {
+          // Atomic success — every file shares the same commit SHA; no per-file
+          // verification fetch needed (the tree API guarantees consistency).
+          results = files.map((file, idx) => ({
+            path: guardResults[idx].path,
+            original_path: guardResults[idx].redirected ? file.path : undefined,
+            redirected: guardResults[idx].redirected,
+            success: true,
+            size_bytes: new TextEncoder().encode(file.content).length,
+            sha: atomicResult.sha,
+            verified: true,
+            validation_errors: validationResults[idx].errors,
+            validation_warnings: validationResults[idx].warnings,
+          }));
+        } else {
+          // Atomic failed — decide whether it's safe to retry.
+          let headChanged = false;
+          if (headShaBefore) {
+            const headShaAfter = await getHeadSha(project_slug);
+            if (headShaAfter) headChanged = headShaAfter !== headShaBefore;
           }
-          return {
-            path: files[idx].path,
-            success: false,
-            size_bytes: 0,
-            sha: "",
-            verified: false,
-            validation_errors: [] as string[],
-            validation_warnings: [] as string[],
-            error: outcome.reason?.message ?? "Unknown push error",
-          };
-        });
 
-        const succeeded = results.filter(r => r.success);
+          if (headChanged) {
+            // HEAD moved — partial atomic write. Do NOT fall back; the repo is
+            // in an indeterminate state and a retry could double-write.
+            logger.error(
+              "prism_push atomic commit failed with HEAD changed — partial state",
+              { project_slug, atomicError: atomicResult.error },
+            );
+            results = files.map((file, idx) => ({
+              path: guardResults[idx].path,
+              original_path: guardResults[idx].redirected ? file.path : undefined,
+              redirected: guardResults[idx].redirected,
+              success: false,
+              size_bytes: 0,
+              sha: "",
+              verified: false,
+              validation_errors: [
+                ...validationResults[idx].errors,
+                "Partial atomic commit — state may be inconsistent",
+              ],
+              validation_warnings: validationResults[idx].warnings,
+              error: atomicResult.error,
+            }));
+          } else {
+            // HEAD unchanged — safe to fall back. SEQUENTIAL (not parallel) to
+            // avoid the 409-conflict race that motivated atomic commits.
+            logger.warn("prism_push atomic failed; falling back to sequential pushFile", {
+              project_slug,
+              atomicError: atomicResult.error,
+            });
+            results = [];
+            for (let idx = 0; idx < files.length; idx++) {
+              const file = files[idx];
+              const guarded = guardResults[idx];
+              const pushResult = await pushFile(
+                project_slug,
+                guarded.path,
+                file.content,
+                commitMessage,
+              );
+              results.push({
+                path: guarded.path,
+                original_path: guarded.redirected ? file.path : undefined,
+                redirected: guarded.redirected,
+                success: pushResult.success,
+                size_bytes: pushResult.size,
+                sha: pushResult.sha,
+                verified: pushResult.success,
+                validation_errors: pushResult.success ? validationResults[idx].errors : [
+                  ...validationResults[idx].errors,
+                  pushResult.error ?? "Push failed",
+                ],
+                validation_warnings: validationResults[idx].warnings,
+                error: pushResult.error,
+              });
+            }
+          }
+        }
+
+        const succeeded = results.filter((r) => r.success);
         const totalBytes = succeeded.reduce((sum, r) => sum + r.size_bytes, 0);
 
-        // 3. Invalidate template cache if we just pushed an update to the core template
+        // Invalidate template cache if we just pushed an update to the core template
         if (project_slug === FRAMEWORK_REPO) {
-          const templatePushed = succeeded.some(r => r.path === MCP_TEMPLATE_PATH);
+          const templatePushed = succeeded.some((r) => r.path === MCP_TEMPLATE_PATH);
           if (templatePushed) {
             templateCache.invalidate(MCP_TEMPLATE_PATH);
-            logger.info("template cache invalidated", { reason: "core template pushed via prism_push" });
+            logger.info("template cache invalidated", {
+              reason: "core template pushed via prism_push",
+            });
           }
         }
 
@@ -157,6 +238,7 @@ export function registerPush(server: McpServer): void {
           files_pushed: succeeded.length,
           files_failed: files.length - succeeded.length,
           total_bytes: totalBytes,
+          commit_sha: atomicResult.success ? atomicResult.sha : undefined,
         };
 
         logger.info("prism_push complete", {
@@ -164,6 +246,7 @@ export function registerPush(server: McpServer): void {
           pushed: succeeded.length,
           failed: files.length - succeeded.length,
           totalBytes,
+          atomic: atomicResult.success,
           ms: Date.now() - start,
         });
 
@@ -174,10 +257,15 @@ export function registerPush(server: McpServer): void {
         const message = error instanceof Error ? error.message : String(error);
         logger.error("prism_push failed", { project_slug, error: message });
         return {
-          content: [{ type: "text" as const, text: JSON.stringify({ error: message, project: project_slug }) }],
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({ error: message, project: project_slug }),
+            },
+          ],
           isError: true,
         };
       }
-    }
+    },
   );
 }

@@ -553,6 +553,30 @@ export async function getDefaultBranch(repo: string): Promise<string> {
 }
 
 /**
+ * Fetch the HEAD SHA of a repo's default branch. Returns undefined on any
+ * failure — callers treat the absence as "can't verify, assume unchanged."
+ *
+ * Exists so `finalize.ts` commitPhase and `push.ts` can share the exact same
+ * HEAD-snapshot pattern when guarding against partial atomic-commit writes
+ * (S40 C3).
+ */
+export async function getHeadSha(repo: string): Promise<string | undefined> {
+  try {
+    const branch = await getDefaultBranch(repo);
+    const refUrl = `${GITHUB_API_BASE}/repos/${GITHUB_OWNER}/${repo}/git/ref/heads/${branch}`;
+    const refRes = await fetchWithRetry(refUrl, { headers: headers() });
+    if (refRes.ok) {
+      const refData = (await refRes.json()) as { object: { sha: string } };
+      return refData.object.sha;
+    }
+    await refRes.body?.cancel();
+  } catch {
+    // Non-critical — caller proceeds without the safety check.
+  }
+  return undefined;
+}
+
+/**
  * Push multiple files as a single atomic commit using Git Trees API.
  * Eliminates 409 race conditions from parallel Contents API pushes.
  *

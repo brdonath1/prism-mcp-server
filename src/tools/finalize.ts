@@ -16,10 +16,9 @@ import {
   getCommit,
   deleteFile,
   createAtomicCommit,
-  getDefaultBranch,
-  GITHUB_REQUEST_TIMEOUT_MS,
+  getHeadSha,
 } from "../github/client.js";
-import { LIVING_DOCUMENTS, LEGACY_LIVING_DOCUMENTS, SYNTHESIS_ENABLED, SERVER_VERSION, FRAMEWORK_REPO, MCP_SAFE_TIMEOUT, GITHUB_PAT, GITHUB_OWNER } from "../config.js";
+import { LIVING_DOCUMENTS, LEGACY_LIVING_DOCUMENTS, SYNTHESIS_ENABLED, SERVER_VERSION, FRAMEWORK_REPO, MCP_SAFE_TIMEOUT } from "../config.js";
 import { resolveDocPath, resolveDocPushPath, resolveDocFiles } from "../utils/doc-resolver.js";
 import { guardPushPath } from "../utils/doc-guard.js";
 import { logger } from "../utils/logger.js";
@@ -457,21 +456,7 @@ async function commitPhase(
     : `prism: session ${sessionNumber} artifacts`;
 
   // 5a. Capture HEAD SHA before atomic attempt for H-6 safety check
-  let headShaBefore: string | undefined;
-  try {
-    const branch = await getDefaultBranch(projectSlug);
-    const refUrl = `https://api.github.com/repos/${GITHUB_OWNER}/${projectSlug}/git/ref/heads/${branch}`;
-    const refRes = await fetch(refUrl, {
-      headers: { Authorization: `Bearer ${GITHUB_PAT}`, Accept: "application/vnd.github+json" },
-      signal: AbortSignal.timeout(GITHUB_REQUEST_TIMEOUT_MS),
-    });
-    if (refRes.ok) {
-      const refData = await refRes.json() as { object: { sha: string } };
-      headShaBefore = refData.object.sha;
-    }
-  } catch {
-    // Non-critical — proceed without safety check
-  }
+  const headShaBefore = await getHeadSha(projectSlug);
 
   // 5b. Try atomic commit first (single Git Trees API commit — no race conditions)
   const atomicResult = await createAtomicCommit(projectSlug, guardedFiles, commitMessage);
@@ -497,19 +482,9 @@ async function commitPhase(
     // 5c. Atomic commit failed — check if HEAD moved (partial write)
     let headChanged = false;
     if (headShaBefore) {
-      try {
-        const branch = await getDefaultBranch(projectSlug);
-        const refUrl = `https://api.github.com/repos/${GITHUB_OWNER}/${projectSlug}/git/ref/heads/${branch}`;
-        const refRes = await fetch(refUrl, {
-          headers: { Authorization: `Bearer ${GITHUB_PAT}`, Accept: "application/vnd.github+json" },
-          signal: AbortSignal.timeout(GITHUB_REQUEST_TIMEOUT_MS),
-        });
-        if (refRes.ok) {
-          const refData = await refRes.json() as { object: { sha: string } };
-          headChanged = refData.object.sha !== headShaBefore;
-        }
-      } catch {
-        // Assume not changed if we can't check
+      const headShaAfter = await getHeadSha(projectSlug);
+      if (headShaAfter) {
+        headChanged = headShaAfter !== headShaBefore;
       }
     }
 

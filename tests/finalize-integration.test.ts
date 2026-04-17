@@ -19,6 +19,7 @@ vi.mock("../src/github/client.js", () => ({
   fileExists: vi.fn(),
   createAtomicCommit: vi.fn(),
   getDefaultBranch: vi.fn(),
+  getHeadSha: vi.fn(),
 }));
 
 // Mock the AI synthesis modules
