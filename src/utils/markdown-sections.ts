@@ -131,6 +131,25 @@ function normalizeHeader(header: string): string {
 }
 
 /**
+ * Strip trailing newlines from caller-provided patch content.
+ *
+ * S42: Replace and append both unconditionally suffix the reconstructed
+ * section with `"\n\n"` as the section-boundary separator. If the caller's
+ * patchContent already ends with `\n`, the result is three consecutive
+ * newlines — one extra blank line at the section boundary that accumulates
+ * on every subsequent replace/append. Normalizing the caller's trailing
+ * newlines at the boundary makes the transform idempotent w.r.t. callers
+ * who always end their content with `\n` (the common case when content is
+ * built from a multi-line string literal or a `.join("\n")`).
+ *
+ * Only trailing `\n` characters are stripped. Trailing spaces are preserved
+ * since markdown uses `  ` (two spaces + newline) as a hard line break.
+ */
+function stripTrailingNewlines(text: string): string {
+  return text.replace(/\n+$/, "");
+}
+
+/**
  * Find the target section by header, with fallback matching.
  *
  * 1. Exact match (case-sensitive)
@@ -165,6 +184,11 @@ function findSection(sections: Section[], sectionHeader: string): Section {
  *
  * Uses parseSections() to reliably find section boundaries,
  * then reconstructs the document with the patched section.
+ *
+ * S42: `replace` and `append` strip trailing newlines from `patchContent`
+ * before appending the `"\n\n"` section-boundary separator, preventing
+ * the blank-line drift that would otherwise accumulate on every op when
+ * callers pass content that ends with `\n` (the common case).
  */
 export function applyPatch(
   content: string,
@@ -184,7 +208,7 @@ export function applyPatch(
         "\n" +
         section.body.trimEnd() +
         "\n" +
-        patchContent +
+        stripTrailingNewlines(patchContent) +
         "\n\n";
       break;
     case "prepend":
@@ -192,7 +216,11 @@ export function applyPatch(
         section.header + "\n" + patchContent + "\n" + section.body;
       break;
     case "replace":
-      newSection = section.header + "\n" + patchContent + "\n\n";
+      newSection =
+        section.header +
+        "\n" +
+        stripTrailingNewlines(patchContent) +
+        "\n\n";
       break;
   }
 
