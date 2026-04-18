@@ -88,47 +88,97 @@ async function decisionVelocity(projectSlug: string) {
 }
 
 /**
- * Compute session patterns — frequency and duration trends.
+ * Parse session headers out of a session-log body. Supports two real-world
+ * formats observed across PRISM projects:
  *
- * Handles multiple session header formats:
- *   ### Session 7 (03-23-26 CST)
- *   ### Session 9 (03-27-26 18:08:29 CST)
- *   ### CC Session 3 (03-27-26 CST)
- *   ### Session 3 (2026-02-19)
+ *   PRISM-style:  `### Session 25 (2026-03-15)` or `### CC Session 3 (03-27-26 CST)`
+ *   PF2-style:    `## S162 — 03-15-26`
+ *
+ * Returns one entry per matched header. Ignores any line that matches neither
+ * format. Handles both em-dash (U+2014) and en-dash (U+2013) between "S" and
+ * the date in PF2-style headers.
  */
-async function sessionPatterns(projectSlug: string) {
-  const resolved = await resolveDocPath(projectSlug, "session-log.md");
-  const sessionLog = { content: resolved.content, size: resolved.content.length };
-  const content = sessionLog.content;
+export function parseSessionHeaders(
+  content: string
+): Array<{ number: number; date: string }> {
+  const parsed: Array<{ number: number; date: string }> = [];
 
-  const sessions: Array<{ number: number; date: string }> = [];
-  const lines = content.split("\n");
+  for (const line of content.split("\n")) {
+    // PRISM-style: ### [CC ]Session N (date...)
+    const prismMatch = line.match(
+      /^#{2,3}\s+(?:CC\s+)?Session\s+(\d+)\s*\(([^)]+)\)/i
+    );
+    // PF2-style: ## S{N} — MM-DD-YY (accepts em-dash, en-dash, or ASCII dash)
+    const pf2Match = line.match(
+      /^#{2,3}\s+S(\d+)\s+[—–-]+\s+([0-9]{1,4}[-/][0-9]{1,2}[-/][0-9]{1,4})/i
+    );
 
-  for (const line of lines) {
-    // Match: ### Session N (...) or ### CC Session N (...)
-    const headerMatch = line.match(/^###\s+(?:CC\s+)?Session\s+(\d+)\s*\(([^)]+)\)/i);
-    if (!headerMatch) continue;
-
-    const sessionNum = parseInt(headerMatch[1], 10);
-    const dateStr = headerMatch[2].trim();
-
-    // Try MM-DD-YY format first (e.g., "03-23-26 CST" or "03-27-26 18:08:29 CST")
-    const mmddyy = dateStr.match(/^(\d{2})-(\d{2})-(\d{2})/);
-    if (mmddyy) {
-      const year = 2000 + parseInt(mmddyy[3], 10);
-      sessions.push({ number: sessionNum, date: `${year}-${mmddyy[1]}-${mmddyy[2]}` });
+    let sessionNum: number;
+    let rawDate: string;
+    if (prismMatch) {
+      sessionNum = parseInt(prismMatch[1], 10);
+      rawDate = prismMatch[2].trim();
+    } else if (pf2Match) {
+      sessionNum = parseInt(pf2Match[1], 10);
+      rawDate = pf2Match[2].trim();
+    } else {
       continue;
     }
 
-    // Try YYYY-MM-DD format (e.g., "2026-02-19")
-    const yyyymmdd = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})/);
-    if (yyyymmdd) {
-      sessions.push({ number: sessionNum, date: `${yyyymmdd[1]}-${yyyymmdd[2]}-${yyyymmdd[3]}` });
+    // Normalize date to YYYY-MM-DD. Accepts MM-DD-YY (PF2/PRISM-CST) and YYYY-MM-DD.
+    const mmddyy = rawDate.match(/^(\d{2})[-/](\d{2})[-/](\d{2})(?:\D|$)/);
+    if (mmddyy) {
+      const year = 2000 + parseInt(mmddyy[3], 10);
+      parsed.push({
+        number: sessionNum,
+        date: `${year}-${mmddyy[1]}-${mmddyy[2]}`,
+      });
       continue;
+    }
+    const yyyymmdd = rawDate.match(/^(\d{4})[-/](\d{2})[-/](\d{2})/);
+    if (yyyymmdd) {
+      parsed.push({
+        number: sessionNum,
+        date: `${yyyymmdd[1]}-${yyyymmdd[2]}-${yyyymmdd[3]}`,
+      });
     }
   }
 
-  // Calculate gaps between sessions
+  return parsed;
+}
+
+/**
+ * Compute session patterns — frequency and duration trends.
+ *
+ * Reads both `session-log.md` (current) and `session-log-archive.md` (rotated
+ * older sessions) when present, then sorts by parsed date ASC before computing
+ * gaps. Handles multiple session header formats via {@link parseSessionHeaders}.
+ */
+async function sessionPatterns(projectSlug: string) {
+  const resolved = await resolveDocPath(projectSlug, "session-log.md");
+  const currentSessions = parseSessionHeaders(resolved.content);
+
+  // Archive is optional — absence is normal for projects that have not rotated.
+  let archiveSessions: Array<{ number: number; date: string }> = [];
+  try {
+    const archive = await resolveDocPath(projectSlug, "session-log-archive.md");
+    archiveSessions = parseSessionHeaders(archive.content);
+  } catch {
+    // No archive — fine.
+  }
+
+  // Merge + dedupe by session number (archive is authoritative for older numbers;
+  // current wins on collision since it reflects any re-numbering fixes).
+  const bySessionNum = new Map<number, { number: number; date: string }>();
+  for (const s of archiveSessions) bySessionNum.set(s.number, s);
+  for (const s of currentSessions) bySessionNum.set(s.number, s);
+
+  // Sort by parsed date ASC. Document order is not reliable — PRISM writes
+  // newest-on-top, so relying on .split("\n") order inverts first/last.
+  const sessions = Array.from(bySessionNum.values()).sort((a, b) => {
+    return new Date(a.date).getTime() - new Date(b.date).getTime();
+  });
+
   const gaps: number[] = [];
   for (let i = 1; i < sessions.length; i++) {
     const prev = new Date(sessions[i - 1].date);
@@ -150,9 +200,42 @@ async function sessionPatterns(projectSlug: string) {
       average_gap_days: Math.round(avgGap * 10) / 10,
       recent_sessions: sessions.slice(-5),
       gap_trend: gaps.slice(-10),
+      archive_included: archiveSessions.length > 0,
     },
     summary: `${totalSessions} sessions from ${firstDate} to ${lastDate}. Average gap: ${avgGap.toFixed(1)} days between sessions.`,
   };
+}
+
+/**
+ * Sort handoff-history entries in ascending numeric version order.
+ * Lexicographic sort mixes `v49` before `v9`; the numeric sort produces a
+ * chronological order that makes the size trend meaningful. (A-11)
+ */
+export function sortHandoffVersionsAsc<T extends { name: string }>(entries: T[]): T[] {
+  return [...entries].sort((a, b) => {
+    const va = parseInt(a.name.match(/handoff_v(\d+)/)?.[1] ?? "0", 10);
+    const vb = parseInt(b.name.match(/handoff_v(\d+)/)?.[1] ?? "0", 10);
+    return va - vb;
+  });
+}
+
+/**
+ * Parse a handoff-history filename into `{ version, date }`.
+ *
+ * Accepts:
+ *   - `handoff_vN_YYYY-MM-DD.md`       → `{ version: N, date: "YYYY-MM-DD" }`
+ *   - `handoff_vN_MM-DD-YY.md`         → `{ version: N, date: "20YY-MM-DD" }` (A-20)
+ *   - `handoff_vN.md` (no date)        → `{ version: N, date: "unknown" }`
+ *   - anything else                    → `{ version: 0, date: "unknown" }`
+ */
+export function parseHandoffFilename(name: string): { version: number; date: string } {
+  const versionMatch = name.match(/handoff_v(\d+)/);
+  const version = versionMatch ? parseInt(versionMatch[1], 10) : 0;
+  const iso = name.match(/(\d{4}-\d{2}-\d{2})/);
+  if (iso) return { version, date: iso[1] };
+  const short = name.match(/_(\d{2})-(\d{2})-(\d{2})\.md$/);
+  if (short) return { version, date: `20${short[3]}-${short[1]}-${short[2]}` };
+  return { version, date: "unknown" };
 }
 
 /**
@@ -163,16 +246,15 @@ async function handoffSizeHistory(projectSlug: string) {
   if (historyEntries.length === 0) {
     historyEntries = await listDirectory(projectSlug, "handoff-history");
   }
-  const handoffFiles = historyEntries
-    .filter((e) => e.name.startsWith("handoff_v") && e.name.endsWith(".md"))
-    .sort((a, b) => a.name.localeCompare(b.name));
+  const handoffFiles = sortHandoffVersionsAsc(
+    historyEntries.filter((e) => e.name.startsWith("handoff_v") && e.name.endsWith(".md")),
+  );
 
   const versions = handoffFiles.map((f) => {
-    const versionMatch = f.name.match(/handoff_v(\d+)/);
-    const dateMatch = f.name.match(/(\d{4}-\d{2}-\d{2})/);
+    const parsed = parseHandoffFilename(f.name);
     return {
-      version: versionMatch ? parseInt(versionMatch[1], 10) : 0,
-      date: dateMatch ? dateMatch[1] : "unknown",
+      version: parsed.version,
+      date: parsed.date,
       size_bytes: f.size,
       size_kb: Math.round((f.size / 1024) * 10) / 10,
       file: f.name,
@@ -190,12 +272,20 @@ async function handoffSizeHistory(projectSlug: string) {
     // Current handoff might not exist
   }
 
-  const trend =
-    versions.length >= 2
-      ? versions[versions.length - 1].size_bytes > versions[0].size_bytes
-        ? "growing"
-        : "shrinking"
-      : "insufficient_data";
+  // Compute trend from most-recent delta (versions[-1] vs versions[-2]).
+  // Comparing first vs last across many versions obscures the current trend
+  // if there was a mid-lifecycle refactor; single-step delta is the clearest
+  // "are we growing right now?" signal.
+  let trend: "growing" | "shrinking" | "stable" | "insufficient_data";
+  if (versions.length < 2) {
+    trend = "insufficient_data";
+  } else {
+    const last = versions[versions.length - 1].size_bytes;
+    const prior = versions[versions.length - 2].size_bytes;
+    if (last > prior) trend = "growing";
+    else if (last < prior) trend = "shrinking";
+    else trend = "stable";
+  }
 
   return {
     data: {
@@ -248,12 +338,63 @@ async function fileChurn(projectSlug: string) {
 }
 
 /**
+ * Extract directional decision edges from a decision domain-file body.
+ *
+ * Splits the content into per-decision sections headed by `### D-N:` and,
+ * for each section, records an edge `ownerId → ref` for every D-N id cited
+ * inside that section's body (excluding the owner itself and any reference
+ * to an id not present in `knownIds`).
+ *
+ * Pure function — no network, no filesystem — so it can be tested with
+ * synthetic content.
+ */
+export function extractDecisionEdges(
+  content: string,
+  knownIds: Set<string>,
+): Array<{ from: string; to: string }> {
+  const sectionRegex = /^###\s+(D-\d+)\s*:/gm;
+  const starts: Array<{ index: number; id: string }> = [];
+  let m: RegExpExecArray | null;
+  while ((m = sectionRegex.exec(content)) !== null) {
+    starts.push({ index: m.index, id: m[1] });
+  }
+  const edges: Array<{ from: string; to: string }> = [];
+  const seen = new Set<string>();
+  for (let i = 0; i < starts.length; i++) {
+    const ownerId = starts[i].id;
+    if (!knownIds.has(ownerId)) continue;
+    const start = starts[i].index;
+    const end = i + 1 < starts.length ? starts[i + 1].index : content.length;
+    const body = content.slice(start, end);
+    const refs = body.match(/D-\d+/g) ?? [];
+    for (const ref of refs) {
+      if (ref === ownerId) continue;
+      if (!knownIds.has(ref)) continue;
+      const edgeKey = `${ownerId}→${ref}`;
+      if (seen.has(edgeKey)) continue;
+      seen.add(edgeKey);
+      edges.push({ from: ownerId, to: ref });
+    }
+  }
+  return edges;
+}
+
+/**
  * Compute decision graph — find cross-references between decisions.
+ *
+ * The `_INDEX.md` lookup table only contains one row per decision with no
+ * cross-references — scanning it produces a trivially-disconnected graph.
+ * Real edges live in the decision domain files (`architecture.md`,
+ * `operations.md`, etc.), inside individual `### D-N:` entries that cite
+ * other D-N IDs in their prose. Scan those instead.
+ *
+ * Edges are directional: `D-Y` mentions `D-X` → edge `Y → X` (Y refines/
+ * supersedes/depends-on X). The prior `/2` divisor assumed undirected graphs
+ * and halved the real edge count.
  */
 async function decisionGraph(projectSlug: string) {
-  const resolved = await resolveDocPath(projectSlug, "decisions/_INDEX.md");
-  const decisionFile = { content: resolved.content, size: resolved.content.length };
-  const rows = parseMarkdownTable(decisionFile.content);
+  const indexResolved = await resolveDocPath(projectSlug, "decisions/_INDEX.md");
+  const rows = parseMarkdownTable(indexResolved.content);
 
   const idKey = Object.keys(rows[0] ?? {}).find((k) => k.toLowerCase() === "id") ?? "ID";
   const titleKey =
@@ -261,46 +402,47 @@ async function decisionGraph(projectSlug: string) {
   const statusKey =
     Object.keys(rows[0] ?? {}).find((k) => k.toLowerCase() === "status") ?? "Status";
 
-  // Build adjacency list by scanning for D-N references in the full content
   const decisions = rows.map((row) => ({
     id: row[idKey] ?? "",
     title: row[titleKey] ?? "",
     status: row[statusKey] ?? "",
   }));
+  const decisionIds = new Set(decisions.map((d) => d.id).filter((id): id is string => !!id));
 
-  const decisionIds = new Set(decisions.map((d) => d.id));
-
-  // Scan full content for cross-references
+  // Initialize adjacency with all decisions (so isolated ones show up).
   const adjacency: Record<string, string[]> = {};
-  const lines = decisionFile.content.split("\n");
-
-  // Look for lines mentioning decisions and track context
-  for (const decision of decisions) {
-    adjacency[decision.id] = [];
+  for (const d of decisions) {
+    if (d.id) adjacency[d.id] = [];
   }
 
-  // Simple approach: for each decision row, check if it references other D-N ids
-  for (const row of rows) {
-    const rowId = row[idKey] ?? "";
-    const rowContent = Object.values(row).join(" ");
-    const refs = rowContent.match(/D-\d+/g) ?? [];
+  // Locate and scan domain files under .prism/decisions/. Fall back to legacy
+  // root `decisions/` for pre-migration projects.
+  let domainDirEntries = await listDirectory(projectSlug, ".prism/decisions");
+  let domainDir = ".prism/decisions";
+  if (domainDirEntries.length === 0) {
+    domainDirEntries = await listDirectory(projectSlug, "decisions");
+    domainDir = "decisions";
+  }
 
-    for (const ref of refs) {
-      if (ref !== rowId && decisionIds.has(ref)) {
-        if (!adjacency[rowId]) adjacency[rowId] = [];
-        if (!adjacency[rowId].includes(ref)) {
-          adjacency[rowId].push(ref);
-        }
+  const domainPaths = domainDirEntries
+    .filter((e) => e.type === "file" && e.name.endsWith(".md") && e.name !== "_INDEX.md")
+    .map((e) => `${domainDir}/${e.name}`);
+
+  const domainFiles = await fetchFiles(projectSlug, domainPaths);
+
+  for (const [, file] of domainFiles.files) {
+    const edges = extractDecisionEdges(file.content, decisionIds);
+    for (const { from, to } of edges) {
+      if (!adjacency[from].includes(to)) {
+        adjacency[from].push(to);
       }
     }
   }
 
-  // Note: Cross-references are extracted from per-row content above.
-  // Previously, this block scanned full content split by ## headers,
-  // which created a complete graph because all D-N IDs appeared in the
-  // same table block. Removed in KI-2 fix.
+  // Directional edge count — no /2 halving. "D-Y supersedes D-X" is one edge,
+  // not half of a symmetric pair.
+  const totalEdges = Object.values(adjacency).reduce((sum, refs) => sum + refs.length, 0);
 
-  const totalEdges = Object.values(adjacency).reduce((sum, refs) => sum + refs.length, 0) / 2;
   const connectedDecisions = Object.entries(adjacency).filter(
     ([, refs]) => refs.length > 0
   );
@@ -330,6 +472,7 @@ async function decisionGraph(projectSlug: string) {
         ...d,
         references: adjacency[d.id] ?? [],
       })),
+      domain_files_scanned: domainPaths.length,
     },
     summary: `${decisions.length} decisions, ${totalEdges} cross-references. ${connectedDecisions.length} connected, ${isolatedDecisions.length} isolated. Top hub: ${hubs[0]?.id ?? "none"} (${hubs[0]?.connections ?? 0} connections).`,
   };

@@ -544,6 +544,13 @@ const SENSITIVE_KEY_PATTERNS: RegExp[] = [
   /AUTH/i,
   /CREDENTIAL/i,
   /PRIVATE/i,
+  // A-8: GITHUB_PAT was missed — "PAT" is industry-standard for personal
+  // access token. `\b` doesn't help here because JavaScript's \w treats `_`
+  // as a word char, so \bPAT\b never matches inside `GITHUB_PAT`. Use an
+  // explicit underscore/start-of-string boundary instead.
+  /(^|_)PAT($|_)/i,
+  // A-8: belt-and-suspenders for any GITHUB_-prefixed secret.
+  /^GITHUB_/i,
 ];
 
 /** URL with embedded userinfo credentials (e.g. postgres://user:pass@host/db). */

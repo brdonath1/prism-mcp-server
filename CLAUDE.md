@@ -5,13 +5,13 @@
 This is the **PRISM MCP Server** — a custom remote MCP (Model Context Protocol) server that handles all GitHub operations for the PRISM framework (Persistent Reasoning & Intelligent State Management). It replaces manual bash+cURL GitHub API calls with parallelized, validated, context-efficient MCP tool calls.
 
 **Owner:** Brian (brdonath1 on GitHub)
-**Framework:** PRISM v2.9.0
+**Framework:** PRISM — current version pinned by the framework repo's core-template; fetched dynamically at bootstrap.
 **Server Version:** 4.0.0
-**Status:** Production — deployed on Railway, serving 17 PRISM projects
+**Status:** Production — deployed on Railway, serving all active PRISM projects.
 
 ## What PRISM Is
 
-PRISM is a session continuity framework that gives Claude structured external memory via GitHub-backed living documents. It solves Claude's zero cross-session memory by distributing state across structured files in GitHub repositories. Brian manages 17 active PRISM projects.
+PRISM is a session continuity framework that gives Claude structured external memory via GitHub-backed living documents. It solves Claude's zero cross-session memory by distributing state across structured files in GitHub repositories. Brian manages all active PRISM projects; current count is visible via `prism_analytics(health_summary)`.
 
 The MCP server is the v2 evolution — separating Claude into a pure reasoning agent while offloading all mechanical GitHub operations to this dedicated server. This reduces finalization from 13-16 tool calls to 2-3, drops bootstrap context consumption from ~15-20% to ~3-5%, and enables capabilities previously impossible (server-side validation, cross-session analytics, AI synthesis, decision graph tracking, multi-project awareness).
 
@@ -44,7 +44,7 @@ The MCP server is the v2 evolution — separating Claude into a pure reasoning a
 
 **Note:** The MemoryCache singleton and Anthropic client singleton are intentional performance optimizations — safe in stateless mode since they are read-only/config-only (A.6).
 
-**Claude Code orchestration (brief-104):** `cc_dispatch` clones a target repo into /tmp, runs `@anthropic-ai/claude-agent-sdk` query() against it, and (in execute mode) commits results to a feature branch and opens a PR. Dispatch state is persisted to `brdonath1/prism-mcp-server/.dispatch/{id}.json` so `cc_status` can read it across stateless requests. Tools only register when `ANTHROPIC_API_KEY` is set.
+**Claude Code orchestration (brief-104):** `cc_dispatch` clones a target repo into /tmp, runs `@anthropic-ai/claude-agent-sdk` query() against it, and (in execute mode) commits results to a feature branch and opens a PR. Dispatch state is persisted to `brdonath1/prism-dispatch-state/.dispatch/{id}.json` so `cc_status` can read it across stateless requests. The separate state repo avoids Railway auto-deploy loops that would kill in-flight dispatches when state writes commit to this repo. Tools only register when `ANTHROPIC_API_KEY` is set.
 
 ## Technology Stack
 
@@ -164,7 +164,7 @@ All .md files MUST end with `<!-- EOF: {filename} -->`.
 - No duplicate decision IDs — `prism_log_decision` rejects with a clear error when a D-N ID already exists (brief-104 A.1)
 
 ### Commit messages:
-- Must start with: `prism:`, `fix:`, `docs:`, or `chore:`
+- Must start with: `prism:`, `fix:`, `docs:`, `chore:`, `audit:`, or `test:`
 
 ## Commit Prefixes
 
@@ -178,6 +178,8 @@ All .md files MUST end with `<!-- EOF: {filename} -->`.
 | Project scaffold | `prism: scaffold [project-name]` |
 | Decision domain split | `prism: split decisions` |
 | Reference extraction | `prism: extract [filename]` |
+| Audit report / audit-trail | `audit: [description]` |
+| Test artifact / fixture | `test: [description]` |
 
 ## Working Preferences
 
@@ -228,6 +230,6 @@ the brief at `docs/briefs/{brief-name}.status.json`:
 On completion, the file is updated with `"status": "completed"`, the
 terminal `completed_at`, any `pr_url`, and the list of commits. The
 `cc_status` tool exposes the same information for async dispatches via its
-`.dispatch/{id}.json` records in this repo.
+records in `brdonath1/prism-dispatch-state`.
 
 <!-- EOF: CLAUDE.md -->

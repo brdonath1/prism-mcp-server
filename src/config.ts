@@ -141,7 +141,11 @@ export const LIVING_DOCUMENT_NAMES = [
 ] as const;
 
 /** Valid commit prefixes */
-export const VALID_COMMIT_PREFIXES = ["prism:", "fix:", "docs:", "chore:"] as const;
+export const VALID_COMMIT_PREFIXES = [
+  "prism:", "fix:", "docs:", "chore:",
+  "audit:", // audit reports and audit-trail commits
+  "test:",  // test artifacts and test-scope fixtures
+] as const;
 
 /**
  * Project slug → display name mapping for boot banner (D-34).

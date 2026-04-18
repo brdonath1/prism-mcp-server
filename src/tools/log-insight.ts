@@ -10,6 +10,31 @@ import { logger } from "../utils/logger.js";
 import { resolveDocPath, resolveDocPushPath } from "../utils/doc-resolver.js";
 import { guardPushPath } from "../utils/doc-guard.js";
 
+/**
+ * Parse existing insight IDs from an insights.md content string.
+ *
+ * Scans for `### INS-N:` section headers and captures the accompanying title
+ * (excluding the " — STANDING RULE" suffix if present) for the rejection
+ * message. Mirrors {@link parseExistingDecisionIds} in shape so the dedup
+ * guard reads the same on both log-decision and log-insight paths.
+ */
+export function parseExistingInsightIds(content: string): Map<string, string> {
+  const ids = new Map<string, string>();
+  // Canonical entry header: `### INS-N: Title` with optional " — STANDING RULE"
+  // suffix. The regex captures the ID and title separately; we strip the
+  // standing-rule marker from the title before storing for a cleaner message.
+  const headerPattern = /^###\s+(INS-\d+)\s*:\s*(.+?)\s*$/gm;
+  let match: RegExpExecArray | null;
+  while ((match = headerPattern.exec(content)) !== null) {
+    const id = match[1];
+    const rawTitle = match[2].replace(/\s*—\s*STANDING RULE\s*$/, "").trim();
+    if (!ids.has(id)) {
+      ids.set(id, rawTitle);
+    }
+  }
+  return ids;
+}
+
 export function registerLogInsight(server: McpServer): void {
   server.tool(
     "prism_log_insight",
@@ -40,10 +65,12 @@ export function registerLogInsight(server: McpServer): void {
         // 1. Fetch current insights.md (D-67: backward-compatible resolution)
         let content: string;
         let insightsResolvedPath: string;
+        let fileExisted = false;
         try {
           const resolved = await resolveDocPath(project_slug, "insights.md");
           content = resolved.content;
           insightsResolvedPath = resolved.path;
+          fileExisted = true;
         } catch {
           content = `# Insights — ${project_slug}\n\n> Institutional knowledge. Entries tagged **STANDING RULE** are auto-loaded at bootstrap (D-44 Track 1).\n\n## Active\n\n## Formalized\n\n<!-- EOF: insights.md -->\n`;
           const basePushPath = await resolveDocPushPath(project_slug, "insights.md");
@@ -51,7 +78,40 @@ export function registerLogInsight(server: McpServer): void {
           insightsResolvedPath = guarded.path;
         }
 
-        // 2. Build the entry
+        // 2. Dedup guard (A-4): reject if the requested INS-N ID already exists
+        // in insights.md. Mirrors the log_decision dedup pattern. Fresh files
+        // have nothing to dedup against — skip the check.
+        if (fileExisted) {
+          const existingIds = parseExistingInsightIds(content);
+          if (existingIds.has(id)) {
+            const existingTitle = existingIds.get(id) ?? "";
+            const msg =
+              `Insight ID ${id} already exists in insights.md` +
+              (existingTitle ? ` (title: "${existingTitle}")` : "") +
+              `. Use a different ID or update the existing entry via prism_patch.`;
+            logger.warn("prism_log_insight duplicate rejected", {
+              project_slug,
+              id,
+              existingTitle,
+            });
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: JSON.stringify({
+                    error: msg,
+                    duplicate: true,
+                    id,
+                    existing_title: existingTitle,
+                  }),
+                },
+              ],
+              isError: true,
+            };
+          }
+        }
+
+        // 3. Build the entry
         const standingTag = standing_rule ? " — STANDING RULE" : "";
         const categoryTag = standing_rule ? `${category} — **STANDING RULE**` : category;
 
@@ -68,7 +128,7 @@ export function registerLogInsight(server: McpServer): void {
 
         const entry = entryLines.join("\n");
 
-        // 3. Insert into ## Active section (before ## Formalized or EOF)
+        // 4. Insert into ## Active section (before ## Formalized or EOF)
         const formalizedMarker = "## Formalized";
         const eofSentinel = "<!-- EOF: insights.md -->";
 
@@ -80,7 +140,7 @@ export function registerLogInsight(server: McpServer): void {
           content = content.trimEnd() + `\n\n${entry}\n`;
         }
 
-        // 4. Push to resolved path
+        // 5. Push to resolved path
         const result = await pushFile(
           project_slug,
           insightsResolvedPath,
