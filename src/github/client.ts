@@ -581,11 +581,19 @@ export async function getHeadSha(repo: string): Promise<string | undefined> {
  * Eliminates 409 race conditions from parallel Contents API pushes.
  *
  * Steps:
- * 1. GET /repos/{owner}/{repo}/git/ref/heads/{branch} → current HEAD SHA
- * 2. GET /repos/{owner}/{repo}/git/commits/{sha} → base tree SHA
- * 3. POST /repos/{owner}/{repo}/git/trees → create tree with all files
- * 4. POST /repos/{owner}/{repo}/git/commits → create commit pointing to new tree
- * 5. PATCH /repos/{owner}/{repo}/git/ref/heads/{branch} → update HEAD
+ * 1. GET  /repos/{owner}/{repo}/git/ref/heads/{branch}   → current HEAD SHA
+ * 2. GET  /repos/{owner}/{repo}/git/commits/{sha}        → base tree SHA
+ * 3. POST /repos/{owner}/{repo}/git/trees                → create tree with all files
+ * 4. POST /repos/{owner}/{repo}/git/commits              → create commit pointing to new tree
+ * 5. PATCH /repos/{owner}/{repo}/git/refs/heads/{branch} → update HEAD (note plural /refs/)
+ *
+ * IMPORTANT URL ASYMMETRY: GitHub's Git Refs API uses different paths for
+ * read vs. write. Step 1 (GET a single ref) uses `/git/ref/{ref}` (singular).
+ * Step 5 (PATCH update a ref) uses `/git/refs/{ref}` (plural). Reusing the
+ * GET URL for the PATCH returns a fast 404 ("Not found: updateRef <repo>"),
+ * which is exactly how S40 C3 shipped and went unnoticed for five days until
+ * S42 traced it via Railway logs. See tests/atomic-commit-url.test.ts for
+ * the regression guard.
  */
 export async function createAtomicCommit(
   repo: string,
@@ -596,7 +604,8 @@ export async function createAtomicCommit(
   logger.debug("github.createAtomicCommit", { repo, fileCount: files.length });
 
   try {
-    // 1. Get current HEAD ref (dynamic branch detection — KI-17)
+    // 1. Get current HEAD ref (dynamic branch detection — KI-17).
+    //    GET uses the singular /git/ref/{ref} endpoint.
     const branch = await getDefaultBranch(repo);
     const refUrl = `${GITHUB_API_BASE}/repos/${GITHUB_OWNER}/${repo}/git/ref/heads/${branch}`;
     const refRes = await fetchWithRetry(refUrl, { headers: headers() });
@@ -652,8 +661,12 @@ export async function createAtomicCommit(
     }
     const newCommitData = await newCommitRes.json() as { sha: string };
 
-    // 5. Update HEAD ref
-    const updateRefRes = await fetchWithRetry(refUrl, {
+    // 5. Update HEAD ref.
+    //    PATCH uses the PLURAL /git/refs/{ref} endpoint — distinct from the
+    //    singular GET URL reused for step 1. See function docstring for the
+    //    S42 history on why this asymmetry must not be collapsed.
+    const updateRefUrl = `${GITHUB_API_BASE}/repos/${GITHUB_OWNER}/${repo}/git/refs/heads/${branch}`;
+    const updateRefRes = await fetchWithRetry(updateRefUrl, {
       method: "PATCH",
       headers: { ...headers(), "Content-Type": "application/json" },
       body: JSON.stringify({ sha: newCommitData.sha }),
