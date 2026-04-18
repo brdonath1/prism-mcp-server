@@ -65,44 +65,98 @@ Required state for audit to proceed:
 - Tests: capture exact counts (pass / fail / skip). Any failing test is itself a finding. Continue regardless.
 
 ### Step 2 — Env loader (multi-source fallback)
+### Step 2 — Env loader (multi-repo discovery)
 
-The server expects env vars at runtime. Try loading from the conventional paths in order. Export every var found so subsequent tool invocations inherit.
+The API keys the audit needs are distributed across the operator's local clones of `prism-mcp-server`, `prism-framework`, and `platformforge-v2`. These env files are NOT committed to GitHub — they live only on the operator's local filesystem. Search common locations, source every file found. Later sources overlay earlier, so the order matters: `platformforge-v2` first (Anthropic/GitHub keys), then `prism-mcp-server` (server-specific like `RAILWAY_API_TOKEN` and `MCP_AUTH_TOKEN`), then `prism-framework` (unlikely to have env but check anyway).
 
 ```bash
-# Load from whichever env file exists (first match wins)
-for envfile in .env.local .env ~/.prism/.env; do
-  if [ -f "$envfile" ]; then
-    echo "Loading env from $envfile"
-    set -a
-    source "$envfile"
-    set +a
-    break
-  fi
+# Candidate search roots (common layouts)
+SEARCH_ROOTS=(
+  "$(dirname "$(pwd)")"              # parent of current dir (sibling-repo layout)
+  "$(dirname "$(dirname "$(pwd)")")"  # grandparent (nested layout)
+  "$HOME"
+  "$HOME/projects"
+  "$HOME/code"
+  "$HOME/dev"
+  "$HOME/work"
+  "$HOME/repos"
+  "$HOME/src"
+  "$HOME/Documents"
+  "$HOME/Desktop"
+)
+
+# Order: later sources overlay earlier. platformforge-v2 first (full AI keys),
+# then prism-mcp-server (server-specific), then prism-framework.
+REPOS=("platformforge-v2" "prism-mcp-server" "prism-framework")
+ENV_NAMES=(".env.local" ".env")
+
+echo "=== Env file discovery ==="
+LOADED=()
+SEEN=()
+for root in "${SEARCH_ROOTS[@]}"; do
+  for repo in "${REPOS[@]}"; do
+    for env in "${ENV_NAMES[@]}"; do
+      candidate="$root/$repo/$env"
+      # Resolve to canonical path so we don't double-source via symlinks / relative roots
+      if [ -f "$candidate" ]; then
+        canonical=$(readlink -f "$candidate" 2>/dev/null || echo "$candidate")
+        # Dedupe
+        already=false
+        for s in "${SEEN[@]}"; do [ "$s" = "$canonical" ] && already=true; done
+        if [ "$already" = false ]; then
+          SEEN+=("$canonical")
+          echo "Found: $canonical"
+          set -a
+          if source "$canonical" 2>/dev/null; then
+            LOADED+=("$canonical")
+          else
+            echo "  WARN: failed to parse $canonical"
+          fi
+          set +a
+        fi
+      fi
+    done
+  done
 done
 
-# Verify required vars for each test tier
+echo ""
+echo "=== Loaded env files (${#LOADED[@]}) ==="
+printf '%s\n' "${LOADED[@]}"
+
+# Verify required vars. Print first/last 4 chars only to avoid leaking to CI/logs.
+echo ""
 echo "=== ENV CHECK ==="
 for var in GITHUB_PAT GITHUB_OWNER FRAMEWORK_REPO ANTHROPIC_API_KEY MCP_AUTH_TOKEN RAILWAY_API_TOKEN; do
   if [ -z "${!var}" ]; then
     echo "MISSING: $var"
   else
-    # Show only first/last 4 chars to avoid leaking to logs
     val="${!var}"
-    echo "OK: $var (${val:0:4}…${val: -4})"
+    if [ ${#val} -ge 8 ]; then
+      echo "OK: $var (${val:0:4}…${val: -4})"
+    else
+      echo "OK: $var (short-value)"
+    fi
   fi
 done
 ```
 
-Record which vars are present / missing in the report's `Pre-Flight Evidence` section. Use the table below to determine which tiers can run:
+Record the full output in the report's `Pre-Flight Evidence` section, including the list of discovered files and the ENV CHECK result (key presence only, never actual values).
 
-| Required env var | Tools that need it |
-|---|---|
-| `GITHUB_PAT`, `GITHUB_OWNER`, `FRAMEWORK_REPO` | ALL tools (no work possible without these) |
-| `ANTHROPIC_API_KEY` | `prism_synthesize(generate)`, `prism_finalize(draft)`, `prism_finalize(commit)` (auto-synthesis) |
-| `RAILWAY_API_TOKEN` | All 4 `railway_*` tools |
-| `MCP_AUTH_TOKEN` | Not required for direct handler invocation; only needed if you separately test the MCP transport layer end-to-end |
+**Tier dependency table — consult after ENV CHECK to determine which tiers can run:**
 
-If `GITHUB_PAT` is missing, STOP — no testing possible. For other missing vars, skip the dependent tools and label them `STATIC-ONLY (env-unavailable)`.
+| Required env var | Tools that need it | Where it likely lives |
+|---|---|---|
+| `GITHUB_PAT`, `GITHUB_OWNER`, `FRAMEWORK_REPO` | ALL tools — no work possible without these | `prism-mcp-server/.env` (primary), `platformforge-v2/.env.local` (may have `GITHUB_PAT` if populated) |
+| `ANTHROPIC_API_KEY` | `prism_synthesize(generate)`, `prism_finalize(draft)` + `(commit)` auto-synthesis | `platformforge-v2/.env.local` (likely populated per AI SDK usage), also `prism-mcp-server/.env` |
+| `RAILWAY_API_TOKEN` | All 4 `railway_*` tools | `prism-mcp-server/.env` only — not part of PF-v2 stack |
+| `MCP_AUTH_TOKEN` | Not required for direct handler invocation (which is how the audit tests tools). Only needed if separately testing the MCP HTTP transport layer end-to-end. | `prism-mcp-server/.env` only |
+
+Handling missing vars:
+
+- If `GITHUB_PAT` or `GITHUB_OWNER` is still missing after full discovery: STOP the audit. No testing possible. Document the miss as a top-severity Pre-Flight finding.
+- If `ANTHROPIC_API_KEY` is missing: skip `prism_synthesize(generate)` live test and the synthesis path of `prism_finalize(commit)`. Label those sections `STATIC-ONLY (env-unavailable)`.
+- If `RAILWAY_API_TOKEN` is missing: skip all 4 Railway tool live invocations (both Tier A status/list/logs/get and Tier B set+delete). Label each Railway tool's Tier A/B result `STATIC-ONLY (env-unavailable)` and note in the report.
+- If `MCP_AUTH_TOKEN` is missing: this does not block direct-handler tool testing. The audit proceeds. Only flag as a finding if DD8 (transport-layer review) is blocked.
 
 ### Step 3 — Reference clone
 
