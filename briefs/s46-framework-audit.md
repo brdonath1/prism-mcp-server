@@ -64,7 +64,6 @@ Required state for audit to proceed:
 - Build: if it fails, STOP, log the failure as CRITICAL and do not continue.
 - Tests: capture exact counts (pass / fail / skip). Any failing test is itself a finding. Continue regardless.
 
-### Step 2 — Env loader (multi-source fallback)
 ### Step 2 — Env loader (multi-repo discovery)
 
 The API keys the audit needs are distributed across the operator's local clones of `prism-mcp-server`, `prism-framework`, and `platformforge-v2`. These env files are NOT committed to GitHub — they live only on the operator's local filesystem. Search common locations, source every file found. Later sources overlay earlier, so the order matters: `platformforge-v2` first (Anthropic/GitHub keys), then `prism-mcp-server` (server-specific like `RAILWAY_API_TOKEN` and `MCP_AUTH_TOKEN`), then `prism-framework` (unlikely to have env but check anyway).
