@@ -4,9 +4,9 @@
 
 - **Brief ID:** s46-framework-audit
 - **Type:** DUAL-AXIS AUDIT + LIVE-TOOL-TEST (no source changes; test artifacts reversed)
-- **Primary repo:** `prism-mcp-server` (clone target)
+- **Primary repo:** `prism-mcp-server` (uses `main` directly — no staging branch)
 - **Reference repo:** `prism-framework` (clone read-only into `/tmp/prism-framework`)
-- **Target branch:** `staging`
+- **Work branch:** `audit/s46-framework-audit` (created from `main`, PR back to `main` at end)
 - **Model:** Opus 4.7, effort `max`
 - **Deliverable:** Single file — `reports/s46-framework-audit.md` in `prism-mcp-server`
 - **Deadline:** Hard cap 210 minutes wall-clock. Ship partial report with explicit COVERAGE-GAP markers rather than abandoning.
@@ -46,23 +46,24 @@ PRISM's perceived degradation could be rooted in either axis or both. Sessions S
 
 1. **AUDIT ONLY on source.** You MAY create `reports/s46-framework-audit.md`. You MAY NOT modify source code, tests, configs, or documentation. No fixes.
 2. **Live test artifacts must be reversed to byte-identical pre-state.** For every Tier B tool, capture pre-state, invoke, then restore. Verify restoration with SHA comparison. A failed restoration aborts further Tier B testing.
-3. **Exactly one commit at end in prism-mcp-server.** The commit adds only `reports/s46-framework-audit.md`. Run `git status` before commit; unstage any other files.
-4. **Test artifacts in `brdonath1/prism`.** Live Tier B tests produce transient commits; restoration pushes a second commit. End state: file content byte-identical; commit log shows two extra audit-trail commits. Prefix `audit: s46 test-artifact` + tool name.
-5. **Evidence requirement.** Every finding needs concrete evidence: `file:line`, `grep -c` command with match count, test name with pass/fail, captured command output, or explicit sample reference (e.g., `session-log.md S44 Ex 7`). No speculation.
-6. **Live-verification labeling.** Runtime-behavior claims labeled `CONFIRMED-LIVE`, `CONFIRMED-TEST`, or `STATIC-ONLY`.
-7. **HTTP routing claims.** Come from test inspection (mocked-fetch) OR live curl. Never `grep` alone.
-8. **Zero-result discipline.** Before concluding a filter/query is broken on zero results, verify the target class exists in the input.
-9. **Severity calibration.** Strict. Don't amplify. Don't minimize.
-10. **Single push directive.** Push exactly once to `staging`.
-11. **PR at end (mandatory).** Base `main`, head `staging`, Exec Summary in body.
-12. **No fix code inside findings.** End at a fix *category*, not a diff.
-13. **Brittle-restore honesty.** Restoration failure = CRITICAL finding + STOP Tier B.
-14. **No destructive production calls.** `cc_dispatch(execute)`, `railway_deploy(redeploy|restart)` are Tier C — never live-invoked.
-15. **Axis tagging.** Every finding starts with `A-`, `B-`, or `X-`. No untagged findings.
+3. **Work on branch `audit/s46-framework-audit`.** Create from `main`. Do NOT commit to `main` directly. The branch is disposable — its sole purpose is carrying the report commit into a PR.
+4. **Exactly one commit on the work branch.** The commit adds only `reports/s46-framework-audit.md`. Run `git status` before commit; unstage any other files.
+5. **Test artifacts in `brdonath1/prism`.** Live Tier B tests produce transient commits on the prism project's `main`; restoration pushes a second commit. End state: file content byte-identical; commit log shows two extra audit-trail commits. Prefix `audit: s46 test-artifact` + tool name.
+6. **Evidence requirement.** Every finding needs concrete evidence: `file:line`, `grep -c` command with match count, test name with pass/fail, captured command output, or explicit sample reference (e.g., `session-log.md S44 Ex 7`). No speculation.
+7. **Live-verification labeling.** Runtime-behavior claims labeled `CONFIRMED-LIVE`, `CONFIRMED-TEST`, or `STATIC-ONLY`.
+8. **HTTP routing claims.** Come from test inspection (mocked-fetch) OR live curl. Never `grep` alone.
+9. **Zero-result discipline.** Before concluding a filter/query is broken on zero results, verify the target class exists in the input.
+10. **Severity calibration.** Strict. Don't amplify. Don't minimize.
+11. **Single push directive.** Push the work branch exactly once at the end. No interim pushes.
+12. **PR at end (mandatory).** Base `main`, head `audit/s46-framework-audit`. PR body contains the report's Executive Summary verbatim.
+13. **No fix code inside findings.** End each finding at a fix *category*, not a diff.
+14. **Brittle-restore honesty.** Restoration failure = CRITICAL finding + STOP Tier B.
+15. **No destructive production calls.** `cc_dispatch(execute)`, `railway_deploy(redeploy|restart)` are Tier C — never live-invoked.
+16. **Axis tagging.** Every finding starts with `A-`, `B-`, or `X-`. No untagged findings.
 
 ## Pre-Flight
 
-### Step 1 — Environment baseline
+### Step 1 — Environment baseline + branch setup
 
 ```bash
 node --version
@@ -70,7 +71,10 @@ npm --version
 git rev-parse HEAD
 git log -1 --format='%ci %s'
 git status
-git branch --show-current
+git branch --show-current                     # should be main
+git fetch origin
+git checkout -b audit/s46-framework-audit main # create and switch to work branch
+git branch --show-current                     # verify on audit/s46-framework-audit
 npm ci 2>&1 | tail -5
 npm run build 2>&1 | tail -20
 npm test 2>&1 | tail -30
@@ -215,6 +219,7 @@ Approach this codebase as an engineer who has never seen it before.
 - `prism-mcp-server/.prism/known-issues.md` (full)
 - `prism-mcp-server/.prism/handoff.md`
 - `prism-mcp-server/README.md`
+- `prism-mcp-server/CLAUDE.md`
 
 ### NOT in Axis A mandatory reading (priming risk; revisit in Axis B)
 - `prism-mcp-server/briefs/*`
@@ -343,6 +348,8 @@ cc_dispatch [B+C] | cc_status [A]
 
 **Calibration signal: the operator explicitly raised this axis after observing Claude (not the server) failing to use `conversation_search` before asking for information that was in session history.** That single observation is the strongest available evidence that behavioral drift exists. Axis B asks: what else is drifting?
 
+**Second calibration signal: this brief itself.** In its earlier drafts, Claude (the brief author) specified `staging` as the target branch for prism-mcp-server, carrying over a convention from the platformforge-v2 CLAUDE.md it had read in an earlier housekeeping task — without verifying that prism-mcp-server actually uses that branching model. This is in-session evidence of cross-project convention bleed without verification. Axis B should specifically look for this class of drift in other projects (convention inference from one project applied to another without check).
+
 ## Axis B reading list
 
 ### Primary evidence (READ IN DEPTH)
@@ -379,6 +386,7 @@ cc_dispatch [B+C] | cc_status [A]
 - **BL6 Context-management accuracy** — Are context percentages being computed, or are they eyeballed? Are tier transitions triggering appropriate behavior (no-new-topics at orange, finalize at red)?
 - **BL7 Candor / pushback** — Is Claude pushing back on operator premises, or drifting to confirmation? Sample operator-request patterns that had questionable premises — how often did Claude flag the premise vs comply?
 - **BL8 Memory discipline** — Does Claude ask for information it should have looked up (past conversations, project context, prior sessions)? Each occurrence is a signal.
+- **BL9 Cross-project convention bleed** — Does Claude apply a convention/pattern from one project to another without verifying it applies? (See second calibration signal above.)
 
 ## Axis B deep-dives (each MUST have a section)
 
@@ -390,6 +398,7 @@ cc_dispatch [B+C] | cc_status [A]
 - **BDD6 Instruction-saturation correlation.** Projects with larger handoffs / insights.md presumably load more instructions at boot. Is Rule 9 compliance (BDD1) correlated with instruction load? (Use file sizes as proxy.)
 - **BDD7 Operator-frustration signal.** Grep the three session-logs for user messages containing: "you should have", "why didn't you", "I already told you", "you're not", "stop", "no", "wrong", "just", "again", "still". Each hit is a candidate frustration signal. Classify each into (i) legitimate operator correction, (ii) genuine Claude drift, (iii) operator-misread-context. Report the rate over time — is the rate rising?
 - **BDD8 Template-rule evolution vs adherence.** Look at `core-template-mcp.md` version history (via git log on the framework repo). Each version bump (v2.9 → v2.10 → v2.11 → v2.12 → v2.13) added / changed rules. For each, measure: did Claude's behavior actually change post-bump, or did the rule text change without behavioral effect? (Comparison: pre-bump vs post-bump sample responses.)
+- **BDD9 Cross-project convention bleed.** Search session-logs across the three projects for evidence of Claude applying a convention/configuration from one project to another without verification. Examples: branch naming (main vs staging vs feature branches), commit-prefix patterns, directory structures, tool-launching patterns, model-string references. Quantify occurrences per session over the last 10 sessions per project.
 
 ## Axis B methodology
 
@@ -401,7 +410,7 @@ cc_dispatch [B+C] | cc_status [A]
 
 ## Execution order
 
-1. Pre-Flight Steps 1–6
+1. Pre-Flight Steps 1–6 (including branch creation)
 2. Axis A static code reading (src, tests, configs, templates, self-descriptions)
 3. Axis A Tier A live probes
 4. Axis A Tier B live tests (capture-invoke-restore)
@@ -409,11 +418,11 @@ cc_dispatch [B+C] | cc_status [A]
 6. Axis A cross-cutting deep-dives (DD1–DD10) synthesis
 7. Axis A per-tool reviews
 8. **Shift posture:** now Axis B — read session-log, handoff history, decisions/, insights.md across three projects
-9. Axis B deep-dives (BDD1–BDD8)
+9. Axis B deep-dives (BDD1–BDD9)
 10. Cross-axis synthesis (`X-N` findings where Axis A and Axis B intersect)
 11. Findings consolidation + severity calibration
 12. Report assembly
-13. Final verification + single commit + PR
+13. Final verification + single commit + push + PR
 
 ## Severity scale (strict, applies to both axes)
 
@@ -432,6 +441,7 @@ Path: `reports/s46-framework-audit.md` in `prism-mcp-server`. Structure:
 ## Metadata
 - Report generated: <ISO>
 - Server commit: <>
+- Work branch: audit/s46-framework-audit
 - Framework commit: <>
 - Test baseline: <p>/<f>/<s>
 - Build: <pass|fail>
@@ -499,13 +509,13 @@ Both axes. Reading order, tools used, what was live-run vs read vs archaeologica
 | ID | Severity | Lens(es) | Rule/Pattern | Title | Evidence |
 
 ### Axis B deep-dives
-<BDD1–BDD8, each required>
+<BDD1–BDD9, each required>
 
 ### Full B-findings
 
 ### B-N: <title>
 - Severity: …
-- Lens(es): BL1–BL8
+- Lens(es): BL1–BL9
 - Rule/Pattern: <which rule or behavioral expectation>
 - Evidence: <session references, quantified>
 - Trend: improving | stable | degrading | unknown
@@ -524,7 +534,7 @@ For findings that span both axes — e.g., a code feature that exists but is nev
 - Recommended Category: code-change + rule-change combined
 
 ## Lens Coverage
-Both axes. Findings-per-lens tables for L1–L7 and BL1–BL8. Zero-finding lenses need one-sentence justification.
+Both axes. Findings-per-lens tables for L1–L7 and BL1–BL9. Zero-finding lenses need one-sentence justification.
 
 ## Out-of-Scope Observations
 Notes outside the scope of both axes. No severity.
@@ -551,24 +561,24 @@ Per Tier B test: file | pre-SHA | post-invoke-SHA | post-restore-SHA | byte-iden
 Per sample project: session range examined, handoff versions examined, approximate response count, tool-call counts.
 
 ## Appendix E — Axis B Raw Measurements
-Rule 9 compliance table, boot-structure compliance table, tool-proactivity counts, handoff-size trajectory data. The quantitative backing for B-findings.
+Rule 9 compliance table, boot-structure compliance table, tool-proactivity counts, handoff-size trajectory data, cross-project convention bleed incident log. The quantitative backing for B-findings.
 
 <!-- EOF: s46-framework-audit.md -->
 ```
 
 ## Completion criteria (verifiable)
 
-1. File exists at `reports/s46-framework-audit.md` on `staging`.
+1. File exists at `reports/s46-framework-audit.md` on branch `audit/s46-framework-audit`.
 2. Executive Summary answers all five numbered questions, addressing both axes.
 3. Every finding is tagged `A-`, `B-`, or `X-`. No untagged findings.
 4. Axis A: every tool has a per-tool review; Tier A/B results present; Tier C static notes present; DD1–DD10 each have a section.
-5. Axis B: BDD1–BDD8 each have a section with quantified measurements (not just impressions). Appendix E contains the raw numbers.
-6. Lens Coverage table covers both L1–L7 and BL1–BL8.
+5. Axis B: BDD1–BDD9 each have a section with quantified measurements (not just impressions). Appendix E contains the raw numbers.
+6. Lens Coverage table covers both L1–L7 and BL1–BL9.
 7. If any Tier B restoration failed, report documents unrestored state as CRITICAL A-finding and Tier B section header states `ABORTED AFTER: <tool>`.
 8. Every runtime-behavior claim labeled CONFIRMED-LIVE / CONFIRMED-TEST / STATIC-ONLY.
 9. Every Axis B claim cites specific session/exchange references.
-10. `git status` in prism-mcp-server shows only the report staged; `git diff --cached --stat` shows exactly one added file.
-11. PR exists, base `main`, head `staging`, title `Brief S46: PRISM Two-Axis Audit`.
+10. `git status` on the work branch shows only the report staged; `git diff --cached --stat` shows exactly one added file.
+11. PR exists, base `main`, head `audit/s46-framework-audit`, title `Brief S46: PRISM Two-Axis Audit`.
 12. Test target (`prism`) ends in byte-identical state per Appendix C verification.
 
 ## Finishing up (single chained command)
@@ -578,18 +588,18 @@ git add reports/s46-framework-audit.md && \
 git status && \
 git diff --cached --stat && \
 git commit -m "docs: s46 two-axis audit report" && \
-git push origin staging && \
+git push -u origin audit/s46-framework-audit && \
 EXEC_SUMMARY=$(awk '/^## Executive Summary/,/^## Pre-Flight Evidence/' reports/s46-framework-audit.md | sed '$d' | head -c 3500) && \
 PR_BODY=$(jq -Rs '.' <<< "$EXEC_SUMMARY") && \
 curl -s -X POST \
   -H "Authorization: token $GITHUB_PAT" \
   -H "Content-Type: application/json" \
   "https://api.github.com/repos/brdonath1/prism-mcp-server/pulls" \
-  -d "{\"title\":\"Brief S46: PRISM Two-Axis Audit\",\"head\":\"staging\",\"base\":\"main\",\"body\":$PR_BODY}" | tee /tmp/pr-response.json && \
+  -d "{\"title\":\"Brief S46: PRISM Two-Axis Audit\",\"head\":\"audit/s46-framework-audit\",\"base\":\"main\",\"body\":$PR_BODY}" | tee /tmp/pr-response.json && \
 grep -oE '"number":[0-9]+' /tmp/pr-response.json && \
 git log -1 --stat
 ```
 
-If any step fails: STOP, report verbatim, exit.
+If any step fails: STOP, report verbatim, exit. Do not retry. Do not push to main.
 
 <!-- EOF: s46-framework-audit.md -->
