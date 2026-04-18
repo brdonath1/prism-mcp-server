@@ -15,6 +15,8 @@ vi.mock("../src/github/client.js", () => ({
   pushFile: vi.fn(),
   fileExists: vi.fn(),
   listDirectory: vi.fn(),
+  createAtomicCommit: vi.fn(),
+  getHeadSha: vi.fn(),
 }));
 
 vi.mock("../src/utils/doc-resolver.js", () => ({
@@ -26,11 +28,17 @@ vi.mock("../src/utils/doc-guard.js", () => ({
   guardPushPath: vi.fn(),
 }));
 
-import { pushFile } from "../src/github/client.js";
+import {
+  pushFile,
+  createAtomicCommit,
+  getHeadSha,
+} from "../src/github/client.js";
 import { resolveDocPath } from "../src/utils/doc-resolver.js";
 import { guardPushPath } from "../src/utils/doc-guard.js";
 
 const mockPushFile = vi.mocked(pushFile);
+const mockCreateAtomicCommit = vi.mocked(createAtomicCommit);
+const mockGetHeadSha = vi.mocked(getHeadSha);
 const mockResolveDocPath = vi.mocked(resolveDocPath);
 const mockGuardPushPath = vi.mocked(guardPushPath);
 
@@ -239,7 +247,13 @@ describe("prism_log_decision dedup guard (A.1)", () => {
       path: ".prism/decisions/operations.md",
       redirected: false,
     });
-    mockPushFile.mockResolvedValue({ success: true, size: 100, sha: "new" });
+    mockGetHeadSha.mockResolvedValue("head-before");
+    // Atomic commit path (S47 P2.1) — createAtomicCommit is now the primary.
+    mockCreateAtomicCommit.mockResolvedValue({
+      success: true,
+      sha: "atomic-sha",
+      files_committed: 2,
+    });
 
     const { server, handlers } = createServerStub();
     registerLogDecision(server as any);
@@ -259,7 +273,9 @@ describe("prism_log_decision dedup guard (A.1)", () => {
     expect(payload.id).toBe("D-117");
     expect(payload.index_updated).toBe(true);
     expect(payload.domain_file_updated).toBe(true);
-    expect(mockPushFile).toHaveBeenCalledTimes(2);
+    // Atomic commit is the sole write path; pushFile is only used on fallback.
+    expect(mockCreateAtomicCommit).toHaveBeenCalledTimes(1);
+    expect(mockPushFile).not.toHaveBeenCalled();
   });
 
   it("proceeds with the write when the ID is unique", async () => {
@@ -280,7 +296,12 @@ describe("prism_log_decision dedup guard (A.1)", () => {
       path: ".prism/decisions/operations.md",
       redirected: false,
     });
-    mockPushFile.mockResolvedValue({ success: true, size: 100, sha: "new" });
+    mockGetHeadSha.mockResolvedValue("head-before");
+    mockCreateAtomicCommit.mockResolvedValue({
+      success: true,
+      sha: "atomic-sha",
+      files_committed: 2,
+    });
 
     const { server, handlers } = createServerStub();
     registerLogDecision(server as any);
@@ -300,8 +321,9 @@ describe("prism_log_decision dedup guard (A.1)", () => {
     expect(payload.id).toBe("D-117");
     expect(payload.index_updated).toBe(true);
     expect(payload.domain_file_updated).toBe(true);
-    // _INDEX.md and domain file are both pushed.
-    expect(mockPushFile).toHaveBeenCalledTimes(2);
+    // Single atomic commit covers both files (no more sequential pushFile pair).
+    expect(mockCreateAtomicCommit).toHaveBeenCalledTimes(1);
+    expect(mockPushFile).not.toHaveBeenCalled();
   });
 });
 
