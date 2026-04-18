@@ -44,7 +44,6 @@ async function decisionVelocity(projectSlug: string) {
   const decisionFile = { content: resolved.content, sha: resolved.sha, size: resolved.content.length };
   const rows = parseMarkdownTable(decisionFile.content);
 
-  const idKey = Object.keys(rows[0] ?? {}).find((k) => k.toLowerCase() === "id") ?? "ID";
   const sessionKey =
     Object.keys(rows[0] ?? {}).find((k) => k.toLowerCase() === "session") ?? "Session";
   const statusKey =

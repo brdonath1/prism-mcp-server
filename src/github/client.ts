@@ -75,7 +75,7 @@ function sleep(ms: number): Promise<void> {
  * a clear error and do NOT retry — retrying a hung socket just wastes wall
  * clock. 429 responses still trigger exponential backoff as before.
  */
-async function fetchWithRetry(url: string, options: RequestInit = {}, maxRetries = 3): Promise<Response> {
+export async function fetchWithRetry(url: string, options: RequestInit = {}, maxRetries = 3): Promise<Response> {
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const timeoutSignal = AbortSignal.timeout(GITHUB_REQUEST_TIMEOUT_MS);
     const signal = options.signal
