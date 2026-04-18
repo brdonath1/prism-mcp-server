@@ -11,6 +11,7 @@
 - **Deliverable:** Single file — `reports/s46-framework-audit.md` in `prism-mcp-server`
 - **Deadline:** Hard cap 150 minutes wall-clock. Ship partial report with COVERAGE-GAP markers rather than abandoning.
 - **Test target project:** `brdonath1/prism` (live Tier B tests use this project with dedicated test-artifact paths)
+- **Known local layout:** operator keeps all three repos under `~/Desktop/development/` (prism-mcp-server, prism-framework, platformforge-v2)
 
 ## Fresh-eyes posture (READ BEFORE ANYTHING ELSE)
 
@@ -66,26 +67,28 @@ Required state for audit to proceed:
 
 ### Step 2 — Env loader (multi-repo discovery)
 
-The API keys the audit needs are distributed across the operator's local clones of `prism-mcp-server`, `prism-framework`, and `platformforge-v2`. These env files are NOT committed to GitHub — they live only on the operator's local filesystem. Search common locations, source every file found. Later sources overlay earlier, so the order matters: `platformforge-v2` first (Anthropic/GitHub keys), then `prism-mcp-server` (server-specific like `RAILWAY_API_TOKEN` and `MCP_AUTH_TOKEN`), then `prism-framework` (unlikely to have env but check anyway).
+The API keys the audit needs are distributed across the operator's local clones of `prism-mcp-server`, `prism-framework`, and `platformforge-v2`. All three repos live under `~/Desktop/development/` on macOS (verified from session history). These env files are NOT committed to GitHub — they exist only on the operator's local disk.
+
+Source every env file found. Later sources overlay earlier, so order matters: `platformforge-v2` first (Anthropic + GitHub keys), then `prism-mcp-server` (server-specific: `RAILWAY_API_TOKEN`, `MCP_AUTH_TOKEN`), then `prism-framework` (unlikely to have env but check anyway).
 
 ```bash
-# Candidate search roots (common layouts)
+# Known layout (primary):
+#   ~/Desktop/development/prism-mcp-server     (this repo, CC runs from here)
+#   ~/Desktop/development/prism-framework
+#   ~/Desktop/development/platformforge-v2
 SEARCH_ROOTS=(
-  "$(dirname "$(pwd)")"              # parent of current dir (sibling-repo layout)
-  "$(dirname "$(dirname "$(pwd)")")"  # grandparent (nested layout)
+  "$HOME/Desktop/development"            # PRIMARY — verified operator layout
+  "$(dirname "$(pwd)")"                   # parent of current dir (fallback if CC runs from elsewhere)
+  "$(dirname "$(dirname "$(pwd)")")"     # grandparent (nested layout fallback)
   "$HOME"
+  "$HOME/Desktop"
+  "$HOME/Documents"
   "$HOME/projects"
   "$HOME/code"
   "$HOME/dev"
-  "$HOME/work"
-  "$HOME/repos"
-  "$HOME/src"
-  "$HOME/Documents"
-  "$HOME/Desktop"
 )
 
-# Order: later sources overlay earlier. platformforge-v2 first (full AI keys),
-# then prism-mcp-server (server-specific), then prism-framework.
+# Order: later sources overlay earlier.
 REPOS=("platformforge-v2" "prism-mcp-server" "prism-framework")
 ENV_NAMES=(".env.local" ".env")
 
@@ -96,10 +99,8 @@ for root in "${SEARCH_ROOTS[@]}"; do
   for repo in "${REPOS[@]}"; do
     for env in "${ENV_NAMES[@]}"; do
       candidate="$root/$repo/$env"
-      # Resolve to canonical path so we don't double-source via symlinks / relative roots
       if [ -f "$candidate" ]; then
         canonical=$(readlink -f "$candidate" 2>/dev/null || echo "$candidate")
-        # Dedupe
         already=false
         for s in "${SEEN[@]}"; do [ "$s" = "$canonical" ] && already=true; done
         if [ "$already" = false ]; then
@@ -141,21 +142,21 @@ done
 
 Record the full output in the report's `Pre-Flight Evidence` section, including the list of discovered files and the ENV CHECK result (key presence only, never actual values).
 
-**Tier dependency table — consult after ENV CHECK to determine which tiers can run:**
+**Tier dependency table — consult after ENV CHECK:**
 
 | Required env var | Tools that need it | Where it likely lives |
 |---|---|---|
-| `GITHUB_PAT`, `GITHUB_OWNER`, `FRAMEWORK_REPO` | ALL tools — no work possible without these | `prism-mcp-server/.env` (primary), `platformforge-v2/.env.local` (may have `GITHUB_PAT` if populated) |
-| `ANTHROPIC_API_KEY` | `prism_synthesize(generate)`, `prism_finalize(draft)` + `(commit)` auto-synthesis | `platformforge-v2/.env.local` (likely populated per AI SDK usage), also `prism-mcp-server/.env` |
+| `GITHUB_PAT`, `GITHUB_OWNER`, `FRAMEWORK_REPO` | ALL tools — no work possible without these | `prism-mcp-server/.env` (primary), `platformforge-v2/.env.local` (may have `GITHUB_PAT`) |
+| `ANTHROPIC_API_KEY` | `prism_synthesize(generate)`, `prism_finalize(draft)` + `(commit)` auto-synthesis | `platformforge-v2/.env.local` (populated per AI SDK usage), also `prism-mcp-server/.env` |
 | `RAILWAY_API_TOKEN` | All 4 `railway_*` tools | `prism-mcp-server/.env` only — not part of PF-v2 stack |
-| `MCP_AUTH_TOKEN` | Not required for direct handler invocation (which is how the audit tests tools). Only needed if separately testing the MCP HTTP transport layer end-to-end. | `prism-mcp-server/.env` only |
+| `MCP_AUTH_TOKEN` | Not required for direct handler invocation. Only needed if separately testing MCP HTTP transport end-to-end. | `prism-mcp-server/.env` only |
 
 Handling missing vars:
 
-- If `GITHUB_PAT` or `GITHUB_OWNER` is still missing after full discovery: STOP the audit. No testing possible. Document the miss as a top-severity Pre-Flight finding.
-- If `ANTHROPIC_API_KEY` is missing: skip `prism_synthesize(generate)` live test and the synthesis path of `prism_finalize(commit)`. Label those sections `STATIC-ONLY (env-unavailable)`.
-- If `RAILWAY_API_TOKEN` is missing: skip all 4 Railway tool live invocations (both Tier A status/list/logs/get and Tier B set+delete). Label each Railway tool's Tier A/B result `STATIC-ONLY (env-unavailable)` and note in the report.
-- If `MCP_AUTH_TOKEN` is missing: this does not block direct-handler tool testing. The audit proceeds. Only flag as a finding if DD8 (transport-layer review) is blocked.
+- If `GITHUB_PAT` or `GITHUB_OWNER` is still missing after full discovery: STOP the audit. Document as top-severity Pre-Flight finding.
+- If `ANTHROPIC_API_KEY` is missing: skip `prism_synthesize(generate)` live test and synthesis path of `prism_finalize(commit)`. Label `STATIC-ONLY (env-unavailable)`.
+- If `RAILWAY_API_TOKEN` is missing: skip all 4 Railway tool live invocations. Label each Railway tool's Tier A/B result `STATIC-ONLY (env-unavailable)`.
+- If `MCP_AUTH_TOKEN` is missing: does not block direct-handler testing. Only flag as a finding if DD8 (transport-layer review) is blocked.
 
 ### Step 3 — Reference clone
 
@@ -178,7 +179,6 @@ Only unauthenticated endpoint authorized for curl-based probing.
 Before any Tier B test, capture SHAs of all files under `.prism/` in the test target (`brdonath1/prism`) to serve as restoration reference:
 
 ```bash
-# Use gh API or curl to list .prism contents and capture each file's blob SHA
 curl -s -H "Authorization: token $GITHUB_PAT" \
   "https://api.github.com/repos/brdonath1/prism/git/trees/main?recursive=1" \
   | jq '.tree[] | select(.path | startswith(".prism/")) | {path, sha}' \
