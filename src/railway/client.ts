@@ -404,25 +404,51 @@ export async function getEnvironmentLogs(
 }
 
 /**
+ * Messages that Railway reports as severity=error but are actually INFO logs
+ * from the stdio-bridge layer. Railway maps anything the container writes to
+ * stderr to severity=error regardless of the application's own log level, so
+ * the github-mcp-server bridge's `level=INFO msg=…` lines end up drowning
+ * out real errors when operators filter `@level:error`. (A-10 / S47 P3.2)
+ */
+const STDIO_INFO_PATTERN = /\blevel=INFO\s+msg=/;
+
+/**
  * Apply a Railway-style filter expression to an in-memory log list.
  *
  * Supports `@level:<severity>` (exact severity match, case-insensitive) and
  * falls back to a case-insensitive substring search on the message body.
  * An empty filter returns the input unchanged.
+ *
+ * Before filtering, reclassifies any `severity: "error"` entry whose message
+ * matches the stdio-bridge INFO pattern down to `severity: "info"`. This is
+ * necessary because Railway maps all stderr output to severity=error
+ * regardless of application log level, and the github-mcp-server stdio
+ * bridge writes INFO messages to stderr. Reclassifying here ensures
+ * `@level:error` returns real errors only (A-10 / S47 P3.2).
  */
 export function filterLogs(logs: RailwayLog[], filter: string | undefined): RailwayLog[] {
-  if (!filter) return logs;
+  const reclassified = logs.map((l) => {
+    if (
+      (l.severity ?? "").toLowerCase() === "error" &&
+      STDIO_INFO_PATTERN.test(l.message ?? "")
+    ) {
+      return { ...l, severity: "info" };
+    }
+    return l;
+  });
+
+  if (!filter) return reclassified;
   const trimmed = filter.trim();
-  if (!trimmed) return logs;
+  if (!trimmed) return reclassified;
 
   const levelMatch = trimmed.match(/^@level:(\w+)$/i);
   if (levelMatch) {
     const want = levelMatch[1].toLowerCase();
-    return logs.filter((l) => (l.severity ?? "").toLowerCase() === want);
+    return reclassified.filter((l) => (l.severity ?? "").toLowerCase() === want);
   }
 
   const lower = trimmed.toLowerCase();
-  return logs.filter((l) => (l.message ?? "").toLowerCase().includes(lower));
+  return reclassified.filter((l) => (l.message ?? "").toLowerCase().includes(lower));
 }
 
 /**
