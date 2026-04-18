@@ -838,3 +838,141 @@ describe("prism_finalize archive lifecycle (S40 FINDING-14 C2)", () => {
     expect(headerMatches).toHaveLength(1);
   });
 });
+
+// ── Auto-Backup Behavior (INS-14 / Bug-A + Bug-B) ────────────────────────────
+
+describe("prism_finalize auto-backup (INS-14)", () => {
+  const NEW_HANDOFF = `## Meta
+- Handoff Version: 31
+- Session Count: 26
+- Template Version: v2.9.0
+- Status: Active
+
+## Critical Context
+1. Test item
+
+## Where We Are
+Testing.
+
+<!-- EOF: handoff.md -->`;
+
+  it("auto-backup EOF sentinel matches destination filename (Bug A regression)", async () => {
+    // HANDOFF_CONTENT has version 30 and ends with <!-- EOF: handoff.md -->
+    mockFetchFile.mockResolvedValue({
+      content: HANDOFF_CONTENT,
+      sha: "sha",
+      size: HANDOFF_CONTENT.length,
+    });
+    mockListDirectory.mockResolvedValue([]);
+    mockPushFile.mockResolvedValue({ success: true, size: 100, sha: "new" });
+    mockCreateAtomicCommit.mockResolvedValue({
+      success: true,
+      sha: "atomic_sha",
+      files_committed: 1,
+    });
+
+    await callFinalizeTool({
+      project_slug: "test-project",
+      action: "commit",
+      session_number: 26,
+      handoff_version: 31,
+      skip_synthesis: true,
+      files: [{ path: "handoff.md", content: NEW_HANDOFF }],
+    });
+
+    // The backup is pushed via pushFile (separate from the atomic commit)
+    expect(mockPushFile).toHaveBeenCalled();
+    const backupCall = mockPushFile.mock.calls.find(
+      (call) => (call[1] as string).includes("handoff-history/handoff_v"),
+    );
+    expect(backupCall).toBeDefined();
+
+    const backupContent = backupCall![2] as string;
+    // Must NOT contain the source file's EOF sentinel
+    expect(backupContent).not.toContain("<!-- EOF: handoff.md -->");
+    // Must contain EOF sentinel matching the versioned backup filename
+    expect(backupContent).toMatch(
+      /<!-- EOF: handoff_v30_\d{4}-\d{2}-\d{2}\.md -->/,
+    );
+  });
+
+  it("operator-provided backup in files array suppresses auto-backup (Bug B regression)", async () => {
+    mockFetchFile.mockResolvedValue({
+      content: HANDOFF_CONTENT,
+      sha: "sha",
+      size: HANDOFF_CONTENT.length,
+    });
+    mockListDirectory.mockResolvedValue([]);
+    mockPushFile.mockResolvedValue({ success: true, size: 100, sha: "new" });
+    mockCreateAtomicCommit.mockResolvedValue({
+      success: true,
+      sha: "atomic_sha",
+      files_committed: 2,
+    });
+
+    // Operator provides their own backup with the correct EOF sentinel
+    const operatorBackup = HANDOFF_CONTENT.replace(
+      "<!-- EOF: handoff.md -->",
+      "<!-- EOF: handoff_v30_2026-04-18.md -->",
+    );
+
+    const result = await callFinalizeTool({
+      project_slug: "test-project",
+      action: "commit",
+      session_number: 26,
+      handoff_version: 31,
+      skip_synthesis: true,
+      files: [
+        { path: "handoff.md", content: NEW_HANDOFF },
+        {
+          path: ".prism/handoff-history/handoff_v30_2026-04-18.md",
+          content: operatorBackup,
+        },
+      ],
+    });
+
+    const data = parseResult(result);
+    // Auto-backup was skipped (returns "")
+    expect(data.backup_created).toBe("");
+
+    // pushFile should NOT have been called for a backup
+    const backupPushCalls = mockPushFile.mock.calls.filter(
+      (call) => (call[1] as string).includes("handoff-history/handoff_v"),
+    );
+    expect(backupPushCalls).toHaveLength(0);
+  });
+
+  it("auto-backup still runs when operator does NOT provide a backup (backward compat)", async () => {
+    mockFetchFile.mockResolvedValue({
+      content: HANDOFF_CONTENT,
+      sha: "sha",
+      size: HANDOFF_CONTENT.length,
+    });
+    mockListDirectory.mockResolvedValue([]);
+    mockPushFile.mockResolvedValue({ success: true, size: 100, sha: "new" });
+    mockCreateAtomicCommit.mockResolvedValue({
+      success: true,
+      sha: "atomic_sha",
+      files_committed: 1,
+    });
+
+    const result = await callFinalizeTool({
+      project_slug: "test-project",
+      action: "commit",
+      session_number: 26,
+      handoff_version: 31,
+      skip_synthesis: true,
+      files: [{ path: "handoff.md", content: NEW_HANDOFF }],
+    });
+
+    const data = parseResult(result);
+    // Auto-backup should have been created
+    expect(data.backup_created).toContain("handoff-history/handoff_v30");
+
+    // pushFile should have been called for the backup
+    const backupCall = mockPushFile.mock.calls.find(
+      (call) => (call[1] as string).includes("handoff-history/handoff_v"),
+    );
+    expect(backupCall).toBeDefined();
+  });
+});

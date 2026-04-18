@@ -435,15 +435,39 @@ async function commitPhase(
       try {
         const currentHandoff = await resolveDocPath(projectSlug, "handoff.md");
         const currentVersion = parseHandoffVersion(currentHandoff.content) ?? handoffVersion - 1;
+
+        // Skip auto-backup if operator already provided one for this version.
+        // Prevents duplicate backup files when the operator crafts their own
+        // handoff-history entry in the files array.
+        const operatorBackupRe = new RegExp(
+          `handoff-history/handoff_v${currentVersion}_.*\\.md$`,
+        );
+        if (files.some(f => operatorBackupRe.test(f.path))) {
+          logger.info("auto-backup skipped — operator provided backup in files array", {
+            projectSlug,
+            outgoingVersion: currentVersion,
+          });
+          return "";
+        }
+
         const historyBase = currentHandoff.legacy ? "handoff-history" : ".prism/handoff-history";
         const rawBackupPath = `${historyBase}/handoff_v${currentVersion}_${today}.md`;
         const guardedBackup = await guardPushPath(projectSlug, rawBackupPath);
         const backupPath = guardedBackup.path;
 
+        // Replace EOF sentinel to match destination filename (INS-14).
+        // The source handoff ends with <!-- EOF: handoff.md --> but the backup
+        // file has a versioned name, so the sentinel must be rewritten.
+        const backupBasename = backupPath.split("/").pop() ?? backupPath;
+        const backupContent = currentHandoff.content.replace(
+          /<!-- EOF: handoff\.md -->\s*$/,
+          `<!-- EOF: ${backupBasename} -->`,
+        );
+
         await pushFile(
           projectSlug,
           backupPath,
-          currentHandoff.content,
+          backupContent,
           `prism: handoff-backup v${currentVersion}`
         );
         return backupPath;
