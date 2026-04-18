@@ -9,14 +9,49 @@ vi.mock("../src/github/client.js", () => ({
   fetchFile: vi.fn(),
   fetchFiles: vi.fn(),
   pushFile: vi.fn(),
+  createAtomicCommit: vi.fn(),
+  getHeadSha: vi.fn(),
 }));
 
-import { fetchFile, fetchFiles, pushFile } from "../src/github/client.js";
+import {
+  fetchFile,
+  fetchFiles,
+  pushFile,
+  createAtomicCommit,
+  getHeadSha,
+} from "../src/github/client.js";
 import { registerScaleHandoff } from "../src/tools/scale.js";
 
 const mockFetchFile = vi.mocked(fetchFile);
 const mockFetchFiles = vi.mocked(fetchFiles);
 const mockPushFile = vi.mocked(pushFile);
+const mockCreateAtomicCommit = vi.mocked(createAtomicCommit);
+const mockGetHeadSha = vi.mocked(getHeadSha);
+
+/**
+ * Helper to find the content of a given path inside the atomic-commit files
+ * array (the primary write path after S47 P2.2). Mirrors the pre-S47 pattern
+ * of searching mockPushFile.mock.calls — the content lookup shape stays the
+ * same so the assertions below read cleanly.
+ */
+function atomicContentOf(path: string): string | undefined {
+  for (const call of mockCreateAtomicCommit.mock.calls) {
+    const files = call[1] as Array<{ path: string; content: string }>;
+    const match = files.find((f) => f.path === path);
+    if (match) return match.content;
+  }
+  return undefined;
+}
+
+/** Convenience — default happy-path atomic commit mock. */
+function setupAtomicHappyPath(): void {
+  mockGetHeadSha.mockResolvedValue("head-sha");
+  mockCreateAtomicCommit.mockResolvedValue({
+    success: true,
+    sha: "atomic-sha",
+    files_committed: 10,
+  });
+}
 
 /** Small handoff (<10KB) with scalable content for testing. */
 const SMALL_HANDOFF = `## Meta
@@ -134,8 +169,9 @@ describe("prism_scale_handoff action=analyze", () => {
     expect(data.plan.actions).toBeInstanceOf(Array);
     expect(data.plan.actions.length).toBeGreaterThan(0);
 
-    // Verify no pushes were made
+    // Verify no writes were made (neither sequential push nor atomic commit).
     expect(mockPushFile).not.toHaveBeenCalled();
+    expect(mockCreateAtomicCommit).not.toHaveBeenCalled();
   });
 
   it("returns empty actions for a clean handoff", async () => {
@@ -181,7 +217,7 @@ describe("prism_scale_handoff action=execute", () => {
     mockFetchFiles.mockResolvedValue(new Map([
       ["session-log.md", { content: "# Session Log\n\n<!-- EOF: session-log.md -->", sha: "s1", size: 50 }],
     ]));
-    mockPushFile.mockResolvedValue({ success: true, size: 200, sha: "new-sha" });
+    setupAtomicHappyPath();
 
     const result = await callScaleTool({
       project_slug: "test-project",
@@ -194,8 +230,11 @@ describe("prism_scale_handoff action=execute", () => {
     expect(data.action).toBe("execute");
     expect(data.actions_executed).toBeGreaterThanOrEqual(1);
 
-    // Should have pushed the destination file + handoff
-    expect(mockPushFile).toHaveBeenCalled();
+    // S47 P2.2: destination file + handoff pushed via a single atomic commit
+    // (no more separate sequential pushes). Fallback to pushFile only on
+    // atomic failure — the happy-path assertion is "no pushFile, one atomic".
+    expect(mockCreateAtomicCommit).toHaveBeenCalledTimes(1);
+    expect(mockPushFile).not.toHaveBeenCalled();
   });
 
   it("rejects execute without a plan", async () => {
@@ -243,7 +282,7 @@ describe("prism_scale_handoff action=full", () => {
       ["eliminated.md", { content: "# Eliminated\n<!-- EOF: eliminated.md -->", sha: "e1", size: 40 }],
       ["architecture.md", { content: "# Architecture\n<!-- EOF: architecture.md -->", sha: "a1", size: 40 }],
     ]));
-    mockPushFile.mockResolvedValue({ success: true, size: 200, sha: "new-sha" });
+    setupAtomicHappyPath();
 
     const result = await callScaleTool({ project_slug: "test-project", action: "full" });
 
@@ -306,7 +345,7 @@ describe("prism_scale_handoff progress notifications", () => {
       ["eliminated.md", { content: "# Eliminated\n<!-- EOF: eliminated.md -->", sha: "e1", size: 40 }],
       ["architecture.md", { content: "# Architecture\n<!-- EOF: architecture.md -->", sha: "a1", size: 40 }],
     ]));
-    mockPushFile.mockResolvedValue({ success: true, size: 200, sha: "new-sha" });
+    setupAtomicHappyPath();
 
     // We need to access the sendNotification mock — rebuild the tool invocation
     const server = new McpServer(
@@ -525,7 +564,7 @@ describe("KI-11: Large handoff scaling (20KB+ with 46 decisions)", () => {
 
   it("full mode reduces a 20KB handoff to under 8KB", async () => {
     setupKI11Mocks();
-    mockPushFile.mockResolvedValue({ success: true, size: 200, sha: "new-sha" });
+    setupAtomicHappyPath();
 
     const result = await callScaleTool({ project_slug: "test-project", action: "full" });
 
@@ -541,17 +580,14 @@ describe("KI-11: Large handoff scaling (20KB+ with 46 decisions)", () => {
 
   it("decision extraction produces valid _INDEX.md table rows", async () => {
     setupKI11Mocks();
-    mockPushFile.mockResolvedValue({ success: true, size: 200, sha: "new-sha" });
+    setupAtomicHappyPath();
 
     await callScaleTool({ project_slug: "test-project", action: "full" });
 
-    // Find the pushFile call for decisions/_INDEX.md
-    const indexPushCall = mockPushFile.mock.calls.find(
-      (call) => call[1] === ".prism/decisions/_INDEX.md",
-    );
-    expect(indexPushCall).toBeDefined();
+    // S47 P2.2: files now go through createAtomicCommit. Look up by path.
+    const indexContent = atomicContentOf(".prism/decisions/_INDEX.md");
+    expect(indexContent).toBeDefined();
 
-    const indexContent = indexPushCall![2] as string;
     // Should contain table header
     expect(indexContent).toContain("| ID |");
     expect(indexContent).toContain("|----|");
@@ -564,17 +600,13 @@ describe("KI-11: Large handoff scaling (20KB+ with 46 decisions)", () => {
 
   it("session extraction produces valid session-log.md content", async () => {
     setupKI11Mocks();
-    mockPushFile.mockResolvedValue({ success: true, size: 200, sha: "new-sha" });
+    setupAtomicHappyPath();
 
     await callScaleTool({ project_slug: "test-project", action: "full" });
 
-    // Find the pushFile call for session-log.md
-    const sessionPushCall = mockPushFile.mock.calls.find(
-      (call) => call[1] === ".prism/session-log.md",
-    );
-    expect(sessionPushCall).toBeDefined();
+    const sessionContent = atomicContentOf(".prism/session-log.md");
+    expect(sessionContent).toBeDefined();
 
-    const sessionContent = sessionPushCall![2] as string;
     // Should contain archived sessions (older ones, not the last 3)
     expect(sessionContent).toContain("### Session 1");
     expect(sessionContent).toContain("### Session 13");
@@ -588,35 +620,31 @@ describe("KI-11: Large handoff scaling (20KB+ with 46 decisions)", () => {
 
   it("handoff retains summary pointers after scaling", async () => {
     setupKI11Mocks();
-    mockPushFile.mockResolvedValue({ success: true, size: 200, sha: "new-sha" });
+    setupAtomicHappyPath();
 
     await callScaleTool({ project_slug: "test-project", action: "full" });
 
-    // Find the pushFile call for handoff.md
-    const handoffPushCall = mockPushFile.mock.calls.find(
-      (call) => call[1] === ".prism/handoff.md",
-    );
-    expect(handoffPushCall).toBeDefined();
-
-    const handoffContent = handoffPushCall![2] as string;
+    const handoffContent = atomicContentOf(".prism/handoff.md");
+    expect(handoffContent).toBeDefined();
+    const h = handoffContent!;
     // Should contain decision summary pointer
-    expect(handoffContent).toContain("decisions/_INDEX.md");
-    expect(handoffContent).toContain("46 total decisions");
+    expect(h).toContain("decisions/_INDEX.md");
+    expect(h).toContain("46 total decisions");
     // Should contain session summary pointer
-    expect(handoffContent).toContain("session-log.md");
-    expect(handoffContent).toContain("16 total sessions");
+    expect(h).toContain("session-log.md");
+    expect(h).toContain("16 total sessions");
     // Should contain artifacts pointer
-    expect(handoffContent).toContain("architecture.md");
+    expect(h).toContain("architecture.md");
     // Should have exactly one EOF sentinel
-    const eofCount = (handoffContent.match(/<!-- EOF: handoff\.md -->/g) || []).length;
+    const eofCount = (h.match(/<!-- EOF: handoff\.md -->/g) || []).length;
     expect(eofCount).toBe(1);
     // Should still have Meta section
-    expect(handoffContent).toContain("## Meta");
+    expect(h).toContain("## Meta");
     // Critical Context should be condensed to 5 items max
-    const criticalSection = handoffContent.split("## Critical Context")[1]?.split("##")[0] || "";
+    const criticalSection = h.split("## Critical Context")[1]?.split("##")[0] || "";
     const critItems = criticalSection.split("\n").filter((l) => /^\d+\.\s+/.test(l));
     expect(critItems.length).toBeLessThanOrEqual(5);
     // Open Questions should NOT have [x] checked items
-    expect(handoffContent).not.toMatch(/- \[x\]/i);
+    expect(h).not.toMatch(/- \[x\]/i);
   });
 });

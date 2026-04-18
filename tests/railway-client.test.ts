@@ -40,12 +40,20 @@ describe("Railway client — pure helpers", () => {
   describe("isSensitiveKey", () => {
     it("flags common secret patterns", () => {
       expect(isSensitiveKey("ANTHROPIC_API_KEY")).toBe(true);
-      expect(isSensitiveKey("GITHUB_PAT")).toBe(false); // PAT is not in the list
       expect(isSensitiveKey("JWT_SECRET")).toBe(true);
       expect(isSensitiveKey("AUTH_TOKEN")).toBe(true);
       expect(isSensitiveKey("DB_PASSWORD")).toBe(true);
       expect(isSensitiveKey("PRIVATE_KEY")).toBe(true);
       expect(isSensitiveKey("SESSION_CREDENTIAL")).toBe(true);
+    });
+
+    it("flags GITHUB_PAT and other PAT-style keys (A-8)", () => {
+      // A-8: the previous pattern list missed GITHUB_PAT because none of
+      // KEY/SECRET/TOKEN/PASSWORD/AUTH/CREDENTIAL/PRIVATE match "PAT".
+      // Added /\bPAT\b/i and /^GITHUB_/i to close the gap.
+      expect(isSensitiveKey("GITHUB_PAT")).toBe(true);
+      expect(isSensitiveKey("MY_PAT")).toBe(true);
+      expect(isSensitiveKey("GITHUB_USERNAME")).toBe(true); // GITHUB_ prefix belt-and-suspenders
     });
 
     it("does not flag innocuous keys", () => {
@@ -55,9 +63,17 @@ describe("Railway client — pure helpers", () => {
       expect(isSensitiveKey("AI_MODEL")).toBe(false);
     });
 
+    it("does not flag unrelated keys containing 'pat' as a substring", () => {
+      // \bPAT\b uses word boundaries, so 'PATH' and 'SEPARATOR' should NOT trip.
+      expect(isSensitiveKey("PATH")).toBe(false);
+      expect(isSensitiveKey("SEPARATOR")).toBe(false);
+      expect(isSensitiveKey("UPDATE_INTERVAL")).toBe(false);
+    });
+
     it("is case-insensitive", () => {
       expect(isSensitiveKey("api_key")).toBe(true);
       expect(isSensitiveKey("api_Key")).toBe(true);
+      expect(isSensitiveKey("github_pat")).toBe(true);
     });
   });
 

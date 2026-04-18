@@ -16,9 +16,70 @@ import {
 } from "../config.js";
 import { resolveDocExists, resolveDocPath } from "../utils/doc-resolver.js";
 import { logger } from "../utils/logger.js";
+import { MemoryCache } from "../utils/cache.js";
 import { parseHandoffVersion, parseSessionCount } from "../validation/handoff.js";
 import { extractSection } from "../utils/summarizer.js";
 import { getSynthesisHealth } from "../ai/synthesis-tracker.js";
+
+/**
+ * Repo list cache (A-9 / S47 P3.1). Multi-project status calls `listRepos`
+ * every invocation; back-to-back calls from a single session hit GitHub up
+ * to N+1 times for data that is effectively stable on minute-scale.
+ *
+ * 5-minute TTL. Short enough that a newly created repo becomes visible
+ * within one coffee break; long enough that consecutive status calls in a
+ * single session share one fetch. Invalidate explicitly via
+ * {@link clearRepoListCache} when a new repo is created.
+ */
+const listReposCache = new MemoryCache<string[]>("status-list-repos", 5);
+const REPO_LIST_KEY = "owner";
+
+/**
+ * Handoff-existence cache (A-9 / S47 P3.1). The multi-project fan-out
+ * probes `handoff.md` once per repo to decide which are PRISM projects.
+ * Result changes only when a repo joins/leaves the PRISM fold — rare.
+ * 10-minute TTL. Keyed by repo slug.
+ */
+const handoffExistenceCache = new MemoryCache<{ exists: boolean; path: string; legacy: boolean }>(
+  "status-handoff-exists",
+  10,
+);
+
+/**
+ * Invalidate the repo-list cache. Call after a new repo is created so the
+ * next multi-project status call picks it up without waiting for the TTL.
+ */
+export function clearRepoListCache(): void {
+  listReposCache.invalidate(REPO_LIST_KEY);
+}
+
+/**
+ * Invalidate the handoff-existence cache entry for a specific repo. Call
+ * when a repo is scaffolded into PRISM (first handoff.md created) so the
+ * next status sweep sees it.
+ */
+export function clearHandoffExistenceCache(repo?: string): void {
+  if (repo) handoffExistenceCache.invalidate(repo);
+  else handoffExistenceCache.clear();
+}
+
+async function getCachedRepoList(): Promise<string[]> {
+  const cached = listReposCache.get(REPO_LIST_KEY);
+  if (cached) return cached;
+  const fresh = await listRepos();
+  listReposCache.set(REPO_LIST_KEY, fresh);
+  return fresh;
+}
+
+async function getCachedHandoffExists(
+  repo: string,
+): Promise<{ exists: boolean; path: string; legacy: boolean }> {
+  const cached = handoffExistenceCache.get(repo);
+  if (cached) return cached;
+  const fresh = await resolveDocExists(repo, "handoff.md");
+  handoffExistenceCache.set(repo, fresh);
+  return fresh;
+}
 
 /** Input schema for prism_status */
 const inputSchema = {
@@ -206,14 +267,16 @@ export function registerStatus(server: McpServer): void {
           };
         }
 
-        // Multi-project status — discover all PRISM projects
-        const allRepos = await listRepos();
+        // Multi-project status — discover all PRISM projects. Uses the P3.1
+        // caches (5-min for repo list, 10-min for handoff existence) so
+        // back-to-back multi-project status calls share one fetch per layer.
+        const allRepos = await getCachedRepoList();
         logger.info("prism_status repos discovered", { count: allRepos.length, repos: allRepos.slice(0, 5) });
 
         // Check which repos have a handoff.md (i.e., are PRISM projects) — check both paths
         const prismChecks = await Promise.allSettled(
           allRepos.map(async (repo) => {
-            const resolved = await resolveDocExists(repo, "handoff.md");
+            const resolved = await getCachedHandoffExists(repo);
             return { repo, isPrism: resolved.exists };
           })
         );

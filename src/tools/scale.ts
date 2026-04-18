@@ -16,7 +16,13 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ServerNotification, ServerRequest } from "@modelcontextprotocol/sdk/types.js";
 import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
-import { fetchFile, fetchFiles, pushFile } from "../github/client.js";
+import {
+  fetchFile,
+  fetchFiles,
+  pushFile,
+  createAtomicCommit,
+  getHeadSha,
+} from "../github/client.js";
 import { logger } from "../utils/logger.js";
 import { extractSection } from "../utils/summarizer.js";
 import { resolveDocPath, resolveDocPushPath } from "../utils/doc-resolver.js";
@@ -589,11 +595,10 @@ async function executeScaling(
   startTime: number,
 ): Promise<{
   updatedHandoff: string;
-  pushResults: Array<{ path: string; success: boolean }>;
+  destFiles: Array<{ path: string; content: string }>;
   timed_out: boolean;
 }> {
   let updatedHandoff = handoffContent;
-  const pushResults: Array<{ path: string; success: boolean }> = [];
   const destinationContent = new Map<string, string[]>();
   const decisionMerges = new Map<string, ParsedDecision[]>();
 
@@ -754,15 +759,25 @@ async function executeScaling(
 
   // Check safety timeout before network I/O
   if (Date.now() - startTime > SAFETY_TIMEOUT_MS) {
-    return { updatedHandoff, pushResults, timed_out: true };
+    return { updatedHandoff, destFiles: [], timed_out: true };
   }
 
-  // ── Stage 5: Push destination files ──
-  await sendProgress(extra, progressToken, 5, "Pushing redistributed files...");
-  logger.info("scale: stage 5 — push redistributed files", {
+  // ── Stage 5: Materialize destination file contents (no push yet — A-6) ──
+  //
+  // Pre-S47 this stage pushed destination files in parallel via Promise.all,
+  // and the handoff was pushed separately by the caller. A partial failure
+  // (some destinations succeeded, handoff push then succeeded) left content
+  // extracted from the handoff pointing at destinations that had no row yet
+  // — the classic partial-state data-loss hazard the audit flagged.
+  //
+  // Now we build the full `destFiles` list and hand it back to the caller,
+  // which bundles it with the reduced handoff into a single atomic commit.
+  await sendProgress(extra, progressToken, 5, "Composing destination file contents...");
+  logger.info("scale: stage 5 — compose destination file contents", {
     elapsed_ms: Date.now() - startTime,
   });
 
+  const destFiles: Array<{ path: string; content: string }> = [];
   const allDestPaths = new Set([...destinationContent.keys(), ...decisionMerges.keys()]);
   const destPaths = [...allDestPaths].filter((p) => p !== "(remove)");
 
@@ -785,7 +800,7 @@ async function executeScaling(
       }
     }
 
-    const pushPromises = destPaths.map(async (destPath) => {
+    for (const destPath of destPaths) {
       const destInfo = destFileMap.get(destPath);
       const resolvedPushPath = destInfo?.resolvedPath ?? destPath;
       const destFileContent = destInfo?.content ?? null;
@@ -822,24 +837,85 @@ async function executeScaling(
         destContent = `# ${title}\n\n${parts.join("\n\n")}\n\n${eofSentinel}\n`;
       }
 
-      const result = await pushFile(
-        projectSlug, resolvedPushPath, destContent,
-        `prism: extract ${fileName}`,
-      );
-      return { path: resolvedPushPath, success: result.success };
-    });
-
-    const outcomes = await Promise.allSettled(pushPromises);
-    for (const outcome of outcomes) {
-      pushResults.push(
-        outcome.status === "fulfilled"
-          ? outcome.value
-          : { path: "unknown", success: false },
-      );
+      destFiles.push({ path: resolvedPushPath, content: destContent });
     }
   }
 
-  return { updatedHandoff, pushResults, timed_out: false };
+  return { updatedHandoff, destFiles, timed_out: false };
+}
+
+/**
+ * Push the reduced handoff + destination files as a single atomic commit,
+ * with the push.ts-style HEAD-SHA guard and sequential fallback (A-6 / S47 P2.2).
+ *
+ * Returns a pushResults array in the same shape as the pre-S47 code so the
+ * response contract downstream is unchanged. Adds a `partial_state` flag on
+ * the last element when the HEAD-moved branch fires; callers surface this
+ * as a warning.
+ */
+async function atomicCommitScaled(
+  projectSlug: string,
+  handoffPath: string,
+  updatedHandoff: string,
+  destFiles: Array<{ path: string; content: string }>,
+  commitMessage: string,
+): Promise<{
+  pushResults: Array<{ path: string; success: boolean }>;
+  partial_state: boolean;
+  atomic_error?: string;
+}> {
+  const allFiles = [
+    ...destFiles,
+    { path: handoffPath, content: updatedHandoff },
+  ];
+
+  const headShaBefore = await getHeadSha(projectSlug);
+  const atomicResult = await createAtomicCommit(
+    projectSlug,
+    allFiles,
+    commitMessage,
+  );
+
+  if (atomicResult.success) {
+    return {
+      pushResults: allFiles.map((f) => ({ path: f.path, success: true })),
+      partial_state: false,
+    };
+  }
+
+  // Atomic failed — mirror push.ts's HEAD-SHA guard + sequential fallback.
+  let headChanged = false;
+  if (headShaBefore) {
+    const headShaAfter = await getHeadSha(projectSlug);
+    if (headShaAfter) headChanged = headShaAfter !== headShaBefore;
+  }
+
+  if (headChanged) {
+    logger.error(
+      "prism_scale_handoff atomic commit failed with HEAD changed — partial state",
+      { project_slug: projectSlug, atomicError: atomicResult.error },
+    );
+    return {
+      pushResults: allFiles.map((f) => ({ path: f.path, success: false })),
+      partial_state: true,
+      atomic_error: atomicResult.error,
+    };
+  }
+
+  logger.warn(
+    "prism_scale_handoff atomic failed; falling back to sequential pushFile",
+    { project_slug: projectSlug, atomicError: atomicResult.error },
+  );
+  const pushResults: Array<{ path: string; success: boolean }> = [];
+  for (const file of allFiles) {
+    const fileName = file.path.split("/").pop() || file.path;
+    const msg = file.path === handoffPath
+      ? commitMessage
+      : `prism: extract ${fileName}`;
+    const result = await pushFile(projectSlug, file.path, file.content, msg);
+    pushResults.push({ path: file.path, success: result.success });
+  }
+  return { pushResults, partial_state: false, atomic_error: atomicResult.error };
 }
 
 // ── Tool registration ────────────────────────────────────────────────────────
@@ -918,19 +994,24 @@ export function registerScaleHandoff(server: McpServer): void {
           await sendProgress(extra, progressToken, 3, "Fetching target living documents...");
           logger.info("scale: stage 3 — fetch targets (execute)", { elapsed_ms: Date.now() - startTime });
 
-          const { updatedHandoff, pushResults, timed_out } = await executeScaling(
+          const { updatedHandoff, destFiles, timed_out } = await executeScaling(
             project_slug, handoff.content, scaleActions, extra, progressToken, startTime,
           );
 
-          // ── Stage 6: Push updated handoff ──
-          await sendProgress(extra, progressToken, 6, "Pushing updated handoff...");
-          logger.info("scale: stage 6 — push handoff", { elapsed_ms: Date.now() - startTime });
+          // ── Stage 6: Atomic commit destinations + handoff (A-6 / S47 P2.2) ──
+          await sendProgress(extra, progressToken, 6, "Atomic commit of scaled content...");
+          logger.info("scale: stage 6 — atomic commit", {
+            elapsed_ms: Date.now() - startTime,
+            file_count: destFiles.length + 1,
+          });
 
-          const handoffPushPath = handoffResolved.path;
-          const handoffPush = await pushFile(
-            project_slug, handoffPushPath, updatedHandoff, "prism: scale handoff",
+          const { pushResults, partial_state } = await atomicCommitScaled(
+            project_slug,
+            handoffResolved.path,
+            updatedHandoff,
+            destFiles,
+            "prism: scale handoff",
           );
-          pushResults.push({ path: handoffPushPath, success: handoffPush.success });
 
           const afterSize = new TextEncoder().encode(updatedHandoff).length;
           const beforeSize = plan.before_size_bytes;
@@ -949,6 +1030,11 @@ export function registerScaleHandoff(server: McpServer): void {
           const warnings: string[] = pushResults
             .filter((r) => !r.success)
             .map((r) => `Failed to push ${r.path}`);
+          if (partial_state) {
+            warnings.push(
+              "Partial atomic commit — state may be inconsistent. HEAD moved mid-commit; inspect the repo before retrying.",
+            );
+          }
           if (timed_out) {
             warnings.push(
               "Operation exceeded 50s safety timeout. Some actions may not have executed. Consider running again with remaining actions.",
@@ -1122,20 +1208,25 @@ export function registerScaleHandoff(server: McpServer): void {
           };
         }
 
-        // Execute the scaling
-        const { updatedHandoff, pushResults, timed_out } = await executeScaling(
+        // Execute the scaling (materializes destFiles; no push yet)
+        const { updatedHandoff, destFiles, timed_out } = await executeScaling(
           project_slug, handoff.content, actions, extra, progressToken, startTime,
         );
 
-        // Stage 6: Push updated handoff
-        await sendProgress(extra, progressToken, 6, "Pushing updated handoff...");
-        logger.info("scale: stage 6 — push handoff", { elapsed_ms: Date.now() - startTime });
+        // Stage 6: Atomic commit destinations + handoff (A-6 / S47 P2.2)
+        await sendProgress(extra, progressToken, 6, "Atomic commit of scaled content...");
+        logger.info("scale: stage 6 — atomic commit", {
+          elapsed_ms: Date.now() - startTime,
+          file_count: destFiles.length + 1,
+        });
 
-        const handoffPushPath2 = handoffResolved2.path;
-        const handoffPush = await pushFile(
-          project_slug, handoffPushPath2, updatedHandoff, "prism: scale handoff",
+        const { pushResults, partial_state } = await atomicCommitScaled(
+          project_slug,
+          handoffResolved2.path,
+          updatedHandoff,
+          destFiles,
+          "prism: scale handoff",
         );
-        pushResults.push({ path: handoffPushPath2, success: handoffPush.success });
 
         const afterSize = new TextEncoder().encode(updatedHandoff).length;
         const reductionPercent =
@@ -1153,6 +1244,11 @@ export function registerScaleHandoff(server: McpServer): void {
         const warnings: string[] = pushResults
           .filter((r) => !r.success)
           .map((r) => `Failed to push ${r.path}`);
+        if (partial_state) {
+          warnings.push(
+            "Partial atomic commit — state may be inconsistent. HEAD moved mid-commit; inspect the repo before retrying.",
+          );
+        }
         if (timed_out) {
           warnings.push(
             "Operation exceeded 50s safety timeout. Some actions may not have executed. Re-run to complete remaining actions.",

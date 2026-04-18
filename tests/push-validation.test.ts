@@ -61,6 +61,14 @@ describe("commit message prefix validation", () => {
     }
   });
 
+  it("accepts audit: and test: prefixes (A-16)", () => {
+    const auditResult = validateCommitMessage("audit: s46 framework audit report");
+    expect(auditResult.errors).toHaveLength(0);
+
+    const testResult = validateCommitMessage("test: add fixtures for session-pattern parsing");
+    expect(testResult.errors).toHaveLength(0);
+  });
+
   it("rejects invalid prefixes", () => {
     const result = validateCommitMessage("feat: added something");
     expect(result.errors).toHaveLength(1);

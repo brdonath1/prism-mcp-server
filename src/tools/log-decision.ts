@@ -5,7 +5,12 @@
 
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { fetchFile, pushFile } from "../github/client.js";
+import {
+  fetchFile,
+  pushFile,
+  createAtomicCommit,
+  getHeadSha,
+} from "../github/client.js";
 import { logger } from "../utils/logger.js";
 import { resolveDocPath, resolveDocPushPath } from "../utils/doc-resolver.js";
 import { guardPushPath } from "../utils/doc-guard.js";
@@ -164,25 +169,92 @@ export function registerLogDecision(server: McpServer): void {
           domainContent = domainContent.trimEnd() + `\n\n${entry}\n\n${domainEof}\n`;
         }
 
-        // 6. Push both files to resolved paths
-        const indexResult = await pushFile(
+        // 6. Atomic-commit both files (A-5). The docstring has long claimed
+        // atomicity but the original implementation pushed sequentially, so a
+        // mid-sequence failure left `_INDEX.md` referencing a decision whose
+        // domain entry had not yet been written. Mirrors push.ts's pattern:
+        // atomic first; on failure, check HEAD — if HEAD moved, surface a
+        // "partial state" error and abort; if HEAD unchanged, fall back to
+        // sequential pushFile (matching push.ts's recovery contract).
+        const commitMessage = `prism: ${id} ${title}`;
+        const headShaBefore = await getHeadSha(project_slug);
+        const atomicResult = await createAtomicCommit(
           project_slug,
-          indexResolvedPath,
-          indexContent,
-          `prism: ${id} ${title}`
+          [
+            { path: indexResolvedPath, content: indexContent },
+            { path: domainResolvedPath, content: domainContent },
+          ],
+          commitMessage,
         );
 
-        const domainResult = await pushFile(
-          project_slug,
-          domainResolvedPath,
-          domainContent,
-          `prism: ${id} full entry`
-        );
+        let indexSuccess: boolean;
+        let domainSuccess: boolean;
+        let partialStateError: string | undefined;
+
+        if (atomicResult.success) {
+          indexSuccess = true;
+          domainSuccess = true;
+        } else {
+          let headChanged = false;
+          if (headShaBefore) {
+            const headShaAfter = await getHeadSha(project_slug);
+            if (headShaAfter) headChanged = headShaAfter !== headShaBefore;
+          }
+
+          if (headChanged) {
+            logger.error(
+              "prism_log_decision atomic failed with HEAD changed — partial state",
+              { project_slug, id, atomicError: atomicResult.error },
+            );
+            partialStateError =
+              "Concurrent write during log_decision atomic commit; please retry";
+            indexSuccess = false;
+            domainSuccess = false;
+          } else {
+            logger.warn(
+              "prism_log_decision atomic failed; falling back to sequential pushFile",
+              { project_slug, id, atomicError: atomicResult.error },
+            );
+            const indexResult = await pushFile(
+              project_slug,
+              indexResolvedPath,
+              indexContent,
+              commitMessage,
+            );
+            const domainResult = await pushFile(
+              project_slug,
+              domainResolvedPath,
+              domainContent,
+              commitMessage,
+            );
+            indexSuccess = indexResult.success;
+            domainSuccess = domainResult.success;
+          }
+        }
+
+        if (partialStateError) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  error: partialStateError,
+                  id,
+                  title,
+                  domain,
+                  index_updated: false,
+                  domain_file_updated: false,
+                }),
+              },
+            ],
+            isError: true,
+          };
+        }
 
         logger.info("prism_log_decision complete", {
           project_slug, id, domain,
-          indexSuccess: indexResult.success,
-          domainSuccess: domainResult.success,
+          indexSuccess,
+          domainSuccess,
           ms: Date.now() - start,
         });
 
@@ -194,8 +266,8 @@ export function registerLogDecision(server: McpServer): void {
               title,
               domain,
               status,
-              index_updated: indexResult.success,
-              domain_file_updated: domainResult.success,
+              index_updated: indexSuccess,
+              domain_file_updated: domainSuccess,
               domain_file: domainResolvedPath,
             }),
           }],

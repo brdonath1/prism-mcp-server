@@ -42,6 +42,7 @@ import {
 } from "../config.js";
 import { logger } from "../utils/logger.js";
 import { dispatchTask } from "../claude-code/client.js";
+import { fetchWithRetry } from "../github/client.js";
 import { cloneRepo, commitAndPushBranch } from "../claude-code/repo.js";
 import { writeDispatchRecord, type DispatchRecord } from "../dispatch-store.js";
 
@@ -420,7 +421,7 @@ async function runDispatch(
     mode,
     prompt,
     status: resultObj.status,
-    started_at: new Date(Date.now() - 0).toISOString(), // will be overwritten by writeDispatchRecord if an existing record exists
+    started_at: new Date().toISOString(), // overwritten by writeDispatchRecord when an existing record exists
     completed_at: new Date().toISOString(),
     agent: "claude-code",
     server_version: SERVER_VERSION,
@@ -488,7 +489,10 @@ async function createPullRequest(opts: {
     throw new Error("GITHUB_PAT is required to create pull requests.");
   }
   const url = `${GITHUB_API_BASE}/repos/${GITHUB_OWNER}/${opts.repo}/pulls`;
-  const res = await fetch(url, {
+  // A-14: route through fetchWithRetry so a 429 from GitHub retries with the
+  // same POST body + Authorization header instead of failing outright.
+  // fetchWithRetry preserves the full RequestInit across retry attempts.
+  const res = await fetchWithRetry(url, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${GITHUB_PAT}`,
