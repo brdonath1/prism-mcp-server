@@ -82,10 +82,10 @@ describe("Response size monitoring (M-7)", () => {
   });
 });
 
-describe("LEGACY_LIVING_DOCUMENTS deprecation (M-4)", () => {
-  it("is marked deprecated", () => {
+describe("LIVING_DOCUMENT_NAMES canonical list (S41 Phase 4)", () => {
+  it("is exported with canonical JSDoc", () => {
     const source = readFileSync("src/config.ts", "utf-8");
-    expect(source).toContain("@deprecated");
-    expect(source).toContain("LEGACY_LIVING_DOCUMENTS");
+    expect(source).toContain("Canonical list of living-document filenames");
+    expect(source).toContain("LIVING_DOCUMENT_NAMES");
   });
 });

@@ -9,7 +9,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { fetchFile, fileExists } from "../github/client.js";
-import { DOC_ROOT, LEGACY_LIVING_DOCUMENTS } from "../config.js";
+import { DOC_ROOT, LIVING_DOCUMENT_NAMES } from "../config.js";
 import { resolveDocPath, resolveDocExists } from "../utils/doc-resolver.js";
 import { logger } from "../utils/logger.js";
 
@@ -191,7 +191,7 @@ export function registerSearch(server: McpServer): void {
 
         // Step 2: Fetch all living docs via resolver + domain files directly
         const fetchResults = await Promise.allSettled([
-          ...LEGACY_LIVING_DOCUMENTS.map(async (docName) => {
+          ...LIVING_DOCUMENT_NAMES.map(async (docName) => {
             try {
               const resolved = await resolveDocPath(project_slug, docName);
               return { path: docName, content: resolved.content, size: resolved.content.length };

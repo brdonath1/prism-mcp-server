@@ -121,11 +121,13 @@ export const LIVING_DOCUMENTS = [
   `${DOC_ROOT}/intelligence-brief.md`,
 ] as const;
 
-/** @deprecated Legacy paths (pre-D-67 consolidation) for backward compatibility.
- *  Used by resolveDocPath() to find files in repos not yet migrated.
- *  REMOVE after all repos confirmed migrated to .prism/ structure.
- *  Prefer resolveDocFilesOptimized() which auto-detects .prism/ vs root. */
-export const LEGACY_LIVING_DOCUMENTS = [
+/** Canonical list of living-document filenames WITHOUT the DOC_ROOT prefix.
+ *  Consumed by resolveDocPath(), resolveDocFiles(), and
+ *  resolveDocFilesOptimized() — all of which prepend `.prism/` internally.
+ *  Distinct from LIVING_DOCUMENTS (which is the prefixed form used when
+ *  calling GitHub APIs directly without the resolver). Keep both in sync
+ *  when adding or removing a living document. */
+export const LIVING_DOCUMENT_NAMES = [
   "handoff.md",
   "decisions/_INDEX.md",
   "session-log.md",

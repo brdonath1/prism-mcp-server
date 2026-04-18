@@ -20,7 +20,7 @@ import {
 } from "../github/client.js";
 import {
   LIVING_DOCUMENTS,
-  LEGACY_LIVING_DOCUMENTS,
+  LIVING_DOCUMENT_NAMES,
   SYNTHESIS_ENABLED,
   SERVER_VERSION,
   FRAMEWORK_REPO,
@@ -76,7 +76,7 @@ export const ARCHIVE_FILE_SUFFIX = "-archive.md";
  * Synthesis cost scales with input size (S40 FINDING-14) — adding archive
  * files here would regress the whole reason archiving exists.
  */
-export const DRAFT_RELEVANT_DOCS = LEGACY_LIVING_DOCUMENTS.filter(
+export const DRAFT_RELEVANT_DOCS = LIVING_DOCUMENT_NAMES.filter(
   d =>
     d !== "architecture.md" &&
     d !== "glossary.md" &&
@@ -138,9 +138,9 @@ async function auditPhase(projectSlug: string, sessionNumber: number) {
   }
 
   // 1. Fetch all 10 living documents in parallel with backward-compatible resolution
-  const docMap = await resolveDocFiles(projectSlug, [...LEGACY_LIVING_DOCUMENTS]);
+  const docMap = await resolveDocFiles(projectSlug, [...LIVING_DOCUMENT_NAMES]);
 
-  const livingDocuments = LEGACY_LIVING_DOCUMENTS.map((doc) => {
+  const livingDocuments = LIVING_DOCUMENT_NAMES.map((doc) => {
     const fileResult = docMap.get(doc);
     if (!fileResult) {
       return {

@@ -14,7 +14,7 @@ import {
   fileExists,
   listRepos,
 } from "../github/client.js";
-import { LIVING_DOCUMENTS, LEGACY_LIVING_DOCUMENTS } from "../config.js";
+import { LIVING_DOCUMENTS, LIVING_DOCUMENT_NAMES } from "../config.js";
 import { resolveDocPath, resolveDocExists, resolveDocFiles } from "../utils/doc-resolver.js";
 import { logger } from "../utils/logger.js";
 import {
@@ -341,9 +341,9 @@ async function decisionGraph(projectSlug: string) {
 async function healthSummary(projectSlug?: string) {
   if (projectSlug) {
     // Single project health (D-67: backward-compatible resolution)
-    const docMap = await resolveDocFiles(projectSlug, [...LEGACY_LIVING_DOCUMENTS]);
-    const present = LEGACY_LIVING_DOCUMENTS.filter((d) => docMap.has(d));
-    const missing = LEGACY_LIVING_DOCUMENTS.filter((d) => !docMap.has(d));
+    const docMap = await resolveDocFiles(projectSlug, [...LIVING_DOCUMENT_NAMES]);
+    const present = LIVING_DOCUMENT_NAMES.filter((d) => docMap.has(d));
+    const missing = LIVING_DOCUMENT_NAMES.filter((d) => !docMap.has(d));
 
     const handoff = docMap.get("handoff.md");
     const handoffSize = handoff?.size ?? 0;
@@ -396,12 +396,12 @@ async function healthSummary(projectSlug?: string) {
 
       // Quick doc check using resolver
       const docChecks = await Promise.allSettled(
-        LEGACY_LIVING_DOCUMENTS.map((d) => resolveDocExists(repo, d))
+        LIVING_DOCUMENT_NAMES.map((d) => resolveDocExists(repo, d))
       );
       const presentCount = docChecks.filter(
         (r) => r.status === "fulfilled" && r.value.exists
       ).length;
-      const missingCount = LEGACY_LIVING_DOCUMENTS.length - presentCount;
+      const missingCount = LIVING_DOCUMENT_NAMES.length - presentCount;
 
       const handoffSize = resolved.content.length;
       const health =

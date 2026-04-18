@@ -9,7 +9,7 @@ import { fetchFile, fileExists, listRepos } from "../github/client.js";
 import {
   DOC_ROOT,
   LIVING_DOCUMENTS,
-  LEGACY_LIVING_DOCUMENTS,
+  LIVING_DOCUMENT_NAMES,
   HANDOFF_CRITICAL_SIZE,
   HANDOFF_WARNING_SIZE,
   SYNTHESIS_ENABLED,
@@ -91,7 +91,7 @@ async function getProjectHealth(
 ): Promise<ProjectHealth> {
   // Check all 10 living documents in parallel using backward-compatible resolution
   const docChecks = await Promise.allSettled(
-    LEGACY_LIVING_DOCUMENTS.map(async (docName) => {
+    LIVING_DOCUMENT_NAMES.map(async (docName) => {
       const resolved = await resolveDocExists(projectSlug, docName);
       if (resolved.exists) {
         try {

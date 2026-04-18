@@ -1,7 +1,13 @@
 /**
- * doc-resolver — Backward-compatible document path resolution (D-67).
- * Tries .prism/ path first, falls back to legacy root path.
- * REMOVE fallback after all repos confirmed migrated.
+ * doc-resolver — Document path resolution with `.prism/`-first, root-fallback.
+ *
+ * Prefers `.prism/{docName}`; falls back to `{docName}` at repo root. The
+ * fallback serves two purposes: (1) belt-and-suspenders safety for any repo
+ * whose living docs are still at the root level, and (2) explicit support for
+ * arbitrary non-living-doc paths (e.g. `reports/*.md`, `briefs/*.md`) passed
+ * through prism_fetch — those files legitimately live at the root and rely on
+ * the fallback to resolve. Do NOT remove the fallback without first replacing
+ * (2) with an explicit "arbitrary-path" code path.
  */
 
 import { fetchFile, fetchFiles, fileExists, listDirectory } from "../github/client.js";
@@ -14,7 +20,10 @@ import { logger } from "./logger.js";
  *
  * @param projectSlug - Project repo name
  * @param docName - Document name WITHOUT DOC_ROOT prefix (e.g., "handoff.md", "decisions/_INDEX.md")
- * @returns Object with path (resolved), content, sha, and whether legacy path was used
+ * @returns Object with path (resolved), content, sha, and a `legacy` flag indicating
+ *   whether the root fallback was used (true) instead of the `.prism/` path (false).
+ *   The fallback is a live feature for arbitrary root-path fetches — not a migration-only
+ *   path — so `legacy: true` is NOT an error or deprecation signal.
  */
 export async function resolveDocPath(
   projectSlug: string,

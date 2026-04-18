@@ -6,7 +6,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { fetchFile } from "../github/client.js";
-import { DOC_ROOT, LEGACY_LIVING_DOCUMENTS, SUMMARY_SIZE_THRESHOLD } from "../config.js";
+import { DOC_ROOT, LIVING_DOCUMENT_NAMES, SUMMARY_SIZE_THRESHOLD } from "../config.js";
 import { logger } from "../utils/logger.js";
 import { summarizeMarkdown } from "../utils/summarizer.js";
 import { resolveDocPath } from "../utils/doc-resolver.js";
@@ -17,7 +17,7 @@ import { resolveDocPath } from "../utils/doc-resolver.js";
  * (e.g., "decisions/_INDEX.md") and the server will resolve to the actual
  * path (".prism/decisions/_INDEX.md" or legacy root).
  */
-const KNOWN_LIVING_DOC_NAMES = new Set<string>(LEGACY_LIVING_DOCUMENTS);
+const KNOWN_LIVING_DOC_NAMES = new Set<string>(LIVING_DOCUMENT_NAMES);
 
 /**
  * Determine whether a requested path should go through doc-resolver.
