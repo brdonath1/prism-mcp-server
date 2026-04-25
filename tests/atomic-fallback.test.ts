@@ -4,55 +4,44 @@ process.env.GITHUB_PAT = process.env.GITHUB_PAT || "test-dummy-pat";
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "fs";
 
-describe("Atomic commit fallback architecture", () => {
+describe("Atomic commit primitive architecture (S64 Phase 1 Brief 1.5)", () => {
   const source = readFileSync("src/tools/finalize.ts", "utf-8");
   const clientSource = readFileSync("src/github/client.ts", "utf-8");
 
-  it("commitPhase tries atomic commit first", () => {
+  it("commitPhase delegates to safeMutation for atomic commit", () => {
     const commitSection = source.slice(
       source.indexOf("async function commitPhase"),
       source.indexOf("// Synthesis after")
     );
 
-    // Atomic commit should be called before sequential pushFile fallback
-    const atomicIdx = commitSection.indexOf("await createAtomicCommit(");
-    // Look for the fallback comment specifically, not backup pushFile calls
-    const fallbackIdx = commitSection.indexOf("Sequential pushFile");
-
-    expect(atomicIdx).toBeGreaterThan(-1);
-    expect(fallbackIdx).toBeGreaterThan(-1);
-    expect(atomicIdx).toBeLessThan(fallbackIdx);
+    // safeMutation is the atomic-commit primitive (S64 Phase 1 Brief 1.5).
+    expect(commitSection).toContain("await safeMutation(");
+    // No sequential pushFile fallback — atomic-only by design.
+    expect(commitSection).not.toContain("Sequential pushFile");
+    expect(commitSection).not.toContain("falling back to sequential pushFile");
   });
 
-  it("fallback only triggers on atomic failure", () => {
+  it("commit failure adds warning derived from safeMutation error", () => {
     const commitSection = source.slice(
       source.indexOf("async function commitPhase"),
       source.indexOf("// Synthesis after")
     );
 
-    // pushFile fallback should be inside a failure branch
-    expect(commitSection).toContain("atomicResult.success");
-    expect(commitSection).toContain("falling back to sequential pushFile");
-  });
-
-  it("fallback logs a warning when triggered", () => {
-    const commitSection = source.slice(
-      source.indexOf("async function commitPhase"),
-      source.indexOf("// Synthesis after")
-    );
-
-    expect(commitSection).toContain("logger.warn");
+    // safeMutationResult is the new failure handle.
+    expect(commitSection).toContain("safeMutationResult");
+    expect(commitSection).toContain("warnings.push");
     expect(commitSection).toContain("Atomic commit failed");
   });
 
-  it("fallback adds warning to response warnings array", () => {
+  it("commit step does not call createAtomicCommit or getHeadSha directly", () => {
     const commitSection = source.slice(
       source.indexOf("async function commitPhase"),
       source.indexOf("// Synthesis after")
     );
 
-    expect(commitSection).toContain("warnings.push");
-    expect(commitSection).toContain("Fell back to sequential file pushes");
+    // Both primitives are encapsulated by safeMutation.
+    expect(commitSection).not.toContain("createAtomicCommit");
+    expect(commitSection).not.toContain("getHeadSha");
   });
 
   it("createAtomicCommit returns structured error on failure", () => {

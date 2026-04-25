@@ -1,10 +1,10 @@
 /**
- * Integration tests for prism_push tool (S40 C3 — atomic-first flow).
+ * Integration tests for prism_push tool (S64 Phase 1 Brief 1.5 — safeMutation).
  *
- * The tool now tries a single atomic Git Trees commit first. pushFile is
- * only invoked as a sequential fallback when the atomic attempt fails AND
- * HEAD has not moved. When HEAD HAS moved after an atomic failure, the
- * tool refuses to retry and reports a partial-state warning.
+ * The tool delegates to safeMutation, which performs a single atomic Git
+ * Trees commit, retries once on conflict against fresh content, and
+ * refuses to retry when HEAD state is unknown. There is no sequential
+ * pushFile fallback — atomic-only by design (S62 audit Verdict C).
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -229,20 +229,19 @@ describe("prism_push successful flow (atomic-first)", () => {
   });
 });
 
-// ── Atomic failure: HEAD moved → partial state, no fallback ────────────────────
+// ── Atomic failure: retry exhausted → return failure, no sequential fallback ───
 
-describe("prism_push atomic failure with HEAD moved", () => {
-  it("reports partial-state when atomic failed and HEAD moved", async () => {
+describe("prism_push atomic failure with retry exhausted", () => {
+  it("returns failure when safeMutation exhausts its retry budget", async () => {
+    // Atomic always fails — safeMutation retries once, then surfaces
+    // MUTATION_RETRY_EXHAUSTED. No sequential pushFile fallback exists.
     mockCreateAtomicCommit.mockResolvedValue({
       success: false,
       sha: "",
       files_committed: 0,
       error: "updateRef failed: 422 Unprocessable Entity",
     });
-    // Before/after HEAD SHAs differ → partial write suspected
-    mockGetHeadSha
-      .mockResolvedValueOnce("HEAD_BEFORE")
-      .mockResolvedValueOnce("HEAD_AFTER");
+    mockGetHeadSha.mockResolvedValue("HEAD_STABLE");
 
     const result = await callPushTool({
       project_slug: "test-project",
@@ -265,34 +264,32 @@ describe("prism_push atomic failure with HEAD moved", () => {
     expect(data.all_succeeded).toBe(false);
     expect(data.files_pushed).toBe(0);
     expect(data.files_failed).toBe(2);
-    // Must NOT fall back to sequential pushFile — repo is indeterminate
+    // Atomic-only — pushFile is no longer imported by push.ts.
     expect(mockPushFile).not.toHaveBeenCalled();
-    // Every result should carry the partial-state signal
     for (const r of data.results) {
       expect(r.success).toBe(false);
-      expect(r.validation_errors.join(" ")).toContain("Partial atomic commit");
-      expect(r.error).toContain("updateRef failed");
+      expect(r.error).toContain("retry budget exhausted");
     }
+    // safeMutation's retry-exhausted diagnostic must be surfaced.
+    const exhaustedDiag = (data.diagnostics as Array<{ code: string }>).find(
+      (d) => d.code === "MUTATION_RETRY_EXHAUSTED",
+    );
+    expect(exhaustedDiag).toBeDefined();
   });
 });
 
-// ── Null-safe HEAD comparison (S62 Phase 1 Brief 1, Change 7) ─────────────────
+// ── Null-safe HEAD comparison (safeMutation owns the contract) ────────────────
 
-describe("prism_push atomic failure with NULL HEAD (refuse fallback)", () => {
-  // S62 Phase 1 Brief 1 fixes the original `headChanged = false` default that
-  // caused `getHeadSha returning null` to be treated as "HEAD unchanged" and
-  // route to the partial-state-prone fallback. The new pattern:
-  //   - default `headChanged = true` (refuse fallback under uncertainty)
-  //   - emit HEAD_SHA_UNKNOWN diagnostic with phase context
-  //   - both pre-atomic and post-atomic null cases are covered
-  it("treats null HEAD before atomic as unknown (refuse fallback) and emits HEAD_SHA_UNKNOWN", async () => {
+describe("prism_push atomic failure with NULL HEAD (refuse retry)", () => {
+  // safeMutation refuses to retry when either pre-atomic or post-atomic HEAD
+  // snapshot returns undefined. The diagnostic surfaces with phase context.
+  it("treats null HEAD pre-atomic as unknown and emits HEAD_SHA_UNKNOWN", async () => {
     mockCreateAtomicCommit.mockResolvedValue({
       success: false,
       sha: "",
       files_committed: 0,
       error: "createTree failed: 500",
     });
-    // Pre-atomic snapshot returns undefined.
     mockGetHeadSha.mockResolvedValue(undefined);
 
     const result = await callPushTool({
@@ -310,11 +307,7 @@ describe("prism_push atomic failure with NULL HEAD (refuse fallback)", () => {
     const data = parseResult(result);
     expect(data.all_succeeded).toBe(false);
     expect(data.files_pushed).toBe(0);
-    // Critical: refuse to fall back to sequential pushFile under HEAD-unknown.
     expect(mockPushFile).not.toHaveBeenCalled();
-    // Result must carry the partial-state signal (treats unknown as changed).
-    expect(data.results[0].validation_errors.join(" ")).toContain("Partial atomic commit");
-    // Diagnostic emitted with the pre-atomic phase context.
     const headDiag = (data.diagnostics as Array<{ code: string; context?: { phase?: string } }>).find(
       (d) => d.code === "HEAD_SHA_UNKNOWN",
     );
@@ -322,14 +315,13 @@ describe("prism_push atomic failure with NULL HEAD (refuse fallback)", () => {
     expect(headDiag!.context?.phase).toBe("pre-atomic-snapshot");
   });
 
-  it("treats null HEAD post-atomic as unknown (refuse fallback) and emits HEAD_SHA_UNKNOWN", async () => {
+  it("treats null HEAD post-atomic as unknown and emits HEAD_SHA_UNKNOWN", async () => {
     mockCreateAtomicCommit.mockResolvedValue({
       success: false,
       sha: "",
       files_committed: 0,
       error: "createTree failed: 500",
     });
-    // Pre-atomic returns a SHA; post-atomic returns undefined.
     mockGetHeadSha
       .mockResolvedValueOnce("HEAD_BEFORE")
       .mockResolvedValueOnce(undefined);
@@ -357,21 +349,24 @@ describe("prism_push atomic failure with NULL HEAD (refuse fallback)", () => {
   });
 });
 
-// ── Atomic failure: HEAD unchanged → sequential fallback succeeds ──────────────
+// ── Atomic failure → safeMutation retry succeeds ───────────────────────────────
 
-describe("prism_push atomic failure with HEAD unchanged (sequential fallback)", () => {
-  it("falls back to sequential pushFile when HEAD didn't move", async () => {
-    mockCreateAtomicCommit.mockResolvedValue({
-      success: false,
-      sha: "",
-      files_committed: 0,
-      error: "createTree failed: 500 Internal Server Error",
-    });
-    // HEAD stable before and after
+describe("prism_push atomic conflict retry (safeMutation)", () => {
+  it("succeeds when atomic fails once then succeeds on retry", async () => {
+    // safeMutation retries once on conflict — the second atomic call wins.
+    mockCreateAtomicCommit
+      .mockResolvedValueOnce({
+        success: false,
+        sha: "",
+        files_committed: 0,
+        error: "createTree failed: 500 Internal Server Error",
+      })
+      .mockResolvedValueOnce({
+        success: true,
+        sha: "atomic_retry_sha",
+        files_committed: 2,
+      });
     mockGetHeadSha.mockResolvedValue("HEAD_STABLE");
-    mockPushFile
-      .mockResolvedValueOnce({ success: true, size: 100, sha: "fallback_sha_1" })
-      .mockResolvedValueOnce({ success: true, size: 200, sha: "fallback_sha_2" });
 
     const result = await callPushTool({
       project_slug: "test-project",
@@ -394,56 +389,22 @@ describe("prism_push atomic failure with HEAD unchanged (sequential fallback)", 
     expect(data.all_succeeded).toBe(true);
     expect(data.files_pushed).toBe(2);
     expect(data.files_failed).toBe(0);
-    // Fallback path: pushFile called sequentially, once per file
-    expect(mockPushFile).toHaveBeenCalledTimes(2);
-    expect(data.results[0].sha).toBe("fallback_sha_1");
-    expect(data.results[1].sha).toBe("fallback_sha_2");
-    // No atomic commit SHA in the top-level response (atomic failed)
-    expect(data.commit_sha).toBeUndefined();
-  });
-
-  it("propagates per-file errors from the sequential fallback", async () => {
-    mockCreateAtomicCommit.mockResolvedValue({
-      success: false,
-      sha: "",
-      files_committed: 0,
-      error: "tree creation failed",
-    });
-    mockGetHeadSha.mockResolvedValue("HEAD_STABLE");
-    mockPushFile
-      .mockResolvedValueOnce({ success: true, size: 100, sha: "ok_sha" })
-      .mockResolvedValueOnce({ success: false, size: 0, sha: "", error: "409 Conflict" });
-
-    const result = await callPushTool({
-      project_slug: "test-project",
-      files: [
-        {
-          path: "glossary.md",
-          content: "# Glossary\nOK\n<!-- EOF: glossary.md -->",
-          message: "prism: update docs",
-        },
-        {
-          path: "eliminated.md",
-          content: "# Eliminated\nContent\n<!-- EOF: eliminated.md -->",
-          message: "prism: update docs",
-        },
-      ],
-      skip_validation: false,
-    });
-
-    const data = parseResult(result);
-    expect(data.all_succeeded).toBe(false);
-    const succeeded = data.results.filter((r: any) => r.success);
-    const failed = data.results.filter((r: any) => !r.success);
-    expect(succeeded.length).toBe(1);
-    expect(failed.length).toBe(1);
-    expect(failed[0].error).toBe("409 Conflict");
+    expect(mockCreateAtomicCommit).toHaveBeenCalledTimes(2);
+    expect(mockPushFile).not.toHaveBeenCalled();
+    expect(data.commit_sha).toBe("atomic_retry_sha");
+    for (const r of data.results) {
+      expect(r.sha).toBe("atomic_retry_sha");
+    }
+    // safeMutation emits MUTATION_CONFLICT on the way through.
+    const conflictDiag = (data.diagnostics as Array<{ code: string }>).find(
+      (d) => d.code === "MUTATION_CONFLICT",
+    );
+    expect(conflictDiag).toBeDefined();
   });
 
   it("handles thrown errors during atomic commit gracefully", async () => {
-    // createAtomicCommit catches internally and returns failure, but if the
-    // wrapping tool logic itself rejects (e.g. getHeadSha throws before the
-    // atomic call), the tool still produces a structured error payload.
+    // safeMutation propagates throws from createAtomicCommit; the tool
+    // catches and produces a structured error payload.
     mockCreateAtomicCommit.mockRejectedValue(new Error("Network timeout"));
 
     const result = await callPushTool({

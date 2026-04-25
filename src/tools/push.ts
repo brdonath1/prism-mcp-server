@@ -1,19 +1,18 @@
 /**
  * prism_push tool — Push files with server-side validation.
  *
- * Validates ALL files first; if any fail, pushes NONE. Uses a single atomic
- * Git Trees commit by default (S40 C3): one GitHub operation for N files,
- * no 409 race conditions from parallel Contents API calls, and a single
- * commit SHA shared by every file in the batch. On atomic-commit failure
- * the tool inspects the HEAD SHA — if HEAD moved, a partial write happened
- * and we return without falling back; if HEAD is unchanged, we fall back to
- * *sequential* pushFile calls (never parallel — that was the original 409
- * cause).
+ * Validates ALL files first; if any fail, pushes NONE. Uses safeMutation as
+ * the atomic-commit primitive (S64 Phase 1 Brief 1.5): one GitHub operation
+ * for N files via Git Trees, no 409 race conditions from parallel Contents
+ * API calls, and a single commit SHA shared by every file in the batch.
+ * safeMutation handles HEAD snapshot, atomic commit, 409 retry with refreshed
+ * content, and null-safe HEAD comparison. Atomic-only by design (S62 audit
+ * Verdict C).
  */
 
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { createAtomicCommit, getHeadSha, pushFile } from "../github/client.js";
+import { safeMutation } from "../utils/safe-mutation.js";
 import { logger } from "../utils/logger.js";
 import { validateFileAndCommit } from "../validation/index.js";
 import { templateCache } from "../utils/cache.js";
@@ -148,115 +147,51 @@ export function registerPush(server: McpServer): void {
           diagnostics.warn("VALIDATION_WARNING", `Received ${uniqueMessages.size} differing commit messages; using first`, { count: uniqueMessages.size, used: commitMessage });
         }
 
-        // 4. Try atomic commit first
+        // 4. Atomic commit via safeMutation (S64 Phase 1 Brief 1.5).
+        //    safeMutation handles: HEAD snapshot, atomic Git Trees commit, 409
+        //    retry with refreshed content, null-safe HEAD comparison.
+        //    Atomic-only by design (S62 audit Verdict C).
         const atomicFiles = files.map((file, idx) => ({
           path: guardResults[idx].path,
           content: file.content,
         }));
-        const headShaBefore = await getHeadSha(project_slug);
-        const atomicResult = await createAtomicCommit(project_slug, atomicFiles, commitMessage);
+        const safeMutationResult = await safeMutation({
+          repo: project_slug,
+          commitMessage,
+          readPaths: [],
+          diagnostics,
+          computeMutation: () => ({ writes: atomicFiles }),
+        });
 
         let results: PushFileResult[];
-
-        if (atomicResult.success) {
-          // Atomic success — every file shares the same commit SHA; no per-file
-          // verification fetch needed (the tree API guarantees consistency).
+        if (safeMutationResult.ok) {
           results = files.map((file, idx) => ({
             path: guardResults[idx].path,
             original_path: guardResults[idx].redirected ? file.path : undefined,
             redirected: guardResults[idx].redirected,
             success: true,
             size_bytes: new TextEncoder().encode(file.content).length,
-            sha: atomicResult.sha,
+            sha: safeMutationResult.commitSha,
             verified: true,
             validation_errors: validationResults[idx].errors,
             validation_warnings: validationResults[idx].warnings,
           }));
         } else {
-          // Atomic failed — decide whether it's safe to retry.
-          // Null-safe: a missing HEAD SHA on either snapshot means we can't
-          // verify whether HEAD moved, so we treat it as "changed" and refuse
-          // the fallback (the safer side of unknown). S62 Phase 1 Brief 1
-          // Change 7 — direct null-safety fix; full migration to safeMutation
-          // is deferred to Brief 1.5.
-          let headChanged = true;
-          if (headShaBefore) {
-            const headShaAfter = await getHeadSha(project_slug);
-            if (headShaAfter) {
-              headChanged = headShaAfter !== headShaBefore;
-            } else {
-              diagnostics.warn(
-                "HEAD_SHA_UNKNOWN",
-                "getHeadSha returned null after atomic failure — treating as HEAD changed (refuse fallback)",
-                { phase: "post-atomic-check" },
-              );
-            }
-          } else {
-            diagnostics.warn(
-              "HEAD_SHA_UNKNOWN",
-              "getHeadSha returned null before atomic commit — treating as HEAD changed (refuse fallback)",
-              { phase: "pre-atomic-snapshot" },
-            );
-          }
-
-          if (headChanged) {
-            // HEAD moved — partial atomic write. Do NOT fall back; the repo is
-            // in an indeterminate state and a retry could double-write.
-            logger.error(
-              "prism_push atomic commit failed with HEAD changed — partial state",
-              { project_slug, atomicError: atomicResult.error },
-            );
-            diagnostics.error("PUSH_RETRY_ON_CONFLICT", "Atomic commit failed with HEAD changed \u2014 partial state detected", { atomicError: atomicResult.error });
-            results = files.map((file, idx) => ({
-              path: guardResults[idx].path,
-              original_path: guardResults[idx].redirected ? file.path : undefined,
-              redirected: guardResults[idx].redirected,
-              success: false,
-              size_bytes: 0,
-              sha: "",
-              verified: false,
-              validation_errors: [
-                ...validationResults[idx].errors,
-                "Partial atomic commit — state may be inconsistent",
-              ],
-              validation_warnings: validationResults[idx].warnings,
-              error: atomicResult.error,
-            }));
-          } else {
-            // HEAD unchanged — safe to fall back. SEQUENTIAL (not parallel) to
-            // avoid the 409-conflict race that motivated atomic commits.
-            logger.warn("prism_push atomic failed; falling back to sequential pushFile", {
-              project_slug,
-              atomicError: atomicResult.error,
-            });
-            diagnostics.warn("PUSH_RETRY_ON_CONFLICT", "Atomic commit failed; falling back to sequential pushFile", { atomicError: atomicResult.error });
-            results = [];
-            for (let idx = 0; idx < files.length; idx++) {
-              const file = files[idx];
-              const guarded = guardResults[idx];
-              const pushResult = await pushFile(
-                project_slug,
-                guarded.path,
-                file.content,
-                commitMessage,
-              );
-              results.push({
-                path: guarded.path,
-                original_path: guarded.redirected ? file.path : undefined,
-                redirected: guarded.redirected,
-                success: pushResult.success,
-                size_bytes: pushResult.size,
-                sha: pushResult.sha,
-                verified: pushResult.success,
-                validation_errors: pushResult.success ? validationResults[idx].errors : [
-                  ...validationResults[idx].errors,
-                  pushResult.error ?? "Push failed",
-                ],
-                validation_warnings: validationResults[idx].warnings,
-                error: pushResult.error,
-              });
-            }
-          }
+          results = files.map((file, idx) => ({
+            path: guardResults[idx].path,
+            original_path: guardResults[idx].redirected ? file.path : undefined,
+            redirected: guardResults[idx].redirected,
+            success: false,
+            size_bytes: 0,
+            sha: "",
+            verified: false,
+            validation_errors: [
+              ...validationResults[idx].errors,
+              safeMutationResult.error,
+            ],
+            validation_warnings: validationResults[idx].warnings,
+            error: safeMutationResult.error,
+          }));
         }
 
         const succeeded = results.filter((r) => r.success);
@@ -280,7 +215,7 @@ export function registerPush(server: McpServer): void {
           files_pushed: succeeded.length,
           files_failed: files.length - succeeded.length,
           total_bytes: totalBytes,
-          commit_sha: atomicResult.success ? atomicResult.sha : undefined,
+          commit_sha: safeMutationResult.ok ? safeMutationResult.commitSha : undefined,
           diagnostics: diagnostics.list(),
         };
 
@@ -289,7 +224,6 @@ export function registerPush(server: McpServer): void {
           pushed: succeeded.length,
           failed: files.length - succeeded.length,
           totalBytes,
-          atomic: atomicResult.success,
           ms: Date.now() - start,
         });
 

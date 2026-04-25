@@ -388,18 +388,24 @@ describe("push diagnostics integration", () => {
     expect(validationDiag.level).toBe("warn");
   });
 
-  it("surfaces PUSH_RETRY_ON_CONFLICT on atomic fallback", async () => {
+  it("surfaces MUTATION_CONFLICT on atomic-commit retry (S64 Phase 1 Brief 1.5)", async () => {
     const { registerPush } = await import("../src/tools/push.js");
 
-    // Atomic fails, HEAD unchanged — falls back to sequential
-    mockCreateAtomicCommit.mockResolvedValue({
-      success: false,
-      sha: "",
-      files_committed: 0,
-      error: "Tree creation failed",
-    });
-    mockGetHeadSha.mockResolvedValue("HEAD_BEFORE");
-    mockPushFile.mockResolvedValue({ success: true, sha: "push-sha", size: 50 } as any);
+    // safeMutation owns the conflict-and-retry path: first atomic call fails,
+    // second succeeds. The primitive emits MUTATION_CONFLICT on the way through.
+    mockCreateAtomicCommit
+      .mockResolvedValueOnce({
+        success: false,
+        sha: "",
+        files_committed: 0,
+        error: "Tree creation failed",
+      })
+      .mockResolvedValueOnce({
+        success: true,
+        sha: "atomic-retry-sha",
+        files_committed: 1,
+      });
+    mockGetHeadSha.mockResolvedValue("HEAD_STABLE");
 
     const result = await callTool(registerPush, "prism_push", {
       project_slug: "test-project",
@@ -415,10 +421,9 @@ describe("push diagnostics integration", () => {
 
     const data = parseResult(result);
     expect(data.diagnostics).toBeDefined();
-    const retryDiag = data.diagnostics.find((d: Diagnostic) => d.code === "PUSH_RETRY_ON_CONFLICT");
-    expect(retryDiag).toBeDefined();
-    expect(retryDiag.level).toBe("warn");
-    expect(retryDiag.message).toContain("falling back");
+    const conflictDiag = data.diagnostics.find((d: Diagnostic) => d.code === "MUTATION_CONFLICT");
+    expect(conflictDiag).toBeDefined();
+    expect(conflictDiag.level).toBe("warn");
   });
 });
 

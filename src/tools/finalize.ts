@@ -10,12 +10,9 @@ import {
   fetchFile,
   fetchFiles,
   pushFile,
-  pushFiles,
   listDirectory,
   listCommits,
   getCommit,
-  createAtomicCommit,
-  getHeadSha,
 } from "../github/client.js";
 import { safeMutation } from "../utils/safe-mutation.js";
 import {
@@ -627,7 +624,10 @@ async function commitPhase(
     files.map(file => guardPushPath(projectSlug, file.path))
   );
 
-  // 5. Push all files — atomic commit primary, parallel pushFiles fallback
+  // 5. Push all files via safeMutation (S64 Phase 1 Brief 1.5).
+  //    safeMutation handles: HEAD snapshot, atomic Git Trees commit, 409
+  //    retry with refreshed content, null-safe HEAD comparison.
+  //    Atomic-only by design (S62 audit Verdict C).
   const guardedFiles = files.map((file, idx) => ({
     path: guardResults[idx].path,
     content: file.content,
@@ -638,11 +638,13 @@ async function commitPhase(
     ? `prism: finalize session ${sessionNumber} [${today}]`
     : `prism: session ${sessionNumber} artifacts`;
 
-  // 5a. Capture HEAD SHA before atomic attempt for H-6 safety check
-  const headShaBefore = await getHeadSha(projectSlug);
-
-  // 5b. Try atomic commit first (single Git Trees API commit — no race conditions)
-  const atomicResult = await createAtomicCommit(projectSlug, guardedFiles, commitMessage);
+  const safeMutationResult = await safeMutation({
+    repo: projectSlug,
+    commitMessage,
+    readPaths: [],
+    diagnostics,
+    computeMutation: () => ({ writes: guardedFiles }),
+  });
 
   let results: Array<{
     path: string;
@@ -652,8 +654,7 @@ async function commitPhase(
     validation_errors: string[];
   }>;
 
-  if (atomicResult.success) {
-    // Atomic commit succeeded — build results from atomic outcome
+  if (safeMutationResult.ok) {
     results = guardedFiles.map(f => ({
       path: f.path,
       success: true,
@@ -662,67 +663,14 @@ async function commitPhase(
       validation_errors: [],
     }));
   } else {
-    // 5c. Atomic commit failed — check if HEAD moved (partial write).
-    // Null-safe: a missing HEAD SHA on either snapshot means we can't
-    // verify whether HEAD moved, so we treat it as "changed" and refuse
-    // the fallback (the safer side of unknown). S62 Phase 1 Brief 1
-    // Change 7 — direct null-safety fix; full migration to safeMutation
-    // is deferred to Brief 1.5.
-    let headChanged = true;
-    if (headShaBefore) {
-      const headShaAfter = await getHeadSha(projectSlug);
-      if (headShaAfter) {
-        headChanged = headShaAfter !== headShaBefore;
-      } else {
-        diagnostics.warn(
-          "HEAD_SHA_UNKNOWN",
-          "getHeadSha returned null after atomic failure — treating as HEAD changed (refuse fallback)",
-          { phase: "post-atomic-check" },
-        );
-      }
-    } else {
-      diagnostics.warn(
-        "HEAD_SHA_UNKNOWN",
-        "getHeadSha returned null before atomic commit — treating as HEAD changed (refuse fallback)",
-        { phase: "pre-atomic-snapshot" },
-      );
-    }
-
-    if (headChanged) {
-      // HEAD moved — partial atomic write occurred, do NOT fall back
-      logger.error("Atomic commit failed but HEAD changed — partial state detected", {
-        repo: projectSlug,
-        atomicError: atomicResult.error,
-      });
-      warnings.push(`Atomic commit failed with partial state (HEAD changed). Manual verification required.`);
-      results = guardedFiles.map(f => ({
-        path: f.path,
-        success: false,
-        size_bytes: 0,
-        verified: false,
-        validation_errors: ["Partial atomic commit — state may be inconsistent"],
-      }));
-    } else {
-      // HEAD unchanged — safe to fall back to sequential pushFile calls
-      logger.warn("Atomic commit failed, falling back to sequential pushFile", {
-        repo: projectSlug,
-        atomicError: atomicResult.error,
-      });
-      warnings.push(`Atomic commit failed (${atomicResult.error}). Fell back to sequential file pushes.`);
-
-      // Sequential pushFile (not parallel pushFiles) to avoid 409 conflicts
-      results = [];
-      for (const f of guardedFiles) {
-        const pr = await pushFile(projectSlug, f.path, f.content, commitMessage);
-        results.push({
-          path: f.path,
-          success: pr.success,
-          size_bytes: pr.size,
-          verified: pr.success,
-          validation_errors: pr.success ? [] : [pr.error ?? "Push failed"],
-        });
-      }
-    }
+    warnings.push(`Atomic commit failed: ${safeMutationResult.error}`);
+    results = guardedFiles.map(f => ({
+      path: f.path,
+      success: false,
+      size_bytes: 0,
+      verified: false,
+      validation_errors: ["Atomic commit failed", safeMutationResult.error],
+    }));
   }
 
   const succeeded = results.filter((r) => r.success);
