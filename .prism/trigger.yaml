@@ -1,4 +1,4 @@
-enabled: true
+enabled: false
 brief_dir: docs/briefs/
 brief_pattern: "brief-*.md"
 branch_strategy: main-only
