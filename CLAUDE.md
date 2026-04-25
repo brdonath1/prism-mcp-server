@@ -44,7 +44,7 @@ The MCP server is the v2 evolution — separating Claude into a pure reasoning a
 
 **Note:** The MemoryCache singleton and Anthropic client singleton are intentional performance optimizations — safe in stateless mode since they are read-only/config-only (A.6).
 
-**Claude Code orchestration (brief-104):** `cc_dispatch` clones a target repo into /tmp, runs `@anthropic-ai/claude-agent-sdk` query() against it, and (in execute mode) commits results to a feature branch and opens a PR. Dispatch state is persisted to `brdonath1/prism-dispatch-state/.dispatch/{id}.json` so `cc_status` can read it across stateless requests. The separate state repo avoids Railway auto-deploy loops that would kill in-flight dispatches when state writes commit to this repo. Tools only register when `ANTHROPIC_API_KEY` is set.
+**Claude Code orchestration (brief-104):** `cc_dispatch` clones a target repo into /tmp, runs `@anthropic-ai/claude-agent-sdk` query() against it, and (in execute mode) commits results to a feature branch and opens a PR. Dispatch state is persisted to `brdonath1/prism-dispatch-state/.dispatch/{id}.json` so `cc_status` can read it across stateless requests. The separate state repo avoids Railway auto-deploy loops that would kill in-flight dispatches when state writes commit to this repo. Tools only register when `CLAUDE_CODE_OAUTH_TOKEN` is set.
 
 ## Technology Stack
 
@@ -73,7 +73,8 @@ The MCP server is the v2 evolution — separating Claude into a pure reasoning a
 |----------|----------|---------|
 | `GITHUB_PAT` | ✅ | GitHub API auth for all read/write operations |
 | `MCP_AUTH_TOKEN` | ✅ | Bearer token for MCP client auth |
-| `ANTHROPIC_API_KEY` | optional | Enables intelligence-brief synthesis AND `cc_dispatch`/`cc_status` |
+| `ANTHROPIC_API_KEY` | optional | Enables intelligence-brief synthesis (cc_dispatch uses CLAUDE_CODE_OAUTH_TOKEN — see below) |
+| `CLAUDE_CODE_OAUTH_TOKEN` | optional | Enables `cc_dispatch`/`cc_status` (Claude Max subscription OAuth from `claude setup-token`) |
 | `RAILWAY_API_TOKEN` | optional | Enables `railway_*` tools (brief-103) |
 | `SYNTHESIS_MODEL` | optional | Override Opus model for intelligence briefs |
 | `CC_DISPATCH_MODEL` | optional | Override model for Claude Code dispatches (default: `opus`) |
