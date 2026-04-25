@@ -101,6 +101,10 @@ export function registerFetch(server: McpServer): void {
             const file = outcome.value;
 
             if (!file.exists) {
+              // Genuine 404 — the inner catch above absorbed a "Not found"
+              // and returned exists:false. Surface fetch_error: null so the
+              // diagnostic loop classifies this as FILE_NOT_FOUND, not
+              // FILE_FETCH_ERROR (S63 Phase 1 Brief 2).
               return {
                 path: file.path,
                 exists: false,
@@ -108,6 +112,7 @@ export function registerFetch(server: McpServer): void {
                 content: null,
                 summary: null,
                 is_summarized: false,
+                fetch_error: null as string | null,
               };
             }
 
@@ -124,6 +129,7 @@ export function registerFetch(server: McpServer): void {
                 content: null,
                 summary,
                 is_summarized: true,
+                fetch_error: null as string | null,
               };
             }
 
@@ -135,10 +141,17 @@ export function registerFetch(server: McpServer): void {
               content: file.content,
               summary: null,
               is_summarized: false,
+              fetch_error: null as string | null,
             };
           }
 
-          // Failed to fetch
+          // Operational failure (5xx, timeout, rate limit, network). The
+          // inner try/catch only absorbs 404; everything else re-throws and
+          // becomes a rejected Promise.allSettled outcome here. Capture the
+          // error message so the operator can distinguish "GitHub is down"
+          // from "file is missing" (S63 Phase 1 Brief 2).
+          const reason = outcome.reason;
+          const errorMessage = reason instanceof Error ? reason.message : String(reason);
           return {
             path: files[idx],
             exists: false,
@@ -146,11 +159,20 @@ export function registerFetch(server: McpServer): void {
             content: null,
             summary: null,
             is_summarized: false,
+            fetch_error: errorMessage as string | null,
           };
         });
 
         for (const fr of fileResults) {
-          if (!fr.exists) {
+          if (fr.fetch_error !== null) {
+            // Operational failure — distinct from a genuine 404. Severity is
+            // warn (not error) because partial results may still be useful
+            // and the request itself completed.
+            diagnostics.warn("FILE_FETCH_ERROR", `Fetch failed: ${fr.path}`, {
+              path: fr.path,
+              error: fr.fetch_error,
+            });
+          } else if (!fr.exists) {
             diagnostics.warn("FILE_NOT_FOUND", `File not found: ${fr.path}`, { path: fr.path });
           }
         }
