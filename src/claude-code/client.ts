@@ -16,7 +16,11 @@
  * - Model defaults to `CC_DISPATCH_MODEL` (env-overridable).
  * - The SDK spawns the `claude` CLI as a subprocess, so `pathToClaudeCodeExecutable`
  *   must resolve to the binary installed via `@anthropic-ai/claude-code`. The
- *   subprocess inherits `ANTHROPIC_API_KEY` for auth.
+ *   subprocess receives CLAUDE_CODE_OAUTH_TOKEN (Max subscription OAuth)
+ *   for auth. ANTHROPIC_API_KEY is explicitly scrubbed from the subprocess
+ *   env even though the parent process has it set for synthesis — without
+ *   scrubbing, CC's auth precedence ladder would prefer the API key (#3)
+ *   over the OAuth token (#5) and silently re-route to per-token API billing.
  * - Container MUST run as non-root user (INS-73, D-118). Claude Code CLI
  *   v2.1+ rejects bypassPermissions when running as root.
  */
@@ -25,7 +29,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import { execSync } from "child_process";
 import { existsSync } from "fs";
 import { join } from "path";
-import { ANTHROPIC_API_KEY, CC_DISPATCH_EFFORT, CC_DISPATCH_MODEL } from "../config.js";
+import { CC_DISPATCH_EFFORT, CC_DISPATCH_MODEL, CLAUDE_CODE_OAUTH_TOKEN } from "../config.js";
 import { logger } from "../utils/logger.js";
 
 /** Options accepted by dispatchTask. Mirrors the subset of Agent SDK
@@ -123,6 +127,55 @@ function findClaudeExecutable(): {
 }
 
 /**
+ * Build the env passed to the spawned Claude Code subprocess.
+ *
+ * Scrubs ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN so the child does not
+ * inherit them from the parent process. Sets CLAUDE_CODE_OAUTH_TOKEN as the
+ * sanctioned auth source for the official Claude Code CLI.
+ *
+ * Exported solely so the env-scrubbing behavior can be unit-tested without
+ * spinning up the Agent SDK.
+ */
+export function buildDispatchEnv(
+  parentEnv: NodeJS.ProcessEnv,
+  oauthToken: string,
+  effort: string,
+): Record<string, string> {
+  const childEnv: Record<string, string> = {};
+  for (const [key, value] of Object.entries(parentEnv)) {
+    if (key === "ANTHROPIC_API_KEY") continue;
+    if (key === "ANTHROPIC_AUTH_TOKEN") continue;
+    if (value !== undefined) childEnv[key] = value;
+  }
+  childEnv.CLAUDE_CODE_OAUTH_TOKEN = oauthToken;
+  childEnv.CLAUDE_CODE_EFFORT = effort;
+  return childEnv;
+}
+
+const OAUTH_REJECTION_SIGNATURES = [
+  "OAuth authentication is currently not supported",
+  "Invalid bearer token",
+  "invalid bearer token",
+  "OAuth token expired",
+  "Please run /login",
+];
+
+/** Returns a specific OAuth-failure error string if `raw` matches any known
+ *  rejection signature; otherwise returns null. */
+export function detectOAuthRejection(raw: string | undefined): string | null {
+  if (!raw) return null;
+  const hit = OAUTH_REJECTION_SIGNATURES.find((sig) => raw.includes(sig));
+  if (!hit) return null;
+  return (
+    "Claude Code OAuth token rejected by Anthropic — " +
+    "the CLAUDE_CODE_OAUTH_TOKEN is likely expired, revoked, or invalid. " +
+    "Regenerate via `claude setup-token` on a Mac signed into the intended " +
+    "Max subscription, then update the Railway env var. Underlying signature: " +
+    `"${hit}". Original error: ${raw}`
+  );
+}
+
+/**
  * Dispatch a task to Claude Code and wait for the result.
  *
  * The function resolves when the SDK emits a terminal `result` message, when
@@ -133,7 +186,7 @@ function findClaudeExecutable(): {
 export async function dispatchTask(
   options: DispatchOptions,
 ): Promise<DispatchResult> {
-  if (!ANTHROPIC_API_KEY) {
+  if (!CLAUDE_CODE_OAUTH_TOKEN) {
     return {
       success: false,
       result: "",
@@ -142,7 +195,10 @@ export async function dispatchTask(
       cost_usd: 0,
       duration_ms: 0,
       error:
-        "ANTHROPIC_API_KEY is not set — cc_dispatch requires a key to spawn Claude Code.",
+        "CLAUDE_CODE_OAUTH_TOKEN is not set — cc_dispatch requires a Claude " +
+        "Max subscription OAuth token. Generate one with `claude setup-token` " +
+        "on a Mac signed into the intended Max account, then set " +
+        "CLAUDE_CODE_OAUTH_TOKEN as a Railway env var on this service.",
     };
   }
 
@@ -208,12 +264,7 @@ export async function dispatchTask(
         // If ignored, Opus 4.6 defaults to "high" effort which is still
         // excellent. "max" is an experimental upgrade for maximum capability.
         effort: CC_DISPATCH_EFFORT,
-        env: {
-          ...process.env,
-          ANTHROPIC_API_KEY,
-          // Also set as env var in case the Claude CLI reads it directly
-          CLAUDE_CODE_EFFORT: CC_DISPATCH_EFFORT,
-        },
+        env: buildDispatchEnv(process.env, CLAUDE_CODE_OAUTH_TOKEN, CC_DISPATCH_EFFORT),
       } as any,
     });
 
@@ -248,9 +299,11 @@ export async function dispatchTask(
             resultText = message.result ?? "";
           } else {
             success = false;
-            errorMsg = `Agent returned ${message.subtype}: ${
-              (message as any).error ?? "unknown"
-            }`;
+            const rawError = (message as any).error ?? "unknown";
+            const oauthErr =
+              detectOAuthRejection(rawError) ??
+              detectOAuthRejection(message.subtype);
+            errorMsg = oauthErr ?? `Agent returned ${message.subtype}: ${rawError}`;
           }
           break;
         }
@@ -289,6 +342,10 @@ export async function dispatchTask(
       executableError: executable.error ?? "none",
       model,
     });
+    const oauthErr = detectOAuthRejection(message);
+    const errorString =
+      oauthErr ??
+      `${message} | executable: ${executable.path} (${executable.version ?? "version unknown"})${executable.error ? " | pre-flight: " + executable.error : ""}`;
     return {
       success: false,
       result: "",
@@ -296,7 +353,7 @@ export async function dispatchTask(
       usage: { input_tokens: 0, output_tokens: 0 },
       cost_usd: 0,
       duration_ms: Date.now() - start,
-      error: `${message} | executable: ${executable.path} (${executable.version ?? "version unknown"})${executable.error ? " | pre-flight: " + executable.error : ""}`,
+      error: errorString,
       timed_out: timedOut,
     };
   }

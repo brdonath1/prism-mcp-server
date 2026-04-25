@@ -6,6 +6,8 @@
 process.env.GITHUB_PAT = process.env.GITHUB_PAT || "test-dummy-pat";
 process.env.ANTHROPIC_API_KEY =
   process.env.ANTHROPIC_API_KEY || "test-dummy-anthropic";
+process.env.CLAUDE_CODE_OAUTH_TOKEN =
+  process.env.CLAUDE_CODE_OAUTH_TOKEN || "sk-ant-oat01-test-dummy";
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
