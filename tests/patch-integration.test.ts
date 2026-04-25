@@ -221,6 +221,92 @@ describe("prism_patch concurrent-write recovery (S62 Phase 1 Brief 1)", () => {
   });
 });
 
+describe("prism_patch resolveDocPath classification (S63 Phase 1 Brief 3)", () => {
+  it("falls back silently to original path when resolveDocPath rejects with 'Not found'", async () => {
+    // resolveDocPath rethrows the inner fetchFile 404, which has the form
+    // "Not found: fetchFile <repo>/<path>". This is the legitimate fallback
+    // case (arbitrary repo file, brand-new doc) — no diagnostic should fire.
+    mockResolveDocPath.mockRejectedValueOnce(
+      new Error("Not found: fetchFile test-project/notes/random.md"),
+    );
+    mockFetchFile.mockResolvedValue({
+      content: TASK_QUEUE,
+      sha: "tq-sha",
+      size: TASK_QUEUE.length,
+    });
+    mockGetHeadSha.mockResolvedValue("HEAD_STABLE");
+    mockCreateAtomicCommit.mockResolvedValue({
+      success: true,
+      sha: "atomic-3",
+      files_committed: 1,
+    });
+
+    const result = await callPatchTool({
+      project_slug: "test-project",
+      file: "notes/random.md",
+      patches: [
+        { operation: "append", section: "## In Progress", content: "- item" },
+      ],
+    });
+
+    const data = parseResult(result);
+    expect(data.success).toBe(true);
+    // Original path was used (no redirect, no PATCH_REDIRECTED).
+    expect(data.file).toBe("notes/random.md");
+    expect(data.redirected).toBe(false);
+    const codes = (data.diagnostics as Array<{ code: string }>).map(
+      (d) => d.code,
+    );
+    expect(codes).not.toContain("PATCH_RESOLVE_FAILED");
+    expect(codes).not.toContain("PATCH_REDIRECTED");
+  });
+
+  it("emits PATCH_RESOLVE_FAILED on operational error and falls back to original path", async () => {
+    // 5xx-class operational error from resolveDocPath. The bare-catch bug
+    // would have swallowed this silently; the fix surfaces it as a
+    // PATCH_RESOLVE_FAILED diagnostic while preserving operational
+    // continuity (Option A).
+    mockResolveDocPath.mockRejectedValueOnce(
+      new Error("GitHub API 503: Service Unavailable (fetchFile test-project/.prism/task-queue.md)"),
+    );
+    mockFetchFile.mockResolvedValue({
+      content: TASK_QUEUE,
+      sha: "tq-sha",
+      size: TASK_QUEUE.length,
+    });
+    mockGetHeadSha.mockResolvedValue("HEAD_STABLE");
+    mockCreateAtomicCommit.mockResolvedValue({
+      success: true,
+      sha: "atomic-4",
+      files_committed: 1,
+    });
+
+    const result = await callPatchTool({
+      project_slug: "test-project",
+      file: "task-queue.md",
+      patches: [
+        { operation: "append", section: "## In Progress", content: "- item" },
+      ],
+    });
+
+    const data = parseResult(result);
+    // Option A: tool still succeeds against the original path.
+    expect(data.success).toBe(true);
+    expect(data.file).toBe("task-queue.md");
+    expect(data.redirected).toBe(false);
+
+    const resolveDiag = (data.diagnostics as Array<{
+      code: string;
+      message: string;
+      context?: { original?: string; error?: string };
+    }>).find((d) => d.code === "PATCH_RESOLVE_FAILED");
+    expect(resolveDiag).toBeDefined();
+    expect(resolveDiag!.message).toContain("503");
+    expect(resolveDiag!.context?.original).toBe("task-queue.md");
+    expect(resolveDiag!.context?.error).toContain("503");
+  });
+});
+
 describe("prism_patch partial-failure surfaces PATCH_PARTIAL_FAILURE", () => {
   it("rejects the write when any patch fails and emits PATCH_PARTIAL_FAILURE", async () => {
     mockFetchFile.mockResolvedValue({

@@ -8,7 +8,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { logger } from "../utils/logger.js";
 import { applyPatch, validateIntegrity, type IntegrityIssue } from "../utils/markdown-sections.js";
 import { resolveDocPath } from "../utils/doc-resolver.js";
-import { DOC_ROOT } from "../config.js";
+import { DOC_ROOT, PATCH_WALL_CLOCK_DEADLINE_MS } from "../config.js";
 import { DiagnosticsCollector } from "../utils/diagnostics.js";
 import { safeMutation } from "../utils/safe-mutation.js";
 
@@ -72,16 +72,34 @@ export function registerPatch(server: McpServer): void {
 
       try {
         // 1. Resolve file path to prevent root-level duplication (D-67 addendum).
-        //    The bare-catch silent fallback below is intentionally preserved in
-        //    this brief — Brief 3 will differentiate "not found" from operational
-        //    errors in the resolveDocPath path. See S62 audit Change 6 NOTE.
+        //    "Not found" at both .prism/ and root is the legitimate fallback
+        //    case (arbitrary repo files, brand-new docs) — fall back silently.
+        //    Operational errors (5xx, rate limit, timeout, network, auth) are
+        //    distinct: the resolver couldn't tell us which path is correct, so
+        //    surface PATCH_RESOLVE_FAILED. We still fall back to the requested
+        //    path (Option A) — the patch may succeed against it, and even if
+        //    fetchFile inside safeMutation 404s, the operator now has a
+        //    diagnostic explaining why path resolution was inconclusive
+        //    (S63 Phase 1 Brief 3).
         const baseName = file.startsWith(`${DOC_ROOT}/`) ? file.slice(DOC_ROOT.length + 1) : file;
         let resolvedPath: string;
         try {
           const resolved = await resolveDocPath(project_slug, baseName);
           resolvedPath = resolved.path;
-        } catch {
-          // Not a living doc or doesn't exist at either location — use original path
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          // resolveDocPath rethrows the inner fetchFile error on "neither path
+          // exists"; that error has the form "Not found: fetchFile <repo>/<path>"
+          // (handleApiError, src/github/client.ts). Mirror fetch.ts's
+          // substring-match pattern. Anything else is operational.
+          const isNotFound = message.includes("Not found");
+          if (!isNotFound) {
+            diagnostics.warn(
+              "PATCH_RESOLVE_FAILED",
+              `Path resolution failed (operational): ${message}`,
+              { original: file, error: message },
+            );
+          }
           resolvedPath = file;
         }
 
@@ -100,6 +118,7 @@ export function registerPatch(server: McpServer): void {
           commitMessage: `prism: patch ${resolvedPath} (${patches.length} ops)`,
           readPaths: [resolvedPath],
           diagnostics,
+          deadlineMs: PATCH_WALL_CLOCK_DEADLINE_MS,
           computeMutation: (files) => {
             const fileResult = files.get(resolvedPath);
             if (!fileResult) {
