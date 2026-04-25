@@ -146,12 +146,13 @@ describe("S40 C1/C3 — finalize.ts HEAD-sha checks route through getHeadSha (wh
     expect(rawFetchMatches.length).toBe(0);
   });
 
-  it("finalize.ts imports and uses getHeadSha from the github client", () => {
+  it("finalize.ts routes HEAD-sha checks through safeMutation (S64 Phase 1 Brief 1.5)", () => {
     const source = readFileSync("src/tools/finalize.ts", "utf-8");
-    expect(source).toContain("getHeadSha");
-    // At least one call site for before/after HEAD capture
-    const callMatches = source.match(/getHeadSha\(projectSlug\)/g) ?? [];
-    expect(callMatches.length).toBeGreaterThanOrEqual(1);
+    // safeMutation owns the HEAD-snapshot machinery on behalf of finalize.ts.
+    expect(source).toContain("safeMutation");
+    // safeMutation itself uses getHeadSha, which routes through fetchWithRetry.
+    const safeMutationSource = readFileSync("src/utils/safe-mutation.ts", "utf-8");
+    expect(safeMutationSource).toContain("getHeadSha");
   });
 
   it("getHeadSha implementation routes through fetchWithRetry (timeout-bearing)", () => {

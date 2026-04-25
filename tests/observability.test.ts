@@ -48,23 +48,21 @@ describe("Partial failure flagging (H-3)", () => {
   });
 });
 
-describe("Safer atomic commit fallback (H-6)", () => {
-  it("checks HEAD SHA before and after atomic attempt", () => {
+describe("Safer atomic commit primitive (H-6 → S64 Phase 1 Brief 1.5)", () => {
+  it("commit step delegates to safeMutation, which owns the HEAD comparison", () => {
     const source = readFileSync("src/tools/finalize.ts", "utf-8");
-    expect(source).toContain("headShaBefore");
-    expect(source).toContain("headChanged");
+    expect(source).toContain("safeMutation");
+    // The HEAD-comparison logic is no longer inline in finalize.ts —
+    // safeMutation encapsulates it.
+    expect(source).not.toContain("headShaBefore");
+    expect(source).not.toContain("headChanged");
   });
 
-  it("does NOT fall back if HEAD changed (partial state)", () => {
+  it("does NOT include a sequential pushFile fallback for the commit step", () => {
     const source = readFileSync("src/tools/finalize.ts", "utf-8");
-    expect(source).toContain("partial state detected");
-    expect(source).toContain("Manual verification required");
-  });
-
-  it("uses sequential pushFile instead of parallel pushFiles in fallback", () => {
-    const source = readFileSync("src/tools/finalize.ts", "utf-8");
-    // The fallback should use sequential pushFile, not parallel pushFiles
-    expect(source).toContain("sequential pushFile");
+    // Atomic-only by design (S62 audit Verdict C).
+    expect(source).not.toContain("falling back to sequential pushFile");
+    expect(source).not.toContain("Fell back to sequential file pushes");
   });
 });
 
