@@ -9,6 +9,7 @@ import { fetchFile } from "../github/client.js";
 import { resolveDocPath } from "../utils/doc-resolver.js";
 import { generateIntelligenceBrief } from "../ai/synthesize.js";
 import { logger } from "../utils/logger.js";
+import { DiagnosticsCollector } from "../utils/diagnostics.js";
 
 export function registerSynthesize(server: McpServer) {
   server.tool(
@@ -21,6 +22,7 @@ export function registerSynthesize(server: McpServer) {
     },
     async ({ project_slug, mode, session_number }) => {
       const start = Date.now();
+      const diagnostics = new DiagnosticsCollector();
       logger.info("prism_synthesize", { project_slug, mode });
 
       try {
@@ -36,6 +38,7 @@ export function registerSynthesize(server: McpServer) {
                   synthesis_enabled: SYNTHESIS_ENABLED,
                   // Extract the "Last synthesized" line
                   last_synthesized: resolved.content.match(/Last synthesized: (S\d+ \([^)]+\))/)?.[1] ?? "unknown",
+                  diagnostics: diagnostics.list(),
                 }),
               }],
             };
@@ -49,6 +52,7 @@ export function registerSynthesize(server: McpServer) {
                   message: SYNTHESIS_ENABLED
                     ? "No intelligence brief exists yet. Run mode:'generate' after a finalization."
                     : "Synthesis disabled — ANTHROPIC_API_KEY not configured on server.",
+                  diagnostics: diagnostics.list(),
                 }),
               }],
             };
@@ -72,6 +76,7 @@ export function registerSynthesize(server: McpServer) {
               type: "text" as const,
               text: JSON.stringify({
                 error: "Synthesis disabled — ANTHROPIC_API_KEY not configured on server.",
+                diagnostics: diagnostics.list(),
               }),
             }],
             isError: true,
@@ -79,6 +84,14 @@ export function registerSynthesize(server: McpServer) {
         }
 
         const result = await generateIntelligenceBrief(project_slug, session_number);
+
+        if (!result.success && result.error) {
+          if (result.error.toLowerCase().includes("timeout") || result.error.toLowerCase().includes("timed out") || result.error.toLowerCase().includes("etimedout")) {
+            diagnostics.error("SYNTHESIS_TIMEOUT", `Synthesis timed out: ${result.error}`, { error: result.error });
+          } else {
+            diagnostics.error("SYNTHESIS_RETRY", `Synthesis failed: ${result.error}`, { error: result.error });
+          }
+        }
 
         logger.info("prism_synthesize complete", {
           project_slug,
@@ -88,7 +101,7 @@ export function registerSynthesize(server: McpServer) {
         });
 
         return {
-          content: [{ type: "text" as const, text: JSON.stringify(result) }],
+          content: [{ type: "text" as const, text: JSON.stringify({ ...result, diagnostics: diagnostics.list() }) }],
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

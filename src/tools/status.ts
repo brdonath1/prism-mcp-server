@@ -20,6 +20,7 @@ import { MemoryCache } from "../utils/cache.js";
 import { parseHandoffVersion, parseSessionCount } from "../validation/handoff.js";
 import { extractSection } from "../utils/summarizer.js";
 import { getSynthesisHealth } from "../ai/synthesis-tracker.js";
+import { DiagnosticsCollector } from "../utils/diagnostics.js";
 
 /**
  * Repo list cache (A-9 / S47 P3.1). Multi-project status calls `listRepos`
@@ -249,12 +250,17 @@ export function registerStatus(server: McpServer): void {
     inputSchema,
     async ({ project_slug, include_details }) => {
       const start = Date.now();
+      const diagnostics = new DiagnosticsCollector();
       logger.info("prism_status", { project_slug: project_slug ?? "all", include_details });
 
       try {
         if (project_slug) {
           // Single project status
           const health = await getProjectHealth(project_slug, include_details ?? false);
+
+          if (health.health === "needs-attention" || health.health === "critical") {
+            diagnostics.warn("HEALTH_NEEDS_ATTENTION", `Project health: ${health.health}`, { health: health.health, missingDocs: health.missing_documents, handoffSizeBytes: health.handoff_size_bytes });
+          }
 
           logger.info("prism_status complete (single)", {
             project: project_slug,
@@ -263,7 +269,7 @@ export function registerStatus(server: McpServer): void {
           });
 
           return {
-            content: [{ type: "text" as const, text: JSON.stringify(health) }],
+            content: [{ type: "text" as const, text: JSON.stringify({ ...health, diagnostics: diagnostics.list() }) }],
           };
         }
 
@@ -316,6 +322,11 @@ export function registerStatus(server: McpServer): void {
           projects,
         };
 
+        const unhealthyCount = summary.needs_attention + summary.critical;
+        if (unhealthyCount > 0) {
+          diagnostics.warn("STATUS_PARTIAL", `${unhealthyCount} project(s) need attention or are critical`, { needsAttention: summary.needs_attention, critical: summary.critical });
+        }
+
         logger.info("prism_status complete (multi)", {
           totalProjects: projects.length,
           healthy: summary.healthy,
@@ -325,7 +336,7 @@ export function registerStatus(server: McpServer): void {
         });
 
         return {
-          content: [{ type: "text" as const, text: JSON.stringify(summary) }],
+          content: [{ type: "text" as const, text: JSON.stringify({ ...summary, diagnostics: diagnostics.list() }) }],
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

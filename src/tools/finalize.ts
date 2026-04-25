@@ -92,6 +92,7 @@ import { validateFile } from "../validation/index.js";
 import { parseMarkdownTable } from "../utils/summarizer.js";
 import { generateIntelligenceBrief } from "../ai/synthesize.js";
 import { escapeHtml, stripMarkdown, formatResumptionHtml, toolIcon, generateCstTimestamp } from "../utils/banner.js";
+import { DiagnosticsCollector } from "../utils/diagnostics.js";
 
 /**
  * Robust JSON extraction from AI responses (B.8).
@@ -925,6 +926,7 @@ export function registerFinalize(server: McpServer): void {
     },
     async ({ project_slug, action, session_number, handoff_version, files, skip_synthesis, banner_data }) => {
       const start = Date.now();
+      const diagnostics = new DiagnosticsCollector();
       logger.info("prism_finalize", { project_slug, action, session_number });
 
       try {
@@ -951,7 +953,7 @@ export function registerFinalize(server: McpServer): void {
             ms: Date.now() - start,
           });
           return {
-            content: [{ type: "text" as const, text: JSON.stringify({ ...result, session_end_rules: sessionEndRules }) }],
+            content: [{ type: "text" as const, text: JSON.stringify({ ...result, session_end_rules: sessionEndRules, diagnostics: diagnostics.list() }) }],
           };
         }
 
@@ -976,6 +978,7 @@ export function registerFinalize(server: McpServer): void {
               deadlineMs: FINALIZE_DRAFT_DEADLINE_MS,
               elapsedMs: Date.now() - phaseStart,
             });
+            diagnostics.error("SYNTHESIS_TIMEOUT", `Draft deadline exceeded (${deadlineSec}s)`, { deadlineMs: FINALIZE_DRAFT_DEADLINE_MS });
             return {
               content: [
                 {
@@ -985,6 +988,7 @@ export function registerFinalize(server: McpServer): void {
                     action: "draft",
                     error: `prism_finalize draft deadline exceeded (${deadlineSec}s)`,
                     fallback: "Compose finalization files manually.",
+                    diagnostics: diagnostics.list(),
                   }),
                 },
               ],
@@ -1002,8 +1006,11 @@ export function registerFinalize(server: McpServer): void {
             success: result.success,
             ms: Date.now() - start,
           });
+          if (!result.success) {
+            diagnostics.warn("SYNTHESIS_SKIPPED", `Draft generation failed: ${(result as any).error ?? "unknown"}`, {});
+          }
           return {
-            content: [{ type: "text" as const, text: JSON.stringify(result) }],
+            content: [{ type: "text" as const, text: JSON.stringify({ ...result, diagnostics: diagnostics.list() }) }],
           };
         }
 
@@ -1054,6 +1061,7 @@ export function registerFinalize(server: McpServer): void {
             deadlineMs: FINALIZE_COMMIT_DEADLINE_MS,
             elapsedMs: Date.now() - phaseStart,
           });
+          diagnostics.error("SYNTHESIS_TIMEOUT", `Commit deadline exceeded (${deadlineSec}s)`, { deadlineMs: FINALIZE_COMMIT_DEADLINE_MS });
           return {
             content: [
               {
@@ -1064,6 +1072,7 @@ export function registerFinalize(server: McpServer): void {
                   error: `prism_finalize commit deadline exceeded (${deadlineSec}s)`,
                   partial_state_warning:
                     "Atomic commit may have partially succeeded — verify repo state manually",
+                  diagnostics: diagnostics.list(),
                 }),
               },
             ],
@@ -1160,6 +1169,15 @@ export function registerFinalize(server: McpServer): void {
           logger.warn("finalization banner render failed", { error: bannerMsg });
         }
 
+        // Surface diagnostics for partial commits and synthesis outcomes
+        if (!result.all_succeeded) {
+          const failedPaths = result.results.filter(r => !r.success).map(r => r.path);
+          diagnostics.error("PARTIAL_COMMIT", `${failedPaths.length} file(s) failed to push`, { failedPaths });
+        }
+        if (result.synthesis_outcome === "skipped" && !skip_synthesis) {
+          diagnostics.warn("SYNTHESIS_SKIPPED", "Post-finalization synthesis was skipped (commit not fully successful or synthesis disabled)");
+        }
+
         logger.info("prism_finalize commit complete", {
           project_slug,
           allSucceeded: result.all_succeeded,
@@ -1168,7 +1186,7 @@ export function registerFinalize(server: McpServer): void {
         });
 
         return {
-          content: [{ type: "text" as const, text: JSON.stringify({ ...result, finalization_banner_html }) }],
+          content: [{ type: "text" as const, text: JSON.stringify({ ...result, finalization_banner_html, diagnostics: diagnostics.list() }) }],
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

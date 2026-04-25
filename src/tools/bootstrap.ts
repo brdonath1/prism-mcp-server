@@ -31,6 +31,7 @@ import {
 } from "../utils/summarizer.js";
 import { parseHandoffVersion, parseSessionCount, parseTemplateVersion } from "../validation/handoff.js";
 import { generateCstTimestamp, parseResumptionForBanner, renderBannerHtml, renderBannerText, type BannerData, type BannerTextInput } from "../utils/banner.js";
+import { DiagnosticsCollector } from "../utils/diagnostics.js";
 
 /** Input schema for prism_bootstrap */
 const inputSchema = {
@@ -223,6 +224,7 @@ export function registerBootstrap(server: McpServer): void {
     inputSchema,
     async ({ project_slug, opening_message }) => {
       const start = Date.now();
+      const diagnostics = new DiagnosticsCollector();
 
       // KI-15: Resolve display names, Claude project names, and fuzzy matches to slugs
       let resolvedSlug = resolveProjectSlug(project_slug);
@@ -240,6 +242,10 @@ export function registerBootstrap(server: McpServer): void {
 
       if (resolvedSlug !== project_slug) {
         logger.info("slug resolved", { input: project_slug, resolved: resolvedSlug });
+        // Only surface if we used dynamic resolution (static map hits are expected)
+        if (!Object.keys(PROJECT_DISPLAY_NAMES).includes(resolvedSlug)) {
+          diagnostics.warn("SLUG_RESOLVED_DYNAMICALLY", `Project slug resolved dynamically: "${project_slug}" → "${resolvedSlug}"`, { input: project_slug, resolved: resolvedSlug });
+        }
       }
 
       logger.info("prism_bootstrap", { project_slug: resolvedSlug, hasOpeningMessage: !!opening_message });
@@ -303,6 +309,7 @@ export function registerBootstrap(server: McpServer): void {
           warnings.push(
             `Handoff is ${(handoff.size / 1024).toFixed(1)}KB \u2014 exceeds 15KB critical threshold. Scaling recommended.`
           );
+          diagnostics.warn("HANDOFF_SCALING_RECOMMENDED", `Handoff is ${(handoff.size / 1024).toFixed(1)}KB \u2014 exceeds 15KB critical threshold`, { sizeBytes: handoff.size, thresholdBytes: HANDOFF_CRITICAL_SIZE });
         }
 
         // Extract structured sections
@@ -374,8 +381,9 @@ export function registerBootstrap(server: McpServer): void {
                 });
                 bytesDelivered += resolved.content.length;
                 filesFetched++;
-              } catch {
+              } catch (prefetchErr) {
                 // Prefetch failure is non-critical
+                diagnostics.warn("PREFETCH_FAILED", `Failed to prefetch ${docName}`, { file: docName, error: prefetchErr instanceof Error ? prefetchErr.message : String(prefetchErr) });
               }
             })
           ).then(() => {});
@@ -436,6 +444,7 @@ export function registerBootstrap(server: McpServer): void {
             briefAgeResult = briefAge;
             if (briefAge > 2) {
               warnings.push(`Intelligence brief is ${briefAge} sessions old (last synthesized S${briefSession}). Consider running prism_synthesize to refresh.`);
+              diagnostics.warn("BRIEF_STALE", `Intelligence brief is ${briefAge} sessions old (last synthesized S${briefSession})`, { briefAge, briefSession });
             }
           }
         }
@@ -463,6 +472,7 @@ export function registerBootstrap(server: McpServer): void {
         const pushToolLabel = bootTestResult.success ? "push verified" : "push failed";
         if (!bootTestResult.success) {
           warnings.push(`Boot-test push failed: ${bootTestResult.error}`);
+          diagnostics.warn("BOOT_TEST_FAILED", `Boot-test push failed: ${bootTestResult.error}`, { error: bootTestResult.error });
         }
 
         const toolsList: Array<{ label: string; status: "ok" | "warn" | "critical" }> = [
@@ -567,6 +577,7 @@ export function registerBootstrap(server: McpServer): void {
           expected_tool_surface: getExpectedToolSurface(RAILWAY_ENABLED, CC_DISPATCH_ENABLED),  // D-83 (S44)
           post_boot_tool_searches: POST_BOOT_TOOL_SEARCHES,                                     // D-83 (S44)
           warnings,
+          diagnostics: diagnostics.list(),
         };
 
         // QW-1: Only include banner_data as fallback when banner_text is absent
@@ -605,8 +616,10 @@ export function registerBootstrap(server: McpServer): void {
         const responseBytes = new TextEncoder().encode(responseText).length;
         if (responseBytes > 100_000) {
           logger.error("bootstrap response exceeds 100KB", { project_slug: resolvedSlug, responseBytes });
+          diagnostics.error("BOOTSTRAP_OVERSIZE", `Response is ${(responseBytes / 1024).toFixed(1)}KB \u2014 exceeds 100KB`, { responseBytes });
         } else if (responseBytes > 80_000) {
           logger.warn("bootstrap response exceeds 80KB", { project_slug: resolvedSlug, responseBytes });
+          diagnostics.warn("BOOTSTRAP_OVERSIZE", `Response is ${(responseBytes / 1024).toFixed(1)}KB \u2014 exceeds 80KB warning threshold`, { responseBytes });
         }
 
         return {

@@ -14,6 +14,7 @@ import {
 import { logger } from "../utils/logger.js";
 import { resolveDocPath, resolveDocPushPath } from "../utils/doc-resolver.js";
 import { guardPushPath } from "../utils/doc-guard.js";
+import { DiagnosticsCollector } from "../utils/diagnostics.js";
 
 /**
  * Parse existing decision IDs from a decisions/_INDEX.md content string.
@@ -74,6 +75,7 @@ export function registerLogDecision(server: McpServer): void {
     },
     async ({ project_slug, id, title, domain, status, reasoning, assumptions, impact, session }) => {
       const start = Date.now();
+      const diagnostics = new DiagnosticsCollector();
       logger.info("prism_log_decision", { project_slug, id, domain });
 
       try {
@@ -108,6 +110,7 @@ export function registerLogDecision(server: McpServer): void {
             id,
             existingTitle,
           });
+          diagnostics.warn("DEDUP_TRIGGERED", `Decision ID ${id} already exists in _INDEX.md`, { id, existingTitle });
           return {
             content: [
               {
@@ -117,6 +120,7 @@ export function registerLogDecision(server: McpServer): void {
                   duplicate: true,
                   id,
                   existing_title: existingTitle,
+                  diagnostics: diagnostics.list(),
                 }),
               },
             ],
@@ -206,6 +210,7 @@ export function registerLogDecision(server: McpServer): void {
               "prism_log_decision atomic failed with HEAD changed — partial state",
               { project_slug, id, atomicError: atomicResult.error },
             );
+            diagnostics.error("INDEX_WRITE_FAILED", "Atomic commit failed with HEAD changed — partial state", { atomicError: atomicResult.error });
             partialStateError =
               "Concurrent write during log_decision atomic commit; please retry";
             indexSuccess = false;
@@ -215,6 +220,7 @@ export function registerLogDecision(server: McpServer): void {
               "prism_log_decision atomic failed; falling back to sequential pushFile",
               { project_slug, id, atomicError: atomicResult.error },
             );
+            diagnostics.warn("INDEX_WRITE_FAILED", "Atomic commit failed; falling back to sequential pushFile", { atomicError: atomicResult.error });
             const indexResult = await pushFile(
               project_slug,
               indexResolvedPath,
@@ -229,6 +235,12 @@ export function registerLogDecision(server: McpServer): void {
             );
             indexSuccess = indexResult.success;
             domainSuccess = domainResult.success;
+            if (!indexSuccess) {
+              diagnostics.error("INDEX_WRITE_FAILED", "Failed to push _INDEX.md via sequential fallback");
+            }
+            if (!domainSuccess) {
+              diagnostics.error("DOMAIN_WRITE_FAILED", "Failed to push domain file via sequential fallback", { domainFile: domainResolvedPath });
+            }
           }
         }
 
@@ -244,6 +256,7 @@ export function registerLogDecision(server: McpServer): void {
                   domain,
                   index_updated: false,
                   domain_file_updated: false,
+                  diagnostics: diagnostics.list(),
                 }),
               },
             ],
@@ -269,6 +282,7 @@ export function registerLogDecision(server: McpServer): void {
               index_updated: indexSuccess,
               domain_file_updated: domainSuccess,
               domain_file: domainResolvedPath,
+              diagnostics: diagnostics.list(),
             }),
           }],
         };

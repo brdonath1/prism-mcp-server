@@ -26,6 +26,7 @@ import {
 import { logger } from "../utils/logger.js";
 import { extractSection } from "../utils/summarizer.js";
 import { resolveDocPath, resolveDocPushPath } from "../utils/doc-resolver.js";
+import { DiagnosticsCollector } from "../utils/diagnostics.js";
 
 /** Maximum wall-clock time before returning a partial result (ms). */
 const SAFETY_TIMEOUT_MS = 50_000;
@@ -941,6 +942,7 @@ export function registerScaleHandoff(server: McpServer): void {
     },
     async ({ project_slug, action, plan }, extra) => {
       const startTime = Date.now();
+      const diagnostics = new DiagnosticsCollector();
       const progressToken = extra._meta?.progressToken;
 
       logger.info("prism_scale_handoff", {
@@ -1034,11 +1036,16 @@ export function registerScaleHandoff(server: McpServer): void {
             warnings.push(
               "Partial atomic commit — state may be inconsistent. HEAD moved mid-commit; inspect the repo before retrying.",
             );
+            diagnostics.error("MIGRATION_FAILED", "Partial atomic commit — state may be inconsistent");
           }
           if (timed_out) {
             warnings.push(
               "Operation exceeded 50s safety timeout. Some actions may not have executed. Consider running again with remaining actions.",
             );
+            diagnostics.warn("SCALE_PLAN_INCOMPLETE", "Operation exceeded safety timeout — some actions may not have executed");
+          }
+          if (pushResults.filter((r) => !r.success).length > 0) {
+            diagnostics.warn("MIGRATION_FAILED", `${pushResults.filter(r => !r.success).length} file(s) failed to push`);
           }
           if (afterSize > 8192) {
             warnings.push(
@@ -1061,6 +1068,7 @@ export function registerScaleHandoff(server: McpServer): void {
                 elapsed_ms: totalMs,
                 timed_out,
                 warnings,
+                diagnostics: diagnostics.list(),
               }, null, 2),
             }],
           };
@@ -1129,6 +1137,10 @@ export function registerScaleHandoff(server: McpServer): void {
             ms: totalMs,
           });
 
+          if (actions.length === 0) {
+            diagnostics.warn("SCALE_PLAN_INCOMPLETE", "No scalable content identified — handoff may already be optimally sized");
+          }
+
           return {
             content: [{
               type: "text" as const,
@@ -1144,6 +1156,7 @@ export function registerScaleHandoff(server: McpServer): void {
                 warnings: actions.length === 0
                   ? ["No scalable content identified. Handoff may already be optimally sized."]
                   : [],
+                diagnostics: diagnostics.list(),
               }, null, 2),
             }],
           };
@@ -1248,11 +1261,16 @@ export function registerScaleHandoff(server: McpServer): void {
           warnings.push(
             "Partial atomic commit — state may be inconsistent. HEAD moved mid-commit; inspect the repo before retrying.",
           );
+          diagnostics.error("MIGRATION_FAILED", "Partial atomic commit — state may be inconsistent");
         }
         if (timed_out) {
           warnings.push(
             "Operation exceeded 50s safety timeout. Some actions may not have executed. Re-run to complete remaining actions.",
           );
+          diagnostics.warn("SCALE_PLAN_INCOMPLETE", "Operation exceeded safety timeout — some actions may not have executed");
+        }
+        if (pushResults.filter((r) => !r.success).length > 0) {
+          diagnostics.warn("MIGRATION_FAILED", `${pushResults.filter(r => !r.success).length} file(s) failed to push`);
         }
         if (afterSize > 8192) {
           warnings.push(
@@ -1275,6 +1293,7 @@ export function registerScaleHandoff(server: McpServer): void {
               elapsed_ms: totalMs,
               timed_out,
               warnings,
+              diagnostics: diagnostics.list(),
             }, null, 2),
           }],
         };

@@ -12,6 +12,7 @@ import { fetchFile, fileExists } from "../github/client.js";
 import { DOC_ROOT, LIVING_DOCUMENT_NAMES } from "../config.js";
 import { resolveDocPath, resolveDocExists } from "../utils/doc-resolver.js";
 import { logger } from "../utils/logger.js";
+import { DiagnosticsCollector } from "../utils/diagnostics.js";
 
 /** Input schema for prism_search */
 const inputSchema = {
@@ -182,6 +183,7 @@ export function registerSearch(server: McpServer): void {
     inputSchema,
     async ({ project_slug, query, max_results }) => {
       const start = Date.now();
+      const diagnostics = new DiagnosticsCollector();
       const limit = max_results ?? 10;
       logger.info("prism_search", { project_slug, query, max_results: limit });
 
@@ -252,6 +254,10 @@ export function registerSearch(server: McpServer): void {
           .sort((a, b) => b.score - a.score)
           .slice(0, limit);
 
+        if (scored.length === 0 && queryTerms.length > 0) {
+          diagnostics.warn("NO_RESULTS_BUT_QUERY_NONEMPTY", `No results found for query "${query}" across ${files.length} files`, { query, filesSearched: files.length, sectionsSearched: allSections.length });
+        }
+
         // Step 5: Build response
         const totalBytes = files.reduce((sum, f) => sum + f.size, 0);
 
@@ -263,6 +269,7 @@ export function registerSearch(server: McpServer): void {
           sections_searched: allSections.length,
           bytes_searched: totalBytes,
           results: scored,
+          diagnostics: diagnostics.list(),
           ms: Date.now() - start,
         };
 
