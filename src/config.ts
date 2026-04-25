@@ -93,6 +93,18 @@ export const PUSH_WALL_CLOCK_DEADLINE_MS =
 export const FINALIZE_COMMIT_DEADLINE_MS =
   parseInt(process.env.FINALIZE_COMMIT_DEADLINE_MS ?? "90000", 10) || 90_000;
 
+/** Per-call wall-clock budget (ms) for prism_patch (S63 Phase 1 Brief 3).
+ *  Bounds the entire patch operation — fetch + N applyPatch + integrity
+ *  validate + atomic commit (and any 409 retry the safeMutation primitive
+ *  performs). Default 60s gives comfortable headroom over the per-request
+ *  GitHub timeout (15s) for sequences that include retries, while staying
+ *  below the MCP client's ~60s ceiling. Exceeding this deadline causes
+ *  safeMutation to return `{ ok: false, code: "DEADLINE_EXCEEDED" }` and
+ *  emit a DEADLINE_EXCEEDED diagnostic. Configurable via env var so tests
+ *  can inject a much smaller value without waiting 60s in CI. */
+export const PATCH_WALL_CLOCK_DEADLINE_MS =
+  parseInt(process.env.PATCH_WALL_CLOCK_DEADLINE_MS ?? "60000", 10) || 60_000;
+
 /** Per-attempt timeout for the Opus call inside prism_finalize draft phase.
  *  Accommodates large-project single-attempt latency (S41 — observed ~100s
  *  ceiling on PF-v2-scale inputs). Configurable via env for per-deployment
