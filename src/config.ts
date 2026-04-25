@@ -293,6 +293,23 @@ export const CC_DISPATCH_MAX_TURNS = parseInt(
 export const CC_DISPATCH_EFFORT = process.env.CC_DISPATCH_EFFORT ?? "max";
 
 /**
+ * Per-call wall-clock budget (ms) for SYNC mode `cc_dispatch`.
+ *
+ * This is the hard deadline passed to the Agent SDK's AbortController. It
+ * MUST stay below `MCP_SAFE_TIMEOUT` minus serialization overhead (~5s) so
+ * the MCP response can be written back to the client before the transport
+ * times out. Raising it past ~55s causes the MCP client to give up before
+ * the server returns (MCP architectural ceiling of ~60s).
+ *
+ * For tasks expected to exceed this budget, callers should pass
+ * `async_mode: true` — async dispatches have no deadline.
+ *
+ * Configurable via the `CC_DISPATCH_SYNC_TIMEOUT_MS` environment variable.
+ */
+export const CC_DISPATCH_SYNC_TIMEOUT_MS =
+  parseInt(process.env.CC_DISPATCH_SYNC_TIMEOUT_MS ?? `${MCP_SAFE_TIMEOUT - 5_000}`, 10) || (MCP_SAFE_TIMEOUT - 5_000);
+
+/**
  * Root directory for dispatch state files in the prism-mcp-server repo.
  * Dispatch records are persisted to GitHub so cc_status can read them
  * across stateless server requests.

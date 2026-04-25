@@ -34,10 +34,10 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   CC_DISPATCH_MAX_TURNS,
   CC_DISPATCH_MODEL,
+  CC_DISPATCH_SYNC_TIMEOUT_MS,
   GITHUB_API_BASE,
   GITHUB_OWNER,
   GITHUB_PAT,
-  MCP_SAFE_TIMEOUT,
   SERVER_VERSION,
 } from "../config.js";
 import { logger } from "../utils/logger.js";
@@ -243,9 +243,10 @@ export function registerCCDispatch(server: McpServer): void {
         maxTurns: resolvedMaxTurns,
         prTitle: pr_title,
         prBody: pr_body,
-        // Leave a small buffer under MCP_SAFE_TIMEOUT so we have time to
-        // serialize the response and write the final record.
-        timeoutMs: MCP_SAFE_TIMEOUT - 5_000,
+        // CC_DISPATCH_SYNC_TIMEOUT_MS leaves a buffer under MCP_SAFE_TIMEOUT
+        // so we have time to serialize the response and write the final record.
+        // Override via the CC_DISPATCH_SYNC_TIMEOUT_MS env var.
+        timeoutMs: CC_DISPATCH_SYNC_TIMEOUT_MS,
       });
 
       const response: DispatchResponse = {
@@ -385,10 +386,24 @@ async function runDispatch(
           });
           resultObj.pr_url = pr.html_url;
         } else {
-          // The agent ran successfully but produced no changes. Not an
-          // error — surface it in the result but skip the PR.
-          resultObj.result =
-            (resultObj.result ?? "") + "\n\n(No file changes were made.)";
+          // INS-174: The wrapper saw no diff, but CC may have created a PR
+          // autonomously via gh/git. Scan the agent's output for a matching
+          // PR URL before assuming no changes were made.
+          const agentPrUrl = detectAgentCreatedPr(
+            sdkResult.result ?? "",
+            GITHUB_OWNER,
+            repo,
+          );
+          if (agentPrUrl) {
+            resultObj.pr_url = agentPrUrl;
+            resultObj.result =
+              (resultObj.result ?? "") +
+              `\n\n(PR was created by Claude Code: ${agentPrUrl})`;
+          } else {
+            // Genuinely no changes — surface it in the result but skip the PR.
+            resultObj.result =
+              (resultObj.result ?? "") + "\n\n(No file changes were made.)";
+          }
         }
       } catch (pushErr) {
         const msg =
@@ -442,6 +457,56 @@ async function runDispatch(
   }
 
   return resultObj;
+}
+
+/**
+ * Detect a CC-created PR by scanning the agent's output text for GitHub PR
+ * URLs constrained to the dispatched repo. Returns the clean PR URL if found,
+ * or null when no matching URL is present.
+ *
+ * When multiple distinct PRs from the dispatched repo are detected, returns
+ * the one with the highest PR number (newest). Logs a warning so we can audit
+ * if this branch is hit in real traffic.
+ *
+ * Exported for unit testing.
+ */
+export function detectAgentCreatedPr(
+  resultText: string,
+  owner: string,
+  repo: string,
+): string | null {
+  if (!resultText) return null;
+
+  // Escape special regex characters in owner/repo to prevent injection.
+  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(
+    `https://github\\.com/${esc(owner)}/${esc(repo)}/pull/(\\d+)`,
+    "gi",
+  );
+
+  const seen = new Map<number, string>();
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(resultText)) !== null) {
+    const prNum = parseInt(match[1], 10);
+    // Reconstruct a clean URL (strips any trailing punctuation the regex
+    // may have been adjacent to — the \d+ capture naturally excludes it).
+    const cleanUrl = `https://github.com/${owner}/${repo}/pull/${prNum}`;
+    seen.set(prNum, cleanUrl);
+  }
+
+  if (seen.size === 0) return null;
+
+  if (seen.size > 1) {
+    logger.warn("detectAgentCreatedPr: multiple distinct PRs detected", {
+      owner,
+      repo,
+      prNumbers: [...seen.keys()],
+    });
+  }
+
+  // Return the highest PR number (newest).
+  const highest = Math.max(...seen.keys());
+  return seen.get(highest) ?? null;
 }
 
 /** Trim a prompt to a one-line summary for PR titles / status display. */

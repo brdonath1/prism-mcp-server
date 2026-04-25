@@ -152,6 +152,21 @@ export function buildDispatchEnv(
   return childEnv;
 }
 
+/**
+ * Format a human-readable error message for sync-mode timeout.
+ * Replaces the SDK's misleading "aborted by user" message with an actionable
+ * explanation. Pure function extracted for testability.
+ */
+export function formatTimeoutError(timeoutMs: number): string {
+  return (
+    `cc_dispatch sync timeout reached after ${timeoutMs}ms. ` +
+    `The Agent SDK was aborted because the operation exceeded the configured deadline. ` +
+    `For tasks expected to exceed ~30s, pass async_mode: true to remove the deadline. ` +
+    `To adjust the sync timeout, set the CC_DISPATCH_SYNC_TIMEOUT_MS environment variable ` +
+    `(current value: ${timeoutMs}ms).`
+  );
+}
+
 const OAUTH_REJECTION_SIGNATURES = [
   "OAuth authentication is currently not supported",
   "Invalid bearer token",
@@ -303,7 +318,9 @@ export async function dispatchTask(
             const oauthErr =
               detectOAuthRejection(rawError) ??
               detectOAuthRejection(message.subtype);
-            errorMsg = oauthErr ?? `Agent returned ${message.subtype}: ${rawError}`;
+            errorMsg = timedOut
+              ? formatTimeoutError(timeoutMs ?? 0)
+              : oauthErr ?? `Agent returned ${message.subtype}: ${rawError}`;
           }
           break;
         }
@@ -343,9 +360,10 @@ export async function dispatchTask(
       model,
     });
     const oauthErr = detectOAuthRejection(message);
-    const errorString =
-      oauthErr ??
-      `${message} | executable: ${executable.path} (${executable.version ?? "version unknown"})${executable.error ? " | pre-flight: " + executable.error : ""}`;
+    const errorString = timedOut
+      ? formatTimeoutError(timeoutMs ?? 0)
+      : oauthErr ??
+        `${message} | executable: ${executable.path} (${executable.version ?? "version unknown"})${executable.error ? " | pre-flight: " + executable.error : ""}`;
     return {
       success: false,
       result: "",
