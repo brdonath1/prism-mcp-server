@@ -380,7 +380,11 @@ Completed audit remediation.
     expect(data.results[0].validation_errors.length).toBeGreaterThan(0);
   });
 
-  it("prunes handoff history to keep only last 3 versions", async () => {
+  it("prunes handoff history to keep only last 3 versions via a single atomic commit (S62 Brief 1)", async () => {
+    // S62 Phase 1 Brief 1, Change 5: prune step migrated to safeMutation +
+    // createAtomicCommit with `deletes`. The legacy parallel `deleteFile`
+    // loop is gone — a single atomic commit removes the over-retention
+    // versions, eliminating the HEAD-racing 409s identified in KI-23.
     mockFetchFile.mockResolvedValue({
       content: HANDOFF_CONTENT,
       sha: "sha",
@@ -397,10 +401,19 @@ Completed audit remediation.
     ]);
 
     mockPushFile.mockResolvedValue({ success: true, size: 100, sha: "new" });
+    // safeMutation issues at least 2 atomic commits in this scenario:
+    //   - one for the prune step (deletes only)
+    //   - one for the main commit step (the handoff write)
+    // Both should land successfully.
     mockCreateAtomicCommit.mockResolvedValue({ success: true, sha: "atomic_sha", files_committed: 1 });
-    mockDeleteFile.mockResolvedValue(true);
+    // Capture the prune commit so we can assert its `deletes` payload.
+    const pruneCalls: Array<{ files: unknown; message: string; deletes?: string[] }> = [];
+    mockCreateAtomicCommit.mockImplementation(async (_repo, files, message, deletes) => {
+      pruneCalls.push({ files, message, deletes: deletes ?? [] });
+      return { success: true, sha: "atomic_sha", files_committed: 1 };
+    });
 
-    const result = await callFinalizeTool({
+    await callFinalizeTool({
       project_slug: "test-project",
       action: "commit",
       session_number: 26,
@@ -410,9 +423,22 @@ Completed audit remediation.
       ],
     });
 
-    const data = parseResult(result);
-    // Should have deleted the 2 oldest (v27 and v26)
-    expect(mockDeleteFile).toHaveBeenCalledTimes(2);
+    // The prune commit must include the 2 oldest paths in its deletes array.
+    const pruneCommit = pruneCalls.find((c) =>
+      (c.deletes ?? []).some((p) => p.includes("handoff_v27"))
+    );
+    expect(pruneCommit).toBeDefined();
+    expect(pruneCommit!.deletes).toEqual(
+      expect.arrayContaining([
+        "handoff-history/handoff_v27_2026-03-31.md",
+        "handoff-history/handoff_v26_2026-03-30.md",
+      ]),
+    );
+    expect(pruneCommit!.deletes).toHaveLength(2);
+    // Newer entries (v30, v29, v28) MUST NOT be in the deletes list.
+    expect(pruneCommit!.deletes).not.toContain(
+      "handoff-history/handoff_v30_2026-04-03.md",
+    );
   });
 
   it("includes synthesis status in response (D-78: fire-and-forget)", async () => {
@@ -443,6 +469,102 @@ Completed audit remediation.
     expect(data.synthesis_banner_html).toBeNull();
     expect(data).toHaveProperty("synthesis_status_hint");
     expect(data.synthesis_status_hint).toContain("background");
+  });
+});
+
+// ── Null-safe HEAD comparison (S62 Phase 1 Brief 1, Change 7) ─────────────────
+
+describe("prism_finalize commit phase null-safe HEAD comparison", () => {
+  // S62 Brief 1 changes the default `headChanged = true` so `getHeadSha`
+  // returning undefined no longer routes to the partial-state-prone fallback.
+  // Both null-pre-atomic and null-post-atomic cases must:
+  //   1. Refuse to fall back to sequential pushFile.
+  //   2. Emit HEAD_SHA_UNKNOWN diagnostic with the right phase context.
+  it("null pre-atomic HEAD: refuses fallback, emits HEAD_SHA_UNKNOWN(pre-atomic-snapshot)", async () => {
+    mockFetchFile.mockResolvedValue({
+      content: HANDOFF_CONTENT,
+      sha: "sha",
+      size: 100,
+    });
+    mockListDirectory.mockResolvedValue([]);
+    mockCreateAtomicCommit.mockResolvedValue({
+      success: false,
+      sha: "",
+      files_committed: 0,
+      error: "createTree failed",
+    });
+    // Pre-atomic returns undefined.
+    const { getHeadSha } = await import("../src/github/client.js");
+    vi.mocked(getHeadSha).mockResolvedValue(undefined);
+
+    const result = await callFinalizeTool({
+      project_slug: "test-project",
+      action: "commit",
+      session_number: 26,
+      handoff_version: 31,
+      skip_synthesis: true,
+      files: [
+        { path: "glossary.md", content: "# Glossary\nT\n<!-- EOF: glossary.md -->" },
+      ],
+    });
+
+    const data = parseResult(result);
+    expect(data.all_succeeded).toBe(false);
+    // Must NOT fall back to sequential pushFile on the COMMIT step.
+    // (pushFile may still be called for the auto-backup step — separate path.)
+    const commitFallbackCalls = mockPushFile.mock.calls.filter(
+      (call) => !(call[1] as string).includes("handoff-history/handoff_v"),
+    );
+    expect(commitFallbackCalls).toHaveLength(0);
+
+    const diagnostics = data.diagnostics as Array<{ code: string; context?: { phase?: string } }>;
+    const headDiag = diagnostics.find(
+      (d) => d.code === "HEAD_SHA_UNKNOWN" && d.context?.phase === "pre-atomic-snapshot",
+    );
+    expect(headDiag).toBeDefined();
+  });
+
+  it("null post-atomic HEAD: refuses fallback, emits HEAD_SHA_UNKNOWN(post-atomic-check)", async () => {
+    mockFetchFile.mockResolvedValue({
+      content: HANDOFF_CONTENT,
+      sha: "sha",
+      size: 100,
+    });
+    mockListDirectory.mockResolvedValue([]);
+    mockCreateAtomicCommit.mockResolvedValue({
+      success: false,
+      sha: "",
+      files_committed: 0,
+      error: "createTree failed",
+    });
+    const { getHeadSha } = await import("../src/github/client.js");
+    vi.mocked(getHeadSha)
+      .mockResolvedValueOnce("HEAD_BEFORE")
+      .mockResolvedValueOnce(undefined);
+
+    const result = await callFinalizeTool({
+      project_slug: "test-project",
+      action: "commit",
+      session_number: 26,
+      handoff_version: 31,
+      skip_synthesis: true,
+      files: [
+        { path: "glossary.md", content: "# Glossary\nT\n<!-- EOF: glossary.md -->" },
+      ],
+    });
+
+    const data = parseResult(result);
+    expect(data.all_succeeded).toBe(false);
+    const commitFallbackCalls = mockPushFile.mock.calls.filter(
+      (call) => !(call[1] as string).includes("handoff-history/handoff_v"),
+    );
+    expect(commitFallbackCalls).toHaveLength(0);
+
+    const diagnostics = data.diagnostics as Array<{ code: string; context?: { phase?: string } }>;
+    const headDiag = diagnostics.find(
+      (d) => d.code === "HEAD_SHA_UNKNOWN" && d.context?.phase === "post-atomic-check",
+    );
+    expect(headDiag).toBeDefined();
   });
 });
 

@@ -174,10 +174,29 @@ export function registerPush(server: McpServer): void {
           }));
         } else {
           // Atomic failed — decide whether it's safe to retry.
-          let headChanged = false;
+          // Null-safe: a missing HEAD SHA on either snapshot means we can't
+          // verify whether HEAD moved, so we treat it as "changed" and refuse
+          // the fallback (the safer side of unknown). S62 Phase 1 Brief 1
+          // Change 7 — direct null-safety fix; full migration to safeMutation
+          // is deferred to Brief 1.5.
+          let headChanged = true;
           if (headShaBefore) {
             const headShaAfter = await getHeadSha(project_slug);
-            if (headShaAfter) headChanged = headShaAfter !== headShaBefore;
+            if (headShaAfter) {
+              headChanged = headShaAfter !== headShaBefore;
+            } else {
+              diagnostics.warn(
+                "HEAD_SHA_UNKNOWN",
+                "getHeadSha returned null after atomic failure — treating as HEAD changed (refuse fallback)",
+                { phase: "post-atomic-check" },
+              );
+            }
+          } else {
+            diagnostics.warn(
+              "HEAD_SHA_UNKNOWN",
+              "getHeadSha returned null before atomic commit — treating as HEAD changed (refuse fallback)",
+              { phase: "pre-atomic-snapshot" },
+            );
           }
 
           if (headChanged) {

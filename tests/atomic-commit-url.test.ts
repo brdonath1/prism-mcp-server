@@ -174,6 +174,75 @@ describe("S42 — createAtomicCommit URL routing", () => {
     ]);
   });
 
+  it("encodes deletes as Git Trees entries with sha:null (S62 Phase 1 Brief 1, Change 1)", async () => {
+    // INS-31 HTTP-routing assertion: the Trees API POST body must carry a
+    // tree entry with `sha: null` for each deleted path. This is GitHub's
+    // documented mechanism for removing files via the Trees API.
+    globalThis.fetch = buildHappyPathFetch(calls);
+
+    const result = await createAtomicCommit(
+      "del-test-repo",
+      [{ path: "keep.md", content: "stay" }],
+      "chore: prune two old files",
+      ["old1.md", "old2.md"],
+    );
+
+    expect(result.success).toBe(true);
+
+    const treeCall = calls.find(
+      (c) => c.method === "POST" && c.url.endsWith("/git/trees"),
+    );
+    expect(treeCall).toBeDefined();
+    expect(treeCall!.body).toBeDefined();
+    const payload = JSON.parse(treeCall!.body!);
+    expect(payload.tree).toBeDefined();
+    expect(Array.isArray(payload.tree)).toBe(true);
+
+    // Write entry: has content, no sha
+    const writeEntry = payload.tree.find(
+      (t: { path: string }) => t.path === "keep.md",
+    );
+    expect(writeEntry).toBeDefined();
+    expect(writeEntry.content).toBe("stay");
+    expect("sha" in writeEntry).toBe(false);
+
+    // Delete entries: sha is null, mode 100644, type blob, no content
+    const deleteEntries = payload.tree.filter(
+      (t: { path: string }) => t.path === "old1.md" || t.path === "old2.md",
+    );
+    expect(deleteEntries).toHaveLength(2);
+    for (const entry of deleteEntries) {
+      expect(entry.sha).toBe(null);
+      expect(entry.mode).toBe("100644");
+      expect(entry.type).toBe("blob");
+      expect("content" in entry).toBe(false);
+    }
+  });
+
+  it("backwards-compatible: omitting deletes produces a write-only tree payload", async () => {
+    globalThis.fetch = buildHappyPathFetch(calls);
+
+    await createAtomicCommit(
+      "back-compat-repo",
+      [{ path: "a.md", content: "x" }],
+      "test: write only",
+    );
+
+    const treeCall = calls.find(
+      (c) => c.method === "POST" && c.url.endsWith("/git/trees"),
+    );
+    expect(treeCall).toBeDefined();
+    const payload = JSON.parse(treeCall!.body!);
+    expect(payload.tree).toHaveLength(1);
+    expect(payload.tree[0].path).toBe("a.md");
+    expect(payload.tree[0].content).toBe("x");
+    // No sha:null entries when deletes is omitted (regression guard)
+    const nullShaEntries = payload.tree.filter(
+      (t: { sha?: unknown }) => "sha" in t && t.sha === null,
+    );
+    expect(nullShaEntries).toHaveLength(0);
+  });
+
   it("surfaces 404 as structured error when PATCH is mis-routed (pre-S42 bug shape)", async () => {
     // Simulate the pre-fix bug: every PATCH returns 404. Verifies the error
     // surfaces as { success: false, error: "Not found: updateRef <repo>" } —

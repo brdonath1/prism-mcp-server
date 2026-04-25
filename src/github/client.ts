@@ -594,14 +594,22 @@ export async function getHeadSha(repo: string): Promise<string | undefined> {
  * which is exactly how S40 C3 shipped and went unnoticed for five days until
  * S42 traced it via Railway logs. See tests/atomic-commit-url.test.ts for
  * the regression guard.
+ *
+ * Deletes (S63 brief 1, audit Change 1): pass an optional `deletes: string[]`
+ * to remove paths in the same commit. Each deleted path is included in the
+ * Git Trees API payload as a tree entry with `sha: null`, which is GitHub's
+ * documented mechanism for removing files via the Trees API. Existing callers
+ * that pass no `deletes` parameter observe identical behavior (the tree
+ * payload only contains write entries).
  */
 export async function createAtomicCommit(
   repo: string,
   files: Array<{ path: string; content: string }>,
-  message: string
+  message: string,
+  deletes: string[] = []
 ): Promise<AtomicCommitResult> {
   const start = Date.now();
-  logger.debug("github.createAtomicCommit", { repo, fileCount: files.length });
+  logger.debug("github.createAtomicCommit", { repo, fileCount: files.length, deleteCount: deletes.length });
 
   try {
     // 1. Get current HEAD ref (dynamic branch detection — KI-17).
@@ -624,16 +632,25 @@ export async function createAtomicCommit(
     const commitData = await commitRes.json() as { tree: { sha: string } };
     const baseTreeSha = commitData.tree.sha;
 
-    // 3. Create new tree with all files
+    // 3. Create new tree with all files (writes) and deletes.
+    //    Deletes are encoded as tree entries with `sha: null` per GitHub's
+    //    Git Trees API contract.
     const treeUrl = `${GITHUB_API_BASE}/repos/${GITHUB_OWNER}/${repo}/git/trees`;
+    const writeEntries = files.map(f => ({
+      path: f.path,
+      mode: "100644" as const,
+      type: "blob" as const,
+      content: f.content,
+    }));
+    const deleteEntries = deletes.map(path => ({
+      path,
+      mode: "100644" as const,
+      type: "blob" as const,
+      sha: null,
+    }));
     const treePayload = {
       base_tree: baseTreeSha,
-      tree: files.map(f => ({
-        path: f.path,
-        mode: "100644" as const,
-        type: "blob" as const,
-        content: f.content,
-      })),
+      tree: [...writeEntries, ...deleteEntries],
     };
     const treeRes = await fetchWithRetry(treeUrl, {
       method: "POST",
@@ -678,6 +695,7 @@ export async function createAtomicCommit(
     logger.info("github.createAtomicCommit complete", {
       repo,
       files: files.length,
+      deletes: deletes.length,
       sha: newCommitData.sha,
       ms: Date.now() - start,
     });
@@ -685,7 +703,7 @@ export async function createAtomicCommit(
     return {
       success: true,
       sha: newCommitData.sha,
-      files_committed: files.length,
+      files_committed: files.length + deletes.length,
     };
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
