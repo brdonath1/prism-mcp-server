@@ -232,4 +232,26 @@ terminal `completed_at`, any `pr_url`, and the list of commits. The
 `cc_status` tool exposes the same information for async dispatches via its
 records in `brdonath1/prism-dispatch-state`.
 
+## Trigger Workflow
+
+This repo is enrolled in the Trigger daemon (`brdonath1/trigger`) via the marker file at `.prism/trigger.yaml`. The daemon discovers this repo, dispatches Claude Code to execute briefs autonomously, and runs post-merge actions on PR merge.
+
+### Brief execution
+- Briefs live at `docs/briefs/brief-NNN-description.md`.
+- Branch strategy: feature branch from `main`, PR back to `main`. No staging branch.
+- Commit prefix: `prism(SN):` where N is the session number specified in the brief.
+- Every completed brief MUST end with a PR. Trigger detects PR creation via polling.
+
+### Quality gates before PR
+- `npm test` must pass
+- `npx tsc --noEmit` must compile cleanly
+- `npm run lint` must pass with zero warnings
+- Verify changes from disk after push: re-read each modified file and confirm content matches intent
+
+### Done criteria
+- PR exists on `brdonath1/prism-mcp-server` targeting `main`
+- All CI checks green
+- Operator merges; Trigger fires `notify` ntfy event on merge
+- State recorded in trigger repo at `state/prism-mcp-server.json` (not in this repo)
+
 <!-- EOF: CLAUDE.md -->
