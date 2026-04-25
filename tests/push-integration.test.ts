@@ -276,6 +276,87 @@ describe("prism_push atomic failure with HEAD moved", () => {
   });
 });
 
+// ── Null-safe HEAD comparison (S62 Phase 1 Brief 1, Change 7) ─────────────────
+
+describe("prism_push atomic failure with NULL HEAD (refuse fallback)", () => {
+  // S62 Phase 1 Brief 1 fixes the original `headChanged = false` default that
+  // caused `getHeadSha returning null` to be treated as "HEAD unchanged" and
+  // route to the partial-state-prone fallback. The new pattern:
+  //   - default `headChanged = true` (refuse fallback under uncertainty)
+  //   - emit HEAD_SHA_UNKNOWN diagnostic with phase context
+  //   - both pre-atomic and post-atomic null cases are covered
+  it("treats null HEAD before atomic as unknown (refuse fallback) and emits HEAD_SHA_UNKNOWN", async () => {
+    mockCreateAtomicCommit.mockResolvedValue({
+      success: false,
+      sha: "",
+      files_committed: 0,
+      error: "createTree failed: 500",
+    });
+    // Pre-atomic snapshot returns undefined.
+    mockGetHeadSha.mockResolvedValue(undefined);
+
+    const result = await callPushTool({
+      project_slug: "test-project",
+      files: [
+        {
+          path: "glossary.md",
+          content: "# Glossary\nTerms\n<!-- EOF: glossary.md -->",
+          message: "prism: update glossary",
+        },
+      ],
+      skip_validation: false,
+    });
+
+    const data = parseResult(result);
+    expect(data.all_succeeded).toBe(false);
+    expect(data.files_pushed).toBe(0);
+    // Critical: refuse to fall back to sequential pushFile under HEAD-unknown.
+    expect(mockPushFile).not.toHaveBeenCalled();
+    // Result must carry the partial-state signal (treats unknown as changed).
+    expect(data.results[0].validation_errors.join(" ")).toContain("Partial atomic commit");
+    // Diagnostic emitted with the pre-atomic phase context.
+    const headDiag = (data.diagnostics as Array<{ code: string; context?: { phase?: string } }>).find(
+      (d) => d.code === "HEAD_SHA_UNKNOWN",
+    );
+    expect(headDiag).toBeDefined();
+    expect(headDiag!.context?.phase).toBe("pre-atomic-snapshot");
+  });
+
+  it("treats null HEAD post-atomic as unknown (refuse fallback) and emits HEAD_SHA_UNKNOWN", async () => {
+    mockCreateAtomicCommit.mockResolvedValue({
+      success: false,
+      sha: "",
+      files_committed: 0,
+      error: "createTree failed: 500",
+    });
+    // Pre-atomic returns a SHA; post-atomic returns undefined.
+    mockGetHeadSha
+      .mockResolvedValueOnce("HEAD_BEFORE")
+      .mockResolvedValueOnce(undefined);
+
+    const result = await callPushTool({
+      project_slug: "test-project",
+      files: [
+        {
+          path: "glossary.md",
+          content: "# Glossary\nTerms\n<!-- EOF: glossary.md -->",
+          message: "prism: update glossary",
+        },
+      ],
+      skip_validation: false,
+    });
+
+    const data = parseResult(result);
+    expect(data.all_succeeded).toBe(false);
+    expect(mockPushFile).not.toHaveBeenCalled();
+    const headDiag = (data.diagnostics as Array<{ code: string; context?: { phase?: string } }>).find(
+      (d) => d.code === "HEAD_SHA_UNKNOWN",
+    );
+    expect(headDiag).toBeDefined();
+    expect(headDiag!.context?.phase).toBe("post-atomic-check");
+  });
+});
+
 // ── Atomic failure: HEAD unchanged → sequential fallback succeeds ──────────────
 
 describe("prism_push atomic failure with HEAD unchanged (sequential fallback)", () => {

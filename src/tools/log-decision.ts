@@ -5,16 +5,11 @@
 
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import {
-  fetchFile,
-  pushFile,
-  createAtomicCommit,
-  getHeadSha,
-} from "../github/client.js";
 import { logger } from "../utils/logger.js";
 import { resolveDocPath, resolveDocPushPath } from "../utils/doc-resolver.js";
 import { guardPushPath } from "../utils/doc-guard.js";
 import { DiagnosticsCollector } from "../utils/diagnostics.js";
+import { safeMutation } from "../utils/safe-mutation.js";
 
 /**
  * Parse existing decision IDs from a decisions/_INDEX.md content string.
@@ -58,6 +53,23 @@ export function parseExistingDecisionIds(indexContent: string): Map<string, stri
   return ids;
 }
 
+/**
+ * Internal sentinel thrown from inside `computeMutation` when a duplicate
+ * decision ID is detected on the freshly-read index. Caught at the tool
+ * boundary to surface the existing duplicate response shape unchanged.
+ */
+class DedupError extends Error {
+  readonly duplicate = true as const;
+  constructor(
+    readonly id: string,
+    readonly existingTitle: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "DedupError";
+  }
+}
+
 export function registerLogDecision(server: McpServer): void {
   server.tool(
     "prism_log_decision",
@@ -79,12 +91,12 @@ export function registerLogDecision(server: McpServer): void {
       logger.info("prism_log_decision", { project_slug, id, domain });
 
       try {
-        // 1. Fetch current _INDEX.md (D-67: backward-compatible resolution)
-        let indexContent: string;
+        // 1. Resolve _INDEX.md path. The path is derived from the existing
+        //    file; if the index doesn't exist at all, we cannot log a
+        //    decision against it.
         let indexResolvedPath: string;
         try {
           const resolved = await resolveDocPath(project_slug, "decisions/_INDEX.md");
-          indexContent = resolved.content;
           indexResolvedPath = resolved.path;
         } catch {
           return {
@@ -93,67 +105,30 @@ export function registerLogDecision(server: McpServer): void {
           };
         }
 
-        // 2. Dedup guard (A.1 — brief 104): reject if the requested D-N ID
-        // already exists in _INDEX.md. The concurrent-write race (two requests
-        // passing the check simultaneously) is a known edge case — resolved
-        // downstream by GitHub's SHA-based optimistic concurrency (409 →
-        // retry with fresh SHA, which re-reads _INDEX.md and re-checks).
-        const existingIds = parseExistingDecisionIds(indexContent);
-        if (existingIds.has(id)) {
-          const existingTitle = existingIds.get(id) ?? "";
-          const msg =
-            `Decision ID ${id} already exists in _INDEX.md` +
-            (existingTitle ? ` (title: "${existingTitle}")` : "") +
-            `. Use a different ID or update the existing entry via prism_patch.`;
-          logger.warn("prism_log_decision duplicate rejected", {
-            project_slug,
-            id,
-            existingTitle,
-          });
-          diagnostics.warn("DEDUP_TRIGGERED", `Decision ID ${id} already exists in _INDEX.md`, { id, existingTitle });
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: JSON.stringify({
-                  error: msg,
-                  duplicate: true,
-                  id,
-                  existing_title: existingTitle,
-                  diagnostics: diagnostics.list(),
-                }),
-              },
-            ],
-            isError: true,
-          };
-        }
-
-        // 3. Insert new row into the table (before EOF sentinel)
-        const newRow = `| ${id} | ${title} | ${domain} | ${status} | ${session} |`;
-        const eofSentinel = "<!-- EOF: _INDEX.md -->";
-
-        if (indexContent.includes(eofSentinel)) {
-          indexContent = indexContent.replace(eofSentinel, `${newRow}\n${eofSentinel}`);
-        } else {
-          indexContent = indexContent.trimEnd() + `\n${newRow}\n`;
-        }
-
-        // 4. Fetch or create domain file (D-67: backward-compatible resolution)
+        // 2. Resolve domain file path; note whether the domain file exists
+        //    so safeMutation knows whether to read it on each attempt.
         const domainDocName = `decisions/${domain}.md`;
-        let domainContent: string;
         let domainResolvedPath: string;
+        let domainExisted = false;
         try {
           const resolved = await resolveDocPath(project_slug, domainDocName);
-          domainContent = resolved.content;
           domainResolvedPath = resolved.path;
+          domainExisted = true;
         } catch {
-          domainContent = `# Decisions — ${domain}\n\n> Domain: ${domain}\n> Full decision entries. See _INDEX.md for lookup table.\n\n<!-- EOF: ${domain}.md -->\n`;
           const basePushPath = await resolveDocPushPath(project_slug, domainDocName);
           const guarded = await guardPushPath(project_slug, basePushPath);
           domainResolvedPath = guarded.path;
         }
 
-        // 5. Build full decision entry
+        const readPaths = domainExisted
+          ? [indexResolvedPath, domainResolvedPath]
+          : [indexResolvedPath];
+
+        const commitMessage = `prism: ${id} ${title}`;
+        const domainEof = `<!-- EOF: ${domain}.md -->`;
+        const eofSentinel = "<!-- EOF: _INDEX.md -->";
+        const newRow = `| ${id} | ${title} | ${domain} | ${status} | ${session} |`;
+
         const entryLines = [
           `### ${id}: ${title}`,
           `- Domain: ${domain}`,
@@ -163,94 +138,103 @@ export function registerLogDecision(server: McpServer): void {
         if (assumptions) entryLines.push(`- Assumptions: ${assumptions}`);
         if (impact) entryLines.push(`- Impact: ${impact}`);
         entryLines.push(`- Decided: Session ${session}`);
-
         const entry = entryLines.join("\n");
-        const domainEof = `<!-- EOF: ${domain}.md -->`;
 
-        if (domainContent.includes(domainEof)) {
-          domainContent = domainContent.replace(domainEof, `${entry}\n\n${domainEof}`);
-        } else {
-          domainContent = domainContent.trimEnd() + `\n\n${entry}\n\n${domainEof}\n`;
-        }
-
-        // 6. Atomic-commit both files (A-5). The docstring has long claimed
-        // atomicity but the original implementation pushed sequentially, so a
-        // mid-sequence failure left `_INDEX.md` referencing a decision whose
-        // domain entry had not yet been written. Mirrors push.ts's pattern:
-        // atomic first; on failure, check HEAD — if HEAD moved, surface a
-        // "partial state" error and abort; if HEAD unchanged, fall back to
-        // sequential pushFile (matching push.ts's recovery contract).
-        const commitMessage = `prism: ${id} ${title}`;
-        const headShaBefore = await getHeadSha(project_slug);
-        const atomicResult = await createAtomicCommit(
-          project_slug,
-          [
-            { path: indexResolvedPath, content: indexContent },
-            { path: domainResolvedPath, content: domainContent },
-          ],
+        // 3. safeMutation handles HEAD snapshot, atomic commit, and 409 retry
+        //    with re-read of the index + domain content. Dedup runs INSIDE
+        //    computeMutation so it re-checks fresh data on every retry.
+        const result = await safeMutation({
+          repo: project_slug,
           commitMessage,
-        );
-
-        let indexSuccess: boolean;
-        let domainSuccess: boolean;
-        let partialStateError: string | undefined;
-
-        if (atomicResult.success) {
-          indexSuccess = true;
-          domainSuccess = true;
-        } else {
-          let headChanged = false;
-          if (headShaBefore) {
-            const headShaAfter = await getHeadSha(project_slug);
-            if (headShaAfter) headChanged = headShaAfter !== headShaBefore;
-          }
-
-          if (headChanged) {
-            logger.error(
-              "prism_log_decision atomic failed with HEAD changed — partial state",
-              { project_slug, id, atomicError: atomicResult.error },
-            );
-            diagnostics.error("INDEX_WRITE_FAILED", "Atomic commit failed with HEAD changed — partial state", { atomicError: atomicResult.error });
-            partialStateError =
-              "Concurrent write during log_decision atomic commit; please retry";
-            indexSuccess = false;
-            domainSuccess = false;
-          } else {
-            logger.warn(
-              "prism_log_decision atomic failed; falling back to sequential pushFile",
-              { project_slug, id, atomicError: atomicResult.error },
-            );
-            diagnostics.warn("INDEX_WRITE_FAILED", "Atomic commit failed; falling back to sequential pushFile", { atomicError: atomicResult.error });
-            const indexResult = await pushFile(
-              project_slug,
-              indexResolvedPath,
-              indexContent,
-              commitMessage,
-            );
-            const domainResult = await pushFile(
-              project_slug,
-              domainResolvedPath,
-              domainContent,
-              commitMessage,
-            );
-            indexSuccess = indexResult.success;
-            domainSuccess = domainResult.success;
-            if (!indexSuccess) {
-              diagnostics.error("INDEX_WRITE_FAILED", "Failed to push _INDEX.md via sequential fallback");
+          readPaths,
+          diagnostics,
+          computeMutation: (files) => {
+            const indexFile = files.get(indexResolvedPath);
+            if (!indexFile) {
+              throw new Error("safeMutation did not return _INDEX.md content");
             }
-            if (!domainSuccess) {
-              diagnostics.error("DOMAIN_WRITE_FAILED", "Failed to push domain file via sequential fallback", { domainFile: domainResolvedPath });
-            }
-          }
-        }
+            let indexContent = indexFile.content;
 
-        if (partialStateError) {
+            // Dedup against fresh data — a concurrent writer may have logged
+            // the same ID since our initial path resolution.
+            const existingIds = parseExistingDecisionIds(indexContent);
+            if (existingIds.has(id)) {
+              const existingTitle = existingIds.get(id) ?? "";
+              const msg =
+                `Decision ID ${id} already exists in _INDEX.md` +
+                (existingTitle ? ` (title: "${existingTitle}")` : "") +
+                `. Use a different ID or update the existing entry via prism_patch.`;
+              logger.warn("prism_log_decision duplicate rejected", {
+                project_slug,
+                id,
+                existingTitle,
+              });
+              diagnostics.warn(
+                "DEDUP_TRIGGERED",
+                `Decision ID ${id} already exists in _INDEX.md`,
+                { id, existingTitle },
+              );
+              throw new DedupError(id, existingTitle, msg);
+            }
+
+            // Insert the new row before the EOF sentinel.
+            if (indexContent.includes(eofSentinel)) {
+              indexContent = indexContent.replace(eofSentinel, `${newRow}\n${eofSentinel}`);
+            } else {
+              indexContent = indexContent.trimEnd() + `\n${newRow}\n`;
+            }
+
+            // Build domain content. If the domain file existed at request
+            // time we expect fresh content in the map; otherwise we write a
+            // starter file with the new entry already attached.
+            let domainContent: string;
+            if (domainExisted) {
+              const domainFile = files.get(domainResolvedPath);
+              if (!domainFile) {
+                throw new Error(
+                  `safeMutation did not return ${domainResolvedPath} content`,
+                );
+              }
+              domainContent = domainFile.content;
+              if (domainContent.includes(domainEof)) {
+                domainContent = domainContent.replace(
+                  domainEof,
+                  `${entry}\n\n${domainEof}`,
+                );
+              } else {
+                domainContent = domainContent.trimEnd() + `\n\n${entry}\n\n${domainEof}\n`;
+              }
+            } else {
+              domainContent =
+                `# Decisions — ${domain}\n\n` +
+                `> Domain: ${domain}\n` +
+                `> Full decision entries. See _INDEX.md for lookup table.\n\n` +
+                `${entry}\n\n${domainEof}\n`;
+            }
+
+            return {
+              writes: [
+                { path: indexResolvedPath, content: indexContent },
+                { path: domainResolvedPath, content: domainContent },
+              ],
+            };
+          },
+        });
+
+        if (!result.ok) {
+          logger.error("prism_log_decision safeMutation failed", {
+            project_slug,
+            id,
+            code: result.code,
+            error: result.error,
+          });
           return {
             content: [
               {
                 type: "text" as const,
                 text: JSON.stringify({
-                  error: partialStateError,
+                  error: result.error,
+                  code: result.code,
                   id,
                   title,
                   domain,
@@ -265,9 +249,10 @@ export function registerLogDecision(server: McpServer): void {
         }
 
         logger.info("prism_log_decision complete", {
-          project_slug, id, domain,
-          indexSuccess,
-          domainSuccess,
+          project_slug,
+          id,
+          domain,
+          retried: result.retried,
           ms: Date.now() - start,
         });
 
@@ -279,14 +264,31 @@ export function registerLogDecision(server: McpServer): void {
               title,
               domain,
               status,
-              index_updated: indexSuccess,
-              domain_file_updated: domainSuccess,
+              index_updated: true,
+              domain_file_updated: true,
               domain_file: domainResolvedPath,
               diagnostics: diagnostics.list(),
             }),
           }],
         };
       } catch (error) {
+        if (error instanceof DedupError) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  error: error.message,
+                  duplicate: true,
+                  id: error.id,
+                  existing_title: error.existingTitle,
+                  diagnostics: diagnostics.list(),
+                }),
+              },
+            ],
+            isError: true,
+          };
+        }
         const message = error instanceof Error ? error.message : String(error);
         logger.error("prism_log_decision failed", { project_slug, id, error: message });
         return {

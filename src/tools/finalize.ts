@@ -14,10 +14,10 @@ import {
   listDirectory,
   listCommits,
   getCommit,
-  deleteFile,
   createAtomicCommit,
   getHeadSha,
 } from "../github/client.js";
+import { safeMutation } from "../utils/safe-mutation.js";
 import {
   LIVING_DOCUMENTS,
   LIVING_DOCUMENT_NAMES,
@@ -425,6 +425,7 @@ async function commitPhase(
   handoffVersion: number,
   files: Array<{ path: string; content: string }>,
   skipSynthesis: boolean = false,
+  diagnostics: DiagnosticsCollector = new DiagnosticsCollector(),
 ) {
   const warnings: string[] = [];
   const today = new Date().toISOString().split("T")[0];
@@ -481,27 +482,53 @@ async function commitPhase(
       }
     })(),
 
-    // 2. Prune handoff-history to keep only last 3 versions
+    // 2. Prune handoff-history to keep only last 3 versions.
+    //    Migrated to safeMutation per S62 audit (Phase 1 Brief 1, Change 5):
+    //    a single atomic commit with `deletes` replaces the parallel
+    //    Contents-API DELETE loop that previously raced HEAD on every
+    //    successful delete. Failures are emitted as DELETE_FILE_FAILED
+    //    instead of being silently swallowed; pruning is still non-fatal.
     (async () => {
+      let historyEntries: Awaited<ReturnType<typeof listDirectory>>;
       try {
-        let historyEntries = await listDirectory(projectSlug, ".prism/handoff-history");
+        historyEntries = await listDirectory(projectSlug, ".prism/handoff-history");
         if (historyEntries.length === 0) {
           historyEntries = await listDirectory(projectSlug, "handoff-history");
         }
-        const handoffFiles = historyEntries
-          .filter((e) => e.name.startsWith("handoff_v") && e.name.endsWith(".md"))
-          .sort((a, b) => b.name.localeCompare(a.name));
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        diagnostics.warn(
+          "DELETE_FILE_FAILED",
+          `Failed to list handoff-history for pruning: ${msg}`,
+          { phase: "list" },
+        );
+        return;
+      }
 
-        if (handoffFiles.length > 3) {
-          const toDelete = handoffFiles.slice(3);
-          await Promise.allSettled(
-            toDelete.map((f) =>
-              deleteFile(projectSlug, f.path, `chore: prune old handoff backup ${f.name}`)
-            )
-          );
-        }
-      } catch {
-        // handoff-history may not exist or pruning failed — non-critical
+      const handoffFiles = historyEntries
+        .filter((e) => e.name.startsWith("handoff_v") && e.name.endsWith(".md"))
+        .sort((a, b) => b.name.localeCompare(a.name));
+
+      if (handoffFiles.length <= 3) return;
+
+      const toDelete = handoffFiles.slice(3);
+      const pruneResult = await safeMutation({
+        repo: projectSlug,
+        commitMessage: `chore: prune ${toDelete.length} old handoff backup${toDelete.length === 1 ? "" : "s"}`,
+        readPaths: [],
+        diagnostics,
+        computeMutation: () => ({
+          writes: [],
+          deletes: toDelete.map((f) => f.path),
+        }),
+      });
+
+      if (!pruneResult.ok) {
+        diagnostics.warn(
+          "DELETE_FILE_FAILED",
+          `Failed to prune handoff-history: ${pruneResult.error}`,
+          { code: pruneResult.code, pathCount: toDelete.length },
+        );
       }
     })(),
   ]);
@@ -635,13 +662,30 @@ async function commitPhase(
       validation_errors: [],
     }));
   } else {
-    // 5c. Atomic commit failed — check if HEAD moved (partial write)
-    let headChanged = false;
+    // 5c. Atomic commit failed — check if HEAD moved (partial write).
+    // Null-safe: a missing HEAD SHA on either snapshot means we can't
+    // verify whether HEAD moved, so we treat it as "changed" and refuse
+    // the fallback (the safer side of unknown). S62 Phase 1 Brief 1
+    // Change 7 — direct null-safety fix; full migration to safeMutation
+    // is deferred to Brief 1.5.
+    let headChanged = true;
     if (headShaBefore) {
       const headShaAfter = await getHeadSha(projectSlug);
       if (headShaAfter) {
         headChanged = headShaAfter !== headShaBefore;
+      } else {
+        diagnostics.warn(
+          "HEAD_SHA_UNKNOWN",
+          "getHeadSha returned null after atomic failure — treating as HEAD changed (refuse fallback)",
+          { phase: "post-atomic-check" },
+        );
       }
+    } else {
+      diagnostics.warn(
+        "HEAD_SHA_UNKNOWN",
+        "getHeadSha returned null before atomic commit — treating as HEAD changed (refuse fallback)",
+        { phase: "pre-atomic-snapshot" },
+      );
     }
 
     if (headChanged) {
@@ -1050,6 +1094,7 @@ export function registerFinalize(server: McpServer): void {
           handoff_version ?? 1,
           files,
           skipSynthesis,
+          diagnostics,
         );
         const raced = await Promise.race([commitWork, commitDeadlinePromise]);
         if (commitDeadlineTimer) clearTimeout(commitDeadlineTimer);
