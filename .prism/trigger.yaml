@@ -1,0 +1,8 @@
+enabled: true
+brief_dir: docs/briefs/
+brief_pattern: "brief-*.md"
+branch_strategy: main-only
+intra_project_parallel: false
+max_parallel_briefs: 1
+post_merge:
+  - notify
