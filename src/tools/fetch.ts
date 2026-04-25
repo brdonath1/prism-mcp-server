@@ -8,6 +8,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { fetchFile } from "../github/client.js";
 import { DOC_ROOT, LIVING_DOCUMENT_NAMES, SUMMARY_SIZE_THRESHOLD } from "../config.js";
 import { logger } from "../utils/logger.js";
+import { DiagnosticsCollector } from "../utils/diagnostics.js";
 import { summarizeMarkdown } from "../utils/summarizer.js";
 import { resolveDocPath } from "../utils/doc-resolver.js";
 
@@ -54,6 +55,7 @@ export function registerFetch(server: McpServer): void {
     inputSchema,
     async ({ project_slug, files, summary_mode }) => {
       const start = Date.now();
+      const diagnostics = new DiagnosticsCollector();
       logger.info("prism_fetch", { project_slug, fileCount: files.length, summary_mode });
 
       try {
@@ -147,11 +149,21 @@ export function registerFetch(server: McpServer): void {
           };
         });
 
+        for (const fr of fileResults) {
+          if (!fr.exists) {
+            diagnostics.warn("FILE_NOT_FOUND", `File not found: ${fr.path}`, { path: fr.path });
+          }
+        }
+        if (summary_mode && fileResults.some(fr => fr.is_summarized)) {
+          diagnostics.info("SUMMARY_MODE_TRIGGERED", `Summary mode applied to ${fileResults.filter(fr => fr.is_summarized).length} file(s) exceeding ${(SUMMARY_SIZE_THRESHOLD / 1024).toFixed(0)}KB`);
+        }
+
         const result = {
           project: project_slug,
           files: fileResults,
           bytes_delivered: bytesDelivered,
           files_fetched: filesFetched,
+          diagnostics: diagnostics.list(),
         };
 
         logger.info("prism_fetch complete", {

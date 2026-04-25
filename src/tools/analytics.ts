@@ -17,6 +17,7 @@ import {
 import { LIVING_DOCUMENTS, LIVING_DOCUMENT_NAMES } from "../config.js";
 import { resolveDocPath, resolveDocExists, resolveDocFiles } from "../utils/doc-resolver.js";
 import { logger } from "../utils/logger.js";
+import { DiagnosticsCollector } from "../utils/diagnostics.js";
 import {
   parseMarkdownTable,
   extractSection,
@@ -710,6 +711,7 @@ export function registerAnalytics(server: McpServer): void {
     async ({ project_slug, metric }) => {
       const start = Date.now();
       const effectiveMetric = (metric ?? "health_summary") as Metric;
+      const diagnostics = new DiagnosticsCollector();
       logger.info("prism_analytics", { project_slug: project_slug ?? "all", metric: effectiveMetric });
 
       try {
@@ -801,6 +803,14 @@ export function registerAnalytics(server: McpServer): void {
             const result = await healthSummary(project_slug);
             data = result.data;
             summary = result.summary;
+            const criticalCount = result.data.critical as number | undefined;
+            const needsAttCount = result.data.needs_attention as number | undefined;
+            const healthVal = result.data.health as string | undefined;
+            if (criticalCount !== undefined && needsAttCount !== undefined && (criticalCount > 0 || needsAttCount > 0)) {
+              diagnostics.warn("METRIC_PARTIAL_DATA", `${criticalCount} critical and ${needsAttCount} needs-attention project(s)`, { critical: criticalCount, needsAttention: needsAttCount });
+            } else if (healthVal !== undefined && healthVal !== "healthy") {
+              diagnostics.warn("METRIC_PARTIAL_DATA", `Project health: ${healthVal}`, { health: healthVal });
+            }
             break;
           }
 
@@ -818,6 +828,7 @@ export function registerAnalytics(server: McpServer): void {
           data,
           computed_at: new Date().toISOString(),
           summary,
+          diagnostics: diagnostics.list(),
         };
 
         logger.info("prism_analytics complete", {

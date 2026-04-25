@@ -23,6 +23,7 @@ import {
   PUSH_WALL_CLOCK_DEADLINE_MS,
 } from "../config.js";
 import { guardPushPath } from "../utils/doc-guard.js";
+import { DiagnosticsCollector } from "../utils/diagnostics.js";
 
 /** Sentinel used to signal that the tool-level deadline fired (S40 C4). */
 const PUSH_DEADLINE_SENTINEL = Symbol("push.deadline");
@@ -63,6 +64,7 @@ export function registerPush(server: McpServer): void {
     inputSchema,
     async ({ project_slug, files, skip_validation }) => {
       const start = Date.now();
+      const diagnostics = new DiagnosticsCollector();
       logger.info("prism_push", { project_slug, fileCount: files.length, skip_validation });
 
       // S40 C4 — Tool-level wall-clock deadline. Hard backstop on top of the
@@ -101,6 +103,7 @@ export function registerPush(server: McpServer): void {
             project_slug,
             errorCount: results.reduce((sum, r) => sum + r.validation_errors.length, 0),
           });
+          diagnostics.warn("VALIDATION_WARNING", `Validation failed for ${results.filter(r => r.validation_errors.length > 0).length} file(s)`, { errorCount: results.reduce((sum, r) => sum + r.validation_errors.length, 0) });
 
           return {
             content: [
@@ -114,6 +117,7 @@ export function registerPush(server: McpServer): void {
                     files_pushed: 0,
                     files_failed: files.length,
                     total_bytes: 0,
+                    diagnostics: diagnostics.list(),
                   },
                   null,
                   2,
@@ -141,6 +145,7 @@ export function registerPush(server: McpServer): void {
             count: uniqueMessages.size,
             used: commitMessage,
           });
+          diagnostics.warn("VALIDATION_WARNING", `Received ${uniqueMessages.size} differing commit messages; using first`, { count: uniqueMessages.size, used: commitMessage });
         }
 
         // 4. Try atomic commit first
@@ -182,6 +187,7 @@ export function registerPush(server: McpServer): void {
               "prism_push atomic commit failed with HEAD changed — partial state",
               { project_slug, atomicError: atomicResult.error },
             );
+            diagnostics.error("PUSH_RETRY_ON_CONFLICT", "Atomic commit failed with HEAD changed \u2014 partial state detected", { atomicError: atomicResult.error });
             results = files.map((file, idx) => ({
               path: guardResults[idx].path,
               original_path: guardResults[idx].redirected ? file.path : undefined,
@@ -204,6 +210,7 @@ export function registerPush(server: McpServer): void {
               project_slug,
               atomicError: atomicResult.error,
             });
+            diagnostics.warn("PUSH_RETRY_ON_CONFLICT", "Atomic commit failed; falling back to sequential pushFile", { atomicError: atomicResult.error });
             results = [];
             for (let idx = 0; idx < files.length; idx++) {
               const file = files[idx];
@@ -255,6 +262,7 @@ export function registerPush(server: McpServer): void {
           files_failed: files.length - succeeded.length,
           total_bytes: totalBytes,
           commit_sha: atomicResult.success ? atomicResult.sha : undefined,
+          diagnostics: diagnostics.list(),
         };
 
         logger.info("prism_push complete", {

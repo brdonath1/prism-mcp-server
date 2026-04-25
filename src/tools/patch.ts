@@ -10,6 +10,7 @@ import { logger } from "../utils/logger.js";
 import { applyPatch, validateIntegrity } from "../utils/markdown-sections.js";
 import { resolveDocPath } from "../utils/doc-resolver.js";
 import { DOC_ROOT } from "../config.js";
+import { DiagnosticsCollector } from "../utils/diagnostics.js";
 
 export function registerPatch(server: McpServer): void {
   server.tool(
@@ -26,6 +27,7 @@ export function registerPatch(server: McpServer): void {
     },
     async ({ project_slug, file, patches }) => {
       const start = Date.now();
+      const diagnostics = new DiagnosticsCollector();
       logger.info("prism_patch", { project_slug, file, patchCount: patches.length });
 
       try {
@@ -38,6 +40,10 @@ export function registerPatch(server: McpServer): void {
         } catch {
           // Not a living doc or doesn't exist at either location — use original path
           resolvedPath = file;
+        }
+
+        if (resolvedPath !== file) {
+          diagnostics.warn("PATCH_REDIRECTED", `Path redirected: "${file}" → "${resolvedPath}"`, { original: file, resolved: resolvedPath });
         }
 
         // 2. Fetch the current file using resolved path
@@ -59,12 +65,15 @@ export function registerPatch(server: McpServer): void {
 
         // If any patch failed, don't push
         if (results.some(r => !r.success)) {
+          const failedPatches = results.filter(r => !r.success);
+          diagnostics.error("PATCH_PARTIAL_FAILURE", `${failedPatches.length} patch(es) failed`, { failedPatches: failedPatches.map(p => ({ section: p.section, error: p.error })) });
           return {
             content: [{
               type: "text" as const,
               text: JSON.stringify({
                 error: "One or more patches failed — file not modified",
                 results,
+                diagnostics: diagnostics.list(),
               }),
             }],
             isError: true,
@@ -116,6 +125,7 @@ export function registerPatch(server: McpServer): void {
               integrity_check: integrity.issues.length > 0
                 ? { warnings: integrity.issues }
                 : { clean: true },
+              diagnostics: diagnostics.list(),
             }),
           }],
         };

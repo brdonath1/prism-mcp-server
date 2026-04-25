@@ -9,6 +9,7 @@ import { fetchFile, pushFile } from "../github/client.js";
 import { logger } from "../utils/logger.js";
 import { resolveDocPath, resolveDocPushPath } from "../utils/doc-resolver.js";
 import { guardPushPath } from "../utils/doc-guard.js";
+import { DiagnosticsCollector } from "../utils/diagnostics.js";
 
 /**
  * Parse existing insight IDs from an insights.md content string.
@@ -51,6 +52,7 @@ export function registerLogInsight(server: McpServer): void {
     },
     async ({ project_slug, id, title, category, description, session, standing_rule, procedure }) => {
       const start = Date.now();
+      const diagnostics = new DiagnosticsCollector();
       logger.info("prism_log_insight", { project_slug, id, standing_rule });
 
       try {
@@ -94,6 +96,7 @@ export function registerLogInsight(server: McpServer): void {
               id,
               existingTitle,
             });
+            diagnostics.warn("STANDING_RULE_DUPLICATE_ID", `Insight ID ${id} already exists in insights.md`, { id, existingTitle });
             return {
               content: [
                 {
@@ -103,6 +106,7 @@ export function registerLogInsight(server: McpServer): void {
                     duplicate: true,
                     id,
                     existing_title: existingTitle,
+                    diagnostics: diagnostics.list(),
                   }),
                 },
               ],
@@ -164,6 +168,7 @@ export function registerLogInsight(server: McpServer): void {
               standing_rule: !!standing_rule,
               success: result.success,
               size_bytes: result.size,
+              diagnostics: diagnostics.list(),
             }),
           }],
         };
