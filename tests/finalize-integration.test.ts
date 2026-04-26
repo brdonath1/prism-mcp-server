@@ -779,7 +779,7 @@ describe("prism_finalize draft phase", () => {
       content: '{"handoff": {"content": "draft handoff"}, "session_log": {"content": "draft log"}}',
       input_tokens: 5000,
       output_tokens: 2000,
-      model: "claude-opus-4-6",
+      model: "claude-opus-4-7",
     });
 
     const result = await callFinalizeTool({
@@ -794,6 +794,13 @@ describe("prism_finalize draft phase", () => {
     expect(data.input_tokens).toBe(5000);
     expect(data.output_tokens).toBe(2000);
     expect(data.review_instructions).toContain("Review each draft");
+
+    // Phase 3a: draft phase (CS-1) MUST NOT pass thinking: true.
+    // Adaptive thinking on draft is gated to Phase 3b pending benchmark.
+    expect(mockSynthesize).toHaveBeenCalledTimes(1);
+    const draftCallArgs = mockSynthesize.mock.calls[0];
+    // synthesize(systemPrompt, userContent, maxTokens, timeoutMs, maxRetries, thinking)
+    expect(draftCallArgs[5]).toBeFalsy();
   });
 
   it("handles synthesis failure gracefully", async () => {
@@ -824,7 +831,7 @@ describe("prism_finalize draft phase", () => {
       content: "Here are my thoughts about the finalization:\n\nThe handoff should be updated...",
       input_tokens: 3000,
       output_tokens: 1000,
-      model: "claude-opus-4-6",
+      model: "claude-opus-4-7",
     });
 
     const result = await callFinalizeTool({

@@ -65,21 +65,30 @@ export const SUMMARY_SIZE_THRESHOLD = 5_120;  // 5 KB
 /** Root directory for PRISM living documents within project repos (D-67) */
 export const DOC_ROOT = ".prism";
 
-/** Anthropic API key for Opus 4.6 synthesis (Track 2) */
+/** Anthropic API key for Opus 4.7 synthesis (Track 2) */
 export const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? "";
 
 /** Model to use for synthesis */
-export const SYNTHESIS_MODEL = process.env.SYNTHESIS_MODEL ?? "claude-opus-4-6";
+export const SYNTHESIS_MODEL = process.env.SYNTHESIS_MODEL ?? "claude-opus-4-7";
 
 /** Whether synthesis is enabled (requires API key) */
 export const SYNTHESIS_ENABLED = !!process.env.ANTHROPIC_API_KEY;
 
-/** Max output tokens for synthesis calls */
-export const SYNTHESIS_MAX_OUTPUT_TOKENS = 4096;
+/** Max output tokens for synthesis calls. Bumped from 4096 → 8192 for Phase 3a:
+ *  adaptive thinking on Opus 4.7 emits internal thinking content blocks that
+ *  are counted against max_tokens. Text-output budget after thinking overhead
+ *  remains ample for the 2K–4K-token brief target. */
+export const SYNTHESIS_MAX_OUTPUT_TOKENS = 8192;
 
 /** Timeout for post-finalization synthesis (S34d). Separate from MCP_SAFE_TIMEOUT
- *  because synthesis runs after commit succeeds and is best-effort/non-fatal. */
-export const SYNTHESIS_TIMEOUT_MS = 120_000;
+ *  because synthesis runs after commit succeeds and is best-effort/non-fatal.
+ *  Phase 3a bump from 120_000 → 240_000 default and made env-overridable: S71
+ *  baseline p95 was 118.9s on Opus 4.6 *without* thinking; adaptive thinking
+ *  adds variable per-request output, so doubling the ceiling absorbs the new
+ *  variance without pinching any real call. Synthesis is fire-and-forget per
+ *  D-78 so longer ceiling has no operator-visible cost. */
+export const SYNTHESIS_TIMEOUT_MS =
+  parseInt(process.env.SYNTHESIS_TIMEOUT_MS ?? "240000", 10) || 240_000;
 
 /** Tool-level wall-clock deadline for prism_push (S40 C4). Hard backstop on
  *  top of the per-request GitHub fetch timeout. Configurable via env var so
