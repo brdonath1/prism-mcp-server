@@ -8,7 +8,12 @@ import { LIVING_DOCUMENT_NAMES, SYNTHESIS_ENABLED, SYNTHESIS_TIMEOUT_MS } from "
 import { resolveDocFiles, resolveDocPushPath } from "../utils/doc-resolver.js";
 import { logger } from "../utils/logger.js";
 import { synthesize } from "./client.js";
-import { FINALIZATION_SYNTHESIS_PROMPT, buildSynthesisUserMessage } from "./prompts.js";
+import {
+  FINALIZATION_SYNTHESIS_PROMPT,
+  PENDING_DOC_UPDATES_PROMPT,
+  buildSynthesisUserMessage,
+  buildPendingDocUpdatesUserMessage,
+} from "./prompts.js";
 import { generateCstTimestamp } from "../utils/banner.js";
 import { recordSynthesisEvent } from "./synthesis-tracker.js";
 
@@ -163,6 +168,171 @@ export async function generateIntelligenceBrief(
       success: false,
       error: message,
       duration_ms: duration,
+    });
+
+    return { success: false, error: message };
+  }
+}
+
+/**
+ * Generate a pending doc-updates proposal for a project (D-156 §3.6, D-155).
+ *
+ * Parallel in shape to generateIntelligenceBrief: same input bundle, different
+ * system prompt, different output file. Fired alongside generateIntelligenceBrief
+ * by finalize.ts commit-action via Promise.allSettled — fire-and-forget per
+ * INS-178.
+ *
+ * Excludes both `intelligence-brief.md` AND `pending-doc-updates.md` from input
+ * to avoid circular references.
+ */
+export async function generatePendingDocUpdates(
+  projectSlug: string,
+  sessionNumber: number
+): Promise<SynthesisOutcome> {
+  if (!SYNTHESIS_ENABLED) {
+    return { success: false, error: "Synthesis disabled — no API key" };
+  }
+
+  const start = Date.now();
+
+  try {
+    // 1. Fetch ALL living documents minus intelligence-brief.md AND
+    //    pending-doc-updates.md (avoid circular references).
+    //    `pending-doc-updates.md` is not in LIVING_DOCUMENT_NAMES today; the
+    //    cast + double-filter is defensive in case it gets added later.
+    const docsToFetch = (LIVING_DOCUMENT_NAMES as readonly string[]).filter(
+      d => d !== "intelligence-brief.md" && d !== "pending-doc-updates.md",
+    );
+    const docMap = await resolveDocFiles(projectSlug, [...docsToFetch]);
+
+    // Decision domain files — same back-compat fetch as the intelligence brief.
+    const decisionDomainNames = [
+      "decisions/architecture.md",
+      "decisions/operations.md",
+      "decisions/optimization.md",
+      "decisions/onboarding.md",
+      "decisions/integrity.md",
+      "decisions/resilience.md",
+      "decisions/production-stack.md",
+    ];
+
+    let domainMap: Map<string, { content: string; size: number }> = new Map();
+    try {
+      domainMap = await resolveDocFiles(projectSlug, decisionDomainNames);
+    } catch {
+      logger.info("Some decision domain files not found", { projectSlug });
+    }
+
+    const allDocs = new Map([...docMap, ...domainMap]);
+
+    // 2. Build the user message
+    const timestamp = generateCstTimestamp();
+    const userMessage = buildPendingDocUpdatesUserMessage(
+      projectSlug,
+      sessionNumber,
+      timestamp,
+      allDocs,
+    );
+
+    logger.info("Pending doc-updates synthesis input assembled", {
+      projectSlug,
+      sessionNumber,
+      documentCount: allDocs.size,
+      totalBytes: Array.from(allDocs.values()).reduce((sum, d) => sum + d.size, 0),
+    });
+
+    // 3. Call Opus 4.6
+    const result = await synthesize(
+      PENDING_DOC_UPDATES_PROMPT,
+      userMessage,
+      undefined,
+      SYNTHESIS_TIMEOUT_MS,
+    );
+
+    if (!result.success) {
+      recordSynthesisEvent({
+        project: projectSlug,
+        sessionNumber,
+        timestamp: new Date().toISOString(),
+        success: false,
+        error: result.error,
+        duration_ms: Date.now() - start,
+        synthesis_kind: "pending_updates",
+      });
+      return { success: false, error: result.error };
+    }
+
+    // 4. Validate response sections — lenient (warn-and-push, don't fail).
+    const requiredSections = [
+      "## architecture.md",
+      "## glossary.md",
+      "## insights.md",
+      "## No Updates Needed",
+    ];
+    const missingSections = requiredSections.filter(s => !result.content.includes(s));
+    if (missingSections.length > 0) {
+      logger.warn("Pending doc-updates output missing sections", { missingSections });
+    }
+
+    // 5. Ensure EOF sentinel
+    let content = result.content.trim();
+    if (!content.endsWith("<!-- EOF: pending-doc-updates.md -->")) {
+      content += "\n\n<!-- EOF: pending-doc-updates.md -->\n";
+    }
+
+    // 6. Push
+    const pushPath = await resolveDocPushPath(projectSlug, "pending-doc-updates.md");
+    await pushFile(
+      projectSlug,
+      pushPath,
+      content,
+      `prism: S${sessionNumber} pending doc updates (auto-synthesized)`,
+    );
+
+    const outcome: SynthesisOutcome = {
+      success: true,
+      bytes_written: new TextEncoder().encode(content).length,
+      input_tokens: result.input_tokens,
+      output_tokens: result.output_tokens,
+    };
+
+    logger.info("Pending doc-updates generated and pushed", {
+      projectSlug,
+      sessionNumber,
+      ...outcome,
+      ms: Date.now() - start,
+    });
+
+    recordSynthesisEvent({
+      project: projectSlug,
+      sessionNumber,
+      timestamp: new Date().toISOString(),
+      success: true,
+      input_tokens: outcome.input_tokens,
+      output_tokens: outcome.output_tokens,
+      duration_ms: Date.now() - start,
+      synthesis_kind: "pending_updates",
+    });
+
+    return outcome;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const duration = Date.now() - start;
+    logger.error("Pending doc-updates generation failed", {
+      projectSlug,
+      sessionNumber,
+      error: message,
+      ms: duration,
+    });
+
+    recordSynthesisEvent({
+      project: projectSlug,
+      sessionNumber,
+      timestamp: new Date().toISOString(),
+      success: false,
+      error: message,
+      duration_ms: duration,
+      synthesis_kind: "pending_updates",
     });
 
     return { success: false, error: message };

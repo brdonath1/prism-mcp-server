@@ -1,12 +1,69 @@
 // Set dummy PAT to prevent config.ts from calling process.exit(1) during import
 process.env.GITHUB_PAT = process.env.GITHUB_PAT || "test-dummy-pat";
+process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "test-dummy-anthropic";
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+// Mocks for the commit-handler dispatch smoke test. Declared before the
+// imports they target — vitest hoists vi.mock automatically.
+vi.mock("../src/github/client.js", () => ({
+  fetchFile: vi.fn(),
+  fetchFiles: vi.fn(),
+  pushFile: vi.fn(),
+  pushFiles: vi.fn(),
+  listDirectory: vi.fn(),
+  listCommits: vi.fn(),
+  getCommit: vi.fn(),
+  deleteFile: vi.fn(),
+  fileExists: vi.fn(),
+  createAtomicCommit: vi.fn(),
+  getDefaultBranch: vi.fn(),
+  getHeadSha: vi.fn(),
+}));
+
+vi.mock("../src/ai/client.js", () => ({
+  synthesize: vi.fn(),
+}));
+
+vi.mock("../src/ai/synthesize.js", () => ({
+  generateIntelligenceBrief: vi.fn(),
+  generatePendingDocUpdates: vi.fn(),
+}));
+
+vi.mock("../src/config.js", async (importOriginal) => {
+  const actual = await importOriginal() as Record<string, unknown>;
+  return {
+    ...actual,
+    SYNTHESIS_ENABLED: true,
+  };
+});
+
 import {
   extractJSON,
   DRAFT_RELEVANT_DOCS,
   ARCHIVE_FILE_SUFFIX,
+  registerFinalize,
 } from "../src/tools/finalize.js";
+import {
+  fetchFile,
+  pushFile,
+  listDirectory,
+  listCommits,
+  createAtomicCommit,
+} from "../src/github/client.js";
+import {
+  generateIntelligenceBrief,
+  generatePendingDocUpdates,
+} from "../src/ai/synthesize.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+
+const mockFetchFile = vi.mocked(fetchFile);
+const mockPushFile = vi.mocked(pushFile);
+const mockListDirectory = vi.mocked(listDirectory);
+const mockListCommits = vi.mocked(listCommits);
+const mockCreateAtomicCommit = vi.mocked(createAtomicCommit);
+const mockGenerateIntelligenceBrief = vi.mocked(generateIntelligenceBrief);
+const mockGeneratePendingDocUpdates = vi.mocked(generatePendingDocUpdates);
 
 describe("extractJSON (B.8 — robust AI output parsing)", () => {
   it("parses raw JSON directly", () => {
@@ -100,5 +157,79 @@ describe("DRAFT_RELEVANT_DOCS archive exclusion (S40 FINDING-14 C3)", () => {
     expect(DRAFT_RELEVANT_DOCS).toContain("session-log.md");
     expect(DRAFT_RELEVANT_DOCS).toContain("task-queue.md");
     expect(DRAFT_RELEVANT_DOCS).toContain("insights.md");
+  });
+});
+
+// ── Commit-handler synthesis dispatch (D-156 §3.6) ──────────────────────────────
+
+describe("commit handler dispatches both synthesis functions in parallel", () => {
+  const HANDOFF_CONTENT = `## Meta
+- Handoff Version: 30
+- Session Count: 25
+- Template Version: v2.9.0
+- Status: Active
+
+## Critical Context
+1. PRISM MCP Server runs the show.
+
+## Where We Are
+Working on the dispatch test.
+
+<!-- EOF: handoff.md -->`;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockFetchFile.mockResolvedValue({
+      content: HANDOFF_CONTENT,
+      sha: "head_sha",
+      size: HANDOFF_CONTENT.length,
+    });
+    mockListDirectory.mockResolvedValue([]);
+    mockListCommits.mockResolvedValue([]);
+    mockPushFile.mockResolvedValue({ success: true, size: 100, sha: "new_sha" });
+    mockCreateAtomicCommit.mockResolvedValue({ success: true, sha: "atomic_sha", files_committed: 1 });
+    mockGenerateIntelligenceBrief.mockResolvedValue({ success: true, input_tokens: 100, output_tokens: 50 });
+    mockGeneratePendingDocUpdates.mockResolvedValue({ success: true, input_tokens: 100, output_tokens: 50 });
+  });
+
+  it("invokes both generateIntelligenceBrief and generatePendingDocUpdates on a successful commit", async () => {
+    const server = new McpServer(
+      { name: "test-server", version: "1.0.0" },
+      { capabilities: { tools: {} } },
+    );
+    registerFinalize(server);
+    const tool = (server as any)._registeredTools["prism_finalize"];
+
+    const mockExtra = {
+      signal: new AbortController().signal,
+      _meta: undefined,
+      requestId: "test-dispatch-1",
+      sendNotification: vi.fn().mockResolvedValue(undefined),
+      sendRequest: vi.fn().mockResolvedValue(undefined),
+    };
+
+    const result = await tool.handler(
+      {
+        project_slug: "test-project",
+        action: "commit",
+        session_number: 26,
+        handoff_version: 31,
+        files: [
+          { path: "glossary.md", content: "# Glossary\n<!-- EOF: glossary.md -->" },
+        ],
+      },
+      mockExtra,
+    );
+
+    const data = JSON.parse(result.content[0].text);
+    expect(data.all_succeeded).toBe(true);
+    expect(data.synthesis_outcome).toBe("background");
+
+    // The dispatch is fire-and-forget via Promise.allSettled. The .then callback
+    // may have queued microtasks after the response is built — flush before
+    // asserting both mocks were called.
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(mockGenerateIntelligenceBrief).toHaveBeenCalledOnce();
+    expect(mockGeneratePendingDocUpdates).toHaveBeenCalledOnce();
   });
 });

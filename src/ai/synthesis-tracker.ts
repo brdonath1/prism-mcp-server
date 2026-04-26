@@ -7,6 +7,13 @@
 
 import { logger } from "../utils/logger.js";
 
+/**
+ * Distinguishes which background synthesis call produced this event.
+ * Older events (pre-D-156 §3.6) lack this field — treat absence as
+ * "intelligence_brief" for back-compat in any future segmentation.
+ */
+export type SynthesisKind = "intelligence_brief" | "pending_updates";
+
 export interface SynthesisEvent {
   project: string;
   sessionNumber: number;
@@ -16,6 +23,7 @@ export interface SynthesisEvent {
   input_tokens?: number;
   output_tokens?: number;
   duration_ms?: number;
+  synthesis_kind?: SynthesisKind;
 }
 
 const MAX_EVENTS_PER_PROJECT = 20;
@@ -42,11 +50,14 @@ export function recordSynthesisEvent(event: SynthesisEvent): void {
   projectEvents.set(slug, events);
 
   if (!event.success) {
-    logger.error("SYNTHESIS ALERT: Intelligence brief generation failed", {
+    const kind = event.synthesis_kind ?? "intelligence_brief";
+    const kindLabel = kind === "pending_updates" ? "Pending doc-updates" : "Intelligence brief";
+    logger.error(`SYNTHESIS ALERT: ${kindLabel} generation failed`, {
       project: event.project,
       session: event.sessionNumber,
       error: event.error,
       timestamp: event.timestamp,
+      synthesis_kind: kind,
     });
   }
 }

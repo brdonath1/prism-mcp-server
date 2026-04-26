@@ -44,6 +44,7 @@ vi.mock("../src/ai/client.js", () => ({
 
 vi.mock("../src/ai/synthesize.js", () => ({
   generateIntelligenceBrief: vi.fn(),
+  generatePendingDocUpdates: vi.fn(),
 }));
 
 import {

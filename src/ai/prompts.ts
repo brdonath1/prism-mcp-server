@@ -76,6 +76,89 @@ export function buildSynthesisUserMessage(
 }
 
 /**
+ * System prompt for pending doc-updates synthesis (D-156 §3.6, D-155).
+ *
+ * Produces a structured markdown proposal of concrete deltas the operator
+ * should apply to architecture.md / glossary.md / insights.md after the
+ * session that just finalized. Read by the next session at bootstrap and
+ * acted on via prism_patch.
+ */
+export const PENDING_DOC_UPDATES_PROMPT = `You are the PRISM Pending Doc-Updates Engine. Your purpose is to read ALL of a project's living documents and produce concrete, actionable proposals for updates to architecture.md, glossary.md, and insights.md based on what the most recent sessions surfaced.
+
+You are NOT writing a narrative summary. You are writing concrete, ready-to-apply content that the operator can review and patch into the relevant living document with minimal editing.
+
+Produce a markdown document with EXACTLY these four H2 sections, in this order:
+
+## architecture.md
+
+One subsection per narrative section that should be added or updated. Each subsection:
+### Proposed: <section heading or short change description>
+
+Body: the actual proposed prose, ready to apply. Include the rationale from the session(s) that motivated the update. Be concrete. If a new architectural concept emerged this session (a new component, pattern, decision boundary), draft the actual paragraph the operator can paste into architecture.md.
+
+## glossary.md
+
+One subsection per term to add. Each subsection:
+### Add term: <term name>
+
+Body: the proposed glossary entry — definition, first surfaced in S{N} or D-N when applicable, and any cross-references.
+
+## insights.md
+
+One subsection per insight-housekeeping action. Use one of these subsection forms:
+### Re-tier: INS-N (current Tier X → proposed Tier Y) — rationale
+### Consolidate: INS-N + INS-M — rationale + proposed merged content
+### Mark dormant: INS-N — rationale
+
+NEVER propose deletion of an insight. Dormant or archived only.
+
+## No Updates Needed
+
+If a section above has no proposals, render it as just this single sentence: "No updates needed at this time." Do NOT omit any of the four section headers — every section must be present even when empty.
+
+FORMATTING RULES:
+- Output valid markdown. Start with the H1 title and metadata block shown below.
+- Be CONCRETE. Each proposal must be ready to apply with at most light editing.
+- Never propose deletions of insights, decisions, or glossary terms — only additions or housekeeping (re-tier / consolidate / mark dormant).
+- Total output: 1500-3500 tokens.
+- End with the EOF sentinel: <!-- EOF: pending-doc-updates.md -->
+
+OUTPUT FORMAT — start your response with exactly this:
+# Pending Doc Updates — {PROJECT_NAME}
+
+> Auto-generated proposals. Operator review required before applying via \`prism_patch\`.
+> Last synthesized: S{SESSION_NUMBER} ({TIMESTAMP})
+
+Then the four H2 sections above.`;
+
+/**
+ * Build the user message for pending doc-updates synthesis.
+ * Same shape as buildSynthesisUserMessage (the input bundle is identical;
+ * only the system prompt differs).
+ */
+export function buildPendingDocUpdatesUserMessage(
+  projectSlug: string,
+  sessionNumber: number,
+  timestamp: string,
+  documents: Map<string, { content: string; size: number }>
+): string {
+  const parts: string[] = [
+    `Project: ${projectSlug}`,
+    `Session just completed: S${sessionNumber}`,
+    `Timestamp: ${timestamp}`,
+    `\n---\nLIVING DOCUMENTS (read all of these):\n`,
+  ];
+
+  for (const [path, doc] of documents) {
+    parts.push(`\n### FILE: ${path} (${doc.size} bytes)\n`);
+    parts.push(doc.content);
+    parts.push(`\n--- END ${path} ---\n`);
+  }
+
+  return parts.join("\n");
+}
+
+/**
  * System prompt for finalization draft generation.
  * Produces structured JSON drafts for session log, handoff updates, and task queue.
  */

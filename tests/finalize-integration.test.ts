@@ -29,6 +29,7 @@ vi.mock("../src/ai/client.js", () => ({
 
 vi.mock("../src/ai/synthesize.js", () => ({
   generateIntelligenceBrief: vi.fn(),
+  generatePendingDocUpdates: vi.fn(),
 }));
 
 // Mock SYNTHESIS_ENABLED to true for draft phase tests
@@ -296,6 +297,64 @@ describe("prism_finalize audit phase", () => {
     expect(data.audit.session_work_products.commit_count).toBe(3);
     expect(data.audit.session_work_products.files_pushed_this_session).toContain("architecture.md");
     expect(data.audit.session_work_products.files_pushed_this_session).toContain("handoff.md");
+  });
+
+  it("returns currency_warnings array with one entry per narrative doc (D-156 §3.7)", async () => {
+    const docMap = buildDocMap({
+      "architecture.md": "# Architecture\n\n> Updated: S20\n\nBody.\n\n<!-- EOF: architecture.md -->",
+      "glossary.md": "# Glossary\n\n> Updated: S25\n\nDefinitions.\n\n<!-- EOF: glossary.md -->",
+    });
+    setupFetchFileMockFromDocMap(mockFetchFile, docMap);
+    mockListDirectory.mockResolvedValue([]);
+    mockListCommits.mockResolvedValue([]);
+
+    const result = await callFinalizeTool({
+      project_slug: "test-project",
+      action: "audit",
+      session_number: 26,
+    });
+
+    const data = parseResult(result);
+    expect(Array.isArray(data.audit.currency_warnings)).toBe(true);
+    expect(data.audit.currency_warnings).toHaveLength(2);
+    const paths = data.audit.currency_warnings.map((w: any) => w.path).sort();
+    expect(paths).toEqual(["architecture.md", "glossary.md"]);
+
+    const archWarning = data.audit.currency_warnings.find((w: any) => w.path === "architecture.md");
+    expect(archWarning.last_modified_session).toBe(20);
+    expect(archWarning.current_session).toBe(26);
+    expect(archWarning.sessions_since_last_modified).toBe(6);
+  });
+
+  it("fires currency_warnings.acknowledgment_required when threshold + arch decisions met", async () => {
+    const archBody = "# Architecture\n\n> Updated: S40\n\nNeeds refresh.\n\n<!-- EOF: architecture.md -->";
+    const indexBody = `| ID | Title | Domain | Status | Session |
+|---|---|---|---|---|
+| D-300 | Routing layer | architecture | SETTLED | 55 |
+| D-301 | Caching layer | architecture | SETTLED | 60 |
+| D-302 | Synthesis routing | architecture | SETTLED | 65 |
+<!-- EOF: _INDEX.md -->`;
+    const docMap = buildDocMap({
+      "architecture.md": archBody,
+      "decisions/_INDEX.md": indexBody,
+    });
+    setupFetchFileMockFromDocMap(mockFetchFile, docMap);
+    mockListDirectory.mockResolvedValue([]);
+    mockListCommits.mockResolvedValue([]);
+
+    const result = await callFinalizeTool({
+      project_slug: "test-project",
+      action: "audit",
+      session_number: 67,
+    });
+
+    const data = parseResult(result);
+    const archWarning = data.audit.currency_warnings.find((w: any) => w.path === "architecture.md");
+    expect(archWarning.last_modified_session).toBe(40);
+    expect(archWarning.sessions_since_last_modified).toBe(27);
+    expect(archWarning.pending_arch_decisions_count).toBe(3);
+    expect(archWarning.pending_arch_decision_ids).toEqual(["D-300", "D-301", "D-302"]);
+    expect(archWarning.acknowledgment_required).toBe(true);
   });
 });
 

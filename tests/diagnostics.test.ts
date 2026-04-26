@@ -131,6 +131,7 @@ vi.mock("../src/utils/doc-guard.js", () => ({
 // Mock AI client for synthesize tests
 vi.mock("../src/ai/synthesize.js", () => ({
   generateIntelligenceBrief: vi.fn(),
+  generatePendingDocUpdates: vi.fn(),
 }));
 
 // Mock AI client for finalize draft
