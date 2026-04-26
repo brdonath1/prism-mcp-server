@@ -464,15 +464,34 @@ export function registerBootstrap(server: McpServer): void {
         // Wait for both boot-test and prefetch to complete
         const [bootTestResult] = await Promise.all([bootTestPromise, prefetchPromise]);
 
-        // 5. Intelligence brief + insights loaded in parallel (D.1 fix — was sequential)
+        // 5. Intelligence brief + insights + pending doc-updates loaded in parallel
+        //    (D.1 fix — was sequential; pending-doc-updates added per D-156 §3.5).
         let intelligenceBrief: string | null = null;
         let intelligenceBriefFull: string | null = null;
         let insightsContent: string | null = null;
 
-        const [briefOutcome, insightsOutcome] = await Promise.allSettled([
-          resolveDocPath(resolvedSlug, "intelligence-brief.md"),
-          resolveDocPath(resolvedSlug, "insights.md"),
-        ]);
+        const [briefOutcome, insightsOutcome, pendingUpdatesOutcome] =
+          await Promise.allSettled([
+            resolveDocPath(resolvedSlug, "intelligence-brief.md"),
+            resolveDocPath(resolvedSlug, "insights.md"),
+            resolveDocPath(resolvedSlug, "pending-doc-updates.md"),
+          ]);
+
+        // Always-prefetch pending-doc-updates.md when it exists. Surfaced as an
+        // entry in `prefetched_documents` per D-156 §3.5 / brief author note.
+        if (pendingUpdatesOutcome.status === "fulfilled") {
+          const pendingFile = pendingUpdatesOutcome.value;
+          prefetchedDocuments.push({
+            file: `${DOC_ROOT}/pending-doc-updates.md`,
+            size_bytes: pendingFile.content.length,
+            summary: summarizeMarkdown(pendingFile.content),
+          });
+          bytesDelivered += pendingFile.content.length;
+          filesFetched++;
+          logger.info("pending doc-updates prefetched", {
+            size: pendingFile.content.length,
+          });
+        }
 
         if (briefOutcome.status === "fulfilled") {
           const briefFile = briefOutcome.value;

@@ -87,7 +87,8 @@ import { extractHeaders, extractSection, parseNumberedList } from "../utils/summ
 import { parseHandoffVersion } from "../validation/handoff.js";
 import { validateFile } from "../validation/index.js";
 import { parseMarkdownTable } from "../utils/summarizer.js";
-import { generateIntelligenceBrief } from "../ai/synthesize.js";
+import { generateIntelligenceBrief, generatePendingDocUpdates } from "../ai/synthesize.js";
+import { computeCurrencyWarning, type CurrencyWarning } from "../utils/doc-currency.js";
 import { escapeHtml, stripMarkdown, formatResumptionHtml, toolIcon, generateCstTimestamp } from "../utils/banner.js";
 import { DiagnosticsCollector } from "../utils/diagnostics.js";
 
@@ -303,6 +304,22 @@ async function auditPhase(projectSlug: string, sessionNumber: number) {
     // handoff-history directory may not exist
   }
 
+  // 5. Doc-currency check (D-156 §3.7 / D-155). Computed from already-fetched
+  //    docs — no extra GitHub round-trips. Narrative docs are architecture.md
+  //    and glossary.md per the brief; missing markers fall back to null
+  //    (warning is non-fatal — operator-side advisory only).
+  const NARRATIVE_DOCS = ["architecture.md", "glossary.md"] as const;
+  const indexBody = decisionResult?.content ?? "";
+  const currencyWarnings: CurrencyWarning[] = NARRATIVE_DOCS.map((docName) => {
+    const docResult = docMap.get(docName);
+    return computeCurrencyWarning({
+      path: docName,
+      docBody: docResult?.content ?? "",
+      indexBody,
+      currentSession: sessionNumber,
+    });
+  });
+
   return {
     project: projectSlug,
     session_number: sessionNumber,
@@ -312,6 +329,7 @@ async function auditPhase(projectSlug: string, sessionNumber: number) {
       session_work_products: sessionWorkProducts,
       handoff_backup_exists: handoffBackupExists,
       current_handoff_version: currentVersion,
+      currency_warnings: currencyWarnings,
       warnings,
     },
   };
@@ -697,20 +715,40 @@ async function commitPhase(
     synthesisStatusHint =
       "Synthesis running in background. Check via prism_synthesize mode=status or wait for next session bootstrap.";
     const synthStart = Date.now();
-    // Fire synthesis in background; do not await. Failures are logged but do not
-    // affect the commit response (which has already been constructed by the time
-    // this resolves).
-    void generateIntelligenceBrief(projectSlug, sessionNumber)
-      .then((result) => {
-        logger.info("background synthesis complete", {
-          projectSlug,
-          sessionNumber,
-          success: result.success ?? false,
-          durationMs: Date.now() - synthStart,
+    // Fire BOTH synthesis functions in background via Promise.allSettled so the
+    // slower of the two does not block the other (D-156 §3.6 / D-155). Both
+    // remain fire-and-forget per INS-178 — commit response is already built.
+    const synthesisLabels = ["intelligence_brief", "pending_updates"] as const;
+    void Promise.allSettled([
+      generateIntelligenceBrief(projectSlug, sessionNumber),
+      generatePendingDocUpdates(projectSlug, sessionNumber),
+    ])
+      .then((results) => {
+        results.forEach((r, idx) => {
+          const label = synthesisLabels[idx];
+          if (r.status === "fulfilled") {
+            logger.info("background synthesis complete", {
+              projectSlug,
+              sessionNumber,
+              synthesis_kind: label,
+              success: r.value?.success ?? false,
+              durationMs: Date.now() - synthStart,
+            });
+          } else {
+            logger.error("background synthesis failed", {
+              projectSlug,
+              sessionNumber,
+              synthesis_kind: label,
+              err: r.reason instanceof Error ? r.reason.message : String(r.reason),
+              durationMs: Date.now() - synthStart,
+            });
+          }
         });
       })
       .catch((err) => {
-        logger.error("background synthesis failed", {
+        // Defensive — Promise.allSettled itself never rejects, so this catches
+        // synchronous throws from the .then callback (e.g. logger failures).
+        logger.error("background synthesis dispatch failed", {
           projectSlug,
           sessionNumber,
           err: err instanceof Error ? err.message : String(err),
