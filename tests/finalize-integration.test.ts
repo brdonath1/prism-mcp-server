@@ -795,12 +795,12 @@ describe("prism_finalize draft phase", () => {
     expect(data.output_tokens).toBe(2000);
     expect(data.review_instructions).toContain("Review each draft");
 
-    // Phase 3a: draft phase (CS-1) MUST NOT pass thinking: true.
-    // Adaptive thinking on draft is gated to Phase 3b pending benchmark.
+    // Phase 3b: draft phase (CS-1) passes thinking: true. Flipped after the
+    // benchmark in briefs/results/phase-3b-benchmark.md confirmed safety.
     expect(mockSynthesize).toHaveBeenCalledTimes(1);
     const draftCallArgs = mockSynthesize.mock.calls[0];
     // synthesize(systemPrompt, userContent, maxTokens, timeoutMs, maxRetries, thinking)
-    expect(draftCallArgs[5]).toBeFalsy();
+    expect(draftCallArgs[5]).toBe(true);
   });
 
   it("handles synthesis failure gracefully", async () => {
