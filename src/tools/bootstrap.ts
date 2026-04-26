@@ -18,7 +18,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { fetchFile, fetchFiles, pushFile, listRepos } from "../github/client.js";
-import { CC_DISPATCH_ENABLED, DOC_ROOT, FRAMEWORK_REPO, HANDOFF_CRITICAL_SIZE, LIVING_DOCUMENTS, MCP_TEMPLATE_PATH, PREFETCH_KEYWORDS, PROJECT_DISPLAY_NAMES, RAILWAY_ENABLED, STANDING_RULE_TOPIC_KEYWORDS, resolveProjectSlug } from "../config.js";
+import { CC_DISPATCH_ENABLED, DOC_ROOT, FRAMEWORK_REPO, HANDOFF_CRITICAL_SIZE, LIVING_DOCUMENTS, MCP_TEMPLATE_PATH, PREFETCH_KEYWORDS, PROJECT_DISPLAY_NAMES, RAILWAY_ENABLED, resolveProjectSlug } from "../config.js";
 import { getExpectedToolSurface, POST_BOOT_TOOL_SEARCHES } from "../tool-registry.js";
 import { resolveDocPath, resolveDocPushPath } from "../utils/doc-resolver.js";
 import { logger } from "../utils/logger.js";
@@ -32,6 +32,22 @@ import {
 import { parseHandoffVersion, parseSessionCount, parseTemplateVersion } from "../validation/handoff.js";
 import { generateCstTimestamp, parseResumptionForBanner, renderBannerHtml, renderBannerText, type BannerData, type BannerTextInput } from "../utils/banner.js";
 import { DiagnosticsCollector } from "../utils/diagnostics.js";
+import {
+  extractStandingRules,
+  selectStandingRulesForBoot,
+  topicMatch,
+  type StandingRule,
+} from "../utils/standing-rules.js";
+
+// Re-export the standing-rule helpers so existing imports from
+// "../src/tools/bootstrap.js" continue to resolve (PR 4 / D-156 §3.5
+// extracted these to src/utils/standing-rules.ts; back-compat per INS-28).
+export {
+  extractStandingRules,
+  selectStandingRulesForBoot,
+  topicMatch,
+};
+export type { StandingRule };
 
 /** Input schema for prism_bootstrap */
 const inputSchema = {
@@ -70,126 +86,6 @@ function parseDecisions(content: string): Array<{ id: string; title: string; sta
       status: row[statusKey] ?? "",
     };
   }).filter(d => d.id.length > 0);
-}
-
-/** Standing rule extracted from insights — procedure-only (D-47), tier-aware (D-156) */
-export interface StandingRule {
-  id: string;
-  title: string;
-  procedure: string; // D-47: procedure-only, not full content
-  tier: "A" | "B" | "C"; // D-156: A=always-load, B=topic-load, C=reference-only. Default A when tag absent (back-compat).
-  topics: string[];      // D-156: topics this rule applies to. Empty array when not specified. Used for Tier B selection.
-}
-
-/**
- * Extract standing rules from insights content, keeping only the procedure portion.
- * ME-3 (D-48): Excludes ARCHIVED RULE, DORMANT RULE, ARCHIVED STANDING RULE,
- * and DORMANT STANDING RULE entries from the active set.
- */
-export function extractStandingRules(insightsContent: string | null): StandingRule[] {
-  if (!insightsContent) return [];
-
-  const rules: StandingRule[] = [];
-  const sections = insightsContent.split(/(?=^### )/m);
-
-  for (const section of sections) {
-    // D-48: Skip archived or dormant entries
-    if (/archived\s+(standing\s+)?rule/i.test(section) || /dormant\s+(standing\s+)?rule/i.test(section)) {
-      continue;
-    }
-
-    if (/standing\s+rule/i.test(section)) {
-      const headerMatch = section.match(/^### (INS-\d+):?\s*(.+)/);
-      if (headerMatch) {
-        // D-47: Extract procedure-only — find "Standing procedure:" and take everything after
-        let procedure = '';
-        const procStart = section.search(/\*\*Standing procedure:\*\*/i);
-        if (procStart !== -1) {
-          procedure = section.slice(procStart)
-            .replace(/^\*\*Standing procedure:\*\*\s*/i, '')
-            .trim();
-        }
-
-        // D-156: Parse tier tag from header (defaults to "A" when absent)
-        let tier: "A" | "B" | "C" = "A";
-        const tierMatch = headerMatch[2].match(/\[TIER:([A-Z])\]/i);
-        if (tierMatch) {
-          const letter = tierMatch[1].toUpperCase();
-          if (letter === "A" || letter === "B" || letter === "C") {
-            tier = letter;
-          } else {
-            logger.warn("standing rule has unknown tier letter; defaulting to A", { id: headerMatch[1], tierLetter: letter });
-          }
-        }
-
-        // D-156: Strip both — STANDING RULE and [TIER:X] from the visible title
-        const title = headerMatch[2]
-          .replace(/\s*\[TIER:[A-Z]\]\s*/i, '')
-          .replace(/\s*—\s*STANDING RULE\s*/gi, '')
-          .trim();
-
-        // D-156: Parse topics from <!-- topics: foo, bar --> comment in section body
-        let topics: string[] = [];
-        const topicsMatch = section.match(/<!--\s*topics:\s*([^-]+?)\s*-->/i);
-        if (topicsMatch) {
-          topics = topicsMatch[1]
-            .split(',')
-            .map(t => t.trim())
-            .filter(t => t.length > 0);
-        }
-
-        rules.push({
-          id: headerMatch[1],
-          title,
-          procedure,
-          tier,
-          topics,
-        });
-      }
-    }
-  }
-
-  return rules;
-}
-
-/**
- * Match a standing rule's topics against an opening message via STANDING_RULE_TOPIC_KEYWORDS (D-156).
- * Returns true if any topic on the rule has at least one keyword present in the opening message
- * (case-insensitive substring match). Returns false when openingMessage is empty/undefined or
- * the rule has no topics.
- */
-export function topicMatch(openingMessage: string | undefined, ruleTopics: string[]): boolean {
-  if (!openingMessage || ruleTopics.length === 0) return false;
-  const lower = openingMessage.toLowerCase();
-  for (const topic of ruleTopics) {
-    const keywords = STANDING_RULE_TOPIC_KEYWORDS[topic];
-    if (!keywords) continue; // Unknown topic on the rule — no match (and worth a future cleanup signal)
-    for (const kw of keywords) {
-      if (lower.includes(kw)) return true;
-    }
-  }
-  return false;
-}
-
-/**
- * Select which standing rules to deliver at bootstrap based on tier (D-156).
- *
- * Selection rules:
- * - Tier A: always include (behavioral judgment rules effective across every session)
- * - Tier B: include if topicMatch returns true (rule's topics overlap with opening_message keywords)
- * - Tier C: never include at bootstrap (reference-only; available via prism_load_rules in PR 4)
- *
- * Returns a new array — does not mutate the input. Order is preserved from the input.
- */
-export function selectStandingRulesForBoot(
-  rules: StandingRule[],
-  openingMessage: string | undefined,
-): StandingRule[] {
-  return rules.filter(rule => {
-    if (rule.tier === "A") return true;
-    if (rule.tier === "B") return topicMatch(openingMessage, rule.topics);
-    return false; // tier C
-  });
 }
 
 /**

@@ -51,6 +51,30 @@ Some content...
     expect(parseLastModifiedSession("> Updated: 64")).toBeNull();
     expect(parseLastModifiedSession("Updated: S64")).toBeNull(); // missing blockquote
   });
+
+  // PR 4 §4 / INS-180 Finding 1: production markers include trailing date or
+  // freeform note content. The relaxed regex must accept those while still
+  // rejecting non-boundary-followed digits like `S64bad`.
+  it("accepts production marker with trailing date — `> Updated: S64 (04-25-26)`", () => {
+    const body = `# Architecture\n\n> Updated: S64 (04-25-26)\n\nBody.`;
+    expect(parseLastModifiedSession(body)).toBe(64);
+  });
+
+  it("accepts marker with trailing freeform note — `> Updated: S64 — refresh after PR 4`", () => {
+    const body = `# Architecture\n\n> Updated: S64 — refresh after PR 4\n\nBody.`;
+    expect(parseLastModifiedSession(body)).toBe(64);
+  });
+
+  it("still accepts the strict marker form (no trailing content)", () => {
+    // Regression check that relaxation didn't break the original strict case.
+    expect(parseLastModifiedSession("> Updated: S64")).toBe(64);
+  });
+
+  it("rejects non-boundary trailing letters — `> Updated: S64bad`", () => {
+    // \b after the digits must NOT match when followed immediately by a word
+    // character. This guards against accidental looser matches.
+    expect(parseLastModifiedSession("> Updated: S64bad")).toBeNull();
+  });
 });
 
 describe("parseArchDecisionsSinceSession", () => {

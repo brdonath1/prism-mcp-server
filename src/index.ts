@@ -29,6 +29,7 @@ import { registerSynthesize } from "./tools/synthesize.js";
 import { registerLogDecision } from "./tools/log-decision.js";
 import { registerLogInsight } from "./tools/log-insight.js";
 import { registerPatch } from "./tools/patch.js";
+import { registerLoadRules } from "./tools/load-rules.js";
 import { registerRailwayLogs } from "./tools/railway-logs.js";
 import { registerRailwayDeploy } from "./tools/railway-deploy.js";
 import { registerRailwayEnv } from "./tools/railway-env.js";
@@ -71,6 +72,7 @@ function createServer(): McpServer {
   registerLogDecision(server);
   registerLogInsight(server);
   registerPatch(server);
+  registerLoadRules(server);
 
   // Railway operations gateway (brief-103). Tools only register when the
   // RAILWAY_API_TOKEN environment variable is set, so existing deployments
