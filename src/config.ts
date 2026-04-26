@@ -250,6 +250,25 @@ export const PREFETCH_KEYWORDS: Record<string, string> = {
   learned: `${DOC_ROOT}/insights.md`,
 };
 
+/**
+ * Topic keyword map for Tier B standing-rule selection at bootstrap (D-156 / Phase 2 PR 1).
+ *
+ * Each topic maps to a list of keywords that, when present in the opening_message
+ * (case-insensitive substring match), triggers inclusion of Tier B standing rules
+ * tagged with that topic. Tier A rules always load; Tier C rules never load at boot.
+ *
+ * Schema: `Record<topic, string[]>`. Topics are stable identifiers used in insights.md
+ * `<!-- topics: foo, bar -->` comment lines.
+ */
+export const STANDING_RULE_TOPIC_KEYWORDS: Record<string, string[]> = {
+  cc_dispatch: ["cc_dispatch", "dispatch", "claude code", "cc brief", "pr ", "pull request", "merge"],
+  mcp_server: ["mcp server", "prism-mcp-server", "deploy", "railway", "tool change", "tool surface"],
+  trigger: ["trigger", "daemon", "marker file", "brief_dir", "trigger.config"],
+  prism_push: ["prism_push", "prism_patch", "living doc", "artifact push"],
+  auth: ["oauth", "api key", "keychain", "anthropic_api_key", "claude_code_oauth_token"],
+  ci_workflow: [".github/workflows", "workflow", "actions", " ci "],
+};
+
 /** MCP Auth Token for Bearer authentication (B.2) */
 export const MCP_AUTH_TOKEN = process.env.MCP_AUTH_TOKEN || "";
 

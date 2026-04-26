@@ -18,7 +18,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { fetchFile, fetchFiles, pushFile, listRepos } from "../github/client.js";
-import { CC_DISPATCH_ENABLED, DOC_ROOT, FRAMEWORK_REPO, HANDOFF_CRITICAL_SIZE, LIVING_DOCUMENTS, MCP_TEMPLATE_PATH, PREFETCH_KEYWORDS, PROJECT_DISPLAY_NAMES, RAILWAY_ENABLED, resolveProjectSlug } from "../config.js";
+import { CC_DISPATCH_ENABLED, DOC_ROOT, FRAMEWORK_REPO, HANDOFF_CRITICAL_SIZE, LIVING_DOCUMENTS, MCP_TEMPLATE_PATH, PREFETCH_KEYWORDS, PROJECT_DISPLAY_NAMES, RAILWAY_ENABLED, STANDING_RULE_TOPIC_KEYWORDS, resolveProjectSlug } from "../config.js";
 import { getExpectedToolSurface, POST_BOOT_TOOL_SEARCHES } from "../tool-registry.js";
 import { resolveDocPath, resolveDocPushPath } from "../utils/doc-resolver.js";
 import { logger } from "../utils/logger.js";
@@ -72,11 +72,13 @@ function parseDecisions(content: string): Array<{ id: string; title: string; sta
   }).filter(d => d.id.length > 0);
 }
 
-/** Standing rule extracted from insights — procedure-only (D-47) */
+/** Standing rule extracted from insights — procedure-only (D-47), tier-aware (D-156) */
 export interface StandingRule {
   id: string;
   title: string;
   procedure: string; // D-47: procedure-only, not full content
+  tier: "A" | "B" | "C"; // D-156: A=always-load, B=topic-load, C=reference-only. Default A when tag absent (back-compat).
+  topics: string[];      // D-156: topics this rule applies to. Empty array when not specified. Used for Tier B selection.
 }
 
 /**
@@ -108,16 +110,86 @@ export function extractStandingRules(insightsContent: string | null): StandingRu
             .trim();
         }
 
+        // D-156: Parse tier tag from header (defaults to "A" when absent)
+        let tier: "A" | "B" | "C" = "A";
+        const tierMatch = headerMatch[2].match(/\[TIER:([A-Z])\]/i);
+        if (tierMatch) {
+          const letter = tierMatch[1].toUpperCase();
+          if (letter === "A" || letter === "B" || letter === "C") {
+            tier = letter;
+          } else {
+            logger.warn("standing rule has unknown tier letter; defaulting to A", { id: headerMatch[1], tierLetter: letter });
+          }
+        }
+
+        // D-156: Strip both — STANDING RULE and [TIER:X] from the visible title
+        const title = headerMatch[2]
+          .replace(/\s*\[TIER:[A-Z]\]\s*/i, '')
+          .replace(/\s*—\s*STANDING RULE\s*/gi, '')
+          .trim();
+
+        // D-156: Parse topics from <!-- topics: foo, bar --> comment in section body
+        let topics: string[] = [];
+        const topicsMatch = section.match(/<!--\s*topics:\s*([^-]+?)\s*-->/i);
+        if (topicsMatch) {
+          topics = topicsMatch[1]
+            .split(',')
+            .map(t => t.trim())
+            .filter(t => t.length > 0);
+        }
+
         rules.push({
           id: headerMatch[1],
-          title: headerMatch[2].replace(/\s*—\s*STANDING RULE\s*/i, '').trim(),
+          title,
           procedure,
+          tier,
+          topics,
         });
       }
     }
   }
 
   return rules;
+}
+
+/**
+ * Match a standing rule's topics against an opening message via STANDING_RULE_TOPIC_KEYWORDS (D-156).
+ * Returns true if any topic on the rule has at least one keyword present in the opening message
+ * (case-insensitive substring match). Returns false when openingMessage is empty/undefined or
+ * the rule has no topics.
+ */
+export function topicMatch(openingMessage: string | undefined, ruleTopics: string[]): boolean {
+  if (!openingMessage || ruleTopics.length === 0) return false;
+  const lower = openingMessage.toLowerCase();
+  for (const topic of ruleTopics) {
+    const keywords = STANDING_RULE_TOPIC_KEYWORDS[topic];
+    if (!keywords) continue; // Unknown topic on the rule — no match (and worth a future cleanup signal)
+    for (const kw of keywords) {
+      if (lower.includes(kw)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Select which standing rules to deliver at bootstrap based on tier (D-156).
+ *
+ * Selection rules:
+ * - Tier A: always include (behavioral judgment rules effective across every session)
+ * - Tier B: include if topicMatch returns true (rule's topics overlap with opening_message keywords)
+ * - Tier C: never include at bootstrap (reference-only; available via prism_load_rules in PR 4)
+ *
+ * Returns a new array — does not mutate the input. Order is preserved from the input.
+ */
+export function selectStandingRulesForBoot(
+  rules: StandingRule[],
+  openingMessage: string | undefined,
+): StandingRule[] {
+  return rules.filter(rule => {
+    if (rule.tier === "A") return true;
+    if (rule.tier === "B") return topicMatch(openingMessage, rule.topics);
+    return false; // tier C
+  });
 }
 
 /**
@@ -453,9 +525,40 @@ export function registerBootstrap(server: McpServer): void {
           insightsContent = insightsOutcome.value.content;
         }
 
-        const standingRules = extractStandingRules(insightsContent);
-        if (standingRules.length > 0) {
-          logger.info("standing rules extracted", { count: standingRules.length, ids: standingRules.map(r => r.id) });
+        const allStandingRules = extractStandingRules(insightsContent);
+        const standingRules = selectStandingRulesForBoot(allStandingRules, opening_message);
+
+        // D-156: Tier accounting for diagnostics + log
+        const tierA = allStandingRules.filter(r => r.tier === "A");
+        const tierB = allStandingRules.filter(r => r.tier === "B");
+        const tierC = allStandingRules.filter(r => r.tier === "C");
+        const tierBSelected = standingRules.filter(r => r.tier === "B");
+        const tierBExcluded = tierB.length - tierBSelected.length;
+        const topicsMatched = Array.from(new Set(tierBSelected.flatMap(r => r.topics)));
+
+        if (allStandingRules.length > 0) {
+          logger.info("standing rules extracted", {
+            total: allStandingRules.length,
+            delivered: standingRules.length,
+            tier_a: tierA.length,
+            tier_b_loaded: tierBSelected.length,
+            tier_b_excluded: tierBExcluded,
+            tier_c_excluded: tierC.length,
+            topics_matched: topicsMatched,
+            ids: standingRules.map(r => r.id),
+          });
+
+          // D-156: Diagnostics field surfacing tier accounting (only when rules exist —
+          // preserves back-compat with empty-diagnostics assertion on clean bootstrap).
+          diagnostics.info("STANDING_RULES_TIERED", "Standing rules selected by tier", {
+            total: allStandingRules.length,
+            delivered: standingRules.length,
+            tier_a: tierA.length,
+            tier_b_loaded: tierBSelected.length,
+            tier_b_excluded: tierBExcluded,
+            tier_c_excluded: tierC.length,
+            topics_matched: topicsMatched,
+          });
         }
 
         // 6. Banner data + text rendering (ME-1: compact text replaces HTML)
