@@ -399,6 +399,7 @@ async function draftPhase(projectSlug: string, sessionNumber: number) {
     4096,
     draftTimeoutMs,
     0, // maxRetries — retry storms on draft are worse than fast failure (S41)
+    true, // thinking: true — Phase 3b CS-1 adaptive-thinking flag (D-159 successor)
   );
 
   if (!result.success) {

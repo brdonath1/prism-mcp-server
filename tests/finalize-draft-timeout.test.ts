@@ -113,9 +113,10 @@ describe("S41 C5 — finalize draft timeout + deadline + no-retry", () => {
     expect(callArgs[2]).toBe(4096);
     expect(callArgs[3]).toBe(5000);
     expect(callArgs[4]).toBe(0);
-    // Phase 3a: draft (CS-1) MUST NOT enable thinking; thinking on draft is
-    // deferred to Phase 3b pending a benchmark of the 150s draft budget.
-    expect(callArgs[5]).toBeFalsy();
+    // Phase 3b: draft (CS-1) enables adaptive thinking. Flag flipped after
+    // the benchmark in briefs/results/phase-3b-benchmark.md confirmed safety
+    // of the 150s draft budget (D-159 successor).
+    expect(callArgs[5]).toBe(true);
   });
 
   it("synthesize() forwards maxRetries to Anthropic SDK when provided, omits it otherwise", async () => {
