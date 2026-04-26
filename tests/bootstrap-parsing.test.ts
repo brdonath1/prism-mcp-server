@@ -180,3 +180,87 @@ describe("T-3: standing rule lifecycle filtering (D-48)", () => {
     expect(rules[0].id).toBe("INS-6");
   });
 });
+
+describe("standing rule tier parsing", () => {
+  it("defaults to tier A when no [TIER:X] tag is present (back-compat)", () => {
+    const content = `### INS-99: Test rule — STANDING RULE
+- Discovered: Session 1
+- Description: A test rule.
+**Standing procedure:**
+1. Do something.
+`;
+    const rules = extractStandingRules(content);
+    expect(rules).toHaveLength(1);
+    expect(rules[0].tier).toBe("A");
+    expect(rules[0].topics).toEqual([]);
+  });
+
+  it("parses [TIER:A] explicitly", () => {
+    const content = `### INS-100: Tier A rule — STANDING RULE [TIER:A]
+**Standing procedure:** do A.
+`;
+    const rules = extractStandingRules(content);
+    expect(rules[0].tier).toBe("A");
+    expect(rules[0].title).toBe("Tier A rule");
+  });
+
+  it("parses [TIER:B]", () => {
+    const content = `### INS-101: Tier B rule — STANDING RULE [TIER:B]
+<!-- topics: cc_dispatch -->
+**Standing procedure:** do B.
+`;
+    const rules = extractStandingRules(content);
+    expect(rules[0].tier).toBe("B");
+    expect(rules[0].topics).toEqual(["cc_dispatch"]);
+  });
+
+  it("parses [TIER:C]", () => {
+    const content = `### INS-102: Tier C rule — STANDING RULE [TIER:C]
+<!-- topics: trigger, auth -->
+**Standing procedure:** do C.
+`;
+    const rules = extractStandingRules(content);
+    expect(rules[0].tier).toBe("C");
+    expect(rules[0].topics).toEqual(["trigger", "auth"]);
+  });
+
+  it("strips [TIER:X] from the visible title", () => {
+    const content = `### INS-103: Title here — STANDING RULE [TIER:B]
+**Standing procedure:** ok.
+`;
+    const rules = extractStandingRules(content);
+    expect(rules[0].title).toBe("Title here");
+  });
+
+  it("strips a doubled — STANDING RULE tag from the title (cosmetic-bug tolerance)", () => {
+    const content = `### INS-104: Title — STANDING RULE — STANDING RULE
+**Standing procedure:** ok.
+`;
+    const rules = extractStandingRules(content);
+    expect(rules[0].title).toBe("Title");
+  });
+
+  it("defaults to tier A on unknown tier letter (e.g., [TIER:Z])", () => {
+    const content = `### INS-105: Bad tier — STANDING RULE [TIER:Z]
+**Standing procedure:** ok.
+`;
+    const rules = extractStandingRules(content);
+    expect(rules[0].tier).toBe("A");
+  });
+
+  it("returns empty topics array when no <!-- topics: --> comment present", () => {
+    const content = `### INS-106: No topics — STANDING RULE [TIER:B]
+**Standing procedure:** ok.
+`;
+    const rules = extractStandingRules(content);
+    expect(rules[0].topics).toEqual([]);
+  });
+
+  it("preserves D-48 archived/dormant exclusion", () => {
+    const content = `### INS-107: Archived — ARCHIVED STANDING RULE [TIER:A]
+**Standing procedure:** ok.
+`;
+    const rules = extractStandingRules(content);
+    expect(rules).toHaveLength(0);
+  });
+});
