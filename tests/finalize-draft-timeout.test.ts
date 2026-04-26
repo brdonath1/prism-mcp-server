@@ -60,7 +60,7 @@ describe("S41 C5 — finalize draft timeout + deadline + no-retry", () => {
       content: '{"drafts": []}',
       input_tokens: 100,
       output_tokens: 200,
-      model: "claude-opus-4-6",
+      model: "claude-opus-4-7",
     });
 
     vi.doMock("../src/ai/client.js", () => ({
@@ -109,10 +109,13 @@ describe("S41 C5 — finalize draft timeout + deadline + no-retry", () => {
 
     expect(synthesizeSpy).toHaveBeenCalledTimes(1);
     const callArgs = synthesizeSpy.mock.calls[0];
-    // synthesize(systemPrompt, userContent, maxTokens, timeoutMs, maxRetries)
+    // synthesize(systemPrompt, userContent, maxTokens, timeoutMs, maxRetries, thinking)
     expect(callArgs[2]).toBe(4096);
     expect(callArgs[3]).toBe(5000);
     expect(callArgs[4]).toBe(0);
+    // Phase 3a: draft (CS-1) MUST NOT enable thinking; thinking on draft is
+    // deferred to Phase 3b pending a benchmark of the 150s draft budget.
+    expect(callArgs[5]).toBeFalsy();
   });
 
   it("synthesize() forwards maxRetries to Anthropic SDK when provided, omits it otherwise", async () => {

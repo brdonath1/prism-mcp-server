@@ -80,8 +80,16 @@ export async function generateIntelligenceBrief(
       totalBytes: Array.from(allDocs.values()).reduce((sum, d) => sum + d.size, 0),
     });
 
-    // 3. Call Opus 4.6
-    const result = await synthesize(FINALIZATION_SYNTHESIS_PROMPT, userMessage, undefined, SYNTHESIS_TIMEOUT_MS);
+    // 3. Call Opus 4.7 with adaptive thinking (Phase 3a — CS-2).
+    //    Fire-and-forget per D-78 so latency overhead is invisible to operator.
+    const result = await synthesize(
+      FINALIZATION_SYNTHESIS_PROMPT,
+      userMessage,
+      undefined,
+      SYNTHESIS_TIMEOUT_MS,
+      undefined,
+      true, // thinking: true — Phase 3a CS-2 adaptive-thinking flag
+    );
 
     if (!result.success) {
       recordSynthesisEvent({
@@ -241,12 +249,15 @@ export async function generatePendingDocUpdates(
       totalBytes: Array.from(allDocs.values()).reduce((sum, d) => sum + d.size, 0),
     });
 
-    // 3. Call Opus 4.6
+    // 3. Call Opus 4.7 with adaptive thinking (Phase 3a — CS-3).
+    //    Fire-and-forget per D-78 / D-156 so latency overhead is invisible.
     const result = await synthesize(
       PENDING_DOC_UPDATES_PROMPT,
       userMessage,
       undefined,
       SYNTHESIS_TIMEOUT_MS,
+      undefined,
+      true, // thinking: true — Phase 3a CS-3 adaptive-thinking flag
     );
 
     if (!result.success) {

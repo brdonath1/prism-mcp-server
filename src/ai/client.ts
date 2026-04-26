@@ -35,7 +35,14 @@ export interface SynthesisError {
 export type SynthesisOutcome = (SynthesisResult & { success: true }) | SynthesisError;
 
 /**
- * Call Opus 4.6 for synthesis. Returns structured outcome with success/error info.
+ * Call Opus for synthesis. Returns structured outcome with success/error info.
+ *
+ * @param thinking When true, sends `thinking: { type: "adaptive" }` so Opus 4.7
+ *   dynamically allocates its thinking-token budget per request. Opus 4.7
+ *   accepts ONLY the adaptive variant — the legacy fixed-budget thinking shape
+ *   returns HTTP 400. The text-extraction filter below ignores any `thinking`
+ *   content blocks emitted alongside `text`, so callers see only the final
+ *   text output.
  */
 export async function synthesize(
   systemPrompt: string,
@@ -43,6 +50,7 @@ export async function synthesize(
   maxTokens?: number,
   timeoutMs?: number,
   maxRetries?: number,
+  thinking?: boolean,
 ): Promise<SynthesisOutcome> {
   const anthropic = getClient();
   if (!anthropic) {
@@ -59,15 +67,21 @@ export async function synthesize(
       requestOptions.maxRetries = maxRetries;
     }
 
-    const response = await anthropic.messages.create(
-      {
-        model: SYNTHESIS_MODEL,
-        max_tokens: maxTokens ?? SYNTHESIS_MAX_OUTPUT_TOKENS,
-        system: systemPrompt,
-        messages: [{ role: "user", content: userContent }],
-      },
-      requestOptions,
-    );
+    const requestBody: Anthropic.MessageCreateParamsNonStreaming = {
+      model: SYNTHESIS_MODEL,
+      max_tokens: maxTokens ?? SYNTHESIS_MAX_OUTPUT_TOKENS,
+      system: systemPrompt,
+      messages: [{ role: "user", content: userContent }],
+    };
+    if (thinking) {
+      // Opus 4.7 supports ONLY the adaptive variant; the legacy fixed-budget
+      // thinking shape returns HTTP 400. Cast through unknown because the
+      // installed SDK's ThinkingConfig union does not yet include the
+      // "adaptive" variant.
+      (requestBody as unknown as { thinking: { type: "adaptive" } }).thinking = { type: "adaptive" };
+    }
+
+    const response = await anthropic.messages.create(requestBody, requestOptions);
 
     const textContent = response.content
       .filter((block): block is Anthropic.TextBlock => block.type === "text")
@@ -86,6 +100,7 @@ export async function synthesize(
       model: SYNTHESIS_MODEL,
       input_tokens: result.input_tokens,
       output_tokens: result.output_tokens,
+      thinking_enabled: !!thinking,
       ms: Date.now() - start,
     });
 
