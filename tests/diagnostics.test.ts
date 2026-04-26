@@ -202,7 +202,7 @@ import {
   resolveDocExists,
   resolveDocFiles,
 } from "../src/utils/doc-resolver.js";
-import { generateIntelligenceBrief } from "../src/ai/synthesize.js";
+import { generateIntelligenceBrief, generatePendingDocUpdates } from "../src/ai/synthesize.js";
 
 const mockFetchFile = vi.mocked(fetchFile);
 const mockPushFile = vi.mocked(pushFile);
@@ -214,6 +214,7 @@ const mockResolveDocPushPath = vi.mocked(resolveDocPushPath);
 const mockResolveDocExists = vi.mocked(resolveDocExists);
 const mockResolveDocFiles = vi.mocked(resolveDocFiles);
 const mockGenerateIntelligenceBrief = vi.mocked(generateIntelligenceBrief);
+const mockGeneratePendingDocUpdates = vi.mocked(generatePendingDocUpdates);
 
 /** Helper: register a tool, extract its handler, and call it. */
 async function callTool(
@@ -588,7 +589,8 @@ describe("synthesize diagnostics integration", () => {
     const data = parseResult(result);
     expect(data.diagnostics).toBeDefined();
     expect(data.diagnostics).toEqual([]);
-    expect(data.exists).toBe(true);
+    // PR 4 §5.2: status mode reports both artifacts in a wrapped shape.
+    expect(data.intelligence_brief.exists).toBe(true);
   });
 
   it("surfaces SYNTHESIS_TIMEOUT when generation times out", async () => {
@@ -597,6 +599,12 @@ describe("synthesize diagnostics integration", () => {
     mockGenerateIntelligenceBrief.mockResolvedValue({
       success: false,
       error: "Synthesis API call timed out after 50000ms",
+    });
+    // PR 4 §5.1: synthesize now fires both functions in parallel. Mock
+    // pending as success so this test stays focused on the brief failure path.
+    mockGeneratePendingDocUpdates.mockResolvedValue({
+      success: true,
+      bytes_written: 1000,
     });
 
     const result = await callTool(registerSynthesize, "prism_synthesize", {
@@ -619,6 +627,10 @@ describe("synthesize diagnostics integration", () => {
     mockGenerateIntelligenceBrief.mockResolvedValue({
       success: false,
       error: "API rate limit exceeded",
+    });
+    mockGeneratePendingDocUpdates.mockResolvedValue({
+      success: true,
+      bytes_written: 1000,
     });
 
     const result = await callTool(registerSynthesize, "prism_synthesize", {
@@ -643,6 +655,12 @@ describe("synthesize diagnostics integration", () => {
       input_tokens: 1000,
       output_tokens: 500,
     });
+    mockGeneratePendingDocUpdates.mockResolvedValue({
+      success: true,
+      bytes_written: 2000,
+      input_tokens: 800,
+      output_tokens: 400,
+    });
 
     const result = await callTool(registerSynthesize, "prism_synthesize", {
       project_slug: "test-project",
@@ -653,6 +671,8 @@ describe("synthesize diagnostics integration", () => {
     const data = parseResult(result);
     expect(data.diagnostics).toBeDefined();
     expect(data.diagnostics).toEqual([]);
-    expect(data.success).toBe(true);
+    // PR 4 §5.1: response shape now wraps each artifact's outcome.
+    expect(data.intelligence_brief.success).toBe(true);
+    expect(data.pending_doc_updates.success).toBe(true);
   });
 });

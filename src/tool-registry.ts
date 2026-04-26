@@ -31,7 +31,7 @@ export interface ToolRegistryEntry {
  * Category `claude_code` = registered only when CC_DISPATCH_ENABLED.
  */
 export const TOOL_REGISTRY: readonly ToolRegistryEntry[] = [
-  // PRISM core (12)
+  // PRISM core (13)
   { name: "prism_bootstrap", category: "prism_core" },
   { name: "prism_fetch", category: "prism_core" },
   { name: "prism_push", category: "prism_core" },
@@ -44,6 +44,7 @@ export const TOOL_REGISTRY: readonly ToolRegistryEntry[] = [
   { name: "prism_log_decision", category: "prism_core" },
   { name: "prism_log_insight", category: "prism_core" },
   { name: "prism_patch", category: "prism_core" },
+  { name: "prism_load_rules", category: "prism_core" },
   // Railway (4)
   { name: "railway_logs", category: "railway" },
   { name: "railway_deploy", category: "railway" },

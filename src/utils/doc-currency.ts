@@ -25,7 +25,12 @@ export interface CurrencyWarning {
   acknowledgment_required: boolean;
 }
 
-const UPDATED_MARKER_RE = /^>\s*Updated:\s*S(\d+)\s*$/m;
+// PR 4 §4 / INS-180 Finding 1: relax to a `\b` word-boundary anchor so the
+// matcher accepts production formats like `> Updated: S64 (04-25-26)` and
+// `> Updated: S64 — note`. The capture group is unchanged; trailing content
+// after the digits is permitted but `S64bad` still fails (no word boundary
+// between digit and letter).
+const UPDATED_MARKER_RE = /^>\s*Updated:\s*S(\d+)\b/m;
 
 /**
  * Extract the highest `> Updated: S<N>` session marker from a markdown body.
@@ -37,7 +42,7 @@ const UPDATED_MARKER_RE = /^>\s*Updated:\s*S(\d+)\s*$/m;
 export function parseLastModifiedSession(docBody: string): number | null {
   if (!docBody) return null;
 
-  const matches = [...docBody.matchAll(/^>\s*Updated:\s*S(\d+)\s*$/gm)];
+  const matches = [...docBody.matchAll(/^>\s*Updated:\s*S(\d+)\b/gm)];
   if (matches.length === 0) return null;
 
   let highest: number | null = null;
