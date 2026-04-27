@@ -17,8 +17,6 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ServerNotification, ServerRequest } from "@modelcontextprotocol/sdk/types.js";
 import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import {
-  fetchFile,
-  fetchFiles,
   pushFile,
   createAtomicCommit,
   getHeadSha,
@@ -282,7 +280,7 @@ function condenseSessionHistory(sectionBody: string): { lean: string; archive: s
 
   let match;
   while ((match = sessionPattern.exec(sectionBody)) !== null) {
-    positions.push({ index: match.index, num: parseInt(match[1]) });
+    positions.push({ index: match.index, num: parseInt(match[1], 10) });
   }
 
   if (positions.length <= 3) {
@@ -748,7 +746,6 @@ async function executeScaling(
     // ── Duplicate EOF removal ──
     if (sectionName === "Duplicate EOF") {
       action.executed = true;
-      continue;
     }
   }
 

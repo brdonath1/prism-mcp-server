@@ -3,7 +3,7 @@
  * Logs method, path, status code, and response time for all requests.
  */
 
-import { randomUUID } from "crypto";
+import { randomUUID } from "node:crypto";
 import type { Request, Response, NextFunction } from "express";
 import { logger } from "../utils/logger.js";
 

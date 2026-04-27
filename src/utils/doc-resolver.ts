@@ -36,14 +36,9 @@ export async function resolveDocPath(
     return { path: newPath, content: file.content, sha: file.sha, legacy: false };
   } catch {
     // Fall back to legacy root path
-    try {
-      const file = await fetchFile(projectSlug, docName);
-      logger.info("doc-resolver: using legacy path", { projectSlug, docName });
-      return { path: docName, content: file.content, sha: file.sha, legacy: true };
-    } catch (err) {
-      // Neither path exists — rethrow
-      throw err;
-    }
+    const file = await fetchFile(projectSlug, docName);
+    logger.info("doc-resolver: using legacy path", { projectSlug, docName });
+    return { path: docName, content: file.content, sha: file.sha, legacy: true };
   }
 }
 

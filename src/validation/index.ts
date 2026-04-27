@@ -2,7 +2,7 @@
  * Validation orchestrator — routes files to the appropriate validators.
  */
 
-import path from "path";
+import path from "node:path";
 import { validateCommon, validateCommitMessage, mergeResults, type ValidationResult } from "./common.js";
 import { validateHandoff } from "./handoff.js";
 import { validateDecisionIndex } from "./decisions.js";

@@ -39,7 +39,7 @@ export function escapeHtml(str: string): string {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/\"/g, "&quot;")
+    .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
 }
 
@@ -214,7 +214,9 @@ export function renderBannerText(data: BannerTextInput): string {
 
   if (data.warnings.length > 0) {
     lines.push("");
-    data.warnings.forEach(w => lines.push(`\u26a0 ${w}`));
+    data.warnings.forEach((w) => {
+      lines.push(`\u26a0 ${w}`);
+    });
   }
 
   return lines.join("\n");
@@ -243,7 +245,7 @@ export function renderBannerHtml(data: BannerData): string {
 
   // Tools HTML
   const toolsHtml = data.tools
-    .map((t, i) => {
+    .map((t, _i) => {
       const cls = t.status !== "ok" ? ` ${t.status}` : "";
       return `<div class="bn-tool${cls}">${toolIcon(t.status)} ${e(t.label)}</div>`;
     })

@@ -29,7 +29,7 @@
  */
 
 import { z } from "zod";
-import { randomUUID } from "crypto";
+import { randomUUID } from "node:crypto";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   CC_DISPATCH_MAX_TURNS,

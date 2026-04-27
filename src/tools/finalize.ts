@@ -8,7 +8,6 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   fetchFile,
-  fetchFiles,
   pushFile,
   listDirectory,
   listCommits,
@@ -21,7 +20,6 @@ import {
   SYNTHESIS_ENABLED,
   SERVER_VERSION,
   FRAMEWORK_REPO,
-  MCP_SAFE_TIMEOUT,
   FINALIZE_COMMIT_DEADLINE_MS,
   FINALIZE_DRAFT_TIMEOUT_MS,
   FINALIZE_DRAFT_DEADLINE_MS,
@@ -80,7 +78,7 @@ export const DRAFT_RELEVANT_DOCS = LIVING_DOCUMENT_NAMES.filter(
     d !== "intelligence-brief.md" &&
     !d.endsWith(ARCHIVE_FILE_SUFFIX),
 );
-import { resolveDocPath, resolveDocPushPath, resolveDocFiles } from "../utils/doc-resolver.js";
+import { resolveDocPath, resolveDocFiles } from "../utils/doc-resolver.js";
 import { guardPushPath } from "../utils/doc-guard.js";
 import { logger } from "../utils/logger.js";
 import { extractHeaders, extractSection, parseNumberedList } from "../utils/summarizer.js";
@@ -174,7 +172,7 @@ async function auditPhase(projectSlug: string, sessionNumber: number) {
   });
 
   // 2. Drift detection — compare current handoff with previous version
-  let driftDetection = {
+  const driftDetection = {
     critical_context_changed: false,
     changed_items: [] as string[],
     decision_count_current: 0,
@@ -447,7 +445,7 @@ async function commitPhase(
   const today = new Date().toISOString().split("T")[0];
 
   // 1 & 2. Backup current handoff and prune old versions — run in parallel
-  const [backupOutcome, pruneOutcome] = await Promise.allSettled([
+  const [backupOutcome, _pruneOutcome] = await Promise.allSettled([
     // 1. Backup
     (async () => {
       try {

@@ -6,12 +6,10 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
-  fetchFile,
   fetchFiles,
   listDirectory,
   listCommits,
   getCommit,
-  fileExists,
   listRepos,
 } from "../github/client.js";
 import { LIVING_DOCUMENTS, LIVING_DOCUMENT_NAMES } from "../config.js";
@@ -20,8 +18,6 @@ import { logger } from "../utils/logger.js";
 import { DiagnosticsCollector } from "../utils/diagnostics.js";
 import {
   parseMarkdownTable,
-  extractSection,
-  extractHeaders,
 } from "../utils/summarizer.js";
 import { parseHandoffVersion, parseSessionCount } from "../validation/handoff.js";
 
@@ -83,7 +79,7 @@ async function decisionVelocity(projectSlug: string) {
         count: bySession[s],
       })),
     },
-    summary: `${totalDecisions} decisions across ${totalSessions} sessions (avg ${avgPerSession.toFixed(1)}/session). ${statusCounts["SETTLED"] ?? 0} settled, ${statusCounts["PENDING"] ?? 0} pending.`,
+    summary: `${totalDecisions} decisions across ${totalSessions} sessions (avg ${avgPerSession.toFixed(1)}/session). ${statusCounts.SETTLED ?? 0} settled, ${statusCounts.PENDING ?? 0} pending.`,
   };
 }
 

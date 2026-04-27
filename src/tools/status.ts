@@ -5,9 +5,8 @@
 
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { fetchFile, fileExists, listRepos } from "../github/client.js";
+import { fetchFile, listRepos } from "../github/client.js";
 import {
-  DOC_ROOT,
   LIVING_DOCUMENTS,
   LIVING_DOCUMENT_NAMES,
   HANDOFF_CRITICAL_SIZE,
