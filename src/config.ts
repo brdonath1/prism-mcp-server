@@ -380,6 +380,17 @@ export const ALLOWED_CIDRS = process.env.ALLOWED_CIDRS
  */
 export const ENABLE_IP_ALLOWLIST = process.env.ENABLE_IP_ALLOWLIST !== "false";
 
+/**
+ * When true, prism_bootstrap drops a `.prism/trigger.yaml` marker into the
+ * target project repo on first session if no marker is already present
+ * (brief-105). Idempotent thereafter — bootstrap is a no-op when the marker
+ * exists. Set to "false" or "0" to disable server-wide without editing
+ * each project's marker file. Defaults to true.
+ */
+export const TRIGGER_AUTO_ENROLL =
+  process.env.TRIGGER_AUTO_ENROLL !== "false" &&
+  process.env.TRIGGER_AUTO_ENROLL !== "0";
+
 if (!GITHUB_PAT) {
   console.error("FATAL: GITHUB_PAT environment variable is not set.");
   process.exit(1);
