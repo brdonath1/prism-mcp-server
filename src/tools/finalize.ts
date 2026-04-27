@@ -1127,7 +1127,9 @@ export function registerFinalize(server: McpServer): void {
           ).length;
 
           // Extract resumption from handoff.md content in files array
-          const handoffFile = files.find((f) => f.path === "handoff.md");
+          const handoffFile = files.find(
+            (f) => f.path === "handoff.md" || f.path === `${DOC_ROOT}/handoff.md`,
+          );
           let resumption = "See handoff.md for resumption point.";
           if (handoffFile) {
             const whereWeAre = extractSection(handoffFile.content, "Where We Are")
