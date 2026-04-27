@@ -1141,7 +1141,9 @@ export function registerFinalize(server: McpServer): void {
           }
 
           // Determine handoff push status
-          const handoffResult = result.results.find((r) => r.path === "handoff.md");
+          const handoffResult = result.results.find(
+            (r) => r.path === "handoff.md" || r.path === `${DOC_ROOT}/handoff.md`,
+          );
           let handoffStatus: "ok" | "warn" = "ok";
           let handoffLabel = "pushed";
           if (!handoffResult?.success) {
@@ -1154,10 +1156,19 @@ export function registerFinalize(server: McpServer): void {
 
           // Count decisions from _INDEX.md in files array
           let decisionsCount = 0;
-          const indexFile = files.find((f) => f.path === "decisions/_INDEX.md");
-          if (indexFile) {
-            const rows = parseMarkdownTable(indexFile.content);
-            decisionsCount = rows.length;
+          try {
+            const indexDoc = await resolveDocPath(project_slug, "decisions/_INDEX.md");
+            decisionsCount = parseMarkdownTable(indexDoc.content).length;
+          } catch {
+            // Fall back to commit files array (handles legacy paths and unmigrated repos)
+            const indexFile = files.find(
+              (f) =>
+                f.path === "decisions/_INDEX.md" ||
+                f.path === `${DOC_ROOT}/decisions/_INDEX.md`,
+            );
+            if (indexFile) {
+              decisionsCount = parseMarkdownTable(indexFile.content).length;
+            }
           }
 
           // Build deliverables
