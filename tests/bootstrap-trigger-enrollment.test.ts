@@ -182,13 +182,14 @@ describe("brief-105: Trigger enrollment marker drop", () => {
     const [repoArg, , contentArg, messageArg] = markerPushCall!;
     expect(repoArg).toBe("prism");
     expect(contentArg).toContain("enabled: true");
-    expect(contentArg).toContain("brief_dir: .prism/briefs/");
+    expect(contentArg).toContain("brief_dir: .prism/briefs/queue/");
     expect(contentArg).toContain('brief_pattern: "brief-*.md"');
     expect(contentArg).toContain("branch_strategy: main-only");
     expect(contentArg).toContain("intra_project_parallel: false");
     expect(contentArg).toContain("max_parallel_briefs: 1");
     expect(contentArg).toContain("post_merge:");
     expect(contentArg).toContain("- notify");
+    expect(contentArg).toContain("- archive");
     expect(messageArg).toMatch(/^prism: enroll prism in Trigger via marker file/);
   });
 
@@ -243,6 +244,43 @@ describe("brief-105: Trigger enrollment marker drop", () => {
     const parsed = JSON.parse(result.content[0].text);
     expect(parsed.trigger_enrollment.status).toBe("error");
     expect(parsed.trigger_enrollment.reason).toContain("forbidden");
+  });
+
+  it("pushes the queue/archive marker layout end-to-end (S77 regression guard)", async () => {
+    const { bootstrapHandler, mockPushFile } = await setupBootstrap();
+
+    const result = await bootstrapHandler({ project_slug: "prism" });
+    expect(result.isError).toBeFalsy();
+
+    const markerPushCall = mockPushFile.mock.calls.find(
+      ([, path]) => path === ".prism/trigger.yaml",
+    );
+    expect(markerPushCall).toBeDefined();
+    const contentArg = markerPushCall![2] as string;
+
+    // Body block — schema fields. Asserts the queue/archive defaults exactly.
+    const expectedBody =
+      "enabled: true\n" +
+      "brief_dir: .prism/briefs/queue/\n" +
+      'brief_pattern: "brief-*.md"\n' +
+      "branch_strategy: main-only\n" +
+      "intra_project_parallel: false\n" +
+      "max_parallel_briefs: 1\n" +
+      "post_merge:\n" +
+      "  - notify\n" +
+      "  - archive\n";
+    expect(contentArg).toContain(expectedBody);
+
+    // Order of post_merge actions matters — notify must precede archive so
+    // operators are paged before the brief is auto-moved out of the queue.
+    const notifyIdx = contentArg.indexOf("- notify");
+    const archiveIdx = contentArg.indexOf("- archive");
+    expect(notifyIdx).toBeGreaterThan(-1);
+    expect(archiveIdx).toBeGreaterThan(notifyIdx);
+
+    // Comment header references the new layout.
+    expect(contentArg).toContain("# Layout:");
+    expect(contentArg).toContain("archive/");
   });
 
   it("returns error status when pushFile throws (bootstrap still succeeds)", async () => {
