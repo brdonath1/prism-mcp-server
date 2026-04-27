@@ -1,0 +1,57 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.4.13/schema.json",
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
+  "files": {
+    "includes": ["**", "!!**/dist", "!!**/node_modules"]
+  },
+  // Formatter is configured for the opt-in `format` script but excluded
+  // from `npm run lint` via the `--formatter-enabled=false` CLI flag in
+  // package.json. Mass-reformatting the existing codebase is explicitly
+  // out of scope for brief 200 (baseline lint coverage, not retroactive
+  // style cleanup).
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 100
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      // disabled until separate cleanup pass — each produced >20 violations
+      // on first run or required intrusive type-system changes inconsistent
+      // with brief 200's "no retroactive cleanup" scope.
+      "style": {
+        "useTemplate": "off",
+        "noNonNullAssertion": "off"
+      },
+      "suspicious": {
+        "noExplicitAny": "off",
+        "noImplicitAnyLet": "off",
+        "noAssignInExpressions": "off"
+      }
+    }
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "double",
+      "semicolons": "always",
+      "trailingCommas": "all"
+    }
+  },
+  // disabled until separate cleanup pass — auto-sorting imports across
+  // ~32 files = retroactive cleanup, out of scope for brief 200.
+  "assist": {
+    "enabled": true,
+    "actions": {
+      "source": {
+        "organizeImports": "off"
+      }
+    }
+  }
+}

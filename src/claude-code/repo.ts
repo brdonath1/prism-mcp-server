@@ -12,10 +12,10 @@
  * - Never logs the PAT, even on failure.
  */
 
-import { execFileSync } from "child_process";
-import { mkdtempSync, rmSync } from "fs";
-import { tmpdir } from "os";
-import { join } from "path";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { GITHUB_OWNER, GITHUB_PAT } from "../config.js";
 import { logger } from "../utils/logger.js";
 

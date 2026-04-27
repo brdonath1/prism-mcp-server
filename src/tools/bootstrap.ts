@@ -17,7 +17,7 @@
 
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { fetchFile, fetchFiles, pushFile, listRepos } from "../github/client.js";
+import { fetchFile, pushFile, listRepos } from "../github/client.js";
 import { CC_DISPATCH_ENABLED, DOC_ROOT, FRAMEWORK_REPO, HANDOFF_CRITICAL_SIZE, LIVING_DOCUMENTS, MCP_TEMPLATE_PATH, PREFETCH_KEYWORDS, PROJECT_DISPLAY_NAMES, RAILWAY_ENABLED, TRIGGER_AUTO_ENROLL, resolveProjectSlug } from "../config.js";
 import { getExpectedToolSurface, POST_BOOT_TOOL_SEARCHES } from "../tool-registry.js";
 import { resolveDocPath, resolveDocPushPath } from "../utils/doc-resolver.js";
@@ -30,7 +30,7 @@ import {
   summarizeMarkdown,
 } from "../utils/summarizer.js";
 import { parseHandoffVersion, parseSessionCount, parseTemplateVersion } from "../validation/handoff.js";
-import { generateCstTimestamp, parseResumptionForBanner, renderBannerHtml, renderBannerText, type BannerData, type BannerTextInput } from "../utils/banner.js";
+import { generateCstTimestamp, parseResumptionForBanner, renderBannerText, type BannerTextInput } from "../utils/banner.js";
 import { DiagnosticsCollector } from "../utils/diagnostics.js";
 import {
   extractStandingRules,
@@ -247,7 +247,7 @@ async function ensureTriggerMarker(slug: string): Promise<{
  * Returns the matched repo name or null.
  */
 async function resolveSlugDynamic(input: string): Promise<string | null> {
-  const normalize = (s: string) => s.toLowerCase().replace(/[-_\s\[\]()]/g, "");
+  const normalize = (s: string) => s.toLowerCase().replace(/[-_\s[\]()]/g, "");
   const normalizedInput = normalize(input);
 
   // Skip obvious placeholders

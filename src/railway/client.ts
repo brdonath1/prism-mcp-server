@@ -580,7 +580,7 @@ const SENSITIVE_KEY_PATTERNS: RegExp[] = [
 ];
 
 /** URL with embedded userinfo credentials (e.g. postgres://user:pass@host/db). */
-const URL_WITH_CREDS_RE = /^[a-z][a-z0-9+.\-]*:\/\/[^\s:/@]+:[^\s@]+@/i;
+const URL_WITH_CREDS_RE = /^[a-z][a-z0-9+.-]*:\/\/[^\s:/@]+:[^\s@]+@/i;
 
 /** Return true if the variable name looks sensitive. */
 export function isSensitiveKey(name: string): boolean {

@@ -3,7 +3,7 @@
  * Loads all living documents, calls Opus 4.6, pushes intelligence-brief.md.
  */
 
-import { fetchFiles, pushFile } from "../github/client.js";
+import { pushFile } from "../github/client.js";
 import { LIVING_DOCUMENT_NAMES, SYNTHESIS_ENABLED, SYNTHESIS_TIMEOUT_MS } from "../config.js";
 import { resolveDocFiles, resolveDocPushPath } from "../utils/doc-resolver.js";
 import { logger } from "../utils/logger.js";

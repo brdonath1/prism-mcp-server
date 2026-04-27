@@ -8,7 +8,9 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "tsc --watch & node --watch dist/index.js",
-    "lint": "tsc --noEmit",
+    "lint": "biome check --formatter-enabled=false src/",
+    "format": "biome format --write src/",
+    "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -28,6 +30,7 @@
     "zod": "^4.0.0"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.4.13",
     "@types/express": "^5.0.0",
     "@types/node": "^22.0.0",
     "typescript": "^5.7.0",

@@ -8,8 +8,8 @@
 
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { fetchFile, fileExists } from "../github/client.js";
-import { DOC_ROOT, LIVING_DOCUMENT_NAMES } from "../config.js";
+import { fetchFile, } from "../github/client.js";
+import { LIVING_DOCUMENT_NAMES } from "../config.js";
 import { resolveDocPath, resolveDocExists } from "../utils/doc-resolver.js";
 import { logger } from "../utils/logger.js";
 import { DiagnosticsCollector } from "../utils/diagnostics.js";

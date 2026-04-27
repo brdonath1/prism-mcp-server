@@ -103,7 +103,7 @@ export async function fetchWithRetry(url: string, options: RequestInit = {}, max
       }
       await res.body?.cancel(); // Prevent response body leak on retry
       const retryAfter = parseInt(res.headers.get("retry-after") ?? "1", 10);
-      const delay = Math.min(retryAfter * 1000 * Math.pow(2, attempt), 120_000);
+      const delay = Math.min(retryAfter * 1000 * 2 ** attempt, 120_000);
       logger.warn("Rate limited, retrying", { attempt: attempt + 1, delay, url });
       await sleep(delay);
       continue;

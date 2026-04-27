@@ -4,7 +4,7 @@
  */
 
 import { VALID_COMMIT_PREFIXES } from "../config.js";
-import path from "path";
+import path from "node:path";
 
 export interface ValidationResult {
   errors: string[];

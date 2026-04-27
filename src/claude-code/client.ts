@@ -26,9 +26,9 @@
  */
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
-import { execSync } from "child_process";
-import { existsSync } from "fs";
-import { join } from "path";
+import { execSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { CC_DISPATCH_EFFORT, CC_DISPATCH_MODEL, CLAUDE_CODE_OAUTH_TOKEN } from "../config.js";
 import { logger } from "../utils/logger.js";
 

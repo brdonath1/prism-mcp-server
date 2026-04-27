@@ -2,8 +2,8 @@
  * PRISM MCP Server configuration — loaded from environment variables.
  */
 
-import { readFileSync } from "fs";
-import { resolve } from "path";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 // Load .env in local development (no-op if vars already set, e.g. Railway)
 try {
