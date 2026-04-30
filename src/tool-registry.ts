@@ -15,7 +15,7 @@
  * corresponding keyword coverage.
  */
 
-export type ToolCategory = "prism_core" | "railway" | "claude_code";
+export type ToolCategory = "prism_core" | "railway" | "claude_code" | "github";
 
 export interface ToolRegistryEntry {
   name: string;
@@ -29,6 +29,9 @@ export interface ToolRegistryEntry {
  * Category `prism_core` = always registered.
  * Category `railway` = registered only when RAILWAY_ENABLED.
  * Category `claude_code` = registered only when CC_DISPATCH_ENABLED.
+ * Category `github` = registered when GITHUB_PAT is set (always required for the
+ *                     server to boot — gating is explicit to mirror the other
+ *                     optional categories).
  */
 export const TOOL_REGISTRY: readonly ToolRegistryEntry[] = [
   // PRISM core (13)
@@ -53,6 +56,10 @@ export const TOOL_REGISTRY: readonly ToolRegistryEntry[] = [
   // Claude Code (2)
   { name: "cc_dispatch", category: "claude_code" },
   { name: "cc_status", category: "claude_code" },
+  // GitHub (3)
+  { name: "gh_delete_branch", category: "github" },
+  { name: "gh_create_release", category: "github" },
+  { name: "gh_update_release", category: "github" },
 ] as const;
 
 /**
@@ -62,6 +69,7 @@ export const TOOL_REGISTRY: readonly ToolRegistryEntry[] = [
 export function getExpectedToolSurface(
   railwayEnabled: boolean,
   ccDispatchEnabled: boolean,
+  githubEnabled: boolean,
 ): Record<ToolCategory, string[]> {
   const filterByCategory = (cat: ToolCategory) =>
     TOOL_REGISTRY.filter((t) => t.category === cat).map((t) => t.name);
@@ -70,6 +78,7 @@ export function getExpectedToolSurface(
     prism_core: filterByCategory("prism_core"),
     railway: railwayEnabled ? filterByCategory("railway") : [],
     claude_code: ccDispatchEnabled ? filterByCategory("claude_code") : [],
+    github: githubEnabled ? filterByCategory("github") : [],
   };
 }
 
@@ -92,4 +101,5 @@ export interface PostBootToolSearch {
 export const POST_BOOT_TOOL_SEARCHES: readonly PostBootToolSearch[] = [
   { query: "prism log patch scale synthesize analytics finalize", limit: 20 },
   { query: "railway deploy environment status dispatch claude code", limit: 20 },
+  { query: "github branch release delete create update", limit: 20 },
 ] as const;

@@ -10,6 +10,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
   CC_DISPATCH_ENABLED,
+  GITHUB_PAT,
   PORT,
   RAILWAY_ENABLED,
   SERVER_VERSION,
@@ -36,6 +37,9 @@ import { registerRailwayEnv } from "./tools/railway-env.js";
 import { registerRailwayStatus } from "./tools/railway-status.js";
 import { registerCCDispatch } from "./tools/cc-dispatch.js";
 import { registerCCStatus } from "./tools/cc-status.js";
+import { registerGhDeleteBranch } from "./tools/gh-delete-branch.js";
+import { registerGhCreateRelease } from "./tools/gh-create-release.js";
+import { registerGhUpdateRelease } from "./tools/gh-update-release.js";
 import { hydrateStore } from "./dispatch-store.js";
 
 const app = express();
@@ -89,6 +93,16 @@ function createServer(): McpServer {
   if (CC_DISPATCH_ENABLED) {
     registerCCDispatch(server);
     registerCCStatus(server);
+  }
+
+  // GitHub utility tools (brief-403) — wraps stable REST endpoints not
+  // exposed by github/github-mcp-server (branch deletion + release CRUD).
+  // Gated on GITHUB_PAT for symmetry with the other optional categories,
+  // even though the server fatals on boot without it (see config.ts).
+  if (GITHUB_PAT) {
+    registerGhDeleteBranch(server);
+    registerGhCreateRelease(server);
+    registerGhUpdateRelease(server);
   }
 
   return server;
@@ -169,6 +183,7 @@ app.listen(PORT, () => {
     transport: "streamable-http",
     railway_enabled: RAILWAY_ENABLED,
     cc_dispatch_enabled: CC_DISPATCH_ENABLED,
+    github_enabled: !!GITHUB_PAT,
   });
 
   // Hydrate dispatch store from GitHub (non-blocking).

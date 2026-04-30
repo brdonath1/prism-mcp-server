@@ -17,6 +17,7 @@ import type {
   DirectoryEntry,
   CommitSummary,
   GitHubCommitListItem,
+  ReleaseResult,
 } from "./types.js";
 
 /** Standard headers for all GitHub API requests */
@@ -714,5 +715,203 @@ export async function createAtomicCommit(
       files_committed: 0,
       error: msg,
     };
+  }
+}
+
+/**
+ * Delete a Git ref (branch or tag) from a repo (brief-403).
+ *
+ * `ref` is the fully-qualified ref form GitHub expects on the wire: e.g.
+ * `heads/feature-branch` for a branch or `tags/v1.2.3` for a tag. Caller
+ * decides which prefix to use; this function does not validate or assume.
+ *
+ * URL note: GitHub's Refs API uses the PLURAL `/git/refs/{ref}` for DELETE
+ * (and PATCH) — distinct from the singular `/git/ref/{ref}` used for GET.
+ * See `createAtomicCommit` for the same asymmetry that bit S40/S42.
+ *
+ * Behavior:
+ *   - 2xx (typically 204 No Content) → success.
+ *   - 422 ("Reference does not exist") → idempotent success with a
+ *     `note: "ref already absent"` so cleanup re-runs don't error.
+ *   - Any other non-2xx routes through `handleApiError` and is returned
+ *     as `{ success: false, error }` (mirrors `deleteFile`'s shape).
+ */
+export async function deleteRef(
+  repo: string,
+  ref: string,
+): Promise<{ success: boolean; note?: string; error?: string }> {
+  const url = `${GITHUB_API_BASE}/repos/${GITHUB_OWNER}/${repo}/git/refs/${ref}`;
+  const start = Date.now();
+  logger.debug("github.deleteRef", { repo, ref });
+
+  try {
+    const res = await fetchWithRetry(url, {
+      method: "DELETE",
+      headers: headers(),
+    });
+
+    if (res.ok) {
+      await res.body?.cancel();
+      logger.debug("github.deleteRef complete", { repo, ref, ms: Date.now() - start });
+      return { success: true };
+    }
+
+    if (res.status === 422) {
+      // GitHub returns 422 when the ref doesn't exist. Treat as idempotent
+      // success so callers re-running cleanup don't error on already-deleted
+      // branches.
+      await res.body?.cancel();
+      logger.debug("github.deleteRef ref already absent", { repo, ref });
+      return { success: true, note: "ref already absent" };
+    }
+
+    const errText = await res.text();
+    const errMsg = handleApiError(res.status, errText, `deleteRef ${repo}/${ref}`).message;
+    logger.error("github.deleteRef failed", { repo, ref, status: res.status, error: errMsg });
+    return { success: false, error: errMsg };
+  } catch (error) {
+    const errMsg = (error as Error).message;
+    logger.error("github.deleteRef error", { repo, ref, error: errMsg });
+    return { success: false, error: errMsg };
+  }
+}
+
+/**
+ * Create a new release on a repo (brief-403).
+ *
+ * Pass-through of the GitHub Releases API `POST /repos/{owner}/{repo}/releases`.
+ * Undefined fields are stripped from the request body.
+ *
+ * Behavior:
+ *   - 201 Created → success with `release_id`, `html_url`, `tag_name`.
+ *   - 422 with `"already_exists"` → soft `{ success: false, error }` so
+ *     callers can fall back to `updateRelease` instead of throwing.
+ *   - Any other non-2xx routes through `handleApiError`.
+ */
+export async function createRelease(
+  repo: string,
+  params: {
+    tag_name: string;
+    target_commitish?: string;
+    name?: string;
+    body?: string;
+    draft?: boolean;
+    prerelease?: boolean;
+    generate_release_notes?: boolean;
+  },
+): Promise<ReleaseResult> {
+  const url = `${GITHUB_API_BASE}/repos/${GITHUB_OWNER}/${repo}/releases`;
+  const start = Date.now();
+  logger.debug("github.createRelease", { repo, tag_name: params.tag_name });
+
+  try {
+    const body: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== undefined) body[k] = v;
+    }
+
+    const res = await fetchWithRetry(url, {
+      method: "POST",
+      headers: { ...headers(), "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    if (res.ok) {
+      const data = (await res.json()) as { id: number; html_url: string; tag_name: string };
+      logger.debug("github.createRelease complete", { repo, release_id: data.id, ms: Date.now() - start });
+      return {
+        success: true,
+        release_id: data.id,
+        html_url: data.html_url,
+        tag_name: data.tag_name,
+      };
+    }
+
+    const errText = await res.text();
+    if (res.status === 422 && errText.includes("already_exists")) {
+      logger.warn("github.createRelease tag already exists", { repo, tag_name: params.tag_name });
+      return {
+        success: false,
+        error: `Release with tag ${params.tag_name} already exists`,
+      };
+    }
+
+    const errMsg = handleApiError(res.status, errText, `createRelease ${repo}`).message;
+    logger.error("github.createRelease failed", { repo, status: res.status, error: errMsg });
+    return { success: false, error: errMsg };
+  } catch (error) {
+    const errMsg = (error as Error).message;
+    logger.error("github.createRelease error", { repo, error: errMsg });
+    return { success: false, error: errMsg };
+  }
+}
+
+/**
+ * Update an existing release on a repo (brief-403).
+ *
+ * `PATCH /repos/{owner}/{repo}/releases/{release_id}`. Only fields the
+ * caller explicitly set are sent — undefined values are stripped so we do
+ * not send `null` and clear server-side fields the caller did not intend
+ * to touch.
+ *
+ * Behavior:
+ *   - 200 OK → success with `release_id`, `html_url`, `tag_name`.
+ *   - 404 → soft `{ success: false, error: "Release not found" }`.
+ *   - Any other non-2xx routes through `handleApiError`.
+ */
+export async function updateRelease(
+  repo: string,
+  releaseId: number,
+  params: {
+    tag_name?: string;
+    target_commitish?: string;
+    name?: string;
+    body?: string;
+    draft?: boolean;
+    prerelease?: boolean;
+    generate_release_notes?: boolean;
+  },
+): Promise<ReleaseResult> {
+  const url = `${GITHUB_API_BASE}/repos/${GITHUB_OWNER}/${repo}/releases/${releaseId}`;
+  const start = Date.now();
+  logger.debug("github.updateRelease", { repo, releaseId });
+
+  try {
+    const body: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== undefined) body[k] = v;
+    }
+
+    const res = await fetchWithRetry(url, {
+      method: "PATCH",
+      headers: { ...headers(), "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    if (res.ok) {
+      const data = (await res.json()) as { id: number; html_url: string; tag_name: string };
+      logger.debug("github.updateRelease complete", { repo, release_id: data.id, ms: Date.now() - start });
+      return {
+        success: true,
+        release_id: data.id,
+        html_url: data.html_url,
+        tag_name: data.tag_name,
+      };
+    }
+
+    if (res.status === 404) {
+      await res.body?.cancel();
+      logger.warn("github.updateRelease not found", { repo, releaseId });
+      return { success: false, error: "Release not found" };
+    }
+
+    const errText = await res.text();
+    const errMsg = handleApiError(res.status, errText, `updateRelease ${repo}/${releaseId}`).message;
+    logger.error("github.updateRelease failed", { repo, releaseId, status: res.status, error: errMsg });
+    return { success: false, error: errMsg };
+  } catch (error) {
+    const errMsg = (error as Error).message;
+    logger.error("github.updateRelease error", { repo, releaseId, error: errMsg });
+    return { success: false, error: errMsg };
   }
 }

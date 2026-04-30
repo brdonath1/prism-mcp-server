@@ -18,7 +18,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { fetchFile, pushFile, listRepos } from "../github/client.js";
-import { CC_DISPATCH_ENABLED, DOC_ROOT, FRAMEWORK_REPO, HANDOFF_CRITICAL_SIZE, LIVING_DOCUMENTS, MCP_TEMPLATE_PATH, PREFETCH_KEYWORDS, PROJECT_DISPLAY_NAMES, RAILWAY_ENABLED, TRIGGER_AUTO_ENROLL, resolveProjectSlug } from "../config.js";
+import { CC_DISPATCH_ENABLED, DOC_ROOT, FRAMEWORK_REPO, GITHUB_PAT, HANDOFF_CRITICAL_SIZE, LIVING_DOCUMENTS, MCP_TEMPLATE_PATH, PREFETCH_KEYWORDS, PROJECT_DISPLAY_NAMES, RAILWAY_ENABLED, TRIGGER_AUTO_ENROLL, resolveProjectSlug } from "../config.js";
 import { getExpectedToolSurface, POST_BOOT_TOOL_SEARCHES } from "../tool-registry.js";
 import { resolveDocPath, resolveDocPushPath } from "../utils/doc-resolver.js";
 import { logger } from "../utils/logger.js";
@@ -704,7 +704,7 @@ export function registerBootstrap(server: McpServer): void {
             total_boot_tokens: totalBootTokens,
             total_boot_percent: totalBootPercent,
           },
-          expected_tool_surface: getExpectedToolSurface(RAILWAY_ENABLED, CC_DISPATCH_ENABLED),  // D-83 (S44)
+          expected_tool_surface: getExpectedToolSurface(RAILWAY_ENABLED, CC_DISPATCH_ENABLED, !!GITHUB_PAT),  // D-83 (S44); github category added in brief-403
           post_boot_tool_searches: POST_BOOT_TOOL_SEARCHES,                                     // D-83 (S44)
           warnings,
           diagnostics: diagnostics.list(),
