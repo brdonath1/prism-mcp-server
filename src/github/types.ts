@@ -99,3 +99,13 @@ export interface GitHubCommitListItem {
     filename: string;
   }>;
 }
+
+/** Result of a release create or update via GitHub Releases API */
+export interface ReleaseResult {
+  success: boolean;
+  release_id?: number;
+  html_url?: string;
+  tag_name?: string;
+  note?: string;
+  error?: string;
+}

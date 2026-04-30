@@ -18,18 +18,19 @@ import {
 } from "../src/tool-registry.js";
 
 describe("D-83 — TOOL_REGISTRY shape", () => {
-  it("contains exactly 19 tools", () => {
-    expect(TOOL_REGISTRY).toHaveLength(19);
+  it("contains exactly 22 tools", () => {
+    expect(TOOL_REGISTRY).toHaveLength(22);
   });
 
-  it("categorizes 13 prism_core, 4 railway, 2 claude_code", () => {
+  it("categorizes 13 prism_core, 4 railway, 2 claude_code, 3 github", () => {
     const counts: Record<ToolCategory, number> = {
       prism_core: 0,
       railway: 0,
       claude_code: 0,
+      github: 0,
     };
     for (const t of TOOL_REGISTRY) counts[t.category]++;
-    expect(counts).toEqual({ prism_core: 13, railway: 4, claude_code: 2 });
+    expect(counts).toEqual({ prism_core: 13, railway: 4, claude_code: 2, github: 3 });
   });
 
   it("has unique tool names", () => {
@@ -39,34 +40,51 @@ describe("D-83 — TOOL_REGISTRY shape", () => {
 });
 
 describe("D-83 — getExpectedToolSurface() feature-flag gating", () => {
-  it("returns all 19 tools when both flags enabled", () => {
-    const surface = getExpectedToolSurface(true, true);
+  it("returns all 22 tools when all flags enabled", () => {
+    const surface = getExpectedToolSurface(true, true, true);
     expect(surface.prism_core).toHaveLength(13);
     expect(surface.railway).toHaveLength(4);
     expect(surface.claude_code).toHaveLength(2);
-    const flat = [...surface.prism_core, ...surface.railway, ...surface.claude_code];
+    expect(surface.github).toHaveLength(3);
+    const flat = [
+      ...surface.prism_core,
+      ...surface.railway,
+      ...surface.claude_code,
+      ...surface.github,
+    ];
     expect(flat).toEqual(TOOL_REGISTRY.map((t) => t.name));
   });
 
   it("excludes railway when RAILWAY_ENABLED=false", () => {
-    const surface = getExpectedToolSurface(false, true);
+    const surface = getExpectedToolSurface(false, true, true);
     expect(surface.railway).toEqual([]);
     expect(surface.prism_core).toHaveLength(13);
     expect(surface.claude_code).toHaveLength(2);
+    expect(surface.github).toHaveLength(3);
   });
 
   it("excludes claude_code when CC_DISPATCH_ENABLED=false", () => {
-    const surface = getExpectedToolSurface(true, false);
+    const surface = getExpectedToolSurface(true, false, true);
     expect(surface.claude_code).toEqual([]);
     expect(surface.prism_core).toHaveLength(13);
     expect(surface.railway).toHaveLength(4);
+    expect(surface.github).toHaveLength(3);
   });
 
-  it("returns only prism_core when both optional flags disabled", () => {
-    const surface = getExpectedToolSurface(false, false);
+  it("excludes github when GITHUB_PAT-derived flag is false", () => {
+    const surface = getExpectedToolSurface(true, true, false);
+    expect(surface.github).toEqual([]);
+    expect(surface.prism_core).toHaveLength(13);
+    expect(surface.railway).toHaveLength(4);
+    expect(surface.claude_code).toHaveLength(2);
+  });
+
+  it("returns only prism_core when all optional flags disabled", () => {
+    const surface = getExpectedToolSurface(false, false, false);
     expect(surface.prism_core).toHaveLength(13);
     expect(surface.railway).toEqual([]);
     expect(surface.claude_code).toEqual([]);
+    expect(surface.github).toEqual([]);
   });
 });
 
@@ -93,6 +111,9 @@ describe("D-83 — drift guard: src/index.ts registers every TOOL_REGISTRY entry
     railway_status: "registerRailwayStatus",
     cc_dispatch: "registerCCDispatch",
     cc_status: "registerCCStatus",
+    gh_delete_branch: "registerGhDeleteBranch",
+    gh_create_release: "registerGhCreateRelease",
+    gh_update_release: "registerGhUpdateRelease",
   };
 
   const indexSource = readFileSync("src/index.ts", "utf-8");
@@ -136,8 +157,8 @@ describe("D-83 — coverage guard: every tool has keyword overlap with POST_BOOT
     ).toEqual([]);
   });
 
-  it("POST_BOOT_TOOL_SEARCHES has exactly 2 queries (S43 empirical)", () => {
-    expect(POST_BOOT_TOOL_SEARCHES).toHaveLength(2);
+  it("POST_BOOT_TOOL_SEARCHES has exactly 3 queries (S43 empirical + brief-403 github)", () => {
+    expect(POST_BOOT_TOOL_SEARCHES).toHaveLength(3);
   });
 
   it("every query has limit >= 15 (defeats relevance-ranking cap)", () => {
@@ -164,9 +185,9 @@ describe("D-83 — bootstrap response wiring (source-read)", () => {
     expect(bootstrapSource).toMatch(/import\s*\{[^}]*CC_DISPATCH_ENABLED[^}]*\}\s*from\s*["']\.\.\/config\.js["']/);
   });
 
-  it("response object includes expected_tool_surface field wired to getExpectedToolSurface(RAILWAY_ENABLED, CC_DISPATCH_ENABLED)", () => {
+  it("response object includes expected_tool_surface field wired to getExpectedToolSurface(RAILWAY_ENABLED, CC_DISPATCH_ENABLED, !!GITHUB_PAT)", () => {
     expect(bootstrapSource).toContain(
-      "expected_tool_surface: getExpectedToolSurface(RAILWAY_ENABLED, CC_DISPATCH_ENABLED)",
+      "expected_tool_surface: getExpectedToolSurface(RAILWAY_ENABLED, CC_DISPATCH_ENABLED, !!GITHUB_PAT)",
     );
   });
 
