@@ -13,7 +13,7 @@ This is the **PRISM MCP Server** — a custom remote MCP (Model Context Protocol
 
 PRISM is a session continuity framework that gives Claude structured external memory via GitHub-backed living documents. It solves Claude's zero cross-session memory by distributing state across structured files in GitHub repositories. Brian manages all active PRISM projects; current count is visible via `prism_analytics(health_summary)`.
 
-The MCP server is the v2 evolution — separating Claude into a pure reasoning agent while offloading all mechanical GitHub operations to this dedicated server. This reduces finalization from 13-16 tool calls to 2-3, drops bootstrap context consumption from ~15-20% to ~3-5%, and enables capabilities previously impossible (server-side validation, cross-session analytics, AI synthesis, decision graph tracking, multi-project awareness).
+The MCP server is the v2 evolution — separating Claude into a pure reasoning agent while offloading all mechanical GitHub operations to this dedicated server. This reduces finalization from 13-16 tool calls to 2-3, drops bootstrap context consumption from ~15-20% to ~3-5%, and enables previously impossible capabilities (server-side validation, cross-session analytics, AI synthesis, decision graph tracking, multi-project awareness).
 
 ## Architecture
 
