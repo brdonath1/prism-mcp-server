@@ -31,37 +31,58 @@ export interface SessionRecommendation {
 
 export interface ClassifySessionInput {
   next_steps: string[];
-  critical_context?: string[];
-  opening_message?: string;
+  // critical_context and opening_message removed (brief-415 / F7) — D-193
+  // Piece 1 made both inputs unreachable from finalize and bootstrap.
+  // Restoring them would re-introduce the S107→S108 banner-discrepancy
+  // class of bug (finalize and bootstrap classifying the same handoff with
+  // divergent input bundles). Future readers should hit a compile error if
+  // they try to add them back.
 }
 
 /**
  * Reasoning-heavy keyword triggers. Hits indicate design / multi-doc
  * investigation / judgment work that benefits from Opus + adaptive thinking.
  *
- * Multi-word phrases must be matched as substrings BEFORE the per-word
- * tokenization runs so they don't get clipped by punctuation/whitespace
- * boundaries. They are stored separately and applied via `includes` against
- * the lowercased text bundle.
+ * Two lists per bucket (brief-415 / F1):
+ *  - WHOLE_WORD: matched via `\bkw\b` regex — used for short keywords where
+ *    prefix-match would over-fire (e.g. "log" must not match "login").
+ *  - PREFIX: matched via `\bkw[a-z]*\b` — catches noun/gerund/adjective
+ *    derivatives without listing each one separately. Example: "verif"
+ *    matches "verify", "verifies", "verification", "verifying", "verified".
+ *
+ * Multi-word phrases (REASONING_PHRASES) are matched as substrings BEFORE
+ * the per-word tokenization runs so they don't get clipped by
+ * punctuation/whitespace boundaries.
  */
-const REASONING_KEYWORDS = [
-  "design",
-  "architect",
-  "architecture",
+const REASONING_WHOLE_WORD = [
   "brainstorm",
-  "investigate",
-  "debug",
-  "evaluate",
-  "analyze",
-  "propose",
-  "compare",
   "tradeoff",
   "strategy",
 ] as const;
 
+const REASONING_PREFIX = [
+  "architect",   // catches architect, architecture, architectural
+  "investigat",  // catches investigate, investigation, investigating
+  "debug",       // catches debug, debugging, debugger
+  "evaluat",     // catches evaluate, evaluation, evaluating
+  "analyz",      // catches analyze, analyzing (US verb forms — drops the trailing 'e')
+  "analys",      // catches analysis, analyses, analyse, analysing (noun form +
+                 //   Brit verb spelling) — sibling spelling that prefix-match
+                 //   on `analyz` cannot reach (s vs z), which the F1 audit
+                 //   intent requires us to catch.
+  "propos",      // catches propose, proposal, proposing
+  "compar",      // catches compare, comparison, comparing
+  "design",      // catches design, designing — whole-word safe per audit data
+                 //   ("designate" does not appear in PRISM next_steps)
+  "scope",       // F3 — catches scope, scoping, rescoping
+  "diagnos",     // F3 — catches diagnose, diagnosis, diagnosing, diagnostic
+] as const;
+
 const REASONING_PHRASES = [
   "decide whether",
-  "follow-up on",
+  // "follow-up on" removed S109 / brief-415 (F6) — audit showed roughly
+  // even split between reasoning and executional connotations; removed to
+  // stop adding noise without consistent signal.
 ] as const;
 
 /**
@@ -69,21 +90,35 @@ const REASONING_PHRASES = [
  * deterministic application work that's well within Sonnet's range and does
  * not need adaptive thinking overhead.
  */
-const EXECUTIONAL_KEYWORDS = [
+const EXECUTIONAL_WHOLE_WORD = [
+  "log",       // whole-word: must not fire on "login", "logging", "logical"
+  "sync",
+  "bump",
+  "pin",       // F5
+  "wire",      // F5
+] as const;
+
+const EXECUTIONAL_PREFIX = [
   "cleanup",
-  "rename",
+  "renam",      // catches rename, renaming
   "patch",
   "push",
-  "log",
   "backfill",
-  "apply",
-  "verify",
-  "demote",
-  "consolidate",
-  "update",
-  "bump",
-  "sync",
-  "enroll",
+  "appl",       // catches apply, applies, applying, application — accepted:
+                //   PRISM next_steps that mention "application" overwhelmingly
+                //   refer to applying a change, not "applications" as a noun.
+  "verif",      // F4 — catches verify, verifies, verification, verifying, verified
+  "demot",      // catches demote, demotion, demoting
+  "consolidat", // catches consolidate, consolidation, consolidating
+  "updat",      // catches update, updates, updating
+  "enroll",     // catches enroll, enrolling, enrollment
+  "dispatch",   // F5 — catches dispatch, dispatching, dispatched
+  "merg",       // F5 — catches merge, merging, merged, merger
+  "delet",      // F5 — catches delete, deleting, deletion
+  "redeploy",   // F5
+  "migrat",     // F5 — catches migrate, migration, migrating
+  "clos",       // F5 — catches close, closing, closure (also "clothes" / "closet"
+                //   in theory — neither appears in PRISM next_steps)
 ] as const;
 
 const EXECUTIONAL_PHRASES = [
@@ -94,6 +129,13 @@ const EXECUTIONAL_PHRASES = [
  * Conditional keywords — only count when paired with a qualifier in the
  * same item. Prevents false positives on common words ("audit" in
  * "audit log file" is not the same as "audit report" or "audit findings").
+ *
+ * The `audit` qualifier list expanded S109 / brief-415 (F2) to reach the
+ * meta-work cases that prompted the calibration ("audit the keyword lists",
+ * "audit Tier A standing rules", "audit code paths"). The qualifier check
+ * uses `lower.includes(q)` against the whole item, gated on the
+ * whole-word `\baudit\b` match — so qualifier substrings don't need
+ * word-boundary precision.
  */
 interface ConditionalKeyword {
   keyword: string;
@@ -102,22 +144,32 @@ interface ConditionalKeyword {
 }
 
 const CONDITIONAL_KEYWORDS: ConditionalKeyword[] = [
-  { keyword: "audit", requiresAny: ["report", "findings"], bucket: "reasoning" },
+  {
+    keyword: "audit",
+    requiresAny: [
+      "report", "findings",                                 // existing — documentation-style
+      "list", "lists", "rules", "keywords",                 // F2 — meta-work qualifiers
+      "code", "system", "behavior", "session", "sessions",  // F2 — investigation qualifiers
+    ],
+    bucket: "reasoning",
+  },
   { keyword: "archive", requiresAny: ["content", "session", "insights", "log"], bucket: "executional" },
   { keyword: "restart", requiresAny: ["daemon", "trigger", "service"], bucket: "executional" },
 ];
 
 /**
  * Count keyword/phrase hits within a single text item.
- * Each occurrence of every distinct keyword counts. Case-insensitive.
+ * Each occurrence of every distinct keyword/phrase counts. Case-insensitive.
  *
- * Phrases are matched as substrings; single keywords are matched as
- * whole-word occurrences (word-boundary regex) so "logging" doesn't
- * accidentally fire on the "log" trigger.
+ * Phrases are matched as substrings; whole-word keywords use word-boundary
+ * regex (so "log" doesn't fire on "logging"); prefix keywords match the
+ * prefix followed by zero+ trailing letters then a word boundary (so
+ * "verif" matches "verify", "verifies", "verification").
  */
 function countHits(
   text: string,
-  keywords: ReadonlyArray<string>,
+  wholeWord: ReadonlyArray<string>,
+  prefix: ReadonlyArray<string>,
   phrases: ReadonlyArray<string>,
 ): number {
   if (!text) return 0;
@@ -132,8 +184,17 @@ function countHits(
     }
   }
 
-  for (const kw of keywords) {
+  for (const kw of wholeWord) {
     const re = new RegExp(`\\b${escapeForRegex(kw)}\\b`, "g");
+    const matches = lower.match(re);
+    if (matches) hits += matches.length;
+  }
+
+  for (const kw of prefix) {
+    // \b{prefix}[a-z]*\b — prefix followed by zero+ letters then a word
+    // boundary. Catches noun/gerund/adjective derivatives without listing
+    // each one as a separate keyword.
+    const re = new RegExp(`\\b${escapeForRegex(kw)}[a-z]*\\b`, "g");
     const matches = lower.match(re);
     if (matches) hits += matches.length;
   }
@@ -167,10 +228,10 @@ function escapeForRegex(s: string): string {
  */
 function scoreItem(text: string): { reasoning: number; executional: number } {
   const reasoning =
-    countHits(text, REASONING_KEYWORDS, REASONING_PHRASES) +
+    countHits(text, REASONING_WHOLE_WORD, REASONING_PREFIX, REASONING_PHRASES) +
     countConditionalHits(text, "reasoning");
   const executional =
-    countHits(text, EXECUTIONAL_KEYWORDS, EXECUTIONAL_PHRASES) +
+    countHits(text, EXECUTIONAL_WHOLE_WORD, EXECUTIONAL_PREFIX, EXECUTIONAL_PHRASES) +
     countConditionalHits(text, "executional");
   return { reasoning, executional };
 }
@@ -230,18 +291,10 @@ export function classifySession(input: ClassifySessionInput): SessionRecommendat
     executionalScore += s.executional;
   }
 
-  for (const ctx of input.critical_context ?? []) {
-    const s = scoreItem(ctx);
-    reasoningScore += s.reasoning;
-    executionalScore += s.executional;
-  }
-
-  // opening_message reflects current intent and gets 2x weight when present.
-  if (input.opening_message) {
-    const s = scoreItem(input.opening_message);
-    reasoningScore += s.reasoning * 2;
-    executionalScore += s.executional * 2;
-  }
+  // critical_context loop and opening_message 2x-weight block removed
+  // S109 / brief-415 (F7) — D-193 Piece 1 made both inputs unreachable
+  // from finalize and bootstrap, so the code paths were dead. Restoring
+  // them would re-introduce the S107→S108 banner-discrepancy class of bug.
 
   const ratio = reasoningScore / Math.max(executionalScore, 1);
 
