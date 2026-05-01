@@ -233,3 +233,250 @@ Working on the dispatch test.
     expect(mockGeneratePendingDocUpdates).toHaveBeenCalledOnce();
   });
 });
+
+// ── brief-411 / D-193 Piece 1 — persisted recommendation injection ─────────────
+
+describe("commit phase injects persisted recommendation into handoff.md", () => {
+  /**
+   * Build a handoff body with the given Next Steps content. The classifier
+   * keys off Next Steps (and only Next Steps) per brief-411 — varying that
+   * section is enough to exercise each category branch.
+   */
+  function buildHandoff(nextSteps: string[]): string {
+    const stepLines = nextSteps.map((s, i) => `${i + 1}. ${s}`).join("\n");
+    return `## Meta
+- Handoff Version: 31
+- Session Count: 26
+- Template Version: v2.16.0
+- Status: Active
+
+## Critical Context
+1. Past-tense executional language: deployed, executed, reconnect.
+
+## Where We Are
+Holding pattern.
+
+## Next Steps
+${stepLines}
+
+<!-- EOF: handoff.md -->
+`;
+  }
+
+  /**
+   * Helper — invoke the prism_finalize commit handler with the given handoff
+   * content and return the writes captured by the mocked atomic commit.
+   */
+  async function runCommit(handoffContent: string): Promise<Array<{ path: string; content: string }>> {
+    const server = new McpServer(
+      { name: "test-server", version: "1.0.0" },
+      { capabilities: { tools: {} } },
+    );
+    registerFinalize(server);
+    const tool = (server as any)._registeredTools["prism_finalize"];
+
+    const mockExtra = {
+      signal: new AbortController().signal,
+      _meta: undefined,
+      requestId: "test-recommendation",
+      sendNotification: vi.fn().mockResolvedValue(undefined),
+      sendRequest: vi.fn().mockResolvedValue(undefined),
+    };
+
+    const result = await tool.handler(
+      {
+        project_slug: "test-project",
+        action: "commit",
+        session_number: 26,
+        handoff_version: 31,
+        files: [
+          { path: "handoff.md", content: handoffContent },
+        ],
+      },
+      mockExtra,
+    );
+
+    const data = JSON.parse(result.content[0].text);
+    expect(data.all_succeeded).toBe(true);
+
+    // The atomic commit receives the post-mutation writes. First call
+    // (resolved by the auto-backup) is the handoff backup; the commit-phase
+    // call has writes that contain our handoff. Find the call that includes
+    // a path matching handoff.md.
+    const callsWithHandoff = mockCreateAtomicCommit.mock.calls.filter((args: unknown[]) => {
+      const writes = args[1] as Array<{ path: string; content: string }>;
+      return writes.some(w => w.path === "handoff.md" || w.path.endsWith("/handoff.md"));
+    });
+    expect(callsWithHandoff.length).toBeGreaterThan(0);
+    return callsWithHandoff[0][1] as Array<{ path: string; content: string }>;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // The auto-backup path reads the existing handoff via fetchFile — return
+    // a minimal valid response so it doesn't throw and abort the commit.
+    mockFetchFile.mockResolvedValue({
+      content: "## Meta\n- Handoff Version: 30\n<!-- EOF: handoff.md -->",
+      sha: "head_sha",
+      size: 60,
+    });
+    mockListDirectory.mockResolvedValue([]);
+    mockListCommits.mockResolvedValue([]);
+    mockPushFile.mockResolvedValue({ success: true, size: 100, sha: "new_sha" });
+    mockCreateAtomicCommit.mockResolvedValue({ success: true, sha: "atomic_sha", files_committed: 1 });
+    mockGenerateIntelligenceBrief.mockResolvedValue({ success: true, input_tokens: 100, output_tokens: 50 });
+    mockGeneratePendingDocUpdates.mockResolvedValue({ success: true, input_tokens: 100, output_tokens: 50 });
+  });
+
+  it("writes a reasoning_heavy block when next_steps are design / investigation work", async () => {
+    const writes = await runCommit(buildHandoff([
+      "Design the orchestration layer",
+      "Architect the new module",
+      "Brainstorm tradeoffs and compare strategy options",
+    ]));
+    const handoffWrite = writes.find(w => w.path === "handoff.md")!;
+    expect(handoffWrite.content).toContain("<!-- prism:recommended_session_settings -->");
+    expect(handoffWrite.content).toContain("- Category: reasoning_heavy");
+    expect(handoffWrite.content).toContain("- Model: Opus 4.7");
+    expect(handoffWrite.content).toContain("- Thinking: Adaptive on");
+  });
+
+  it("writes an executional block when next_steps are mechanical cleanup", async () => {
+    const writes = await runCommit(buildHandoff([
+      "Cleanup INS-223 dead-config references",
+      "Patch task-queue to demote stale items",
+      "Push the updated boot-test fixture",
+    ]));
+    const handoffWrite = writes.find(w => w.path === "handoff.md")!;
+    expect(handoffWrite.content).toContain("- Category: executional");
+    expect(handoffWrite.content).toContain("- Model: Sonnet 4.6");
+    expect(handoffWrite.content).toContain("- Thinking: Adaptive off");
+  });
+
+  it("writes a mixed block when next_steps balance reasoning and execution", async () => {
+    const writes = await runCommit(buildHandoff([
+      "Debug the regression",
+      "Verify the fix",
+    ]));
+    const handoffWrite = writes.find(w => w.path === "handoff.md")!;
+    expect(handoffWrite.content).toContain("- Category: mixed");
+    expect(handoffWrite.content).toContain("- Model: Opus 4.7");
+    expect(handoffWrite.content).toContain("- Thinking: Adaptive off");
+  });
+
+  it("places the block immediately after ## Meta and before ## Critical Context", async () => {
+    const writes = await runCommit(buildHandoff([
+      "Design the orchestrator",
+    ]));
+    const handoffWrite = writes.find(w => w.path === "handoff.md")!;
+    const metaIdx = handoffWrite.content.indexOf("## Meta");
+    const blockIdx = handoffWrite.content.indexOf("## Recommended Session Settings");
+    const criticalIdx = handoffWrite.content.indexOf("## Critical Context");
+    expect(metaIdx).toBeGreaterThanOrEqual(0);
+    expect(blockIdx).toBeGreaterThan(metaIdx);
+    expect(criticalIdx).toBeGreaterThan(blockIdx);
+    // EOF sentinel preserved.
+    expect(handoffWrite.content.trimEnd().endsWith("<!-- EOF: handoff.md -->")).toBe(true);
+  });
+
+  it("replaces an existing block in place rather than producing duplicates", async () => {
+    // Pre-populate the inbound handoff with a stale (executional) block.
+    const handoffWithStaleBlock = `## Meta
+- Handoff Version: 31
+- Session Count: 26
+- Template Version: v2.16.0
+- Status: Active
+
+## Recommended Session Settings
+
+<!-- prism:recommended_session_settings -->
+- Model: Sonnet 4.6
+- Thinking: Adaptive off
+- Category: executional
+- Rationale: stale rationale
+<!-- /prism:recommended_session_settings -->
+
+## Critical Context
+1. Some context.
+
+## Where We Are
+Working.
+
+## Next Steps
+1. Design the orchestrator
+2. Architect the new pipeline
+3. Investigate prior art
+
+<!-- EOF: handoff.md -->
+`;
+
+    const writes = await runCommit(handoffWithStaleBlock);
+    const handoffWrite = writes.find(w => w.path === "handoff.md")!;
+
+    // Exactly one delimiter pair.
+    const opens = (handoffWrite.content.match(/<!-- prism:recommended_session_settings -->/g) ?? []).length;
+    expect(opens).toBe(1);
+
+    // New verdict (reasoning_heavy from the design-heavy next_steps), stale verdict gone.
+    expect(handoffWrite.content).toContain("- Category: reasoning_heavy");
+    expect(handoffWrite.content).not.toContain("- Category: executional");
+    expect(handoffWrite.content).not.toContain("stale rationale");
+  });
+
+  it("logs a warn and skips injection when handoff has no ## Meta section", async () => {
+    const loggerModule = await import("../src/utils/logger.js");
+    const loggerWarnSpy = vi.spyOn(loggerModule.logger, "warn");
+
+    // No ## Meta header at all — legacy/malformed handoff. Validation will
+    // reject this handoff downstream (## Meta is mandatory), but the
+    // injection skip path must still log a warn rather than throw — that
+    // is the brief-411 A.1 contract.
+    const handoffWithoutMeta = `# Handoff
+
+## Critical Context
+1. Some context.
+
+## Where We Are
+Working.
+
+## Next Steps
+1. Cleanup the dead code.
+
+<!-- EOF: handoff.md -->
+`;
+
+    const server = new McpServer(
+      { name: "test-server", version: "1.0.0" },
+      { capabilities: { tools: {} } },
+    );
+    registerFinalize(server);
+    const tool = (server as any)._registeredTools["prism_finalize"];
+
+    const mockExtra = {
+      signal: new AbortController().signal,
+      _meta: undefined,
+      requestId: "test-no-meta",
+      sendNotification: vi.fn().mockResolvedValue(undefined),
+      sendRequest: vi.fn().mockResolvedValue(undefined),
+    };
+
+    // The handler returns without throwing even though validation will fail.
+    await tool.handler(
+      {
+        project_slug: "test-project",
+        action: "commit",
+        session_number: 26,
+        handoff_version: 31,
+        files: [
+          { path: "handoff.md", content: handoffWithoutMeta },
+        ],
+      },
+      mockExtra,
+    );
+
+    const warnCalls = loggerWarnSpy.mock.calls.map(c => String(c[0]));
+    expect(warnCalls.some(msg => msg.includes("no ## Meta section"))).toBe(true);
+
+    loggerWarnSpy.mockRestore();
+  });
+});
