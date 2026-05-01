@@ -26,6 +26,11 @@ vi.mock("../src/utils/doc-resolver.js", () => ({
 
 vi.mock("../src/ai/synthesis-tracker.js", () => ({
   recordSynthesisEvent: vi.fn(),
+  // brief-417: synthesize.ts now reads the rolling CS-3 byte-count baseline
+  // from the tracker. Returning an empty list disables the baseline check
+  // (it requires N >= 3 historical samples) so these tests stay focused on
+  // their original boundaries.
+  getRecentSuccessful: vi.fn().mockReturnValue([]),
 }));
 
 vi.mock("../src/config.js", async (importOriginal) => {
