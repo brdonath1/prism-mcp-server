@@ -80,8 +80,12 @@ export interface DispatchResult {
  * 3. Falls back to "claude" and lets the SDK resolve it.
  *
  * Returns { path, version?, error? } so callers can log diagnostics.
+ *
+ * Exported so other subprocess wrappers (e.g. src/ai/cc-subprocess.ts —
+ * brief-417 Phase 3c-A synthesis routing) can reuse the same resolution
+ * logic without duplicating it.
  */
-function findClaudeExecutable(): {
+export function findClaudeExecutable(): {
   path: string;
   version?: string;
   error?: string;

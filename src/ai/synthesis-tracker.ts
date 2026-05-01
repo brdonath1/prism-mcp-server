@@ -14,6 +14,20 @@ import { logger } from "../utils/logger.js";
  */
 export type SynthesisKind = "intelligence_brief" | "pending_updates";
 
+/**
+ * Transport label for an event (brief-417 Phase 3c-A).
+ *
+ * - `messages_api` — direct Anthropic Messages API call (legacy default).
+ * - `cc_subprocess` — routed through the Claude Code subprocess (OAuth path).
+ * - `messages_api_fallback` — call-site requested cc_subprocess but the
+ *   subprocess attempt failed and we automatically retried via the Messages
+ *   API. Distinct from `messages_api` so the fallback rate is observable.
+ *
+ * Older events (pre-brief-417) lack this field. Absence means the transport
+ * is unknown (effectively `messages_api` for everything historical).
+ */
+export type SynthesisTransport = "messages_api" | "cc_subprocess" | "messages_api_fallback";
+
 export interface SynthesisEvent {
   project: string;
   sessionNumber: number;
@@ -24,6 +38,13 @@ export interface SynthesisEvent {
   output_tokens?: number;
   duration_ms?: number;
   synthesis_kind?: SynthesisKind;
+  /** brief-417: which transport ultimately produced this result. */
+  transport?: SynthesisTransport;
+  /** brief-417: model identifier (e.g. `claude-sonnet-4-6`, `claude-opus-4-7`). */
+  model?: string;
+  /** brief-417: byte count of the synthesized output content (UTF-8). Drives
+   *  the rolling-baseline quality check on CS-3. Optional for legacy events. */
+  output_bytes?: number;
 }
 
 const MAX_EVENTS_PER_PROJECT = 20;
@@ -117,4 +138,23 @@ export function getSynthesisHealth(projectSlug?: string): {
  */
 export function getRecentFailures(limit = 5, projectSlug?: string): SynthesisEvent[] {
   return getAllEvents(projectSlug).filter(e => !e.success).slice(-limit);
+}
+
+/**
+ * Get the last N successful events for a project, optionally filtered by
+ * synthesis kind. Used by quality-check baselines (brief-417 — CS-3 byte
+ * count rolling baseline).
+ *
+ * Events are returned newest-first. Caller decides what statistic to compute
+ * (mean, median, etc.) from the returned `output_tokens` / size info.
+ */
+export function getRecentSuccessful(
+  projectSlug: string,
+  limit: number,
+  kind?: SynthesisKind,
+): SynthesisEvent[] {
+  const events = getAllEvents(projectSlug)
+    .filter((e) => e.success)
+    .filter((e) => (kind ? (e.synthesis_kind ?? "intelligence_brief") === kind : true));
+  return events.slice(-limit).reverse();
 }

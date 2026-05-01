@@ -15,7 +15,10 @@ import {
   buildPendingDocUpdatesUserMessage,
 } from "./prompts.js";
 import { generateCstTimestamp } from "../utils/banner.js";
-import { recordSynthesisEvent } from "./synthesis-tracker.js";
+import {
+  getRecentSuccessful,
+  recordSynthesisEvent,
+} from "./synthesis-tracker.js";
 
 export interface SynthesisOutcome {
   success: boolean;
@@ -249,7 +252,10 @@ export async function generatePendingDocUpdates(
       totalBytes: Array.from(allDocs.values()).reduce((sum, d) => sum + d.size, 0),
     });
 
-    // 3. Call Opus 4.7 with adaptive thinking (Phase 3a — CS-3).
+    // 3. Call synthesize with callSite="pdu" so per-call-site routing
+    //    (brief-417 Phase 3c-A) can route this through the Claude Code
+    //    subprocess + Sonnet 4.6 path when Railway env opts in. Default
+    //    behavior (no env vars set) preserves Opus 4.7 + Messages API.
     //    Fire-and-forget per D-78 / D-156 so latency overhead is invisible.
     const result = await synthesize(
       PENDING_DOC_UPDATES_PROMPT,
@@ -258,6 +264,7 @@ export async function generatePendingDocUpdates(
       SYNTHESIS_TIMEOUT_MS,
       undefined,
       true, // thinking: true — Phase 3a CS-3 adaptive-thinking flag
+      "pdu", // brief-417: per-call-site routing
     );
 
     if (!result.success) {
@@ -283,6 +290,49 @@ export async function generatePendingDocUpdates(
     const missingSections = requiredSections.filter(s => !result.content.includes(s));
     if (missingSections.length > 0) {
       logger.warn("Pending doc-updates output missing sections", { missingSections });
+    }
+
+    // 4b. brief-417: programmatic CS-3 quality checks. All warn-and-push,
+    //     never fail the synthesis (visibility hint per INS-238). Operator
+    //     triages via Railway logs.
+    const currentOutputBytes = new TextEncoder().encode(result.content).length;
+
+    // Byte-count baseline: compare against last 5 successful CS-3 outputs.
+    // Only meaningful with at least 3 historical samples (skip otherwise to
+    // avoid noisy warnings during cold-start / post-deploy windows).
+    const recentSuccessful = getRecentSuccessful(projectSlug, 5, "pending_updates");
+    const baselineSamples = recentSuccessful
+      .map((e) => e.output_bytes)
+      .filter((b): b is number => typeof b === "number" && b > 0);
+    if (baselineSamples.length >= 3) {
+      const baselineMean =
+        baselineSamples.reduce((sum, b) => sum + b, 0) / baselineSamples.length;
+      const lower = baselineMean * 0.5;
+      const upper = baselineMean * 1.5;
+      if (currentOutputBytes < lower || currentOutputBytes > upper) {
+        logger.warn("CS3_QUALITY_BYTE_COUNT_WARNING", {
+          projectSlug,
+          sessionNumber,
+          current_bytes: currentOutputBytes,
+          baseline_mean_bytes: Math.round(baselineMean),
+          baseline_n: baselineSamples.length,
+          lower_bound: Math.round(lower),
+          upper_bound: Math.round(upper),
+        });
+      }
+    }
+
+    // Preamble check: first non-empty line must start with "## " or "**".
+    // Anything else suggests prompt-leak preamble like "Sure, here is..." or
+    // "I'll generate the following...".
+    const trimmed = result.content.replace(/^\s+/, "");
+    const firstLine = trimmed.split("\n", 1)[0] ?? "";
+    if (!firstLine.startsWith("## ") && !firstLine.startsWith("**") && !firstLine.startsWith("# ")) {
+      logger.warn("CS3_QUALITY_PREAMBLE_WARNING", {
+        projectSlug,
+        sessionNumber,
+        first_200_chars: trimmed.slice(0, 200),
+      });
     }
 
     // 5. Ensure EOF sentinel
@@ -314,6 +364,11 @@ export async function generatePendingDocUpdates(
       ms: Date.now() - start,
     });
 
+    // brief-417: capture transport + model for cost/quality analysis.
+    // result.transport is set by synthesize() based on which routing path
+    // actually completed (cc_subprocess on success, messages_api_fallback
+    // when the subprocess attempt failed and we retried via Messages API,
+    // or messages_api when the call-site routes directly there).
     recordSynthesisEvent({
       project: projectSlug,
       sessionNumber,
@@ -323,6 +378,9 @@ export async function generatePendingDocUpdates(
       output_tokens: outcome.output_tokens,
       duration_ms: Date.now() - start,
       synthesis_kind: "pending_updates",
+      transport: result.transport,
+      model: result.model,
+      output_bytes: currentOutputBytes,
     });
 
     return outcome;

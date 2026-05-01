@@ -177,6 +177,9 @@ describe("generateIntelligenceBrief (CS-2) — forwards thinking: true to synthe
     }));
     vi.doMock("../src/ai/synthesis-tracker.js", () => ({
       recordSynthesisEvent: vi.fn(),
+      // brief-417: tracker now also exposes getRecentSuccessful (for the CS-3
+      // rolling byte-count baseline). Empty list disables the baseline check.
+      getRecentSuccessful: vi.fn().mockReturnValue([]),
     }));
     vi.doMock("../src/config.js", async (importOriginal) => {
       const actual = (await importOriginal()) as Record<string, unknown>;
@@ -236,6 +239,9 @@ describe("generatePendingDocUpdates (CS-3) — forwards thinking: true to synthe
     }));
     vi.doMock("../src/ai/synthesis-tracker.js", () => ({
       recordSynthesisEvent: vi.fn(),
+      // brief-417: tracker now also exposes getRecentSuccessful (for the CS-3
+      // rolling byte-count baseline). Empty list disables the baseline check.
+      getRecentSuccessful: vi.fn().mockReturnValue([]),
     }));
     vi.doMock("../src/config.js", async (importOriginal) => {
       const actual = (await importOriginal()) as Record<string, unknown>;

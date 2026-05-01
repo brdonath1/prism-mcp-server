@@ -42,17 +42,19 @@ export const PORT = parseInt(process.env.PORT ?? "3000", 10);
 /** Log level */
 export const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
 
-/** Server version. Bumped to 4.4.0 for brief-416 (D-196 Piece 3 — closes the
- *  visibility piece of the four-piece reliability hardening; Pieces 1+2
- *  shipped as PR #38 on brdonath1/trigger): boot-time stale-active surfacing
- *  in prism_bootstrap. Reads the project's Trigger state file
- *  (`brdonath1/trigger:state/<slug>.json`); when the active slot is occupied
- *  beyond TRIGGER_STALE_ACTIVE_THRESHOLD_MS without a PR opened, surfaces a
- *  warning in `result.warnings` and a structured `STALE_ACTIVE_DETECTED`
- *  diagnostics entry pointing at INS-236. Also extends `fetchFile` with an
- *  optional `ref` parameter (existing default-branch callers unaffected) so
- *  this is the single read path for cross-repo + cross-branch fetches. */
-export const SERVER_VERSION = "4.4.0";
+/** Server version. Bumped to 4.5.0 for brief-417 (Phase 3c-A — D-161
+ *  re-evaluated): per-call-site synthesis routing infrastructure plus the
+ *  CS-3 (`generatePendingDocUpdates`) flip to OAuth + Sonnet 4.6. Adds a new
+ *  optional `callSite?: "draft" | "brief" | "pdu"` parameter to
+ *  `synthesize()` that reads `SYNTHESIS_${CALLSITE_UPPER}_TRANSPORT` and
+ *  `SYNTHESIS_${CALLSITE_UPPER}_MODEL` to optionally route through a new
+ *  lightweight `src/ai/cc-subprocess.ts` wrapper around the Claude Code SDK
+ *  (no workspace, no tools, no PR machinery). Automatic fallback to the
+ *  Messages API on subprocess failure preserves finalization success even
+ *  during OAuth degradation. CS-1 and CS-2 stay on Opus 4.7 + Messages API
+ *  by default — the flip applies only to CS-3, where the operator-review
+ *  safety net catches any quality regression before it propagates. */
+export const SERVER_VERSION = "4.5.0";
 
 /** MCP client timeout is ~60s. All server-side operations must complete within 50s
  *  to leave 10s buffer for transport overhead. This constrains synthesis, draft,
