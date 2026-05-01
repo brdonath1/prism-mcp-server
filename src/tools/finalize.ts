@@ -89,6 +89,7 @@ import { generateIntelligenceBrief, generatePendingDocUpdates } from "../ai/synt
 import { computeCurrencyWarning, type CurrencyWarning } from "../utils/doc-currency.js";
 import { escapeHtml, stripMarkdown, formatResumptionHtml, toolIcon, generateCstTimestamp } from "../utils/banner.js";
 import { DiagnosticsCollector } from "../utils/diagnostics.js";
+import { classifySession, type SessionRecommendation } from "../utils/session-classifier.js";
 
 /**
  * Robust JSON extraction from AI responses (B.8).
@@ -797,6 +798,13 @@ function renderFinalizationBanner(data: {
   deliverables: Array<{ text: string; status: "ok" | "warn" }>;
   warnings: string[];
   errors: string[];
+  /**
+   * brief-405 / D-191: optional pre-boot model+thinking recommendation.
+   * When present, render a "Suggested for next session" section between
+   * Resumption Point and Deliverables. Omit the section entirely when
+   * null/undefined — defensive contract per the brief.
+   */
+  suggested?: SessionRecommendation | null;
 }): string {
   const e = (s: string) => escapeHtml(stripMarkdown(s));
 
@@ -823,6 +831,20 @@ function renderFinalizationBanner(data: {
   const errorsHtml = data.errors
     .map((err) => `<div class="bn-alert critical">\u2717 ${e(err)}</div>`)
     .join("\n    ");
+
+  // brief-405 / D-191: render the model+thinking recommendation section
+  // (between Resumption Point and Deliverables) when present. Defensive
+  // contract \u2014 empty/null suggested means no markup is emitted.
+  const suggestedHtml = data.suggested
+    ? `
+    <div class="bn-suggested">
+      <div class="bn-section-label">Suggested for next session</div>
+      <div class="bn-suggested-card">
+        <div class="bn-suggested-display">${e(data.suggested.display)}</div>
+        <div class="bn-suggested-rationale">${e(data.suggested.rationale)}</div>
+      </div>
+    </div>`
+    : "";
 
   return `<style>
 :root {
@@ -868,6 +890,9 @@ function renderFinalizationBanner(data: {
 .bn-alert { display: flex; align-items: flex-start; gap: 10px; border-radius: 8px; padding: 9px 16px; font-size: 12px; font-weight: 500; line-height: 1.5; }
 .bn-alert.warn { background: rgba(234,179,8,0.1); border: 1px solid rgba(234,179,8,0.3); color: var(--bn-warn); }
 .bn-alert.critical { background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3); color: var(--bn-critical); }
+.bn-suggested-card { background: var(--bn-surface); border: 0.5px solid var(--bn-border); border-left: 3px solid var(--bn-accent-start); border-radius: 8px; padding: 12px 14px; }
+.bn-suggested-display { font-size: 14px; font-weight: 700; color: var(--bn-text); line-height: 1.3; }
+.bn-suggested-rationale { font-size: 12px; font-weight: 400; color: var(--bn-text-muted); margin-top: 4px; line-height: 1.4; }
 </style>
 
 <div class="bn">
@@ -904,7 +929,7 @@ function renderFinalizationBanner(data: {
     <div>
       <div class="bn-section-label">Resumption point</div>
       <div class="bn-resumption">${resumptionHtml}</div>
-    </div>
+    </div>${suggestedHtml}
     <div>
       <div class="bn-section-label">Deliverables</div>
       <div class="bn-steps">
@@ -1129,6 +1154,7 @@ export function registerFinalize(server: McpServer): void {
             (f) => f.path === "handoff.md" || f.path === `${DOC_ROOT}/handoff.md`,
           );
           let resumption = "See handoff.md for resumption point.";
+          let nextStepsForRecommendation: string[] = [];
           if (handoffFile) {
             const whereWeAre = extractSection(handoffFile.content, "Where We Are")
               ?? extractSection(handoffFile.content, "Current State")
@@ -1138,6 +1164,28 @@ export function registerFinalize(server: McpServer): void {
               const firstParagraph = whereWeAre.split("\n\n")[0]?.trim();
               if (firstParagraph) resumption = firstParagraph;
             }
+            // brief-405 / D-191: parse next_steps for the classifier. The
+            // commit-phase finalization banner is the primary pre-boot
+            // signal — handoff_next_steps is the canonical source.
+            nextStepsForRecommendation = parseNumberedList(
+              extractSection(handoffFile.content, "Next Steps")
+                ?? extractSection(handoffFile.content, "Immediate Next")
+                ?? ""
+            );
+          }
+
+          // brief-405 / D-191: classify the next session. Pure function,
+          // no I/O. Failure here is non-fatal — banner just renders without
+          // the suggested section.
+          let recommendation: SessionRecommendation | null = null;
+          try {
+            recommendation = classifySession({
+              next_steps: nextStepsForRecommendation,
+            });
+          } catch (classifyErr) {
+            logger.warn("session classifier failed (finalize)", {
+              error: classifyErr instanceof Error ? classifyErr.message : String(classifyErr),
+            });
           }
 
           // Determine handoff push status
@@ -1204,6 +1252,7 @@ export function registerFinalize(server: McpServer): void {
               .filter((r) => !r.success)
               .map((r) => `Push failed: ${r.path}`),
             errors: [],
+            suggested: recommendation,
           });
 
           logger.info("finalization banner rendered", { htmlLength: finalization_banner_html.length });

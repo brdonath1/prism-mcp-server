@@ -38,6 +38,7 @@ import {
   topicMatch,
   type StandingRule,
 } from "../utils/standing-rules.js";
+import { classifySession, type SessionRecommendation } from "../utils/session-classifier.js";
 
 // Re-export the standing-rule helpers so existing imports from
 // "../src/tools/bootstrap.js" continue to resolve (PR 4 / D-156 §3.5
@@ -611,6 +612,22 @@ export function registerBootstrap(server: McpServer): void {
           { label: scalingRequired ? "scaling required" : "no scaling needed", status: scalingRequired ? "warn" : "ok" },
         ];
 
+        // brief-405 / D-191: classify the upcoming session and surface a
+        // model + thinking recommendation. Pure function — no I/O. Failure
+        // here is non-fatal; bootstrap proceeds with no recommendation.
+        let recommendedSessionSettings: SessionRecommendation | null = null;
+        try {
+          recommendedSessionSettings = classifySession({
+            next_steps: nextSteps,
+            critical_context: criticalContext,
+            opening_message: opening_message,
+          });
+        } catch (err) {
+          logger.warn("session classifier failed", {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+
         // ME-1: Render compact text banner instead of HTML
         let bannerText: string | null = null;
         try {
@@ -628,6 +645,12 @@ export function registerBootstrap(server: McpServer): void {
             resumption,
             nextSteps,
             warnings,
+            suggested: recommendedSessionSettings
+              ? {
+                  display: recommendedSessionSettings.display,
+                  rationale: recommendedSessionSettings.rationale,
+                }
+              : null,
           };
           bannerText = renderBannerText(bannerTextInput);
           logger.info("boot banner text rendered", { textLength: bannerText.length });
@@ -706,6 +729,7 @@ export function registerBootstrap(server: McpServer): void {
           },
           expected_tool_surface: getExpectedToolSurface(RAILWAY_ENABLED, CC_DISPATCH_ENABLED, !!GITHUB_PAT),  // D-83 (S44); github category added in brief-403
           post_boot_tool_searches: POST_BOOT_TOOL_SEARCHES,                                     // D-83 (S44)
+          recommended_session_settings: recommendedSessionSettings,                             // brief-405 / D-191 — advisory model + thinking suggestion
           warnings,
           diagnostics: diagnostics.list(),
         };

@@ -180,6 +180,16 @@ export interface BannerTextInput {
   resumption: string;
   nextSteps: string[];
   warnings: string[];
+  /**
+   * Optional model + thinking recommendation (brief-405 / D-191).
+   * When present, a `Suggested:` line is appended below the tool-status row
+   * so operators see the recommendation before their first prompt. Omitted
+   * entirely when null/undefined — older clients see no extra line.
+   */
+  suggested?: {
+    display: string;
+    rationale: string;
+  } | null;
 }
 
 /**
@@ -200,9 +210,17 @@ export function renderBannerText(data: BannerTextInput): string {
     `PRISM v${data.templateVersion} | Session ${data.sessionNumber} | ${data.timestamp} CST`,
     `Handoff v${data.handoffVersion} (${data.handoffSizeKb}KB) | ${data.decisionCount} decisions (${data.guardrailCount} guardrails) | ${data.docCount}/${data.docTotal} docs healthy`,
     toolStatus,
-    "",
-    `Resumption: ${stripMarkdown(resumption)}`,
   ];
+
+  // brief-405 / D-191: emit a model-recommendation line below the tool row
+  // when the classifier produced a recommendation. Omit entirely on null/
+  // undefined so older clients render no blank line.
+  if (data.suggested) {
+    lines.push(`Suggested: ${data.suggested.display} — ${data.suggested.rationale}`);
+  }
+
+  lines.push("");
+  lines.push(`Resumption: ${stripMarkdown(resumption)}`);
 
   if (data.nextSteps.length > 0) {
     lines.push("");

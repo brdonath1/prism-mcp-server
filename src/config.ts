@@ -42,10 +42,12 @@ export const PORT = parseInt(process.env.PORT ?? "3000", 10);
 /** Log level */
 export const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
 
-/** Server version. Bumped to 4.0.0 for Operations Gateway full stack (brief-104):
- *  server-side dedup for prism_log_decision, fetch path resolution, and the
- *  Claude Code orchestration layer (cc_dispatch + cc_status). */
-export const SERVER_VERSION = "4.0.0";
+/** Server version. Bumped to 4.1.0 for the model-recommendation classifier
+ *  (brief-405 / D-191 Phase 1): bootstrap responses now include
+ *  `recommended_session_settings` and the boot/finalization banners surface a
+ *  `Suggested:` model+thinking line. Backwards-compatible — older clients
+ *  ignoring the new field see no change. */
+export const SERVER_VERSION = "4.1.0";
 
 /** MCP client timeout is ~60s. All server-side operations must complete within 50s
  *  to leave 10s buffer for transport overhead. This constrains synthesis, draft,
