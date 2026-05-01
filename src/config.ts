@@ -272,12 +272,24 @@ export const PREFETCH_KEYWORDS: Record<string, string> = {
  * `<!-- topics: foo, bar -->` comment lines.
  */
 export const STANDING_RULE_TOPIC_KEYWORDS: Record<string, string[]> = {
+  // Pre-existing topics
   cc_dispatch: ["cc_dispatch", "dispatch", "claude code", "cc brief", "pr ", "pull request", "merge"],
   mcp_server: ["mcp server", "prism-mcp-server", "deploy", "railway", "tool change", "tool surface"],
   trigger: ["trigger", "daemon", "marker file", "brief_dir", "trigger.config"],
   prism_push: ["prism_push", "prism_patch", "living doc", "artifact push"],
   auth: ["oauth", "api key", "keychain", "anthropic_api_key", "claude_code_oauth_token"],
   ci_workflow: [".github/workflows", "workflow", "actions", " ci "],
+  // Added S107 Phase 2 — covers newly-demoted Tier B rules (D-192 re-execution)
+  audit:      ["audit severity", "production failure", "live log", "triage", "railway logs audit"],
+  rollout:    ["rollout", "fleet-wide", "template migration", "batch rollout"],
+  debugging:  ["debugging", "reproducer", "root cause", "diagnostic session", "failure signature"],
+  brief:      ["brief spec", "brief authoring", "verify brief", "brief verification"],
+  cost:       ["token reduction", "cost analysis", "pencils out", "cost-saving", "synthesis cost"],
+  launchd:    ["launchd", "tahoe", "plist", "launchagent", "ex_config", "standardoutpath"],
+  credential: ["credential", "pat rotation", "api key rotate", "env leak", "set -a", "zshrc"],
+  deployment: ["dist artifact", "dist mtime", "etime vs", "deployed fix", "running process"],
+  enrollment: ["enrollment", "enroll", "batch enroll", "marker push", "trigger enrollment"],
+  post_merge: ["post_merge", "post merge", "merge action", "actions_completed"],
 };
 
 /** MCP Auth Token for Bearer authentication (B.2) */
