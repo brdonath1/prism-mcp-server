@@ -87,9 +87,11 @@ export function getExpectedToolSurface(
  * Post-boot tool_search queries that Claude executes after receiving the
  * bootstrap response. Together these three queries empirically load all 23
  * registered tools (verified live S43; expanded for the github category in
- * brief-403/404). Each query's limit is intentionally set to 20 to defeat
- * the relevance-ranking cap that causes `tool_search("prism", limit=20)`
- * to still return only 7 results.
+ * brief-403/404; "tag" keyword added S105 to surface gh_delete_tag, which
+ * was ranking below limit:20 in the github query without it). Each query's
+ * limit is intentionally set to 20 to defeat the relevance-ranking cap
+ * that causes `tool_search("prism", limit=20)` to still return only 7
+ * results.
  *
  * When adding a new tool: verify at least one of these queries contains a
  * keyword that matches the tool's name or description. The coverage test
@@ -103,5 +105,5 @@ export interface PostBootToolSearch {
 export const POST_BOOT_TOOL_SEARCHES: readonly PostBootToolSearch[] = [
   { query: "prism log patch scale synthesize analytics finalize", limit: 20 },
   { query: "railway deploy environment status dispatch claude code", limit: 20 },
-  { query: "github branch release delete create update", limit: 20 },
+  { query: "github branch release tag delete create update", limit: 20 },
 ] as const;
