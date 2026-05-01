@@ -88,9 +88,9 @@ describe("selectStandingRulesForBoot", () => {
 });
 
 describe("STANDING_RULE_TOPIC_KEYWORDS map shape", () => {
-  it("includes all six topic groups defined in D-156", () => {
+  it("includes all sixteen topic groups defined in D-156 + S107 Phase 2", () => {
     const topics = Object.keys(STANDING_RULE_TOPIC_KEYWORDS).sort();
-    expect(topics).toEqual(["auth", "cc_dispatch", "ci_workflow", "mcp_server", "prism_push", "trigger"]);
+    expect(topics).toEqual(["audit", "auth", "brief", "cc_dispatch", "ci_workflow", "cost", "credential", "debugging", "deployment", "enrollment", "launchd", "mcp_server", "post_merge", "prism_push", "rollout", "trigger"]);
   });
 
   it("every topic has at least one keyword", () => {
