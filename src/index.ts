@@ -40,6 +40,7 @@ import { registerCCStatus } from "./tools/cc-status.js";
 import { registerGhDeleteBranch } from "./tools/gh-delete-branch.js";
 import { registerGhCreateRelease } from "./tools/gh-create-release.js";
 import { registerGhUpdateRelease } from "./tools/gh-update-release.js";
+import { registerGhDeleteTag } from "./tools/gh-delete-tag.js";
 import { hydrateStore } from "./dispatch-store.js";
 
 const app = express();
@@ -103,6 +104,7 @@ function createServer(): McpServer {
     registerGhDeleteBranch(server);
     registerGhCreateRelease(server);
     registerGhUpdateRelease(server);
+    registerGhDeleteTag(server);
   }
 
   return server;
