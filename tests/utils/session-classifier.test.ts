@@ -4,7 +4,11 @@
 process.env.GITHUB_PAT = process.env.GITHUB_PAT || "test-dummy-pat";
 
 import { describe, it, expect } from "vitest";
-import { classifySession } from "../../src/utils/session-classifier.js";
+import {
+  classifySession,
+  injectPersistedRecommendation,
+  parsePersistedRecommendation,
+} from "../../src/utils/session-classifier.js";
 
 describe("classifySession", () => {
   it("yields executional verdict for a pure cleanup queue", () => {
@@ -152,5 +156,175 @@ describe("classifySession", () => {
     });
     // Bare "log" keyword should not match the substring "logging".
     expect(result.scores.executional).toBe(0);
+  });
+});
+
+// brief-411 / D-193 Piece 1 — persisted recommendation parser + injector.
+
+const HANDOFF_SHELL = `# Handoff
+
+## Meta
+- Handoff Version: 113
+- Session Count: 108
+- Template Version: v2.16.0
+- Status: Active
+
+## Critical Context
+1. Test context.
+
+## Where We Are
+Working on tests.
+
+<!-- EOF: handoff.md -->`;
+
+describe("parsePersistedRecommendation", () => {
+  it("parses a well-formed reasoning_heavy block", () => {
+    const block = `## Recommended Session Settings
+
+<!-- prism:recommended_session_settings -->
+- Model: Opus 4.7
+- Thinking: Adaptive on
+- Category: reasoning_heavy
+- Rationale: Queue includes design / multi-doc investigation
+<!-- /prism:recommended_session_settings -->`;
+    const result = parsePersistedRecommendation(block);
+    expect(result).not.toBeNull();
+    expect(result?.category).toBe("reasoning_heavy");
+    expect(result?.model).toBe("opus-4-7");
+    expect(result?.thinking).toBe("adaptive-on");
+    expect(result?.display).toBe("Opus 4.7 · Adaptive on");
+    expect(result?.rationale).toBe("Queue includes design / multi-doc investigation");
+    expect(result?.scores).toEqual({ reasoning_heavy: 0, executional: 0 });
+  });
+
+  it("parses an executional block", () => {
+    const block = `<!-- prism:recommended_session_settings -->
+- Model: Sonnet 4.6
+- Thinking: Adaptive off
+- Category: executional
+- Rationale: Queue is mechanical cleanup / patches
+<!-- /prism:recommended_session_settings -->`;
+    const result = parsePersistedRecommendation(block);
+    expect(result?.category).toBe("executional");
+    expect(result?.model).toBe("sonnet-4-6");
+    expect(result?.thinking).toBe("adaptive-off");
+    expect(result?.display).toBe("Sonnet 4.6 · Adaptive off");
+  });
+
+  it("parses a mixed block", () => {
+    const block = `<!-- prism:recommended_session_settings -->
+- Model: Opus 4.7
+- Thinking: Adaptive off
+- Category: mixed
+- Rationale: Mixed queue — execution with some judgment
+<!-- /prism:recommended_session_settings -->`;
+    const result = parsePersistedRecommendation(block);
+    expect(result?.category).toBe("mixed");
+    expect(result?.model).toBe("opus-4-7");
+    expect(result?.thinking).toBe("adaptive-off");
+  });
+
+  it("returns null when the block is absent", () => {
+    expect(parsePersistedRecommendation(HANDOFF_SHELL)).toBeNull();
+  });
+
+  it("returns null when a required field is missing", () => {
+    const block = `<!-- prism:recommended_session_settings -->
+- Model: Opus 4.7
+- Thinking: Adaptive on
+- Rationale: missing the Category field
+<!-- /prism:recommended_session_settings -->`;
+    expect(parsePersistedRecommendation(block)).toBeNull();
+  });
+
+  it("returns null when the category value is invalid", () => {
+    const block = `<!-- prism:recommended_session_settings -->
+- Model: Opus 4.7
+- Thinking: Adaptive on
+- Category: bogus_category
+- Rationale: bad category
+<!-- /prism:recommended_session_settings -->`;
+    expect(parsePersistedRecommendation(block)).toBeNull();
+  });
+
+  it("tolerates extra whitespace around field values", () => {
+    const block = `<!-- prism:recommended_session_settings -->
+-    Model:    Opus 4.7
+-   Thinking:   Adaptive on
+- Category:    reasoning_heavy
+-  Rationale:   spaced rationale
+<!-- /prism:recommended_session_settings -->`;
+    const result = parsePersistedRecommendation(block);
+    expect(result).not.toBeNull();
+    expect(result?.category).toBe("reasoning_heavy");
+    expect(result?.display).toBe("Opus 4.7 · Adaptive on");
+    expect(result?.rationale).toBe("spaced rationale");
+  });
+});
+
+describe("injectPersistedRecommendation", () => {
+  const reasoningRec = classifySession({
+    next_steps: ["Design the orchestrator", "Investigate prior art"],
+  });
+
+  it("returns null when ## Meta section is absent", () => {
+    const noMeta = `# Handoff
+
+## Critical Context
+1. No meta here.
+
+<!-- EOF: handoff.md -->`;
+    expect(injectPersistedRecommendation(noMeta, reasoningRec)).toBeNull();
+  });
+
+  it("inserts the block immediately after ## Meta and before the next ## section", () => {
+    const result = injectPersistedRecommendation(HANDOFF_SHELL, reasoningRec);
+    expect(result).not.toBeNull();
+    expect(result).toContain("<!-- prism:recommended_session_settings -->");
+    expect(result).toContain("- Category: reasoning_heavy");
+
+    // Block must appear after ## Meta and before ## Critical Context.
+    const metaIdx = result!.indexOf("## Meta");
+    const blockIdx = result!.indexOf("## Recommended Session Settings");
+    const criticalIdx = result!.indexOf("## Critical Context");
+    expect(metaIdx).toBeLessThan(blockIdx);
+    expect(blockIdx).toBeLessThan(criticalIdx);
+
+    // EOF sentinel must still be present at end of file.
+    expect(result!.trimEnd().endsWith("<!-- EOF: handoff.md -->")).toBe(true);
+  });
+
+  it("round-trips back to the same recommendation when re-parsed", () => {
+    const mutated = injectPersistedRecommendation(HANDOFF_SHELL, reasoningRec);
+    const reparsed = parsePersistedRecommendation(mutated!);
+    expect(reparsed?.category).toBe(reasoningRec.category);
+    expect(reparsed?.model).toBe(reasoningRec.model);
+    expect(reparsed?.thinking).toBe(reasoningRec.thinking);
+    expect(reparsed?.rationale).toBe(reasoningRec.rationale);
+    expect(reparsed?.display).toBe(reasoningRec.display);
+  });
+
+  it("replaces an existing block in place rather than duplicating", () => {
+    const stale = injectPersistedRecommendation(HANDOFF_SHELL, reasoningRec);
+    const executionalRec = classifySession({
+      next_steps: ["Cleanup, patch, push, verify"],
+    });
+    expect(executionalRec.category).toBe("executional");
+
+    const replaced = injectPersistedRecommendation(stale!, executionalRec);
+    expect(replaced).not.toBeNull();
+
+    // Exactly one occurrence of the opening delimiter.
+    const opens = (replaced!.match(/<!-- prism:recommended_session_settings -->/g) ?? []).length;
+    expect(opens).toBe(1);
+    // Exactly one Category line, with the new value.
+    expect(replaced).toContain("- Category: executional");
+    expect(replaced).not.toContain("- Category: reasoning_heavy");
+  });
+
+  it("is idempotent — same input twice yields the same output", () => {
+    const once = injectPersistedRecommendation(HANDOFF_SHELL, reasoningRec);
+    const twice = injectPersistedRecommendation(once!, reasoningRec);
+    expect(twice).toBe(once);
   });
 });

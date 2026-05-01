@@ -268,3 +268,111 @@ export function classifySession(input: ClassifySessionInput): SessionRecommendat
     },
   };
 }
+
+/**
+ * Render the persisted-recommendation markdown block (brief-411 / D-193 Piece 1).
+ *
+ * The block is written into handoff.md by `prism_finalize` and read back by
+ * `prism_bootstrap` so the two tools agree on the same recommendation rather
+ * than reclassifying with divergent inputs (pre-411, finalize used
+ * `next_steps` only and bootstrap used next_steps + critical_context +
+ * opening_message — same handoff yielded different verdicts).
+ */
+function renderRecommendationBlock(rec: SessionRecommendation): string {
+  const [modelDisplay, thinkingDisplay] = rec.display.split(" · ");
+  return [
+    "## Recommended Session Settings",
+    "",
+    "<!-- prism:recommended_session_settings -->",
+    `- Model: ${modelDisplay}`,
+    `- Thinking: ${thinkingDisplay}`,
+    `- Category: ${rec.category}`,
+    `- Rationale: ${rec.rationale}`,
+    "<!-- /prism:recommended_session_settings -->",
+  ].join("\n");
+}
+
+/**
+ * Inject the persisted-recommendation block into handoff.md content
+ * (brief-411 A.1). Inserts immediately after the `## Meta` section and
+ * before whatever follows. If the block already exists in the inbound
+ * content (operator-edited handoff or re-finalize), it is replaced in
+ * place. Returns the mutated string, or `null` if the handoff has no
+ * `## Meta` section to anchor placement against (legacy projects —
+ * caller logs a warning and proceeds without injection per the brief).
+ *
+ * Pure function — no I/O. Idempotent: calling twice with the same
+ * recommendation yields the same output.
+ */
+export function injectPersistedRecommendation(
+  handoffContent: string,
+  recommendation: SessionRecommendation,
+): string | null {
+  if (!/^## Meta\s*$/m.test(handoffContent)) return null;
+
+  // Strip any existing block so re-finalize (or operator-edited handoffs
+  // with a stale block) gets a clean replacement rather than a duplicate.
+  const existingBlockRe = /\n*## Recommended Session Settings\s*\n+<!-- prism:recommended_session_settings -->[\s\S]*?<!-- \/prism:recommended_session_settings -->\n*/;
+  const cleaned = handoffContent.replace(existingBlockRe, "\n\n");
+
+  // Capture the Meta section: from `## Meta` line through the body up to
+  // (and excluding) the next `## ` header or EOF sentinel. The negative
+  // lookahead is what bounds the section without depending on a specific
+  // following section name.
+  const metaSectionRe = /(^## Meta\s*\n(?:(?!^## |^<!--\s*EOF:).*\n?)*)/m;
+  const m = metaSectionRe.exec(cleaned);
+  if (!m || m.index === undefined) return null;
+
+  const metaSection = m[1];
+  const block = renderRecommendationBlock(recommendation);
+  const trimmedMeta = metaSection.replace(/\n+$/, "");
+  const replacement = `${trimmedMeta}\n\n${block}\n\n`;
+
+  return cleaned.slice(0, m.index) + replacement + cleaned.slice(m.index + metaSection.length);
+}
+
+/**
+ * Parse the persisted recommendation block from handoff.md content
+ * (brief-411 A.2). Returns the SessionRecommendation reconstructed from
+ * the block, or `null` if the block is absent, malformed, or carries an
+ * invalid category value.
+ *
+ * Per brief-411: do not parse free-form display strings — the canonical
+ * model + thinking enum values come from the `category` field via the
+ * existing mapping tables. The display string is reconstructed from the
+ * parsed Model + Thinking text fields for human-visible labels only.
+ *
+ * Scores are not preserved across persistence — they are informational
+ * only and would be misleading if stored as a snapshot. Both fields are
+ * returned as 0.
+ */
+export function parsePersistedRecommendation(
+  handoffContent: string,
+): SessionRecommendation | null {
+  const match = handoffContent.match(
+    /<!-- prism:recommended_session_settings -->([\s\S]*?)<!-- \/prism:recommended_session_settings -->/,
+  );
+  if (!match) return null;
+
+  const body = match[1];
+  // Tolerate variable whitespace after the bullet — operators may hand-edit
+  // and YAML-style formatters sometimes pad colons. Field names and the
+  // colon are still required.
+  const modelDisplay = body.match(/^-\s+Model:\s*(.+)$/m)?.[1]?.trim();
+  const thinkingDisplay = body.match(/^-\s+Thinking:\s*(.+)$/m)?.[1]?.trim();
+  const category = body.match(/^-\s+Category:\s*(\w+)$/m)?.[1]?.trim();
+  const rationale = body.match(/^-\s+Rationale:\s*(.+)$/m)?.[1]?.trim();
+
+  if (!modelDisplay || !thinkingDisplay || !category || !rationale) return null;
+  if (!["reasoning_heavy", "executional", "mixed"].includes(category)) return null;
+
+  const cat = category as SessionCategory;
+  return {
+    category: cat,
+    model: MODEL_BY_CATEGORY[cat],
+    thinking: THINKING_BY_CATEGORY[cat],
+    rationale,
+    display: `${modelDisplay} · ${thinkingDisplay}`,
+    scores: { reasoning_heavy: 0, executional: 0 },
+  };
+}

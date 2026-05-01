@@ -42,12 +42,17 @@ export const PORT = parseInt(process.env.PORT ?? "3000", 10);
 /** Log level */
 export const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
 
-/** Server version. Bumped to 4.1.0 for the model-recommendation classifier
- *  (brief-405 / D-191 Phase 1): bootstrap responses now include
- *  `recommended_session_settings` and the boot/finalization banners surface a
- *  `Suggested:` model+thinking line. Backwards-compatible — older clients
- *  ignoring the new field see no change. */
-export const SERVER_VERSION = "4.1.0";
+/** Server version. Bumped to 4.2.0 for brief-411 / D-193 Piece 1: the
+ *  model-recommendation verdict is now persisted to handoff.md by
+ *  `prism_finalize` and read back by `prism_bootstrap` instead of being
+ *  reclassified at boot. Eliminates the S107→S108 banner discrepancy where
+ *  finalize and bootstrap classified the same handoff with divergent input
+ *  bundles. Bootstrap retains a back-compat fallback that classifies on
+ *  `next_steps` only when the persisted block is absent (pre-411 handoffs).
+ *  Backwards-compatible — the `recommended_session_settings` response field
+ *  shape is unchanged; only its provenance moves from "computed at boot" to
+ *  "read from handoff with computed fallback." */
+export const SERVER_VERSION = "4.2.0";
 
 /** MCP client timeout is ~60s. All server-side operations must complete within 50s
  *  to leave 10s buffer for transport overhead. This constrains synthesis, draft,

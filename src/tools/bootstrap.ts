@@ -38,7 +38,7 @@ import {
   topicMatch,
   type StandingRule,
 } from "../utils/standing-rules.js";
-import { classifySession, type SessionRecommendation } from "../utils/session-classifier.js";
+import { classifySession, parsePersistedRecommendation, type SessionRecommendation } from "../utils/session-classifier.js";
 
 // Re-export the standing-rule helpers so existing imports from
 // "../src/tools/bootstrap.js" continue to resolve (PR 4 / D-156 §3.5
@@ -612,18 +612,23 @@ export function registerBootstrap(server: McpServer): void {
           { label: scalingRequired ? "scaling required" : "no scaling needed", status: scalingRequired ? "warn" : "ok" },
         ];
 
-        // brief-405 / D-191: classify the upcoming session and surface a
-        // model + thinking recommendation. Pure function — no I/O. Failure
-        // here is non-fatal; bootstrap proceeds with no recommendation.
+        // brief-411 / D-193 Piece 1: read the persisted recommendation from
+        // handoff.md instead of reclassifying. The single source of truth is
+        // finalize — pre-411 the bootstrap-side classifier ran with
+        // `critical_context` + `opening_message` as additional inputs and
+        // produced different verdicts than finalize for the same handoff
+        // (S107→S108 banner discrepancy). Failure here is non-fatal; the
+        // back-compat fallback covers handoffs written by pre-411 finalize
+        // runs by classifying on `next_steps` only — matching what finalize
+        // WOULD have produced.
         let recommendedSessionSettings: SessionRecommendation | null = null;
         try {
-          recommendedSessionSettings = classifySession({
-            next_steps: nextSteps,
-            critical_context: criticalContext,
-            opening_message: opening_message,
-          });
+          recommendedSessionSettings = parsePersistedRecommendation(handoff.content);
+          if (!recommendedSessionSettings) {
+            recommendedSessionSettings = classifySession({ next_steps: nextSteps });
+          }
         } catch (err) {
-          logger.warn("session classifier failed", {
+          logger.warn("recommendation parse/classify failed", {
             error: err instanceof Error ? err.message : String(err),
           });
         }

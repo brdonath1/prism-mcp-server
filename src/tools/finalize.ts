@@ -89,7 +89,7 @@ import { generateIntelligenceBrief, generatePendingDocUpdates } from "../ai/synt
 import { computeCurrencyWarning, type CurrencyWarning } from "../utils/doc-currency.js";
 import { escapeHtml, stripMarkdown, formatResumptionHtml, toolIcon, generateCstTimestamp } from "../utils/banner.js";
 import { DiagnosticsCollector } from "../utils/diagnostics.js";
-import { classifySession, type SessionRecommendation } from "../utils/session-classifier.js";
+import { classifySession, injectPersistedRecommendation, type SessionRecommendation } from "../utils/session-classifier.js";
 
 /**
  * Robust JSON extraction from AI responses (B.8).
@@ -549,6 +549,61 @@ async function commitPhase(
   ]);
 
   const backupPath = backupOutcome.status === "fulfilled" ? backupOutcome.value : "";
+
+  // 2b. brief-411 / D-193 Piece 1 — persist the model+thinking recommendation
+  //     into handoff.md as a structured markdown block. Bootstrap reads this
+  //     block instead of reclassifying with a different input bundle, which
+  //     was the root cause of the S107→S108 banner discrepancy. Mutation
+  //     MUST precede validation so EOF/structural checks run against the
+  //     final on-disk form.
+  const handoffIdx = files.findIndex(
+    (f) => f.path === "handoff.md" || f.path === `${DOC_ROOT}/handoff.md`,
+  );
+  if (handoffIdx !== -1) {
+    const handoffFile = files[handoffIdx];
+    if (/^## Meta\s*$/m.test(handoffFile.content)) {
+      try {
+        const nextStepsForRecommendation = parseNumberedList(
+          extractSection(handoffFile.content, "Next Steps")
+            ?? extractSection(handoffFile.content, "Immediate Next")
+            ?? "",
+        );
+        const recommendation = classifySession({
+          next_steps: nextStepsForRecommendation,
+        });
+        const mutated = injectPersistedRecommendation(handoffFile.content, recommendation);
+        if (mutated !== null) {
+          files[handoffIdx] = { ...handoffFile, content: mutated };
+          logger.info("persisted recommendation injected into handoff", {
+            projectSlug,
+            sessionNumber,
+            category: recommendation.category,
+            display: recommendation.display,
+          });
+        } else {
+          // Anchor regex did not find a usable Meta section even though the
+          // existence check passed (e.g. malformed body). Proceed without
+          // injection rather than risk corrupting the file.
+          logger.warn("persisted recommendation injection skipped — anchor unmatched", {
+            projectSlug,
+            sessionNumber,
+          });
+        }
+      } catch (classifyErr) {
+        logger.warn("persisted recommendation classifier failed", {
+          projectSlug,
+          sessionNumber,
+          error: classifyErr instanceof Error ? classifyErr.message : String(classifyErr),
+        });
+      }
+    } else {
+      // Defensive contract per brief-411 A.1: do not invent a Meta section.
+      logger.warn("persisted recommendation skipped — no ## Meta section in handoff", {
+        projectSlug,
+        sessionNumber,
+      });
+    }
+  }
 
   // 3. Validate all files
   const validationResults = files.map((file) => {
