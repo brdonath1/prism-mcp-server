@@ -56,10 +56,11 @@ export const TOOL_REGISTRY: readonly ToolRegistryEntry[] = [
   // Claude Code (2)
   { name: "cc_dispatch", category: "claude_code" },
   { name: "cc_status", category: "claude_code" },
-  // GitHub (3)
+  // GitHub (4)
   { name: "gh_delete_branch", category: "github" },
   { name: "gh_create_release", category: "github" },
   { name: "gh_update_release", category: "github" },
+  { name: "gh_delete_tag", category: "github" },
 ] as const;
 
 /**
@@ -84,10 +85,11 @@ export function getExpectedToolSurface(
 
 /**
  * Post-boot tool_search queries that Claude executes after receiving the
- * bootstrap response. Together these two queries empirically load all 18
- * registered tools (verified live S43). Each query's limit is intentionally
- * set to 20 to defeat the relevance-ranking cap that causes
- * `tool_search("prism", limit=20)` to still return only 7 results.
+ * bootstrap response. Together these three queries empirically load all 23
+ * registered tools (verified live S43; expanded for the github category in
+ * brief-403/404). Each query's limit is intentionally set to 20 to defeat
+ * the relevance-ranking cap that causes `tool_search("prism", limit=20)`
+ * to still return only 7 results.
  *
  * When adding a new tool: verify at least one of these queries contains a
  * keyword that matches the tool's name or description. The coverage test
