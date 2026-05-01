@@ -42,17 +42,25 @@ export const PORT = parseInt(process.env.PORT ?? "3000", 10);
 /** Log level */
 export const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
 
-/** Server version. Bumped to 4.2.0 for brief-411 / D-193 Piece 1: the
- *  model-recommendation verdict is now persisted to handoff.md by
- *  `prism_finalize` and read back by `prism_bootstrap` instead of being
- *  reclassified at boot. Eliminates the S107→S108 banner discrepancy where
- *  finalize and bootstrap classified the same handoff with divergent input
- *  bundles. Bootstrap retains a back-compat fallback that classifies on
- *  `next_steps` only when the persisted block is absent (pre-411 handoffs).
- *  Backwards-compatible — the `recommended_session_settings` response field
- *  shape is unchanged; only its provenance moves from "computed at boot" to
- *  "read from handoff with computed fallback." */
-export const SERVER_VERSION = "4.2.0";
+/** Server version. Bumped to 4.3.0 for brief-415 (originally drafted as
+ *  brief-413; re-queued after the daemon abandoned the first dispatch
+ *  mid-execution): classifier keyword calibration in
+ *  `src/utils/session-classifier.ts`. Replaces the `\b{kw}\b` whole-word
+ *  regex with a split (whole-word + prefix) keyword model so noun
+ *  derivatives ("verification", "architecture", "diagnosis") fire alongside
+ *  the verb forms — the highest-impact false-negative class observed across
+ *  the S97–S109 audit. Also: expanded `audit` conditional qualifier list
+ *  (F2), added `scope`/`diagnose` to reasoning (F3) and
+ *  `dispatch`/`merge`/`delete`/`migrate`/`close`/`pin`/`wire`/`redeploy`
+ *  to executional (F5), dropped the noisy `follow-up on` reasoning phrase
+ *  (F6), and removed the dead-code `opening_message` 2x-weight branch and
+ *  `critical_context` loop (F7) that D-193 Piece 1 made unreachable.
+ *  Pure calibration — scoring pipeline, ratio thresholds, category mapping,
+ *  decision rule, and recommendation block format are all unchanged.
+ *  Behavior takes effect at finalize time (the persisted recommendation
+ *  block is computed via the same shared `classifySession` function); the
+ *  S110 boot will be the first live verification surface. */
+export const SERVER_VERSION = "4.3.0";
 
 /** MCP client timeout is ~60s. All server-side operations must complete within 50s
  *  to leave 10s buffer for transport overhead. This constrains synthesis, draft,
