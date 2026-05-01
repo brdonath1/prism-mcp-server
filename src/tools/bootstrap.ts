@@ -18,7 +18,8 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { fetchFile, pushFile, listRepos } from "../github/client.js";
-import { CC_DISPATCH_ENABLED, DOC_ROOT, FRAMEWORK_REPO, GITHUB_PAT, HANDOFF_CRITICAL_SIZE, LIVING_DOCUMENTS, MCP_TEMPLATE_PATH, PREFETCH_KEYWORDS, PROJECT_DISPLAY_NAMES, RAILWAY_ENABLED, TRIGGER_AUTO_ENROLL, resolveProjectSlug } from "../config.js";
+import { CC_DISPATCH_ENABLED, DOC_ROOT, FRAMEWORK_REPO, GITHUB_PAT, HANDOFF_CRITICAL_SIZE, LIVING_DOCUMENTS, MCP_TEMPLATE_PATH, PREFETCH_KEYWORDS, PROJECT_DISPLAY_NAMES, RAILWAY_ENABLED, STALE_ACTIVE_THRESHOLD_MS, TRIGGER_AUTO_ENROLL, resolveProjectSlug } from "../config.js";
+import { checkStaleActive } from "../utils/stale-active-check.js";
 import { getExpectedToolSurface, POST_BOOT_TOOL_SEARCHES } from "../tool-registry.js";
 import { resolveDocPath, resolveDocPushPath } from "../utils/doc-resolver.js";
 import { logger } from "../utils/logger.js";
@@ -242,6 +243,59 @@ async function ensureTriggerMarker(slug: string): Promise<{
 }
 
 /**
+ * Boot-time stale-active surfacing (brief-416 / D-196 Piece 3).
+ *
+ * Reads the project's Trigger state file (`brdonath1/trigger:state/<slug>.json`)
+ * and, when the active slot has been occupied past the configured threshold
+ * without a PR opened, returns a structured payload the bootstrap handler
+ * surfaces as a warning + `STALE_ACTIVE_DETECTED` diagnostic.
+ *
+ * Returns `null` for every non-stale outcome — including:
+ *   - state file missing (404 or any other fetch error → not enrolled or
+ *     daemon hasn't written state yet; non-fatal, no warning),
+ *   - state.active null (slot empty),
+ *   - PR already opened (post-PR wedges clear via post-merge actions),
+ *   - elapsed below threshold (healthy in-flight dispatch),
+ *   - malformed state JSON.
+ *
+ * Bytes accounting: the state-file content is NOT delivered to Claude — only
+ * the resulting ≤200-char warning string reaches the response. Callers must
+ * NOT increment bytesDelivered / filesFetched for this read.
+ */
+async function checkTriggerStaleActive(slug: string): Promise<{
+  brief_id: string | null;
+  elapsed_minutes: number;
+  execution_started_at: string;
+} | null> {
+  let stateJson: string;
+  try {
+    const file = await fetchFile("trigger", `state/${slug}.json`, "state");
+    stateJson = file.content;
+  } catch (err) {
+    // 404 = project not enrolled / no state yet; auth/rate-limit/network =
+    // infrastructure noise that should not block boot or page the operator.
+    // checkStaleActive's contract is "false negatives acceptable" — we
+    // honor it here.
+    logger.debug("trigger state fetch skipped", {
+      slug,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+
+  const result = checkStaleActive(stateJson, new Date(), STALE_ACTIVE_THRESHOLD_MS);
+  if (!result.is_stale || result.execution_started_at === null || result.elapsed_minutes === null) {
+    return null;
+  }
+
+  return {
+    brief_id: result.brief_id,
+    elapsed_minutes: result.elapsed_minutes,
+    execution_started_at: result.execution_started_at,
+  };
+}
+
+/**
  * D-68: Dynamic slug resolution — match project_slug against all repos
  * when static PROJECT_DISPLAY_NAMES map doesn't contain a match.
  * Uses normalized string comparison (strip hyphens, underscores, spaces, brackets).
@@ -413,13 +467,16 @@ export function registerBootstrap(server: McpServer): void {
         const sessionTimestamp = generateCstTimestamp();
         const sessionNumber = sessionCount + 1;
 
-        // Launch boot-test push, trigger marker drop, and prefetch in parallel.
-        // ensureTriggerMarker is fully self-contained — it never throws, and a
-        // failed marker write never causes the bootstrap call to fail per the
-        // brief-105 contract. Running it in parallel with the boot-test push
-        // keeps wall-clock cost sub-second when the marker is already present.
+        // Launch boot-test push, trigger marker drop, stale-active check, and
+        // prefetch in parallel. ensureTriggerMarker and checkTriggerStaleActive
+        // are both fully self-contained — neither throws, and a failed marker
+        // write or stale-active fetch never causes the bootstrap call to fail.
+        // Running them in parallel with the boot-test push keeps wall-clock
+        // cost sub-second when the marker is already present and the state
+        // file is small (typically <2KB).
         const bootTestPromise = pushBootTest(resolvedSlug, sessionNumber, sessionTimestamp, handoffVersion);
         const triggerEnrollmentPromise = ensureTriggerMarker(resolvedSlug);
+        const staleActivePromise = checkTriggerStaleActive(resolvedSlug);
 
         const prefetchedDocuments: Array<{ file: string; size_bytes: number; summary: string }> = [];
         let prefetchPromise: Promise<void> = Promise.resolve();
@@ -465,12 +522,40 @@ export function registerBootstrap(server: McpServer): void {
           ).then(() => {});
         }
 
-        // Wait for boot-test, prefetch, and trigger marker drop to complete
-        const [bootTestResult, , triggerEnrollment] = await Promise.all([
+        // Wait for boot-test, prefetch, trigger marker drop, and stale-active
+        // check to complete.
+        const [bootTestResult, , triggerEnrollment, staleActive] = await Promise.all([
           bootTestPromise,
           prefetchPromise,
           triggerEnrollmentPromise,
+          staleActivePromise,
         ]);
+
+        // brief-416 / D-196 Piece 3: surface a stale Trigger active slot so
+        // the operator can recover before queuing more work. The warning
+        // line fits the banner code fence (single line, ≤200 chars); the
+        // structured diagnostic carries the full payload (brief_id,
+        // elapsed_minutes, execution_started_at, threshold_minutes, and a
+        // pointer to INS-236) for downstream observers. Both render via the
+        // existing channels — no special UX coordination with the
+        // recommended-session-settings line.
+        if (staleActive) {
+          const briefLabel = staleActive.brief_id ?? "unknown brief";
+          warnings.push(
+            `Trigger active slot stuck on ${briefLabel} (${staleActive.elapsed_minutes}m elapsed, no PR). Daemon restart required (see INS-236).`,
+          );
+          diagnostics.info(
+            "STALE_ACTIVE_DETECTED",
+            `Trigger active slot stuck on ${briefLabel}`,
+            {
+              brief_id: staleActive.brief_id,
+              elapsed_minutes: staleActive.elapsed_minutes,
+              execution_started_at: staleActive.execution_started_at,
+              threshold_minutes: Math.round(STALE_ACTIVE_THRESHOLD_MS / 60_000),
+              recovery_procedure: "INS-236",
+            },
+          );
+        }
 
         // 5. Intelligence brief + insights + pending doc-updates loaded in parallel
         //    (D.1 fix — was sequential; pending-doc-updates added per D-156 §3.5).

@@ -42,25 +42,17 @@ export const PORT = parseInt(process.env.PORT ?? "3000", 10);
 /** Log level */
 export const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
 
-/** Server version. Bumped to 4.3.0 for brief-415 (originally drafted as
- *  brief-413; re-queued after the daemon abandoned the first dispatch
- *  mid-execution): classifier keyword calibration in
- *  `src/utils/session-classifier.ts`. Replaces the `\b{kw}\b` whole-word
- *  regex with a split (whole-word + prefix) keyword model so noun
- *  derivatives ("verification", "architecture", "diagnosis") fire alongside
- *  the verb forms — the highest-impact false-negative class observed across
- *  the S97–S109 audit. Also: expanded `audit` conditional qualifier list
- *  (F2), added `scope`/`diagnose` to reasoning (F3) and
- *  `dispatch`/`merge`/`delete`/`migrate`/`close`/`pin`/`wire`/`redeploy`
- *  to executional (F5), dropped the noisy `follow-up on` reasoning phrase
- *  (F6), and removed the dead-code `opening_message` 2x-weight branch and
- *  `critical_context` loop (F7) that D-193 Piece 1 made unreachable.
- *  Pure calibration — scoring pipeline, ratio thresholds, category mapping,
- *  decision rule, and recommendation block format are all unchanged.
- *  Behavior takes effect at finalize time (the persisted recommendation
- *  block is computed via the same shared `classifySession` function); the
- *  S110 boot will be the first live verification surface. */
-export const SERVER_VERSION = "4.3.0";
+/** Server version. Bumped to 4.4.0 for brief-416 (D-196 Piece 3 — closes the
+ *  visibility piece of the four-piece reliability hardening; Pieces 1+2
+ *  shipped as PR #38 on brdonath1/trigger): boot-time stale-active surfacing
+ *  in prism_bootstrap. Reads the project's Trigger state file
+ *  (`brdonath1/trigger:state/<slug>.json`); when the active slot is occupied
+ *  beyond TRIGGER_STALE_ACTIVE_THRESHOLD_MS without a PR opened, surfaces a
+ *  warning in `result.warnings` and a structured `STALE_ACTIVE_DETECTED`
+ *  diagnostics entry pointing at INS-236. Also extends `fetchFile` with an
+ *  optional `ref` parameter (existing default-branch callers unaffected) so
+ *  this is the single read path for cross-repo + cross-branch fetches. */
+export const SERVER_VERSION = "4.4.0";
 
 /** MCP client timeout is ~60s. All server-side operations must complete within 50s
  *  to leave 10s buffer for transport overhead. This constrains synthesis, draft,
@@ -417,6 +409,25 @@ export const ENABLE_IP_ALLOWLIST = process.env.ENABLE_IP_ALLOWLIST !== "false";
 export const TRIGGER_AUTO_ENROLL =
   process.env.TRIGGER_AUTO_ENROLL !== "false" &&
   process.env.TRIGGER_AUTO_ENROLL !== "0";
+
+/**
+ * Stale-active threshold for prism_bootstrap surfacing (brief-416 / D-196
+ * Piece 3). When the project's Trigger state file shows an `active` slot
+ * with `execution_started_at` older than this and no `pr_created_at`, the
+ * bootstrap response surfaces a warning + `STALE_ACTIVE_DETECTED` diagnostic
+ * pointing the operator at INS-236.
+ *
+ * Default 30 minutes. Empirical grounding (state/prism-mcp-server.json
+ * history): normal CC dispatch durations on this project ranged 5m 38s to
+ * 13m 17s with a median of ~11.5m; historical wedges have been 1h 53m and
+ * 2h 53m. 30 minutes sits comfortably above max-normal (13m 17s) and well
+ * below wedge-floor (1h 53m), giving zero false positives on the historical
+ * sample while still catching wedges within ~17m of the longest normal
+ * completion. Override via Railway env-set without code change.
+ */
+export const STALE_ACTIVE_THRESHOLD_MS = Number(
+  process.env.TRIGGER_STALE_ACTIVE_THRESHOLD_MS ?? 30 * 60 * 1000,
+);
 
 if (!GITHUB_PAT) {
   console.error("FATAL: GITHUB_PAT environment variable is not set.");

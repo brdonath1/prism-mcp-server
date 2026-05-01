@@ -33,9 +33,20 @@ function headers(): Record<string, string> {
 /** Per-request timeout for GitHub API calls. A stuck socket aborts after this. */
 export const GITHUB_REQUEST_TIMEOUT_MS = 15_000;
 
-/** Build the full API URL for a repo contents path */
-function contentsUrl(repo: string, path: string): string {
-  return `${GITHUB_API_BASE}/repos/${GITHUB_OWNER}/${repo}/contents/${path}`;
+/**
+ * Build the full API URL for a repo contents path.
+ *
+ * Optional `ref` (branch, tag, or commit SHA) is appended as a `?ref=`
+ * query string for callers that need to read off the default branch
+ * (e.g. brief-416 reads `brdonath1/trigger:state/<slug>.json`). Other
+ * helpers that wrap `contentsUrl` (`fetchSha`, `fileExists`, `getFileSize`,
+ * `listDirectory`) deliberately do NOT plumb `ref` — they are used only on
+ * PRISM-managed default-branch paths and widening their signatures would
+ * add surface area for misuse without a current caller need.
+ */
+function contentsUrl(repo: string, path: string, ref?: string): string {
+  const base = `${GITHUB_API_BASE}/repos/${GITHUB_OWNER}/${repo}/contents/${path}`;
+  return ref ? `${base}?ref=${encodeURIComponent(ref)}` : base;
 }
 
 /**
@@ -117,12 +128,21 @@ export async function fetchWithRetry(url: string, options: RequestInit = {}, max
 /**
  * Fetch a single file from a GitHub repo (B.1 — single API call).
  * Uses JSON mode to get both content (base64) and SHA in one request.
+ *
+ * Optional `ref` selects a branch / tag / commit SHA. Omit for default-branch
+ * reads (existing behavior — all PRISM-managed living-document paths).
+ * brief-416 introduces the first cross-branch caller (Trigger state files
+ * live on the `state` branch of `brdonath1/trigger`).
  */
-export async function fetchFile(repo: string, path: string): Promise<FileResult> {
-  const url = contentsUrl(repo, path);
+export async function fetchFile(
+  repo: string,
+  path: string,
+  ref?: string,
+): Promise<FileResult> {
+  const url = contentsUrl(repo, path, ref);
   const start = Date.now();
 
-  logger.debug("github.fetchFile", { repo, path });
+  logger.debug("github.fetchFile", { repo, path, ref });
 
   const res = await fetchWithRetry(url, { headers: headers() });
 
