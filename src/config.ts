@@ -42,17 +42,19 @@ export const PORT = parseInt(process.env.PORT ?? "3000", 10);
 /** Log level */
 export const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
 
-/** Server version. Bumped to 4.5.1 for brief-418 (D-199 settled): patch
- *  release adding a zero-token-success guard to the cc_subprocess wrapper
- *  (`src/ai/cc-subprocess.ts`) so that Agent-SDK terminal results with
- *  `subtype: "success"` and `usage.input_tokens === 0 &&
- *  usage.output_tokens === 0` (e.g. swallowed "Prompt is too long" API
- *  rejections) are converted to `SynthesisError` and trigger the existing
- *  `SYNTHESIS_TRANSPORT_FALLBACK` path instead of letting the error string
- *  flow downstream into a living document. JSDoc also updated to document
- *  the Sonnet 1M `[1m]` opt-in mechanism for the Claude Code OAuth path. No
- *  routing or behavior change for non-failure flows. */
-export const SERVER_VERSION = "4.5.1";
+/** Server version. Bumped to 4.6.0 for brief-419 (Phase 3c-A observation
+ *  visibility): minor release adding boot-time surfacing of CS-3 synthesis
+ *  observation events (SYNTHESIS_TRANSPORT_FALLBACK,
+ *  CS3_QUALITY_BYTE_COUNT_WARNING, CS3_QUALITY_PREAMBLE_WARNING). New helper
+ *  `src/utils/synthesis-fallback-check.ts` and a `checkSynthesisObservation()`
+ *  helper in `src/tools/bootstrap.ts` query the prism-mcp-server's own
+ *  Railway production environment and surface matching events for the
+ *  booting project as warnings (rendered through the existing ⚠ banner
+ *  channel) plus a single `SYNTHESIS_OBSERVATION_DETECTED` diagnostic.
+ *  Also threads `projectSlug` through `synthesize()` so existing log
+ *  emissions in `src/ai/client.ts` carry the project tag. No routing or
+ *  behavior change for non-observation flows. */
+export const SERVER_VERSION = "4.6.0";
 
 /** MCP client timeout is ~60s. All server-side operations must complete within 50s
  *  to leave 10s buffer for transport overhead. This constrains synthesis, draft,
@@ -427,6 +429,22 @@ export const TRIGGER_AUTO_ENROLL =
  */
 export const STALE_ACTIVE_THRESHOLD_MS = Number(
   process.env.TRIGGER_STALE_ACTIVE_THRESHOLD_MS ?? 30 * 60 * 1000,
+);
+
+/**
+ * Lookback window (ms) for boot-time synthesis observation surfacing
+ * (brief-419 / Phase 3c-A). prism_bootstrap queries the prism-mcp-server's
+ * own Railway production environment for warn-level logs and surfaces any
+ * SYNTHESIS_TRANSPORT_FALLBACK / CS3_QUALITY_BYTE_COUNT_WARNING /
+ * CS3_QUALITY_PREAMBLE_WARNING entry whose timestamp is strictly less than
+ * this window in the past.
+ *
+ * Default 4 hours covers active-work sessions cleanly without false
+ * positives from older finalizations when the operator returns after a
+ * break. Override via Railway env-set without code change.
+ */
+export const SYNTHESIS_LOG_LOOKBACK_MS = Number(
+  process.env.SYNTHESIS_LOG_LOOKBACK_MS ?? 4 * 60 * 60 * 1000,
 );
 
 if (!GITHUB_PAT) {

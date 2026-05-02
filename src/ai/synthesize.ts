@@ -92,6 +92,8 @@ export async function generateIntelligenceBrief(
       SYNTHESIS_TIMEOUT_MS,
       undefined,
       true, // thinking: true — Phase 3a CS-2 adaptive-thinking flag
+      undefined, // callSite — CS-2 stays on messages_api per Phase 3c-A scope
+      projectSlug, // brief-419: project tagging for boot-time observation surfacing
     );
 
     if (!result.success) {
@@ -265,6 +267,7 @@ export async function generatePendingDocUpdates(
       undefined,
       true, // thinking: true — Phase 3a CS-3 adaptive-thinking flag
       "pdu", // brief-417: per-call-site routing
+      projectSlug, // brief-419: project tagging for boot-time observation surfacing
     );
 
     if (!result.success) {
