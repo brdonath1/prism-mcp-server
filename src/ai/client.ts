@@ -101,6 +101,12 @@ export function resolveCallSiteRouting(callSite: SynthesisCallSite): {
  *   Messages API. On cc_subprocess failure, falls back automatically to
  *   messages_api with the default model and logs `SYNTHESIS_TRANSPORT_FALLBACK`.
  *   When not provided, behavior is unchanged (legacy callers).
+ *
+ * @param projectSlug Optional project slug tag (brief-419). When provided,
+ *   it is attached to the `SYNTHESIS_TRANSPORT_FALLBACK` warn log and the
+ *   `Synthesis API call complete` info log so prism_bootstrap can filter
+ *   synthesis observation events by project. Legacy callers that omit it
+ *   continue to emit the same logs without the field — backwards-compatible.
  */
 export async function synthesize(
   systemPrompt: string,
@@ -110,6 +116,7 @@ export async function synthesize(
   maxRetries?: number,
   thinking?: boolean,
   callSite?: SynthesisCallSite,
+  projectSlug?: string,
 ): Promise<SynthesisOutcome> {
   // Resolve routing once if a call-site is supplied; legacy callers (no
   // call-site) bypass env-var reads entirely so their behavior is bit-for-bit
@@ -133,6 +140,7 @@ export async function synthesize(
       attempted_model: routing.model,
       original_error: subprocessOutcome.error,
       original_error_code: subprocessOutcome.error_code,
+      projectSlug,
     });
     // Fall through to messages_api with the default model — the env override
     // is what failed, so we deliberately ignore it on the retry path.
@@ -144,6 +152,7 @@ export async function synthesize(
       maxRetries,
       thinking,
       modelOverride: undefined,
+      projectSlug,
     });
     if (fallback.success) {
       return { ...fallback, transport: "messages_api_fallback" };
@@ -162,6 +171,7 @@ export async function synthesize(
     maxRetries,
     thinking,
     modelOverride: routing?.modelOverridden ? routing.model : undefined,
+    projectSlug,
   });
   if (direct.success && callSite) {
     return { ...direct, transport: "messages_api" };
@@ -177,6 +187,8 @@ interface MessagesApiCallParams {
   maxRetries?: number;
   thinking?: boolean;
   modelOverride?: string;
+  /** brief-419: optional project slug tag attached to the success log. */
+  projectSlug?: string;
 }
 
 async function callMessagesApi(params: MessagesApiCallParams): Promise<SynthesisOutcome> {
@@ -188,6 +200,7 @@ async function callMessagesApi(params: MessagesApiCallParams): Promise<Synthesis
     maxRetries,
     thinking,
     modelOverride,
+    projectSlug,
   } = params;
 
   const anthropic = getClient();
@@ -242,6 +255,7 @@ async function callMessagesApi(params: MessagesApiCallParams): Promise<Synthesis
       output_tokens: result.output_tokens,
       thinking_enabled: !!thinking,
       ms: Date.now() - start,
+      projectSlug,
     });
 
     return result;

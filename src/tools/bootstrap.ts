@@ -18,8 +18,10 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { fetchFile, pushFile, listRepos } from "../github/client.js";
-import { CC_DISPATCH_ENABLED, DOC_ROOT, FRAMEWORK_REPO, GITHUB_PAT, HANDOFF_CRITICAL_SIZE, LIVING_DOCUMENTS, MCP_TEMPLATE_PATH, PREFETCH_KEYWORDS, PROJECT_DISPLAY_NAMES, RAILWAY_ENABLED, STALE_ACTIVE_THRESHOLD_MS, TRIGGER_AUTO_ENROLL, resolveProjectSlug } from "../config.js";
+import { CC_DISPATCH_ENABLED, DOC_ROOT, FRAMEWORK_REPO, GITHUB_PAT, HANDOFF_CRITICAL_SIZE, LIVING_DOCUMENTS, MCP_TEMPLATE_PATH, PREFETCH_KEYWORDS, PROJECT_DISPLAY_NAMES, RAILWAY_API_TOKEN, RAILWAY_ENABLED, STALE_ACTIVE_THRESHOLD_MS, SYNTHESIS_LOG_LOOKBACK_MS, TRIGGER_AUTO_ENROLL, resolveProjectSlug } from "../config.js";
+import { getEnvironmentLogs } from "../railway/client.js";
 import { checkStaleActive } from "../utils/stale-active-check.js";
+import { checkSynthesisObservationEvents, type ObservationCheckResult } from "../utils/synthesis-fallback-check.js";
 import { getExpectedToolSurface, POST_BOOT_TOOL_SEARCHES } from "../tool-registry.js";
 import { resolveDocPath, resolveDocPushPath } from "../utils/doc-resolver.js";
 import { logger } from "../utils/logger.js";
@@ -296,6 +298,70 @@ async function checkTriggerStaleActive(slug: string): Promise<{
 }
 
 /**
+ * Boot-time synthesis observation surfacing (brief-419 / Phase 3c-A).
+ *
+ * Queries the prism-mcp-server's own Railway production environment for
+ * recent warn-level logs and returns the subset matching one of the three
+ * Phase 3c-A observation codes for the booting project, within the
+ * configured lookback window.
+ *
+ * Returns null (and surfaces no warning) when:
+ *   - RAILWAY_API_TOKEN is unset (Railway tools disabled),
+ *   - RAILWAY_ENVIRONMENT_ID is not injected (running outside Railway, or
+ *     a deploy variant that doesn't surface the standard ID env vars),
+ *   - the Railway log fetch throws (auth, rate-limit, network, schema drift),
+ *   - no matching events appear in the window.
+ *
+ * Bytes accounting: log content is server-side-only — only the resulting
+ * ≤200-char warning strings (max 3 lines) reach the response. Callers must
+ * NOT increment bytesDelivered / filesFetched for this read.
+ *
+ * Self-environment resolution uses the static env-var path: Railway
+ * injects RAILWAY_ENVIRONMENT_ID at deploy time. Falls back to null
+ * (silent) when the env var is absent — local dev or alternate deploy
+ * surfaces simply skip this check rather than walking projects → envs at
+ * boot.
+ */
+async function checkSynthesisObservation(
+  slug: string,
+): Promise<ObservationCheckResult | null> {
+  if (!RAILWAY_API_TOKEN) return null;
+
+  const envId = process.env.RAILWAY_ENVIRONMENT_ID;
+  if (!envId || envId.trim().length === 0) {
+    logger.debug("synthesis observation skipped — RAILWAY_ENVIRONMENT_ID not injected", {
+      slug,
+    });
+    return null;
+  }
+
+  // Filter `@level:warn` catches all three observation codes in one call:
+  // SYNTHESIS_TRANSPORT_FALLBACK and both CS3_QUALITY_* warnings are all
+  // logger.warn emissions. Other warn-level entries are returned too but
+  // the pure check function filters by kind — those entries are cheap to
+  // discard. Substring filter on "SYNTHESIS_" alone would miss the
+  // CS3_QUALITY_* codes; Railway's filter syntax does not OR multiple
+  // prefixes. limit:200 amply covers a 4h window even on a busy fleet.
+  let logs;
+  try {
+    logs = await getEnvironmentLogs(envId, 200, "@level:warn");
+  } catch (err) {
+    logger.debug("synthesis observation fetch skipped", {
+      slug,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+
+  return checkSynthesisObservationEvents(
+    logs,
+    slug,
+    new Date(),
+    SYNTHESIS_LOG_LOOKBACK_MS,
+  );
+}
+
+/**
  * D-68: Dynamic slug resolution — match project_slug against all repos
  * when static PROJECT_DISPLAY_NAMES map doesn't contain a match.
  * Uses normalized string comparison (strip hyphens, underscores, spaces, brackets).
@@ -477,6 +543,7 @@ export function registerBootstrap(server: McpServer): void {
         const bootTestPromise = pushBootTest(resolvedSlug, sessionNumber, sessionTimestamp, handoffVersion);
         const triggerEnrollmentPromise = ensureTriggerMarker(resolvedSlug);
         const staleActivePromise = checkTriggerStaleActive(resolvedSlug);
+        const observationPromise = checkSynthesisObservation(resolvedSlug);
 
         const prefetchedDocuments: Array<{ file: string; size_bytes: number; summary: string }> = [];
         let prefetchPromise: Promise<void> = Promise.resolve();
@@ -522,13 +589,14 @@ export function registerBootstrap(server: McpServer): void {
           ).then(() => {});
         }
 
-        // Wait for boot-test, prefetch, trigger marker drop, and stale-active
-        // check to complete.
-        const [bootTestResult, , triggerEnrollment, staleActive] = await Promise.all([
+        // Wait for boot-test, prefetch, trigger marker drop, stale-active
+        // check, and synthesis-observation check to complete.
+        const [bootTestResult, , triggerEnrollment, staleActive, observation] = await Promise.all([
           bootTestPromise,
           prefetchPromise,
           triggerEnrollmentPromise,
           staleActivePromise,
+          observationPromise,
         ]);
 
         // brief-416 / D-196 Piece 3: surface a stale Trigger active slot so
@@ -553,6 +621,52 @@ export function registerBootstrap(server: McpServer): void {
               execution_started_at: staleActive.execution_started_at,
               threshold_minutes: Math.round(STALE_ACTIVE_THRESHOLD_MS / 60_000),
               recovery_procedure: "INS-236",
+            },
+          );
+        }
+
+        // brief-419 / Phase 3c-A: surface CS-3 synthesis observation events
+        // detected in the configured lookback window. Each kind contributes
+        // its own warning line (max 3 added) so the operator sees fallback,
+        // byte-count, and preamble events independently. Pointers reference
+        // INS-242 (the log-code definitions). The structured diagnostic
+        // carries per-kind counts plus a capped slice of the raw events for
+        // downstream observers — full payload stays server-side.
+        if (observation?.has_events) {
+          if (observation.fallback_count > 0) {
+            const suffix =
+              observation.fallback_count > 1 ? ` (× ${observation.fallback_count})` : "";
+            warnings.push(
+              `Synthesis transport fallback detected last finalize${suffix} — CS-3 routed via messages_api fallback (see INS-242).`,
+            );
+          }
+          if (observation.byte_warning_count > 0) {
+            const suffix =
+              observation.byte_warning_count > 1
+                ? ` (× ${observation.byte_warning_count})`
+                : "";
+            warnings.push(
+              `CS-3 output byte-count outside baseline last finalize${suffix} — verify pending-doc-updates.md content (see INS-242).`,
+            );
+          }
+          if (observation.preamble_warning_count > 0) {
+            const suffix =
+              observation.preamble_warning_count > 1
+                ? ` (× ${observation.preamble_warning_count})`
+                : "";
+            warnings.push(
+              `CS-3 preamble-leak warning last finalize${suffix} — first non-empty line not "## "/"**"/"# " (see INS-242).`,
+            );
+          }
+          diagnostics.info(
+            "SYNTHESIS_OBSERVATION_DETECTED",
+            `Phase 3c-A observation events detected for ${resolvedSlug}`,
+            {
+              fallback_count: observation.fallback_count,
+              byte_warning_count: observation.byte_warning_count,
+              preamble_warning_count: observation.preamble_warning_count,
+              events: observation.events.slice(0, 10),
+              lookback_minutes: Math.round(SYNTHESIS_LOG_LOOKBACK_MS / 60_000),
             },
           );
         }
