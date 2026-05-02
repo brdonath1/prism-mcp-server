@@ -338,3 +338,151 @@ describe("prism_patch partial-failure surfaces PATCH_PARTIAL_FAILURE", () => {
     expect(mockPushFile).not.toHaveBeenCalled();
   });
 });
+
+describe("KI-26 — prism_patch sanitizes header-injected content before write", () => {
+  // The pattern these tests pin: a caller supplies `content` containing a
+  // line that begins with `## ` or `### `. Without sanitization that line
+  // would parse as a real section header on the next read, breaking the
+  // section tree silently. sanitizeContentField inserts U+200B between the
+  // `#` cluster and the following space; the line then reads as a normal
+  // body line to the parser.
+  const ZWS = "​";
+
+  function getCommittedContent(): string {
+    const calls = mockCreateAtomicCommit.mock.calls;
+    expect(calls.length).toBeGreaterThan(0);
+    const files = calls[calls.length - 1][1] as Array<{ path: string; content: string }>;
+    const tq = files.find((f) => f.path === ".prism/task-queue.md");
+    if (!tq) throw new Error("task-queue.md missing from atomic-commit payload");
+    return tq.content;
+  }
+
+  it("neutralizes a `## Injected` line in append content", async () => {
+    mockFetchFile.mockResolvedValue({
+      content: TASK_QUEUE,
+      sha: "tq-sha",
+      size: TASK_QUEUE.length,
+    });
+    mockGetHeadSha.mockResolvedValue("HEAD_STABLE");
+    mockCreateAtomicCommit.mockResolvedValue({
+      success: true,
+      sha: "atomic-1",
+      files_committed: 1,
+    });
+
+    const result = await callPatchTool({
+      project_slug: "test-project",
+      file: "task-queue.md",
+      patches: [
+        {
+          operation: "append",
+          section: "## In Progress",
+          content: "- normal task\n## Injected\n- after",
+        },
+      ],
+    });
+
+    const data = parseResult(result);
+    expect(data.success).toBe(true);
+    const written = getCommittedContent();
+    expect(written).toContain(`##${ZWS} Injected`);
+    // Critical: no real `## Injected` header should land in the document.
+    expect(written).not.toMatch(/^## Injected$/m);
+    // Sanity: the unsanitized callers' bodies are still preserved on either
+    // side of the injection — the caller's intent isn't lost.
+    expect(written).toContain("- normal task");
+    expect(written).toContain("- after");
+  });
+
+  it("neutralizes injected headers in replace content", async () => {
+    mockFetchFile.mockResolvedValue({
+      content: TASK_QUEUE,
+      sha: "tq-sha",
+      size: TASK_QUEUE.length,
+    });
+    mockGetHeadSha.mockResolvedValue("HEAD_STABLE");
+    mockCreateAtomicCommit.mockResolvedValue({
+      success: true,
+      sha: "atomic-1",
+      files_committed: 1,
+    });
+
+    const result = await callPatchTool({
+      project_slug: "test-project",
+      file: "task-queue.md",
+      patches: [
+        {
+          operation: "replace",
+          section: "## In Progress",
+          content: "### Sneaky Sub\n- replaced item",
+        },
+      ],
+    });
+
+    const data = parseResult(result);
+    expect(data.success).toBe(true);
+    const written = getCommittedContent();
+    expect(written).toContain(`###${ZWS} Sneaky Sub`);
+    expect(written).not.toMatch(/^### Sneaky Sub$/m);
+  });
+
+  it("neutralizes injected headers in prepend content", async () => {
+    mockFetchFile.mockResolvedValue({
+      content: TASK_QUEUE,
+      sha: "tq-sha",
+      size: TASK_QUEUE.length,
+    });
+    mockGetHeadSha.mockResolvedValue("HEAD_STABLE");
+    mockCreateAtomicCommit.mockResolvedValue({
+      success: true,
+      sha: "atomic-1",
+      files_committed: 1,
+    });
+
+    const result = await callPatchTool({
+      project_slug: "test-project",
+      file: "task-queue.md",
+      patches: [
+        {
+          operation: "prepend",
+          section: "## In Progress",
+          content: "## Top-Of-Section Injection\n- prepended item",
+        },
+      ],
+    });
+
+    const data = parseResult(result);
+    expect(data.success).toBe(true);
+    const written = getCommittedContent();
+    expect(written).toContain(`##${ZWS} Top-Of-Section Injection`);
+    expect(written).not.toMatch(/^## Top-Of-Section Injection$/m);
+  });
+
+  it("leaves header-free content untouched (no incidental ZWS injection)", async () => {
+    mockFetchFile.mockResolvedValue({
+      content: TASK_QUEUE,
+      sha: "tq-sha",
+      size: TASK_QUEUE.length,
+    });
+    mockGetHeadSha.mockResolvedValue("HEAD_STABLE");
+    mockCreateAtomicCommit.mockResolvedValue({
+      success: true,
+      sha: "atomic-1",
+      files_committed: 1,
+    });
+
+    const result = await callPatchTool({
+      project_slug: "test-project",
+      file: "task-queue.md",
+      patches: [
+        { operation: "append", section: "## In Progress", content: "- plain item" },
+      ],
+    });
+
+    const data = parseResult(result);
+    expect(data.success).toBe(true);
+    const written = getCommittedContent();
+    expect(written).toContain("- plain item");
+    expect(written).not.toContain(ZWS);
+  });
+});

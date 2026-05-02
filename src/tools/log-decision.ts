@@ -10,6 +10,7 @@ import { resolveDocPath, resolveDocPushPath } from "../utils/doc-resolver.js";
 import { guardPushPath } from "../utils/doc-guard.js";
 import { DiagnosticsCollector } from "../utils/diagnostics.js";
 import { safeMutation } from "../utils/safe-mutation.js";
+import { sanitizeContentField } from "../utils/sanitize-content.js";
 
 /**
  * Parse existing decision IDs from a decisions/_INDEX.md content string.
@@ -124,19 +125,33 @@ export function registerLogDecision(server: McpServer): void {
           ? [indexResolvedPath, domainResolvedPath]
           : [indexResolvedPath];
 
+        // KI-26: neutralize embedded markdown headers in user-supplied fields
+        // before they are written into the index row or domain entry. Without
+        // this, a `reasoning` (or `title`/`assumptions`/`impact`) value that
+        // contains a line starting with `## ` would parse as a real section
+        // header on the next read, breaking the section tree silently —
+        // validateIntegrity() only flags duplicate headers, not novel ones.
+        const safeTitle = sanitizeContentField(title);
+        const safeReasoning = sanitizeContentField(reasoning);
+        const safeAssumptions = assumptions ? sanitizeContentField(assumptions) : undefined;
+        const safeImpact = impact ? sanitizeContentField(impact) : undefined;
+
+        // Commit message is a non-markdown channel (Git plain text), so it
+        // uses the raw title — ZWS injection there is unnecessary and would
+        // make the message harder to read.
         const commitMessage = `prism: ${id} ${title}`;
         const domainEof = `<!-- EOF: ${domain}.md -->`;
         const eofSentinel = "<!-- EOF: _INDEX.md -->";
-        const newRow = `| ${id} | ${title} | ${domain} | ${status} | ${session} |`;
+        const newRow = `| ${id} | ${safeTitle} | ${domain} | ${status} | ${session} |`;
 
         const entryLines = [
-          `### ${id}: ${title}`,
+          `### ${id}: ${safeTitle}`,
           `- Domain: ${domain}`,
           `- Status: ${status}`,
-          `- Reasoning: ${reasoning}`,
+          `- Reasoning: ${safeReasoning}`,
         ];
-        if (assumptions) entryLines.push(`- Assumptions: ${assumptions}`);
-        if (impact) entryLines.push(`- Impact: ${impact}`);
+        if (safeAssumptions) entryLines.push(`- Assumptions: ${safeAssumptions}`);
+        if (safeImpact) entryLines.push(`- Impact: ${safeImpact}`);
         entryLines.push(`- Decided: Session ${session}`);
         const entry = entryLines.join("\n");
 

@@ -11,6 +11,7 @@ import { resolveDocPath } from "../utils/doc-resolver.js";
 import { DOC_ROOT, PATCH_WALL_CLOCK_DEADLINE_MS } from "../config.js";
 import { DiagnosticsCollector } from "../utils/diagnostics.js";
 import { safeMutation } from "../utils/safe-mutation.js";
+import { sanitizeContentField } from "../utils/sanitize-content.js";
 
 interface PatchOpResult {
   operation: string;
@@ -129,7 +130,13 @@ export function registerPatch(server: McpServer): void {
             const results: PatchOpResult[] = [];
             for (const patch of patches) {
               try {
-                content = applyPatch(content, patch.section, patch.operation, patch.content);
+                // KI-26: neutralize embedded markdown headers in user-supplied
+                // patch content before they are written. Without this, a patch
+                // with `content: "## Injected"` against a body section would
+                // splice a real `## Injected` header into the document on the
+                // next parse, breaking the section tree silently.
+                const safeContent = sanitizeContentField(patch.content);
+                content = applyPatch(content, patch.section, patch.operation, safeContent);
                 results.push({ operation: patch.operation, section: patch.section, success: true });
               } catch (err) {
                 const msg = err instanceof Error ? err.message : String(err);
