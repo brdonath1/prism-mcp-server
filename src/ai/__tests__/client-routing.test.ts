@@ -96,6 +96,25 @@ describe("resolveCallSiteRouting — env var resolution", () => {
     expect(r.transport).toBe("messages_api");
   });
 
+  it("defaults to messages_api + SYNTHESIS_MODEL when no env set (callSite=draft)", () => {
+    const r = resolveCallSiteRouting("draft");
+    expect(r.transport).toBe("messages_api");
+    expect(r.modelOverridden).toBe(false);
+  });
+
+  it("reads SYNTHESIS_DRAFT_TRANSPORT=cc_subprocess", () => {
+    process.env.SYNTHESIS_DRAFT_TRANSPORT = "cc_subprocess";
+    const r = resolveCallSiteRouting("draft");
+    expect(r.transport).toBe("cc_subprocess");
+  });
+
+  it("reads SYNTHESIS_DRAFT_MODEL override", () => {
+    process.env.SYNTHESIS_DRAFT_MODEL = "claude-sonnet-4-6";
+    const r = resolveCallSiteRouting("draft");
+    expect(r.model).toBe("claude-sonnet-4-6");
+    expect(r.modelOverridden).toBe(true);
+  });
+
   it("uses per-call-site env namespace (DRAFT vs PDU vs BRIEF)", () => {
     process.env.SYNTHESIS_PDU_MODEL = "claude-sonnet-4-6";
     process.env.SYNTHESIS_BRIEF_MODEL = "claude-haiku-4-5";

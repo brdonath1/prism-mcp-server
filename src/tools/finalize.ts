@@ -399,6 +399,8 @@ async function draftPhase(projectSlug: string, sessionNumber: number) {
     draftTimeoutMs,
     0, // maxRetries — retry storms on draft are worse than fast failure (S41)
     true, // thinking: true — Phase 3b CS-1 adaptive-thinking flag (D-159 successor)
+    "draft", // brief-420 Phase 5a: per-call-site routing (SYNTHESIS_DRAFT_* env vars)
+    projectSlug, // brief-420 Phase 5a: project tag for observation surfacing (brief-419)
   );
 
   if (!result.success) {
