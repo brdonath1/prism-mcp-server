@@ -61,6 +61,9 @@ const INSIGHTS_ARCHIVE_CONFIG: ArchiveConfig = {
   mostRecentAt: "bottom",
 };
 
+/** Default cap for the `## Recently Completed` section in task-queue.md (brief-422 Piece 4). */
+export const TASK_QUEUE_RECENTLY_COMPLETED_CAP = 15;
+
 /** Suffix identifying archive files. Used to exclude archives from synthesis input. */
 export const ARCHIVE_FILE_SUFFIX = "-archive.md";
 
@@ -78,7 +81,7 @@ export const DRAFT_RELEVANT_DOCS = LIVING_DOCUMENT_NAMES.filter(
     d !== "intelligence-brief.md" &&
     !d.endsWith(ARCHIVE_FILE_SUFFIX),
 );
-import { resolveDocPath, resolveDocFiles } from "../utils/doc-resolver.js";
+import { resolveDocPath, resolveDocFiles, resolveDocPushPath } from "../utils/doc-resolver.js";
 import { guardPushPath } from "../utils/doc-guard.js";
 import { logger } from "../utils/logger.js";
 import { extractHeaders, extractSection, parseNumberedList } from "../utils/summarizer.js";
@@ -90,6 +93,7 @@ import { computeCurrencyWarning, type CurrencyWarning } from "../utils/doc-curre
 import { escapeHtml, stripMarkdown, formatResumptionHtml, toolIcon, generateCstTimestamp } from "../utils/banner.js";
 import { DiagnosticsCollector } from "../utils/diagnostics.js";
 import { classifySession, injectPersistedRecommendation, type SessionRecommendation } from "../utils/session-classifier.js";
+import { applyPendingDocUpdates, type ApplyPduResult } from "../utils/apply-pdu.js";
 
 /**
  * Robust JSON extraction from AI responses (B.8).
@@ -434,6 +438,174 @@ async function draftPhase(projectSlug: string, sessionNumber: number) {
 }
 
 /**
+ * Prune `## Recently Completed` in task-queue.md to keep at most `maxEntries`
+ * `### ` entries (brief-422 Piece 4). The section is reverse-chronological —
+ * newest entries at the top — so excess entries are dropped from the bottom.
+ *
+ * Header rewrite: when the section header carries a `(last N sessions)`
+ * decoration (e.g. `## Recently Completed (last 10 sessions)`), update it to
+ * `(last {maxEntries} sessions)` so the displayed cap matches the enforced
+ * cap. A header without the decoration is left untouched — operators may
+ * have intentionally omitted the count.
+ *
+ * Returns the modified content, or `null` when the section is missing or
+ * already within cap (no-op signal — the caller skips the write).
+ */
+export function pruneRecentlyCompleted(
+  content: string,
+  maxEntries: number = TASK_QUEUE_RECENTLY_COMPLETED_CAP,
+): string | null {
+  const sectionRe = /^##\s+Recently Completed[^\n]*$/m;
+  const sectionMatch = content.match(sectionRe);
+  if (!sectionMatch) return null;
+
+  const sectionStart = sectionMatch.index!;
+  const headerLine = sectionMatch[0];
+  const headerEnd = sectionStart + headerLine.length;
+
+  // Find the next top-level (## ) heading or EOF sentinel — that's where the
+  // Recently Completed body ends.
+  const tail = content.slice(headerEnd);
+  const nextH2 = tail.match(/\n##\s+\S/);
+  const nextEof = tail.match(/\n<!--\s*EOF:/);
+  let bodyEndOffset: number;
+  if (nextH2 && (!nextEof || nextH2.index! < nextEof.index!)) {
+    bodyEndOffset = nextH2.index! + 1; // +1 to consume leading \n
+  } else if (nextEof) {
+    bodyEndOffset = nextEof.index! + 1;
+  } else {
+    bodyEndOffset = tail.length;
+  }
+  const bodyEnd = headerEnd + bodyEndOffset;
+  const body = content.slice(headerEnd, bodyEnd);
+
+  // Enumerate `### ` entry start positions inside the section body.
+  const entryStarts: number[] = [];
+  for (const m of body.matchAll(/^###\s+/gm)) {
+    entryStarts.push(m.index!);
+  }
+  if (entryStarts.length <= maxEntries) return null;
+
+  const dropFromOffset = entryStarts[maxEntries];
+  const trimmedBody = body.slice(0, dropFromOffset).replace(/\s+$/, "") + "\n\n";
+
+  // Update the displayed cap when the header carries a `(last N sessions)`
+  // decoration. Match `(last 10 sessions)`, `(last 15 sessions)`, etc.
+  const newHeader = headerLine.replace(
+    /\(last\s+\d+\s+sessions?\)/i,
+    `(last ${maxEntries} sessions)`,
+  );
+
+  return (
+    content.slice(0, sectionStart) +
+    newHeader +
+    trimmedBody +
+    content.slice(bodyEnd)
+  );
+}
+
+/**
+ * Update architecture.md metadata (brief-422 Piece 3).
+ *
+ * Behavior:
+ *   - Gates on `auto_update_architecture: true` in the project's
+ *     `.prism/config.yaml`. Skip silently otherwise so projects opt in
+ *     deliberately.
+ *   - Refreshes the `> Updated: S{N} ({date})` preamble line via regex.
+ *     Skips silently when the pattern is not found (defensive contract for
+ *     legacy / non-PRISM-style architecture.md files).
+ *   - When the file carries the `**MCP server:**` Stack bullet, refreshes
+ *     its parenthetical to the prism-mcp-server version read from
+ *     `prism-mcp-server/package.json`. No-op when the version is already
+ *     present.
+ *
+ * All errors are returned in the result, never thrown — the caller surfaces
+ * them in the response but commit success is unaffected.
+ */
+export async function updateArchitectureMetadata(
+  projectSlug: string,
+  sessionNumber: number,
+  sessionDate: string,
+): Promise<{ updated: boolean; reason?: string; version?: string }> {
+  // 1. Config gate — must explicitly opt in via `.prism/config.yaml`.
+  let configEnabled = false;
+  try {
+    const config = await fetchFile(projectSlug, ".prism/config.yaml");
+    configEnabled = /^\s*auto_update_architecture:\s*true\s*$/im.test(config.content);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!msg.includes("Not found")) {
+      logger.debug("architecture metadata: config fetch failed", { projectSlug, error: msg });
+    }
+  }
+  if (!configEnabled) {
+    return { updated: false, reason: "auto_update_architecture not enabled" };
+  }
+
+  // 2. Fetch architecture.md.
+  let arch: { content: string; sha: string };
+  try {
+    const resolved = await resolveDocPath(projectSlug, "architecture.md");
+    arch = { content: resolved.content, sha: resolved.sha };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { updated: false, reason: `architecture.md fetch failed: ${msg}` };
+  }
+
+  // 3. Preamble pattern — defensive contract: only process files that
+  //    already carry the canonical `> Updated: S{N} ({date})` line.
+  const preambleRe = /^>\s*Updated:\s*S\d+\s*\([^)]+\)/m;
+  if (!preambleRe.test(arch.content)) {
+    return { updated: false, reason: "preamble pattern not found" };
+  }
+
+  let newContent = arch.content.replace(
+    preambleRe,
+    `> Updated: S${sessionNumber} (${sessionDate})`,
+  );
+
+  // 4. Stack bullet refresh — best-effort. Reads version from
+  //    prism-mcp-server's package.json (the ground-truth source per brief).
+  let version: string | undefined;
+  try {
+    const pkg = await fetchFile("prism-mcp-server", "package.json");
+    const versionMatch = pkg.content.match(/"version"\s*:\s*"([^"]+)"/);
+    if (versionMatch) {
+      version = versionMatch[1];
+      const bulletRe = /^(\s*-\s+\*\*MCP server:\*\*\s+Node\.js\/TypeScript on Railway)\s*\(([^)]*)\)\s*$/m;
+      newContent = newContent.replace(bulletRe, (match, prefix, parens) => {
+        if (parens.includes(`v${version}`)) return match;
+        return `${prefix} (v${version})`;
+      });
+    }
+  } catch (err) {
+    logger.debug("architecture metadata: package.json read failed", {
+      projectSlug,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  if (newContent === arch.content) {
+    return { updated: false, reason: "no change required" };
+  }
+
+  // 5. Push.
+  try {
+    const pushPath = await resolveDocPushPath(projectSlug, "architecture.md");
+    await pushFile(
+      projectSlug,
+      pushPath,
+      newContent,
+      `prism: S${sessionNumber} architecture.md preamble refresh`,
+    );
+    return { updated: true, version };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { updated: false, reason: `architecture.md push failed: ${msg}` };
+  }
+}
+
+/**
  * Commit phase — backup handoff, validate, push all files, verify.
  */
 async function commitPhase(
@@ -694,6 +866,34 @@ async function commitPhase(
   await applyArchive("session-log.md", "session-log-archive.md", SESSION_LOG_ARCHIVE_CONFIG);
   await applyArchive("insights.md", "insights-archive.md", INSIGHTS_ARCHIVE_CONFIG);
 
+  // brief-422 Piece 4: cap `## Recently Completed` in task-queue.md at 15
+  // entries (TASK_QUEUE_RECENTLY_COMPLETED_CAP). Pruning runs against the
+  // operator-supplied content so the cap is enforced in the same atomic
+  // commit as the rest of the finalization. Fail-open: any error is logged
+  // and skipped — finalize success does not depend on the prune.
+  let taskQueuePruned = false;
+  try {
+    const tqIdx = files.findIndex(
+      f => f.path === "task-queue.md" || f.path === `${DOC_ROOT}/task-queue.md`,
+    );
+    if (tqIdx !== -1) {
+      const pruned = pruneRecentlyCompleted(files[tqIdx].content, TASK_QUEUE_RECENTLY_COMPLETED_CAP);
+      if (pruned !== null) {
+        files[tqIdx] = { ...files[tqIdx], content: pruned };
+        taskQueuePruned = true;
+        logger.info("task-queue Recently Completed pruned", {
+          projectSlug,
+          cap: TASK_QUEUE_RECENTLY_COMPLETED_CAP,
+        });
+      }
+    }
+  } catch (err) {
+    logger.warn("task-queue prune skipped — error", {
+      projectSlug,
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
+
   // 4. Guard all paths against root-level duplication (D-67 addendum)
   const guardResults = await Promise.all(
     files.map(file => guardPushPath(projectSlug, file.path))
@@ -754,6 +954,49 @@ async function commitPhase(
   ).length;
 
   const allSucceeded = succeeded.length === files.length;
+
+  // brief-422 Piece 1 + Piece 3: post-commit, pre-synthesis sweeps.
+  // PDU auto-apply runs only when synthesis is enabled (the PDU file is
+  // produced by synthesis — applying nonexistent proposals is a no-op).
+  // Architecture metadata refresh runs whenever the commit succeeded —
+  // it's mechanical and independent of synthesis. Both are gated off
+  // `skipSynthesis` so an operator opt-out covers all post-commit work.
+  let pduResult: ApplyPduResult | null = null;
+  let architectureResult: { updated: boolean; reason?: string; version?: string } | null = null;
+  if (allSucceeded && !skipSynthesis) {
+    if (SYNTHESIS_ENABLED) {
+      try {
+        pduResult = await applyPendingDocUpdates(projectSlug, sessionNumber);
+        if (pduResult.applied.length > 0) {
+          logger.info("PDU auto-apply complete", {
+            projectSlug,
+            applied: pduResult.applied.length,
+            skipped: pduResult.skipped.length,
+            errors: pduResult.errors.length,
+            cleared: pduResult.cleared,
+          });
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.warn("PDU auto-apply threw — continuing", { projectSlug, err: msg });
+        pduResult = { applied: [], skipped: [], errors: [{ title: "(applyPendingDocUpdates)", error: msg }], cleared: false };
+      }
+    }
+    try {
+      architectureResult = await updateArchitectureMetadata(projectSlug, sessionNumber, today);
+      if (architectureResult.updated) {
+        logger.info("architecture.md preamble refreshed", {
+          projectSlug,
+          sessionNumber,
+          version: architectureResult.version,
+        });
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn("architecture metadata update threw — continuing", { projectSlug, err: msg });
+      architectureResult = { updated: false, reason: msg };
+    }
+  }
 
   // Synthesis after successful commit (D-78, FINDING-5) — fire-and-forget.
   // Synthesis takes 60-100s on mature projects, which exceeds the MCP client timeout
@@ -829,6 +1072,17 @@ async function commitPhase(
     synthesis_banner_html: null as string | null,
     synthesis_warning: null as string | null,
     synthesis_status_hint: synthesisStatusHint,
+    // brief-422: surface non-fatal post-commit sweep outcomes so the operator
+    // can see what landed beyond the main commit. Null when sweeps did not run
+    // (skip_synthesis, commit failure, or synthesis disabled). Populated arrays
+    // even when empty are still informative — they confirm the sweeps ran.
+    pdu_applied: pduResult?.applied ?? null,
+    pdu_skipped: pduResult?.skipped ?? null,
+    pdu_errors: pduResult?.errors ?? null,
+    pdu_cleared: pduResult?.cleared ?? null,
+    architecture_updated: architectureResult?.updated ?? null,
+    architecture_update_reason: architectureResult?.reason ?? null,
+    task_queue_pruned: taskQueuePruned,
     confirmation: allSucceeded
       ? `Session ${sessionNumber} finalized. Handoff v${handoffVersion} pushed and verified. ${livingDocsUpdated}/${LIVING_DOCUMENTS.length} living documents updated.${synthesisOutcome === "background" ? " Intelligence brief synthesizing in background." : synthesisOutcome === "skipped" ? " Synthesis skipped." : ""}`
       : `Session ${sessionNumber} finalization partially failed. ${succeeded.length}/${files.length} files pushed.`,

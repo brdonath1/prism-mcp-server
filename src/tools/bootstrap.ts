@@ -42,6 +42,7 @@ import {
   type StandingRule,
 } from "../utils/standing-rules.js";
 import { classifySession, parsePersistedRecommendation, type SessionRecommendation } from "../utils/session-classifier.js";
+import { applyPendingDocUpdates, isPduEmpty, parseLastSynthesizedSession, type ApplyPduResult } from "../utils/apply-pdu.js";
 
 // Re-export the standing-rule helpers so existing imports from
 // "../src/tools/bootstrap.js" continue to resolve (PR 4 / D-156 §3.5
@@ -686,6 +687,7 @@ export function registerBootstrap(server: McpServer): void {
 
         // Always-prefetch pending-doc-updates.md when it exists. Surfaced as an
         // entry in `prefetched_documents` per D-156 §3.5 / brief author note.
+        let pduAppliedAtBoot: ApplyPduResult | null = null;
         if (pendingUpdatesOutcome.status === "fulfilled") {
           const pendingFile = pendingUpdatesOutcome.value;
           prefetchedDocuments.push({
@@ -698,6 +700,66 @@ export function registerBootstrap(server: McpServer): void {
           logger.info("pending doc-updates prefetched", {
             size: pendingFile.content.length,
           });
+
+          // brief-422 Piece 2: stale-PDU safety net. Catches the case where
+          // finalize-side auto-apply (Piece 1) was skipped — `skip_synthesis:
+          // true`, synthesis disabled, or a synthesis run that crashed before
+          // it could write the cleared marker. Stale = PDU synthesized at
+          // session N, current bootstrap is session M with M > N+1.
+          // Empty PDU files are skipped (cleared state is not stale).
+          try {
+            if (!isPduEmpty(pendingFile.content)) {
+              const synthSession = parseLastSynthesizedSession(pendingFile.content);
+              if (synthSession !== null && sessionNumber > synthSession + 1) {
+                const ageSessions = sessionNumber - synthSession;
+                logger.info("stale PDU detected at bootstrap — auto-applying", {
+                  projectSlug: resolvedSlug,
+                  synthSession,
+                  currentSession: sessionNumber,
+                  ageSessions,
+                });
+                pduAppliedAtBoot = await applyPendingDocUpdates(resolvedSlug, sessionNumber);
+                if (pduAppliedAtBoot.applied.length > 0) {
+                  warnings.push(
+                    `PDU stale (${ageSessions} sessions old) — ${pduAppliedAtBoot.applied.length} proposal${pduAppliedAtBoot.applied.length === 1 ? "" : "s"} auto-applied at boot.`,
+                  );
+                  diagnostics.info(
+                    "PDU_AUTO_APPLIED_AT_BOOT",
+                    `Stale PDU auto-applied at boot — ${pduAppliedAtBoot.applied.length} proposal(s)`,
+                    {
+                      synth_session: synthSession,
+                      age_sessions: ageSessions,
+                      applied: pduAppliedAtBoot.applied,
+                      skipped: pduAppliedAtBoot.skipped,
+                      errors: pduAppliedAtBoot.errors,
+                    },
+                  );
+                } else if (pduAppliedAtBoot.errors.length > 0 || pduAppliedAtBoot.skipped.length > 0) {
+                  // No proposals landed but the run surfaced something —
+                  // include a warning so the operator can investigate.
+                  warnings.push(
+                    `PDU stale (${ageSessions} sessions old) — auto-apply produced no successful applies.`,
+                  );
+                  diagnostics.warn(
+                    "PDU_AUTO_APPLY_NOOP",
+                    "Stale PDU auto-apply produced no successful applies",
+                    {
+                      synth_session: synthSession,
+                      age_sessions: ageSessions,
+                      skipped: pduAppliedAtBoot.skipped,
+                      errors: pduAppliedAtBoot.errors,
+                    },
+                  );
+                }
+              }
+            }
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            logger.warn("stale-PDU bootstrap apply failed — continuing", {
+              projectSlug: resolvedSlug,
+              error: msg,
+            });
+          }
         }
 
         if (briefOutcome.status === "fulfilled") {
@@ -934,6 +996,7 @@ export function registerBootstrap(server: McpServer): void {
           expected_tool_surface: getExpectedToolSurface(RAILWAY_ENABLED, CC_DISPATCH_ENABLED, !!GITHUB_PAT),  // D-83 (S44); github category added in brief-403
           post_boot_tool_searches: POST_BOOT_TOOL_SEARCHES,                                     // D-83 (S44)
           recommended_session_settings: recommendedSessionSettings,                             // brief-405 / D-191 — advisory model + thinking suggestion
+          pdu_applied_at_boot: pduAppliedAtBoot,                                                 // brief-422 Piece 2 — stale-PDU safety net summary (null when nothing was applied)
           warnings,
           diagnostics: diagnostics.list(),
         };

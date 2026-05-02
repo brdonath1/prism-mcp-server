@@ -42,19 +42,16 @@ export const PORT = parseInt(process.env.PORT ?? "3000", 10);
 /** Log level */
 export const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
 
-/** Server version. Bumped to 4.6.0 for brief-419 (Phase 3c-A observation
- *  visibility): minor release adding boot-time surfacing of CS-3 synthesis
- *  observation events (SYNTHESIS_TRANSPORT_FALLBACK,
- *  CS3_QUALITY_BYTE_COUNT_WARNING, CS3_QUALITY_PREAMBLE_WARNING). New helper
- *  `src/utils/synthesis-fallback-check.ts` and a `checkSynthesisObservation()`
- *  helper in `src/tools/bootstrap.ts` query the prism-mcp-server's own
- *  Railway production environment and surface matching events for the
- *  booting project as warnings (rendered through the existing ⚠ banner
- *  channel) plus a single `SYNTHESIS_OBSERVATION_DETECTED` diagnostic.
- *  Also threads `projectSlug` through `synthesize()` so existing log
- *  emissions in `src/ai/client.ts` carry the project tag. No routing or
- *  behavior change for non-observation flows. */
-export const SERVER_VERSION = "4.6.0";
+/** Server version. Bumped to 4.7.0 for brief-422 (living-doc enforcement):
+ *  minor release wiring four mechanical maintenance behaviors into the
+ *  finalize commit path and bootstrap. Auto-applies pending-doc-updates
+ *  proposals at finalize, refreshes architecture.md `> Updated:` preamble +
+ *  Stack version bullet (gated on `.prism/config.yaml`
+ *  `auto_update_architecture: true`), caps `## Recently Completed` in
+ *  task-queue.md at 15 entries, and runs a bootstrap-side stale-PDU safety
+ *  net for sessions skipped at finalize. All four behaviors are non-fatal —
+ *  failure in any one does not affect commit or bootstrap primary response. */
+export const SERVER_VERSION = "4.7.0";
 
 /** MCP client timeout is ~60s. All server-side operations must complete within 50s
  *  to leave 10s buffer for transport overhead. This constrains synthesis, draft,
