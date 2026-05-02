@@ -13,9 +13,53 @@
  * The wrapper is invoked from `synthesize()` in `./client.ts` when a call
  * site has `SYNTHESIS_${CALLSITE_UPPER}_TRANSPORT=cc_subprocess` set in its
  * Railway env. On any failure (subprocess crash, timeout, parse error,
- * non-success terminal subtype) it returns a `SynthesisError` with
- * `error_code: "TIMEOUT" | "API_ERROR" | "AUTH"` so the caller can fall back
- * to the Messages API path automatically.
+ * non-success terminal subtype, or zero-token "success" — see below) it
+ * returns a `SynthesisError` with `error_code: "TIMEOUT" | "API_ERROR" |
+ * "AUTH"` so the caller can fall back to the Messages API path automatically.
+ *
+ * Zero-token-success guard (brief-418, INS-244):
+ *
+ * The Agent SDK's `query()` does NOT throw and does NOT emit an error subtype
+ * when the underlying API rejects the request (e.g. "Prompt is too long"). It
+ * emits a terminal `result` message with `subtype: "success"`, the literal API
+ * error string as the `result` text, and `usage.input_tokens === 0 &&
+ * usage.output_tokens === 0`. Without an explicit guard, the wrapper would
+ * report success and the error string would flow downstream into a living
+ * document. The guard below catches this shape (both token counts zero) and
+ * converts it into a `SynthesisError` so the caller's
+ * `SYNTHESIS_TRANSPORT_FALLBACK` machinery engages.
+ *
+ * Context-window opt-in (Sonnet 1M on Claude Code OAuth):
+ *
+ * Claude Code's `--model` argument supports a `[1m]` suffix (e.g.
+ * `claude-sonnet-4-6[1m]`) that selects the 1M-context variant of the named
+ * model. The suffix is a Claude Code routing signal — the binary itself
+ * parses `[1m]` and routes to the extended-context variant, per
+ * code.claude.com/docs/en/model-config. This is unrelated to and should
+ * not be confused with the API-side beta header
+ * `context-1m-2025-08-07`, which is a different mechanism on a different
+ * surface (Anthropic Messages API). The API-side beta header was retired
+ * April 30, 2026 for legacy Sonnet 4 / 4.5; that retirement does not affect
+ * the Claude Code OAuth path.
+ *
+ * Auto-upgrade behavior on Max OAuth plans:
+ *  - Opus 4.7 / 4.6 auto-upgrade to 1M without configuration (default since
+ *    Claude Code v2.1.75, March 13, 2026).
+ *  - Sonnet 4.6 does NOT auto-upgrade. Requesting 1M context on Sonnet
+ *    requires the explicit `[1m]` suffix on the model identifier.
+ *  - Sonnet 1M on Max requires "extra usage" enabled per the operator's
+ *    plan configuration and may not be available on all Max accounts. If
+ *    not enabled, the binary falls back to the 200K Sonnet variant; large
+ *    inputs are then rejected with "Prompt is too long" and the
+ *    zero-token-success guard above engages.
+ *
+ * The Agent SDK forwards `options.model` uninterpreted as `--model <V>` to
+ * the spawned `claude` CLI (verified in
+ * node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs at the single
+ * `l.push("--model",V)` site, byte ~222151). The SDK does not parse, strip,
+ * or sanitize the `[1m]` suffix, so passing
+ * `model: "claude-sonnet-4-6[1m]"` to `synthesizeViaCcSubprocess()` works
+ * end-to-end without any env-var pinning.
  */
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
@@ -154,6 +198,28 @@ export async function synthesizeViaCcSubprocess(
       return {
         success: false,
         error: "cc_subprocess returned empty result text",
+        error_code: "API_ERROR",
+      };
+    }
+
+    // brief-418 / INS-244: zero-token-success guard. The Agent SDK swallows
+    // certain API rejections (e.g. "Prompt is too long") into a terminal
+    // result with subtype="success", the literal error string as the
+    // result text, and zero input/output tokens. Treat that shape as a
+    // failure so the caller's SYNTHESIS_TRANSPORT_FALLBACK path engages
+    // instead of the error string flowing into a living document.
+    if (inputTokens === 0 && outputTokens === 0) {
+      logger.warn(
+        "cc_subprocess synthesis returned zero tokens despite subtype=success — treating as failure",
+        {
+          model,
+          result_preview: resultText.slice(0, 200),
+          ms: Date.now() - start,
+        },
+      );
+      return {
+        success: false,
+        error: `cc_subprocess returned success with zero input/output tokens — likely API rejection or SDK no-op (got: "${resultText.slice(0, 200)}")`,
         error_code: "API_ERROR",
       };
     }

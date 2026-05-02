@@ -218,4 +218,94 @@ describe("synthesizeViaCcSubprocess — wrapper behavior", () => {
     // logic by looking for the well-known guard string.
     expect(typeof synthesizeViaCcSubprocess).toBe("function");
   });
+
+  // brief-418: zero-token-success guard. The Agent SDK swallows certain API
+  // rejections (e.g. "Prompt is too long") into a terminal result with
+  // subtype="success", the literal error string as the result text, and zero
+  // input/output tokens. The wrapper must convert that shape to a failure so
+  // the caller's SYNTHESIS_TRANSPORT_FALLBACK path engages.
+  it("test 7: subtype=success with zero input AND output tokens treated as failure (zero-token guard)", async () => {
+    mockMessageGenerator = async function* () {
+      yield {
+        type: "result",
+        subtype: "success",
+        // The actual production failure shape: API rejection string emitted
+        // as the success-result text with zero tokens on both sides.
+        result: "Prompt is too long",
+        num_turns: 1,
+        usage: { input_tokens: 0, output_tokens: 0 },
+        total_cost_usd: 0,
+      };
+    };
+
+    const result = await synthesizeViaCcSubprocess(
+      "sys",
+      "user",
+      "claude-sonnet-4-6[1m]",
+    );
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error_code).toBe("API_ERROR");
+      // Error message must surface the zero-token signal so operators can
+      // distinguish this failure mode from generic API errors.
+      expect(result.error.toLowerCase()).toMatch(/zero|tokens/);
+      // The captured result text should be included in the error so the
+      // operator can see what the SDK actually returned.
+      expect(result.error).toContain("Prompt is too long");
+    }
+  });
+
+  it("test 8: subtype=success with non-zero tokens passes through (regression on happy path)", async () => {
+    mockMessageGenerator = async function* () {
+      yield {
+        type: "result",
+        subtype: "success",
+        result: "## valid synthesis output",
+        num_turns: 1,
+        usage: { input_tokens: 1234, output_tokens: 567 },
+        total_cost_usd: 0.002,
+      };
+    };
+
+    const result = await synthesizeViaCcSubprocess("sys", "user", "claude-sonnet-4-6[1m]");
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.content).toBe("## valid synthesis output");
+      expect(result.input_tokens).toBe(1234);
+      expect(result.output_tokens).toBe(567);
+    }
+  });
+
+  it("test 9: subtype=success with input_tokens=0 but output_tokens>0 is NOT treated as failure (require both zero)", async () => {
+    // Defense-in-depth boundary case. Per brief-418 scope item 5 case 3, the
+    // chosen guard requires BOTH input_tokens AND output_tokens to be zero
+    // before treating as failure. Rationale: input_tokens=0 alone has a
+    // legitimate explanation (large prompt-cache hit on the system prompt
+    // can drive billed input_tokens to zero while output is genuinely
+    // generated). The observed production failure shape (D-199) had BOTH
+    // zero, and that compound signal is what the guard targets. Single-zero
+    // edges remain success to avoid false-positive fallback storms on
+    // accounts with aggressive caching.
+    mockMessageGenerator = async function* () {
+      yield {
+        type: "result",
+        subtype: "success",
+        result: "## cached-prompt synthesis output",
+        num_turns: 1,
+        usage: { input_tokens: 0, output_tokens: 567 },
+        total_cost_usd: 0.001,
+      };
+    };
+
+    const result = await synthesizeViaCcSubprocess("sys", "user", "claude-sonnet-4-6[1m]");
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.content).toBe("## cached-prompt synthesis output");
+      expect(result.input_tokens).toBe(0);
+      expect(result.output_tokens).toBe(567);
+    }
+  });
 });
