@@ -42,19 +42,17 @@ export const PORT = parseInt(process.env.PORT ?? "3000", 10);
 /** Log level */
 export const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
 
-/** Server version. Bumped to 4.5.0 for brief-417 (Phase 3c-A — D-161
- *  re-evaluated): per-call-site synthesis routing infrastructure plus the
- *  CS-3 (`generatePendingDocUpdates`) flip to OAuth + Sonnet 4.6. Adds a new
- *  optional `callSite?: "draft" | "brief" | "pdu"` parameter to
- *  `synthesize()` that reads `SYNTHESIS_${CALLSITE_UPPER}_TRANSPORT` and
- *  `SYNTHESIS_${CALLSITE_UPPER}_MODEL` to optionally route through a new
- *  lightweight `src/ai/cc-subprocess.ts` wrapper around the Claude Code SDK
- *  (no workspace, no tools, no PR machinery). Automatic fallback to the
- *  Messages API on subprocess failure preserves finalization success even
- *  during OAuth degradation. CS-1 and CS-2 stay on Opus 4.7 + Messages API
- *  by default — the flip applies only to CS-3, where the operator-review
- *  safety net catches any quality regression before it propagates. */
-export const SERVER_VERSION = "4.5.0";
+/** Server version. Bumped to 4.5.1 for brief-418 (D-199 settled): patch
+ *  release adding a zero-token-success guard to the cc_subprocess wrapper
+ *  (`src/ai/cc-subprocess.ts`) so that Agent-SDK terminal results with
+ *  `subtype: "success"` and `usage.input_tokens === 0 &&
+ *  usage.output_tokens === 0` (e.g. swallowed "Prompt is too long" API
+ *  rejections) are converted to `SynthesisError` and trigger the existing
+ *  `SYNTHESIS_TRANSPORT_FALLBACK` path instead of letting the error string
+ *  flow downstream into a living document. JSDoc also updated to document
+ *  the Sonnet 1M `[1m]` opt-in mechanism for the Claude Code OAuth path. No
+ *  routing or behavior change for non-failure flows. */
+export const SERVER_VERSION = "4.5.1";
 
 /** MCP client timeout is ~60s. All server-side operations must complete within 50s
  *  to leave 10s buffer for transport overhead. This constrains synthesis, draft,
