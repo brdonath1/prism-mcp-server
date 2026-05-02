@@ -74,10 +74,13 @@ describe("synthesizeViaCcSubprocess — wrapper behavior", () => {
     expect(capturedQueryPrompt).toContain("Project: prism-mcp-server");
   });
 
-  it("test 2: respects adaptive thinking flag when supported", async () => {
+  it("test 2: overrides thinking=true to false on cc_subprocess path (S118 / D-206)", async () => {
+    // Adaptive thinking on Sonnet 4.6[1m] via the Agent SDK OAuth path is
+    // unverified — the cc_subprocess wrapper always disables thinking
+    // regardless of caller intent. (brief-423 root cause B)
     await synthesizeViaCcSubprocess("sys", "user", "claude-sonnet-4-6", undefined, undefined, true);
 
-    expect(capturedQueryOptions?.thinking).toEqual({ type: "adaptive" });
+    expect(capturedQueryOptions?.thinking).toBeUndefined();
   });
 
   it("test 2b: omits thinking when flag not set", async () => {

@@ -96,6 +96,18 @@ export const SYNTHESIS_MAX_OUTPUT_TOKENS = 8192;
 export const SYNTHESIS_TIMEOUT_MS =
   parseInt(process.env.SYNTHESIS_TIMEOUT_MS ?? "240000", 10) || 240_000;
 
+/** Wall-clock deadline (ms) for the PDU synthesis call when routed through
+ *  the Claude Code subprocess (cc_subprocess transport). Distinct from
+ *  SYNTHESIS_TIMEOUT_MS (which governs the messages_api fire-and-forget path)
+ *  because cc_subprocess has additional overhead beyond inference: CLI spawn,
+ *  OAuth handshake, model load, and token streaming. Default 600s absorbs
+ *  realistic end-to-end variance (observed messages_api inference: 82-132s;
+ *  subprocess overhead estimated 30-60s additional) while still catching
+ *  genuinely stuck processes. Configurable via env var so operators can
+ *  tune per-deployment without code change. */
+export const CC_SUBPROCESS_SYNTHESIS_TIMEOUT_MS =
+  parseInt(process.env.CC_SUBPROCESS_SYNTHESIS_TIMEOUT_MS ?? "600000", 10) || 600_000;
+
 /** Tool-level wall-clock deadline for prism_push (S40 C4). Hard backstop on
  *  top of the per-request GitHub fetch timeout. Configurable via env var so
  *  tests can inject a much smaller value without waiting 60s in CI. */

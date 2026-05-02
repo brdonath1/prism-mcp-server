@@ -60,6 +60,15 @@
  * or sanitize the `[1m]` suffix, so passing
  * `model: "claude-sonnet-4-6[1m]"` to `synthesizeViaCcSubprocess()` works
  * end-to-end without any env-var pinning.
+ *
+ * Thinking override:
+ *
+ * The `thinking` parameter is accepted for signature parity with `synthesize()`
+ * but is always overridden to `false` for cc_subprocess calls. Adaptive
+ * thinking on Sonnet 4.6[1m] via the Agent SDK OAuth path is unverified —
+ * the combination may cause dramatically increased processing time or silent
+ * hangs compared to the messages_api path. Thinking is disabled until
+ * explicitly validated on this surface (S118 root cause B, D-206).
  */
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
@@ -109,6 +118,18 @@ export async function synthesizeViaCcSubprocess(
     };
   }
 
+  // cc_subprocess always disables thinking, regardless of caller intent.
+  // Adaptive thinking on Sonnet 4.6[1m] via the Agent SDK OAuth path is
+  // unverified — it may cause dramatically increased processing time or
+  // silent hangs. The PDU prompt was designed for Opus 4.7 + messages_api
+  // with thinking; the cc_subprocess + Sonnet path should use text-only mode
+  // until thinking behavior is explicitly validated on this surface.
+  // (S118 diagnosis — root cause B of Phase 3c-A PDU timeout failures, D-206)
+  if (thinking) {
+    logger.warn("cc_subprocess: ignoring thinking=true — adaptive thinking is disabled on cc_subprocess path", { model });
+  }
+  const effectiveThinking = false;
+
   const start = Date.now();
   const executable = findClaudeExecutable();
 
@@ -134,7 +155,7 @@ export async function synthesizeViaCcSubprocess(
       pathToClaudeCodeExecutable: executable.path,
       persistSession: false,
       env: buildDispatchEnv(process.env, CLAUDE_CODE_OAUTH_TOKEN, "high"),
-      ...(thinking ? { thinking: { type: "adaptive" as const } } : {}),
+      ...(effectiveThinking ? { thinking: { type: "adaptive" as const } } : {}),
     };
 
     const q = query({
