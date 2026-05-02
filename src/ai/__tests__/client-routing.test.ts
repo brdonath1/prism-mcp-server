@@ -122,6 +122,26 @@ describe("resolveCallSiteRouting — env var resolution", () => {
     expect(resolveCallSiteRouting("brief").model).toBe("claude-haiku-4-5");
     expect(resolveCallSiteRouting("draft").model).toBe("claude-opus-4-7");
   });
+
+  it("defaults to messages_api + SYNTHESIS_MODEL when no env set (callSite=brief)", () => {
+    const r = resolveCallSiteRouting("brief");
+    expect(r.transport).toBe("messages_api");
+    expect(r.model).toBe("claude-opus-4-7"); // SYNTHESIS_MODEL default
+    expect(r.modelOverridden).toBe(false);
+  });
+
+  it("reads SYNTHESIS_BRIEF_TRANSPORT=cc_subprocess", () => {
+    process.env.SYNTHESIS_BRIEF_TRANSPORT = "cc_subprocess";
+    const r = resolveCallSiteRouting("brief");
+    expect(r.transport).toBe("cc_subprocess");
+  });
+
+  it("reads SYNTHESIS_BRIEF_MODEL override", () => {
+    process.env.SYNTHESIS_BRIEF_MODEL = "claude-opus-4-7";
+    const r = resolveCallSiteRouting("brief");
+    expect(r.model).toBe("claude-opus-4-7");
+    expect(r.modelOverridden).toBe(true);
+  });
 });
 
 describe("synthesize() — per-call-site routing", () => {
