@@ -268,3 +268,135 @@ describe("S62 Brief 1 — atomic-only contract, no sequential fallback", () => {
     expect(mockPushFile).not.toHaveBeenCalled();
   });
 });
+
+describe("KI-26 — sanitize header-injected user fields before write", () => {
+  // The pattern these tests pin: a caller passes `reasoning` (or any of the
+  // other user-supplied fields) that contains a line starting with `## ` or
+  // `### `. Without sanitization that line would parse as a real section
+  // header on the next read of the domain file, breaking the section tree.
+  // sanitizeContentField inserts U+200B between the `#` cluster and the
+  // following space, which makes the line invisible to the markdown header
+  // parser while remaining readable to humans.
+  const ZWS = "​";
+
+  function getDomainContent(): string {
+    const calls = mockCreateAtomicCommit.mock.calls;
+    expect(calls.length).toBeGreaterThan(0);
+    const files = calls[calls.length - 1][1] as Array<{ path: string; content: string }>;
+    const dom = files.find((f) => f.path === ".prism/decisions/architecture.md");
+    if (!dom) throw new Error("Domain file missing from atomic-commit payload");
+    return dom.content;
+  }
+
+  function getIndexContent(): string {
+    const calls = mockCreateAtomicCommit.mock.calls;
+    expect(calls.length).toBeGreaterThan(0);
+    const files = calls[calls.length - 1][1] as Array<{ path: string; content: string }>;
+    const idx = files.find((f) => f.path === ".prism/decisions/_INDEX.md");
+    if (!idx) throw new Error("Index file missing from atomic-commit payload");
+    return idx.content;
+  }
+
+  it("neutralizes a `## Injected` header inside the reasoning field", async () => {
+    setupResolvers();
+    setupFetchFile(FRESH_INDEX, FRESH_DOMAIN);
+    mockGetHeadSha.mockResolvedValue("head");
+    mockCreateAtomicCommit.mockResolvedValue({
+      success: true,
+      sha: "ok",
+      files_committed: 2,
+    });
+
+    const { server, handlers } = createServerStub();
+    registerLogDecision(server as any);
+    const result = await handlers.prism_log_decision({
+      ...BASE_ARGS,
+      reasoning: "Some real reasoning.\n## Injected Header\nMore text.",
+    });
+
+    expect(result.isError).toBeUndefined();
+    const dom = getDomainContent();
+    // The neutralized form must be present.
+    expect(dom).toContain(`##${ZWS} Injected Header`);
+    // And critically, no real `## Injected Header` line exists.
+    expect(dom).not.toMatch(/^## Injected Header$/m);
+  });
+
+  it("neutralizes injected headers in the assumptions and impact fields", async () => {
+    setupResolvers();
+    setupFetchFile(FRESH_INDEX, FRESH_DOMAIN);
+    mockGetHeadSha.mockResolvedValue("head");
+    mockCreateAtomicCommit.mockResolvedValue({
+      success: true,
+      sha: "ok",
+      files_committed: 2,
+    });
+
+    const { server, handlers } = createServerStub();
+    registerLogDecision(server as any);
+    const result = await handlers.prism_log_decision({
+      ...BASE_ARGS,
+      reasoning: "plain",
+      assumptions: "intro\n### Sneaky Sub\ntail",
+      impact: "lead\n## Big Impact\nfollowup",
+    });
+
+    expect(result.isError).toBeUndefined();
+    const dom = getDomainContent();
+    expect(dom).toContain(`###${ZWS} Sneaky Sub`);
+    expect(dom).toContain(`##${ZWS} Big Impact`);
+    expect(dom).not.toMatch(/^### Sneaky Sub$/m);
+    expect(dom).not.toMatch(/^## Big Impact$/m);
+  });
+
+  it("neutralizes an injected header inside the title (used in `### D-N: title` heading line)", async () => {
+    setupResolvers();
+    setupFetchFile(FRESH_INDEX, FRESH_DOMAIN);
+    mockGetHeadSha.mockResolvedValue("head");
+    mockCreateAtomicCommit.mockResolvedValue({
+      success: true,
+      sha: "ok",
+      files_committed: 2,
+    });
+
+    const { server, handlers } = createServerStub();
+    registerLogDecision(server as any);
+    const result = await handlers.prism_log_decision({
+      ...BASE_ARGS,
+      // Title with embedded newline + `## ` — stretches the contract but
+      // mirrors the worst-case caller-mistake we want to defend against.
+      title: "Real title\n## Hidden",
+    });
+
+    expect(result.isError).toBeUndefined();
+    const dom = getDomainContent();
+    const idx = getIndexContent();
+    expect(dom).toContain(`##${ZWS} Hidden`);
+    expect(idx).toContain(`##${ZWS} Hidden`);
+    expect(dom).not.toMatch(/^## Hidden$/m);
+    expect(idx).not.toMatch(/^## Hidden$/m);
+  });
+
+  it("does not modify reasoning text that contains no header pattern", async () => {
+    setupResolvers();
+    setupFetchFile(FRESH_INDEX, FRESH_DOMAIN);
+    mockGetHeadSha.mockResolvedValue("head");
+    mockCreateAtomicCommit.mockResolvedValue({
+      success: true,
+      sha: "ok",
+      files_committed: 2,
+    });
+
+    const reasoning =
+      "Plain prose. Has #hashtag, but no leading `# ` header lines.";
+    const { server, handlers } = createServerStub();
+    registerLogDecision(server as any);
+    const result = await handlers.prism_log_decision({
+      ...BASE_ARGS,
+      reasoning,
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(getDomainContent()).toContain(`- Reasoning: ${reasoning}`);
+  });
+});
