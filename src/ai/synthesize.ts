@@ -4,7 +4,7 @@
  */
 
 import { pushFile } from "../github/client.js";
-import { LIVING_DOCUMENT_NAMES, SYNTHESIS_ENABLED, SYNTHESIS_TIMEOUT_MS } from "../config.js";
+import { CC_SUBPROCESS_SYNTHESIS_TIMEOUT_MS, LIVING_DOCUMENT_NAMES, SYNTHESIS_ENABLED, SYNTHESIS_TIMEOUT_MS } from "../config.js";
 import { resolveDocFiles, resolveDocPushPath } from "../utils/doc-resolver.js";
 import { logger } from "../utils/logger.js";
 import { synthesize } from "./client.js";
@@ -259,11 +259,18 @@ export async function generatePendingDocUpdates(
     //    subprocess + Sonnet 4.6 path when Railway env opts in. Default
     //    behavior (no env vars set) preserves Opus 4.7 + Messages API.
     //    Fire-and-forget per D-78 / D-156 so latency overhead is invisible.
+    // Determine which timeout to use: cc_subprocess needs its own (larger) ceiling
+    // because subprocess startup overhead is on top of inference time. Messages API
+    // path continues to use SYNTHESIS_TIMEOUT_MS (fire-and-forget baseline).
+    const pduTransport = process.env.SYNTHESIS_PDU_TRANSPORT;
+    const pduTimeoutMs = pduTransport === "cc_subprocess"
+      ? CC_SUBPROCESS_SYNTHESIS_TIMEOUT_MS
+      : SYNTHESIS_TIMEOUT_MS;
     const result = await synthesize(
       PENDING_DOC_UPDATES_PROMPT,
       userMessage,
       undefined,
-      SYNTHESIS_TIMEOUT_MS,
+      pduTimeoutMs,
       undefined,
       true, // thinking: true — Phase 3a CS-3 adaptive-thinking flag
       "pdu", // brief-417: per-call-site routing
