@@ -85,14 +85,23 @@ export async function generateIntelligenceBrief(
 
     // 3. Call Opus 4.7 with adaptive thinking (Phase 3a — CS-2).
     //    Fire-and-forget per D-78 so latency overhead is invisible to operator.
+    // Determine which timeout to use: cc_subprocess needs its own (larger) ceiling
+    // because subprocess startup overhead is on top of inference time. Messages API
+    // path continues to use SYNTHESIS_TIMEOUT_MS (fire-and-forget baseline).
+    // Mirror of the same logic in generatePendingDocUpdates (brief-417 / Phase 3c-A).
+    const briefTransport = process.env.SYNTHESIS_BRIEF_TRANSPORT;
+    const briefTimeoutMs = briefTransport === "cc_subprocess"
+      ? CC_SUBPROCESS_SYNTHESIS_TIMEOUT_MS
+      : SYNTHESIS_TIMEOUT_MS;
+
     const result = await synthesize(
       FINALIZATION_SYNTHESIS_PROMPT,
       userMessage,
       undefined,
-      SYNTHESIS_TIMEOUT_MS,
+      briefTimeoutMs,
       undefined,
       true, // thinking: true — Phase 3a CS-2 adaptive-thinking flag
-      undefined, // callSite — CS-2 stays on messages_api per Phase 3c-A scope
+      "brief", // brief-424 Phase 3c-B: per-call-site routing (SYNTHESIS_BRIEF_* env vars)
       projectSlug, // brief-419: project tagging for boot-time observation surfacing
     );
 
