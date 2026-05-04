@@ -1320,11 +1320,11 @@ async function fullPhase(
     diagnostics,
   );
 
-  // Step 5 — Return combined result
+  // Step 5 — Return combined result.
+  // Note: commitResult already contains project, session_number, handoff_version etc.
+  // action and phases are unique to fullPhase; diagnostics overrides the one inside commitResult.
   return {
     action: "full" as const,
-    project: projectSlug,
-    session_number: sessionNumber,
     phases: {
       audit: { status: auditStatus, warnings: auditResult.audit.warnings },
       draft: {
