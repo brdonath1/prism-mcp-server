@@ -1303,7 +1303,7 @@ async function fullPhase(
     for (const [key, value] of Object.entries(draftsObj)) {
       if (typeof value !== "string") continue;
       if (key === "handoff.md") continue; // operator-supplied takes precedence
-      if (key.endsWith(".md") || DRAFT_RELEVANT_DOCS.includes(key)) {
+      if (key.endsWith(".md") || (DRAFT_RELEVANT_DOCS as readonly string[]).includes(key)) {
         files.push({ path: key, content: value });
       }
     }
