@@ -1254,15 +1254,102 @@ function renderFinalizationBanner(data: {
 }
 
 /**
+ * Full phase — run audit + draft + commit atomically in a single tool call.
+ * Enables Trigger-driven finalization without inter-call state management.
+ */
+async function fullPhase(
+  projectSlug: string,
+  sessionNumber: number,
+  handoffVersion: number,
+  handoffContent: string,
+  skipSynthesis: boolean,
+  _bannerData?: { deliverables?: Array<{text: string; status: "ok"|"warn"}>; decisions_note?: string; step_statuses?: { audit?: "ok"|"warn"|"critical"; draft?: "ok"|"warn"|"critical"; commit?: "ok"|"warn"|"critical"; verified?: "ok"|"warn"|"critical" } },
+) {
+  // Step 1 — Audit
+  const auditResult = await auditPhase(projectSlug, sessionNumber);
+  const auditStatus = auditResult.audit.living_documents.some(d => !d.exists) ? "warn" : "ok";
+
+  // Step 2 — Draft (CS-1): race with the same deadline used by the draft action handler
+  let draftStatus: "ok" | "warn" = "warn";
+  let draftResult: Awaited<ReturnType<typeof draftPhase>> | null = null;
+
+  let draftDeadlineTimer: ReturnType<typeof setTimeout> | undefined;
+  const draftDeadlinePromise = new Promise<typeof FINALIZE_DRAFT_DEADLINE_SENTINEL>((resolve) => {
+    draftDeadlineTimer = setTimeout(
+      () => resolve(FINALIZE_DRAFT_DEADLINE_SENTINEL),
+      FINALIZE_DRAFT_DEADLINE_MS,
+    );
+  });
+  const draftWork = draftPhase(projectSlug, sessionNumber);
+  const raced = await Promise.race([draftWork, draftDeadlinePromise]);
+  if (draftDeadlineTimer) clearTimeout(draftDeadlineTimer);
+
+  if (raced === FINALIZE_DRAFT_DEADLINE_SENTINEL) {
+    draftStatus = "warn";
+    draftResult = null;
+    logger.warn("fullPhase draft deadline exceeded", { projectSlug, deadlineMs: FINALIZE_DRAFT_DEADLINE_MS });
+  } else {
+    draftResult = raced;
+    draftStatus = draftResult.success === false ? "warn" : "ok";
+  }
+
+  // Step 3 — Assemble files[]
+  const files: Array<{path: string; content: string}> = [
+    { path: "handoff.md", content: handoffContent },
+  ];
+
+  if (draftResult?.success && "drafts" in draftResult && draftResult.drafts && typeof draftResult.drafts === "object") {
+    const draftsObj = draftResult.drafts as Record<string, unknown>;
+    for (const [key, value] of Object.entries(draftsObj)) {
+      if (typeof value !== "string") continue;
+      if (key === "handoff.md") continue; // operator-supplied takes precedence
+      if (key.endsWith(".md") || DRAFT_RELEVANT_DOCS.includes(key)) {
+        files.push({ path: key, content: value });
+      }
+    }
+  }
+
+  // Step 4 — Commit
+  const diagnostics = new DiagnosticsCollector();
+  const commitResult = await commitPhase(
+    projectSlug,
+    sessionNumber,
+    handoffVersion,
+    files,
+    skipSynthesis,
+    diagnostics,
+  );
+
+  // Step 5 — Return combined result
+  return {
+    action: "full" as const,
+    project: projectSlug,
+    session_number: sessionNumber,
+    phases: {
+      audit: { status: auditStatus, warnings: auditResult.audit.warnings },
+      draft: {
+        status: draftStatus,
+        input_tokens: draftResult && "input_tokens" in draftResult ? draftResult.input_tokens : 0,
+        output_tokens: draftResult && "output_tokens" in draftResult ? draftResult.output_tokens : 0,
+      },
+      commit: { all_succeeded: commitResult.all_succeeded, living_documents_updated: commitResult.living_documents_updated },
+    },
+    // Spread top-level commit result fields for banner compatibility
+    ...commitResult,
+    diagnostics: diagnostics.list(),
+  };
+}
+
+/**
  * Register the prism_finalize tool on an MCP server instance.
  */
 export function registerFinalize(server: McpServer): void {
   server.tool(
     "prism_finalize",
-    "PRISM finalization. Actions: audit (document inventory + drift), draft (AI-generated files), commit (backup + push + validate).",
+    "PRISM finalization. Actions: audit (document inventory + drift), draft (AI-generated files), commit (backup + push + validate), full (single call: audit + draft + commit).",
     {
       project_slug: z.string().describe("Project repo name"),
-      action: z.enum(["audit", "draft", "commit"]).describe("Finalization phase: 'audit' for document inventory, 'draft' for AI-generated file drafts, 'commit' to push final files"),
+      action: z.enum(["audit", "draft", "commit", "full"]).describe("Finalization phase: 'audit' for document inventory, 'draft' for AI-generated file drafts, 'commit' to push final files, 'full' (single call: audit + draft + commit)"),
       session_number: z.number().describe("Current session number"),
       handoff_version: z.number().optional().describe("New handoff version (commit phase only)"),
       files: z
@@ -1288,8 +1375,9 @@ export function registerFinalize(server: McpServer): void {
           verified: z.enum(["ok", "warn", "critical"]).optional(),
         }).optional(),
       }).optional().describe("Optional banner customization data (commit phase only)"),
+      handoff_content: z.string().optional().describe("Complete handoff.md content (full action only)"),
     },
-    async ({ project_slug, action, session_number, handoff_version, files, skip_synthesis, banner_data }) => {
+    async ({ project_slug, action, session_number, handoff_version, files, skip_synthesis, banner_data, handoff_content }) => {
       const start = Date.now();
       const diagnostics = new DiagnosticsCollector();
       logger.info("prism_finalize", { project_slug, action, session_number });
@@ -1376,6 +1464,38 @@ export function registerFinalize(server: McpServer): void {
           }
           return {
             content: [{ type: "text" as const, text: JSON.stringify({ ...result, diagnostics: diagnostics.list() }) }],
+          };
+        }
+
+        if (action === "full") {
+          if (!handoff_content) {
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify({
+                error: "Full action requires handoff_content — the complete handoff.md content for this session.",
+                project: project_slug,
+              })}],
+              isError: true,
+            };
+          }
+          const result = await fullPhase(
+            project_slug,
+            session_number,
+            handoff_version ?? 1,
+            handoff_content,
+            skip_synthesis ?? false,
+            banner_data,
+          );
+
+          logger.info("prism_finalize full complete", {
+            project_slug,
+            session_number,
+            phases: result.phases,
+            allSucceeded: result.all_succeeded,
+            ms: Date.now() - start,
+          });
+
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify(result) }],
           };
         }
 
