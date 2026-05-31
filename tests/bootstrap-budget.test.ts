@@ -131,6 +131,13 @@ describe("T-1: bootstrap response size budget", () => {
       parsed.context_estimate.platform_overhead_tokens +
       parsed.context_estimate.tool_schema_tokens
     );
+    // context_window_tokens is exposed and equals the conservative default
+    expect(typeof parsed.context_estimate.context_window_tokens).toBe("number");
+    expect(parsed.context_estimate.context_window_tokens).toBe(200000);
+    // total_boot_percent is derived from context_window_tokens
+    expect(parsed.context_estimate.total_boot_percent).toBe(
+      Math.round((parsed.context_estimate.total_boot_tokens / parsed.context_estimate.context_window_tokens) * 1000) / 10
+    );
   });
 
   it("standing_rules array length < 10 entries", async () => {
