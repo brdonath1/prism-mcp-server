@@ -18,7 +18,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { fetchFile, pushFile, listRepos } from "../github/client.js";
-import { CC_DISPATCH_ENABLED, DOC_ROOT, FRAMEWORK_REPO, GITHUB_PAT, HANDOFF_CRITICAL_SIZE, LIVING_DOCUMENTS, MCP_TEMPLATE_PATH, PREFETCH_KEYWORDS, PROJECT_DISPLAY_NAMES, RAILWAY_API_TOKEN, RAILWAY_ENABLED, STALE_ACTIVE_THRESHOLD_MS, SYNTHESIS_LOG_LOOKBACK_MS, TRIGGER_AUTO_ENROLL, resolveProjectSlug } from "../config.js";
+import { CC_DISPATCH_ENABLED, DEFAULT_CONTEXT_WINDOW_TOKENS, DOC_ROOT, FRAMEWORK_REPO, GITHUB_PAT, HANDOFF_CRITICAL_SIZE, LIVING_DOCUMENTS, MCP_TEMPLATE_PATH, PREFETCH_KEYWORDS, PROJECT_DISPLAY_NAMES, RAILWAY_API_TOKEN, RAILWAY_ENABLED, STALE_ACTIVE_THRESHOLD_MS, SYNTHESIS_LOG_LOOKBACK_MS, TRIGGER_AUTO_ENROLL, resolveProjectSlug } from "../config.js";
 import { getEnvironmentLogs } from "../railway/client.js";
 import { checkStaleActive } from "../utils/stale-active-check.js";
 import { checkSynthesisObservationEvents, type ObservationCheckResult } from "../utils/synthesis-fallback-check.js";
@@ -957,7 +957,7 @@ export function registerBootstrap(server: McpServer): void {
         const platformOverheadTokens = 5000;
         const toolSchemaTokens = 2500;
         const totalBootTokens = bootstrapTokens + platformOverheadTokens + toolSchemaTokens;
-        const totalBootPercent = Math.round((totalBootTokens / 200000) * 1000) / 10;
+        const totalBootPercent = Math.round((totalBootTokens / DEFAULT_CONTEXT_WINDOW_TOKENS) * 1000) / 10;
 
         const result: Record<string, unknown> = {
           project: resolvedSlug,
@@ -992,6 +992,7 @@ export function registerBootstrap(server: McpServer): void {
             tool_schema_tokens: toolSchemaTokens,
             total_boot_tokens: totalBootTokens,
             total_boot_percent: totalBootPercent,
+            context_window_tokens: DEFAULT_CONTEXT_WINDOW_TOKENS,
           },
           expected_tool_surface: getExpectedToolSurface(RAILWAY_ENABLED, CC_DISPATCH_ENABLED, !!GITHUB_PAT),  // D-83 (S44); github category added in brief-403
           post_boot_tool_searches: POST_BOOT_TOOL_SEARCHES,                                     // D-83 (S44)
