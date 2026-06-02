@@ -57,4 +57,4 @@ export const RECOMMENDATION_MODELS = {
  * ("claude-opus-4-7") — centralization only; any bump is gated by
  * INS-244 / INS-245 (OAuth-surface availability + cost).
  */
-export const SYNTHESIS_MODEL_ID = "claude-opus-4-7";
+export const SYNTHESIS_MODEL_ID = "claude-opus-4-8";
