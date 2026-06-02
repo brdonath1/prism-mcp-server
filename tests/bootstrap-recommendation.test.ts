@@ -204,7 +204,7 @@ describe("brief-411: bootstrap reads persisted recommendation", () => {
     const parsed = JSON.parse(result.content[0].text);
 
     expect(parsed.recommended_session_settings.category).toBe("reasoning_heavy");
-    expect(parsed.recommended_session_settings.model).toBe("opus-4-7");
+    expect(parsed.recommended_session_settings.model).toBe("opus-4-8");
     expect(parsed.recommended_session_settings.thinking).toBe("adaptive-on");
   });
 
