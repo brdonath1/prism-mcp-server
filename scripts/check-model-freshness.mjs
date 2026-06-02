@@ -400,10 +400,22 @@ async function main() {
   if (synthBump) {
     const newSynthId = buildSynthId(synthBump.family, synthBump.newVersion);
     bodyLines.push(
-      "### \u26a0\ufe0f Synthesis model \u2014 human review required (INS-244 / INS-245)\n",
+      "### \u26a0\ufe0f Synthesis fallback default \u2014 human review required (INS-244 / INS-245)\n",
     );
     bodyLines.push(
       `- **${synthBump.family}**: \`${synthBump.currentId}\` \u2192 \`${newSynthId}\``,
+    );
+    bodyLines.push("");
+    bodyLines.push(
+      "> **Scope:** This bumps `SYNTHESIS_MODEL_ID` in `src/models.ts` \u2014 the `messages_api` fallback default (API-key path, used only when the OAuth `cc_subprocess` transport fails).",
+    );
+    bodyLines.push(">");
+    bodyLines.push(
+      "> **Production synthesis** runs on the OAuth `cc_subprocess` path. The live models are set by Railway env vars `SYNTHESIS_BRIEF_MODEL` / `SYNTHESIS_PDU_MODEL` / `SYNTHESIS_DRAFT_MODEL`, which this automation does NOT and cannot change.",
+    );
+    bodyLines.push(">");
+    bodyLines.push(
+      "> **Merging this PR does NOT change production synthesis.** To adopt the new model in production, update those Railway env vars (human + OAuth-availability + cost gated per INS-244 / INS-245).",
     );
     bodyLines.push("");
   }

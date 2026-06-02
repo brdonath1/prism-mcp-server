@@ -33,6 +33,7 @@ vi.mock("@anthropic-ai/sdk", () => {
 
 import { synthesize, resolveCallSiteRouting } from "../client.js";
 import { synthesizeViaCcSubprocess } from "../cc-subprocess.js";
+import { SYNTHESIS_MODEL_ID } from "../../models.js";
 
 const mockSubprocess = vi.mocked(synthesizeViaCcSubprocess);
 
@@ -73,7 +74,7 @@ describe("resolveCallSiteRouting — env var resolution", () => {
   it("defaults to messages_api + SYNTHESIS_MODEL when no env set", () => {
     const r = resolveCallSiteRouting("pdu");
     expect(r.transport).toBe("messages_api");
-    expect(r.model).toBe("claude-opus-4-8"); // SYNTHESIS_MODEL default
+    expect(r.model).toBe(SYNTHESIS_MODEL_ID); // SYNTHESIS_MODEL default
     expect(r.modelOverridden).toBe(false);
   });
 
@@ -120,13 +121,13 @@ describe("resolveCallSiteRouting — env var resolution", () => {
     process.env.SYNTHESIS_BRIEF_MODEL = "claude-haiku-4-5";
     expect(resolveCallSiteRouting("pdu").model).toBe("claude-sonnet-4-6");
     expect(resolveCallSiteRouting("brief").model).toBe("claude-haiku-4-5");
-    expect(resolveCallSiteRouting("draft").model).toBe("claude-opus-4-8");
+    expect(resolveCallSiteRouting("draft").model).toBe(SYNTHESIS_MODEL_ID);
   });
 
   it("defaults to messages_api + SYNTHESIS_MODEL when no env set (callSite=brief)", () => {
     const r = resolveCallSiteRouting("brief");
     expect(r.transport).toBe("messages_api");
-    expect(r.model).toBe("claude-opus-4-8"); // SYNTHESIS_MODEL default
+    expect(r.model).toBe(SYNTHESIS_MODEL_ID); // SYNTHESIS_MODEL default
     expect(r.modelOverridden).toBe(false);
   });
 
@@ -152,7 +153,7 @@ describe("synthesize() — per-call-site routing", () => {
     expect(mockSubprocess).not.toHaveBeenCalled();
     expect(mockMessagesCreate).toHaveBeenCalledTimes(1);
     const passedBody = mockMessagesCreate.mock.calls[0][0];
-    expect(passedBody.model).toBe("claude-opus-4-8"); // SYNTHESIS_MODEL default
+    expect(passedBody.model).toBe(SYNTHESIS_MODEL_ID); // SYNTHESIS_MODEL default
     if (result.success) {
       expect(result.transport).toBe("messages_api");
     }
@@ -210,7 +211,7 @@ describe("synthesize() — per-call-site routing", () => {
 
     // The retry path MUST NOT use the override that just failed.
     const passedBody = mockMessagesCreate.mock.calls[0][0];
-    expect(passedBody.model).toBe("claude-opus-4-8");
+    expect(passedBody.model).toBe(SYNTHESIS_MODEL_ID);
 
     if (result.success) {
       expect(result.transport).toBe("messages_api_fallback");
@@ -228,7 +229,7 @@ describe("synthesize() — per-call-site routing", () => {
     expect(mockSubprocess).not.toHaveBeenCalled();
     expect(mockMessagesCreate).toHaveBeenCalledTimes(1);
     const passedBody = mockMessagesCreate.mock.calls[0][0];
-    expect(passedBody.model).toBe("claude-opus-4-8");
+    expect(passedBody.model).toBe(SYNTHESIS_MODEL_ID);
     if (result.success) {
       expect(result.transport).toBeUndefined();
     }

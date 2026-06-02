@@ -9,6 +9,7 @@ import {
   injectPersistedRecommendation,
   parsePersistedRecommendation,
 } from "../../src/utils/session-classifier.js";
+import { RECOMMENDATION_MODELS } from "../../src/models.js";
 
 describe("classifySession", () => {
   it("yields executional verdict for a pure cleanup queue", () => {
@@ -20,9 +21,9 @@ describe("classifySession", () => {
       ],
     });
     expect(result.category).toBe("executional");
-    expect(result.model).toBe("sonnet-4-6");
+    expect(result.model).toBe(RECOMMENDATION_MODELS.executional.code);
     expect(result.thinking).toBe("adaptive-off");
-    expect(result.display).toBe("Sonnet 4.6 · Adaptive off");
+    expect(result.display).toBe(`${RECOMMENDATION_MODELS.executional.display} · Adaptive off`);
     expect(result.rationale.length).toBeLessThanOrEqual(80);
   });
 
@@ -35,9 +36,9 @@ describe("classifySession", () => {
       ],
     });
     expect(result.category).toBe("reasoning_heavy");
-    expect(result.model).toBe("opus-4-8");
+    expect(result.model).toBe(RECOMMENDATION_MODELS.reasoning_heavy.code);
     expect(result.thinking).toBe("adaptive-on");
-    expect(result.display).toBe("Opus 4.8 · Adaptive on");
+    expect(result.display).toBe(`${RECOMMENDATION_MODELS.reasoning_heavy.display} · Adaptive on`);
   });
 
   it("yields mixed verdict for balanced execution + judgment queue", () => {
@@ -49,15 +50,15 @@ describe("classifySession", () => {
     });
     // 1 reasoning (debug) + 1 executional (verify) → ratio 1.0 → mixed window
     expect(result.category).toBe("mixed");
-    expect(result.model).toBe("opus-4-8");
+    expect(result.model).toBe(RECOMMENDATION_MODELS.mixed.code);
     expect(result.thinking).toBe("adaptive-off");
-    expect(result.display).toBe("Opus 4.8 · Adaptive off");
+    expect(result.display).toBe(`${RECOMMENDATION_MODELS.mixed.display} · Adaptive off`);
   });
 
   it("yields mixed verdict (safe default) for empty input", () => {
     const result = classifySession({ next_steps: [] });
     expect(result.category).toBe("mixed");
-    expect(result.model).toBe("opus-4-8");
+    expect(result.model).toBe(RECOMMENDATION_MODELS.mixed.code);
     expect(result.thinking).toBe("adaptive-off");
     expect(result.scores.reasoning_heavy).toBe(0);
     expect(result.scores.executional).toBe(0);
