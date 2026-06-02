@@ -4,6 +4,7 @@
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { SYNTHESIS_MODEL_ID } from "./models.js";
 
 // Load .env in local development (no-op if vars already set, e.g. Railway)
 try {
@@ -79,11 +80,14 @@ export const SUMMARY_SIZE_THRESHOLD = 5_120;  // 5 KB
 /** Root directory for PRISM living documents within project repos (D-67) */
 export const DOC_ROOT = ".prism";
 
-/** Anthropic API key for Opus 4.7 synthesis (Track 2) */
+/** Anthropic API key for synthesis (Track 2) */
 export const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? "";
 
-/** Model to use for synthesis */
-export const SYNTHESIS_MODEL = process.env.SYNTHESIS_MODEL ?? "claude-opus-4-7";
+/** Model to use for synthesis. Default centralized in src/models.ts
+ *  (SYNTHESIS_MODEL_ID); override per-deployment via the SYNTHESIS_MODEL env
+ *  var. Unchanged from the prior hard-coded "claude-opus-4-7" — centralization
+ *  only; any bump is gated by INS-244 / INS-245 (OAuth-surface availability). */
+export const SYNTHESIS_MODEL = process.env.SYNTHESIS_MODEL ?? SYNTHESIS_MODEL_ID;
 
 /** Whether synthesis is enabled (requires API key) */
 export const SYNTHESIS_ENABLED = !!process.env.ANTHROPIC_API_KEY;

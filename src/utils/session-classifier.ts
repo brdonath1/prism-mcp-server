@@ -9,11 +9,20 @@
  *
  * The recommendation is advisory — the operator overrides via the model
  * selector at session start. Goal is to avoid the wasted-boot scenario
- * where a session opens on Opus 4.7 + Adaptive on for what turns out to
+ * where a session opens on Opus 4.8 + Adaptive on for what turns out to
  * be 30 turns of mechanical work.
  */
 
-export type RecommendedModel = "opus-4-7" | "sonnet-4-6" | "haiku-4-5";
+import { RECOMMENDATION_MODELS } from "../models.js";
+
+/**
+ * Short model identifier carried in the recommendation's `model` field.
+ * DERIVED from RECOMMENDATION_MODELS (src/models.ts) so it can never drift
+ * from the values the classifier actually emits — that drift was the S143 bug
+ * (union topped out at "opus-4-7", so 4.8 was unrepresentable).
+ */
+export type RecommendedModel =
+  (typeof RECOMMENDATION_MODELS)[keyof typeof RECOMMENDATION_MODELS]["code"];
 export type RecommendedThinking = "adaptive-on" | "adaptive-off";
 export type SessionCategory = "reasoning_heavy" | "executional" | "mixed";
 
@@ -250,22 +259,30 @@ function buildRationale(category: SessionCategory): string {
   return text.length > 80 ? text.slice(0, 77) + "..." : text;
 }
 
-const DISPLAY_BY_CATEGORY: Record<SessionCategory, string> = {
-  reasoning_heavy: "Opus 4.7 · Adaptive on",
-  executional: "Sonnet 4.6 · Adaptive off",
-  mixed: "Opus 4.7 · Adaptive off",
-};
-
-const MODEL_BY_CATEGORY: Record<SessionCategory, RecommendedModel> = {
-  reasoning_heavy: "opus-4-7",
-  executional: "sonnet-4-6",
-  mixed: "opus-4-7",
-};
-
 const THINKING_BY_CATEGORY: Record<SessionCategory, RecommendedThinking> = {
   reasoning_heavy: "adaptive-on",
   executional: "adaptive-off",
   mixed: "adaptive-off",
+};
+
+const THINKING_DISPLAY: Record<RecommendedThinking, string> = {
+  "adaptive-on": "Adaptive on",
+  "adaptive-off": "Adaptive off",
+};
+
+// Model + display are DERIVED from the central registry (src/models.ts) so a
+// model bump is a one-line edit there and the banner display + `model` field
+// stay in lockstep. Thinking remains workload-driven (above).
+const MODEL_BY_CATEGORY: Record<SessionCategory, RecommendedModel> = {
+  reasoning_heavy: RECOMMENDATION_MODELS.reasoning_heavy.code,
+  executional: RECOMMENDATION_MODELS.executional.code,
+  mixed: RECOMMENDATION_MODELS.mixed.code,
+};
+
+const DISPLAY_BY_CATEGORY: Record<SessionCategory, string> = {
+  reasoning_heavy: `${RECOMMENDATION_MODELS.reasoning_heavy.display} · ${THINKING_DISPLAY[THINKING_BY_CATEGORY.reasoning_heavy]}`,
+  executional: `${RECOMMENDATION_MODELS.executional.display} · ${THINKING_DISPLAY[THINKING_BY_CATEGORY.executional]}`,
+  mixed: `${RECOMMENDATION_MODELS.mixed.display} · ${THINKING_DISPLAY[THINKING_BY_CATEGORY.mixed]}`,
 };
 
 /**
@@ -274,9 +291,9 @@ const THINKING_BY_CATEGORY: Record<SessionCategory, RecommendedThinking> = {
  *
  * Decision rule:
  *   ratio = reasoning_heavy_score / max(executional_score, 1)
- *   ratio >= 1.5  → reasoning_heavy → Opus 4.7 + Adaptive on
+ *   ratio >= 1.5  → reasoning_heavy → Opus 4.8 + Adaptive on
  *   ratio <= 0.67 → executional     → Sonnet 4.6 + Adaptive off
- *   otherwise     → mixed           → Opus 4.7 + Adaptive off (strong default)
+ *   otherwise     → mixed           → Opus 4.8 + Adaptive off (strong default)
  *
  * Empty input yields the mixed verdict — safe default that matches the
  * pre-classifier behavior of running Opus + Adaptive off.

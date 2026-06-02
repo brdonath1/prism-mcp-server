@@ -337,7 +337,7 @@ ${stepLines}
     const handoffWrite = writes.find(w => w.path === "handoff.md")!;
     expect(handoffWrite.content).toContain("<!-- prism:recommended_session_settings -->");
     expect(handoffWrite.content).toContain("- Category: reasoning_heavy");
-    expect(handoffWrite.content).toContain("- Model: Opus 4.7");
+    expect(handoffWrite.content).toContain("- Model: Opus 4.8");
     expect(handoffWrite.content).toContain("- Thinking: Adaptive on");
   });
 
@@ -360,7 +360,7 @@ ${stepLines}
     ]));
     const handoffWrite = writes.find(w => w.path === "handoff.md")!;
     expect(handoffWrite.content).toContain("- Category: mixed");
-    expect(handoffWrite.content).toContain("- Model: Opus 4.7");
+    expect(handoffWrite.content).toContain("- Model: Opus 4.8");
     expect(handoffWrite.content).toContain("- Thinking: Adaptive off");
   });
 

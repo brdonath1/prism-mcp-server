@@ -35,9 +35,9 @@ describe("classifySession", () => {
       ],
     });
     expect(result.category).toBe("reasoning_heavy");
-    expect(result.model).toBe("opus-4-7");
+    expect(result.model).toBe("opus-4-8");
     expect(result.thinking).toBe("adaptive-on");
-    expect(result.display).toBe("Opus 4.7 · Adaptive on");
+    expect(result.display).toBe("Opus 4.8 · Adaptive on");
   });
 
   it("yields mixed verdict for balanced execution + judgment queue", () => {
@@ -49,15 +49,15 @@ describe("classifySession", () => {
     });
     // 1 reasoning (debug) + 1 executional (verify) → ratio 1.0 → mixed window
     expect(result.category).toBe("mixed");
-    expect(result.model).toBe("opus-4-7");
+    expect(result.model).toBe("opus-4-8");
     expect(result.thinking).toBe("adaptive-off");
-    expect(result.display).toBe("Opus 4.7 · Adaptive off");
+    expect(result.display).toBe("Opus 4.8 · Adaptive off");
   });
 
   it("yields mixed verdict (safe default) for empty input", () => {
     const result = classifySession({ next_steps: [] });
     expect(result.category).toBe("mixed");
-    expect(result.model).toBe("opus-4-7");
+    expect(result.model).toBe("opus-4-8");
     expect(result.thinking).toBe("adaptive-off");
     expect(result.scores.reasoning_heavy).toBe(0);
     expect(result.scores.executional).toBe(0);
@@ -403,7 +403,7 @@ describe("parsePersistedRecommendation", () => {
     const block = `## Recommended Session Settings
 
 <!-- prism:recommended_session_settings -->
-- Model: Opus 4.7
+- Model: Opus 4.8
 - Thinking: Adaptive on
 - Category: reasoning_heavy
 - Rationale: Queue includes design / multi-doc investigation
@@ -411,9 +411,9 @@ describe("parsePersistedRecommendation", () => {
     const result = parsePersistedRecommendation(block);
     expect(result).not.toBeNull();
     expect(result?.category).toBe("reasoning_heavy");
-    expect(result?.model).toBe("opus-4-7");
+    expect(result?.model).toBe("opus-4-8");
     expect(result?.thinking).toBe("adaptive-on");
-    expect(result?.display).toBe("Opus 4.7 · Adaptive on");
+    expect(result?.display).toBe("Opus 4.8 · Adaptive on");
     expect(result?.rationale).toBe("Queue includes design / multi-doc investigation");
     expect(result?.scores).toEqual({ reasoning_heavy: 0, executional: 0 });
   });
@@ -434,14 +434,14 @@ describe("parsePersistedRecommendation", () => {
 
   it("parses a mixed block", () => {
     const block = `<!-- prism:recommended_session_settings -->
-- Model: Opus 4.7
+- Model: Opus 4.8
 - Thinking: Adaptive off
 - Category: mixed
 - Rationale: Mixed queue — execution with some judgment
 <!-- /prism:recommended_session_settings -->`;
     const result = parsePersistedRecommendation(block);
     expect(result?.category).toBe("mixed");
-    expect(result?.model).toBe("opus-4-7");
+    expect(result?.model).toBe("opus-4-8");
     expect(result?.thinking).toBe("adaptive-off");
   });
 
