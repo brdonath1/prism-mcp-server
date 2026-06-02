@@ -1,0 +1,50 @@
+name: Model Freshness
+
+on:
+  schedule:
+    - cron: '0 9 * * 1'   # Monday 09:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  check-freshness:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Check model freshness
+        id: freshness
+        run: node scripts/check-model-freshness.mjs
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create bump PR
+        if: steps.freshness.outputs.has_bumps == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH="chore/model-freshness-$(date +%Y%m%d)"
+
+          # Ensure the label exists (no-op if it already does)
+          gh label create model-bump --description "Automated model version bump" --color "0075ca" 2>/dev/null || true
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add src/models.ts
+          git commit -m "chore: bump model pins to latest Anthropic releases"
+          git push origin "$BRANCH"
+
+          gh pr create \
+            --title "chore: bump model pins to latest Anthropic releases" \
+            --label "model-bump" \
+            --body-file /tmp/model-bump-body.md
