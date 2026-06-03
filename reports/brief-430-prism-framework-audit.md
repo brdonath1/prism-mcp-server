@@ -32,7 +32,8 @@ Net: **the PRISM framework's own project state is the worst-maintained PRISM pro
 | 6 | Gate Trigger auto-merge on CI (or verify+document branch protection) — prerequisite for the INS-281 hands-off loop | Medium | **Critical** |
 | 7 | Brief-lifecycle hygiene: reliably archive merged briefs, clean terminal-failed briefs from the queue | Quick win | **Medium** |
 | 8 | Decision/insight capture enforcement: reconcile D-235…D-240; surface "referenced-but-unlogged" IDs at finalize | Medium | **High** |
-| 9 | Complete, enforceable boot + finalization banner spec (Phase 8 deliverable; first Phase-B brief) | Medium | **Medium** |
+
+*(The full 17-item roadmap — including the implementation-ready Banner v4.0 spec and the remaining hardening work — is in Phase 10.)*
 
 ---
 
@@ -444,7 +445,7 @@ cd <workingDir> && unset ANTHROPIC_API_KEY && claude --dangerously-skip-permissi
 
 ## Phase 9 — Test & CI Coverage (safety net for autonomous implementation)
 
-*(Phase 8, the banner spec, follows Phase 9 to keep the reliability findings contiguous; both are complete.)*
+> **Reading-order note:** phases appear 1–7, then **9**, then **8**, then 10. Phase 9 (CI / auto-merge gating) is placed adjacent to Phase 7 (Trigger) because the two are one argument — CI gating is the safety net for the daemon's autonomous merges. Phase 8 (the self-contained, implementation-ready banner spec) then reads directly into the Phase 10 roadmap it seeds. All ten phases are present and complete.
 
 ### 9.1 Is Trigger's PR auto-merge gated on CI? — **No.**
 
