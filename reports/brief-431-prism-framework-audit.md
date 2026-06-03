@@ -87,4 +87,63 @@ The living-document set (10 mandatory docs) realizes Tier 1; the synthesized **i
 
 The gap is therefore not *capture* (that works) but *distillation and delivery*: PRISM captures intelligence reliably and then fails to (a) keep it bounded, (b) re-synthesize it, and (c) deliver the richest possible version of it at the next boot.
 
+## Phase 2 — Architecture review
+
+### 2.1 Component & dataflow map
+
+```
+┌─ claude.ai chat (Brian + Opus 4.8) ──────────────────────────────┐
+│  reasoning agent — calls PRISM MCP tools; renders Rule 2/11 banners│
+└───────────────┬───────────────────────────────────────────────────┘
+                │ MCP Streamable HTTP (stateless, ~60s ceiling)
+┌───────────────▼─────────────── PRISM MCP Server (Railway, v4.7.0) ─┐
+│  23 MCP tools · stateless proxy · MemoryCache + Anthropic singletons│
+│  bootstrap/fetch/push/patch/status/finalize/draft/synthesize/scale/ │
+│  search/analytics/log_decision/log_insight/load_rules + railway_* + │
+│  cc_dispatch/cc_status + gh_*                                       │
+└──┬──────────────────────┬─────────────────────┬───────────────────┘
+   │ GitHub API (fetch)    │ Anthropic SDK        │ Agent SDK (OAuth)
+   ▼                       ▼                      ▼
+┌──────────────────┐  ┌──────────────┐   ┌─────────────────────────┐
+│ GitHub repos     │  │ synthesis     │   │ Claude Code subprocess  │
+│ • prism (state)  │  │ CS-1 draft    │   │ (cc_dispatch → /tmp     │
+│ • prism-mcp-server│ │ CS-2 brief    │   │  clone → PR)            │
+│ • trigger        │  │ CS-3 pdu      │   └─────────────────────────┘
+│ • prism-framework│  └──────────────┘
+│   (templates)    │
+└──────────────────┘
+        ▲ briefs pushed to .prism/briefs/queue/
+        │
+┌───────┴─────────────── Trigger daemon (local iTerm, Brian's Mac) ──┐
+│  poll(30s) → schedule → worker opens iTerm pane → `claude --effort  │
+│  max` (fire-and-forget) → detectPr from state.active → autoMerge    │
+│  (squash) → post-merge archive → close pane. State → trigger        │
+│  origin/state branch (state/<repo>.json).                           │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+**Boot → work → persist → finalize dataflow (chat path):**
+1. **Boot:** `prism_bootstrap(slug, opening_message)` → server fetches handoff + `decisions/_INDEX.md` + `core-template-mcp.md` (5-min cached) in parallel, then intelligence-brief + insights (for standing-rule extraction) + pending-doc-updates; renders `banner_text`; returns one structured payload (Phase 3). Claude renders the Rule 2 boot response verbatim.
+2. **Work:** `prism_fetch` (on-demand docs), `prism_search`, `prism_analytics` (read); `prism_log_decision`/`prism_log_insight` append D-N/INS-N immediately (Rule 5); `prism_patch` for section edits; `prism_push` for whole files. Each write is an atomic Git-Trees commit via `safeMutation` (5 sequential GitHub round-trips).
+3. **Persist/checkpoint:** handoff re-pushed at milestones (Rule 8).
+4. **Finalize:** `prism_finalize action=draft` (CS-1 synthesis drafts the finalization files) → `action=commit` (backup handoff → validate → archive lifecycle → atomic commit → CS-2 brief + CS-3 pdu fire-and-forget) → renders `finalization_banner_html`. Claude renders the Rule 11 Step-6 finalization response.
+
+**Brief flow through Trigger (autonomous path):** brief authored to `.prism/briefs/queue/brief-NNN.md` on `main` → poller `ls-tree origin/main` finds it (not in state) → scheduler moves it to `state.active` → worker opens an iTerm pane and sends `claude --dangerously-skip-permissions --effort max "execute brief"` then returns → Claude executes, opens a PR → next scheduler tick's `detectPr` (from `state.active`) → `autoMerge` (squash) → `post_merge: [notify, archive]` moves the queue file to `archive/` → pane closed, clone reset to `main` → state pushed to `origin/state`.
+
+### 2.2 Separation of concerns & repo boundaries (D-2, D-8)
+The top-level split is clean and correct: **reasoning** (claude.ai) · **mechanics** (MCP server) · **orchestration** (Trigger daemon) · **storage** (GitHub). The MCP server is a genuinely stateless proxy; D-2 project isolation is enforced by slug→repo resolution so no tool reads across project boundaries.
+
+**The framework's own development state is governed by ONE project-state repo (`prism`) spanning THREE code surfaces.** `prism` holds the unified decision/insight history (192 decisions through D-240; INS-1..INS-283) and the 10 living docs. `prism-mcp-server` and `trigger` are *code* repos enrolled in Trigger (each has `.prism/trigger.yaml`) but their decisions are logged into `prism`'s index. `prism-framework` is templates-only and is **not** Trigger-enrolled. This is a coherent design — but two boundary defects exist:
+
+- **Vestigial colliding numberspace (low severity, but it is the exact pattern the brief asked about).** `prism-mcp-server/.prism/` carries an **abandoned** project-state: its own `decisions/_INDEX.md` (only **D-1..D-5**, 5 rows), `handoff.md` (Session Count 4, 2.7KB), plus `architecture.md`/`glossary.md`/`known-issues.md`/`session-log.md`/`task-queue.md`/`eliminated.md` — last meaningfully touched at the **D-67 "consolidate PRISM files into .prism/"** commit. Those D-1..D-5 **numerically collide** with `prism`'s live D-1..D-5 while describing different decisions. It is not actively fragmenting (the server's work is logged in `prism`), but it is dead state that was never archived/removed — a repo-level instance of the same "documents not cleaned up" hygiene problem (Phase 6). Recommend deleting or clearly archiving `prism-mcp-server/.prism/{decisions,handoff.md,architecture.md,…}` (keep only `briefs/` and `trigger.yaml`).
+- **State lives in three places** (`prism` repo living docs · `trigger` `origin/state` branch · `prism-dispatch-state` repo for cc_dispatch). Each split is individually justified (the dispatch-state repo avoids Railway auto-deploy loops, per CLAUDE.md A.6; the state *branch* avoids self-dispatch preflight contamination), but it means "where is the truth" has three answers and no single reconciler.
+
+### 2.3 Architectural debt (load-bearing assumptions, fragility)
+1. **The worker is fire-and-forget and the dispatched `claude` is not a child of the daemon** (`trigger/src/worker/worker.ts:9-14`; `startup/stale-active-recovery.ts:24-30`). This is *the* load-bearing assumption behind every Trigger failure class (Phase 7): completion is inferred only from a PR appearing or an AppleScript pane probe — never from process supervision. It is documented in code comments but **DESIGN.md still describes the opposite** (synchronous "monitors the process for completion," `trigger/DESIGN.md:603`) — a materially stale spec.
+2. **Write latency floor: `createAtomicCommit` is 5 strictly-sequential GitHub round-trips** (`github/client.ts:626-739`: getRef→getCommit→createTree→createCommit→updateRef). At the 15s per-request timeout, worst-case is 75s — above the 60s push/patch deadlines and the ~60s MCP ceiling. Every write pays this floor.
+3. **Only 4 of 23 tools carry a wall-clock deadline** (push 60s, patch 60s, scale 50s pre-commit, cc_dispatch 45s sync). `analytics`, `search`, `status`, `fetch`, `log_decision`, `log_insight` have **no tool-level deadline** and several fan out to 24–30 GitHub round-trips (Phase 4) — these can silently exceed the MCP ceiling and surface as client-side timeouts with no server diagnostic.
+4. **Dead, unwired path-safety control:** `validation/slug.ts` (`validateProjectSlug`/`validateFilePath`, the null-byte/`..` traversal sanitizers) is defined but imported nowhere; `project_slug`/`path` reach the GitHub client as bare strings. Latent security/correctness debt (low real-world risk because GitHub rejects bad paths, but the guard exists and is bypassed).
+5. **Two parallel boot templates** (`core-template.md` v2.2.0 full/fallback vs `core-template-mcp.md` v2.19.1 MCP-primary) with a *third* deprecated description in `docs/THREE_TIER_ARCHITECTURE.md` — Rule 2 differs across them, and MCP template versions 2.10.0–2.18.0 are unlogged in the CHANGELOG. Drift hazard for anyone reading docs/ before _templates/.
+6. **Doc drift in the server's own identity:** `CLAUDE.md` says v4.0.0 / 18 tools / Opus 4.6; the code says v4.7.0 / 23 tools / Opus 4.8 (`config.ts:55`, `models.ts:60`). `models.ts:57-58` docstring claims synthesis model is `claude-opus-4-7` while the constant is `claude-opus-4-8`.
+
 <!-- EOF: brief-431-prism-framework-audit.md -->
