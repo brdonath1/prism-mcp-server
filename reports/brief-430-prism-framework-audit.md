@@ -222,4 +222,176 @@ Every item the framework previously trimmed for a 200K budget is now affordable:
 ### 3.6 Rule 9 context-estimation formula — accuracy vs. 500K
 
 Rule 9 (now in `core-template-mcp.md`, Tier 2) is the client-side context-awareness rule; the server's `context_estimate` is its server-side companion. Against the 500K window the server estimate is **inaccurate in both directions** (3.4) and **anchored to the wrong window**. **Recommendation:** make the denominator model-aware (accept the window from the client or default to 500K), include *all* response fields in the numerator, and reframe the Rule-9 guidance so "context is heavy" triggers at a fraction of 500K — not 200K. Acceptance: `total_boot_percent` for the `prism` project reports ≤ 3 % on the 500K surface and the numerator matches `responseBytes` within 10 %.
+---
+
+## Phase 4 — Full MCP Server: Every Tool, Process, and Sub-Process
+
+### 4.1 Tool inventory (23 tools)
+
+`getExpectedToolSurface` (`tool-registry.ts`) registers 13 core PRISM tools always, +4 GitHub (`gh_*`, with PAT), +4 Railway (with `RAILWAY_API_TOKEN`), +2 Claude Code (with `CLAUDE_CODE_OAUTH_TOKEN`). Per-tool audit (inputs → response → deadline → over-return risk):
+
+| Tool | Key inputs | Response (top-level) | Wall-clock deadline | Over-return risk | Notes |
+|---|---|---|---|---|---|
+| `prism_bootstrap` | project_slug, opening_message? | 25+ fields (Phase 3) | none (many parallel I/O) | Low (capped) | reads 448 KB insights server-side; Railway log fetch at boot |
+| `prism_fetch` | project_slug, files[], summary_mode? | files[] w/ content | none | **Moderate** — full file unless `summary_mode` | per-file parallel fetch |
+| `prism_push` | project_slug, files[], skip_validation? | results[], commit_sha | **`PUSH_WALL_CLOCK_DEADLINE_MS`=60s** | Low (atomic) | all-or-nothing validation |
+| `prism_patch` | project_slug, file, patches[] | results[], integrity_check | **`PATCH_WALL_CLOCK_DEADLINE_MS`=60s** | Low | INS-240/246 hazards (4.4) |
+| `prism_status` | project_slug?, include_details? | health, sizes, archives, projects[] | **none** | **High** (multi-project × details) | fan-out across fleet, cached 5–10 min |
+| `prism_finalize` | project_slug, action, files?, handoff_content? | audit/draft/commit/full | commit 90s; draft **180s/300s** | Low | the core write path (Phase 5/6) |
+| `prism_analytics` | project_slug?, metric | data{} by metric | **none** | **High** (decision_graph, file_churn) | up to 30 `getCommit` calls |
+| `prism_scale_handoff` | project_slug, action, plan? | sizes, push_results[] | **`SAFETY_TIMEOUT_MS`=50s** | Moderate (`content_to_move`) | atomic + sequential fallback |
+| `prism_search` | project_slug, query, max_results? | results[] (capped) | **none** | Low (capped) | fetches all docs + domain files |
+| `prism_load_rules` | project_slug, topic, include_tier_c? | matched_rules[], counts | **none** | Low | single insights.md read |
+| `prism_log_decision` | project_slug, id, title, … | index/domain updated | none (safeMutation ≤1 retry) | Low | **dedup guard** (brief-104 A.1) |
+| `prism_log_insight` | project_slug, id, …, standing_rule? | success | none | Low | dedup guard |
+| `gh_create_release`/`gh_update_release` | repo, tag/release_id, … | release_id, html_url | none | Low | thin REST pass-through |
+| `gh_delete_branch`/`gh_delete_tag` | repo, branch/tag | deleted, note? | none | Low | default-branch + open-PR guards |
+| `railway_deploy`/`railway_env`/`railway_logs`/`railway_status` | project, service, … | action-specific | **none** | **Moderate** (logs ≤200 lines; env list) | Railway GraphQL |
+| `cc_dispatch` | repo, prompt, mode, async_mode? | dispatch_id, status, pr_url | **`CC_DISPATCH_SYNC_TIMEOUT_MS`≈45s** (sync) | **Moderate** (agent output) | async path unbounded |
+| `cc_status` | dispatch_id?, limit? | record(s) | none | Low | memory + GitHub fallback |
+
+**Systemic observation:** the read/analytics tools that fan out across the whole fleet or all living docs — `prism_status`, `prism_analytics`, `prism_search` — have **no wall-clock deadline**. They rely solely on the per-request 15 s GitHub timeout × N parallel calls. On a large fleet or against the 448 KB `insights.md`, these can approach the ~60 s MCP ceiling. Every *write* path has a deadline; the *read* paths do not. **(Finding 4-A, Medium.)**
+
+### 4.2 GitHub client (`src/github/client.ts`)
+
+- **Transport:** plain `fetch` (no Octokit), Contents API in JSON mode (base64 `content` + `sha` in one call). `GITHUB_REQUEST_TIMEOUT_MS = 15 s` per request via `AbortSignal.timeout`, combined with any caller signal via `AbortSignal.any`.
+- **Retry (`fetchWithRetry`):** retries **only 429** (rate-limit), up to 3×, exponential backoff `min(retryAfter·1000·2^attempt, 120_000)`. Timeouts do **not** retry (correct — a hung socket shouldn't be retried). **Finding 4-B (Low/Medium):** a 429 storm can back off up to **120 s on a single attempt** — well beyond the 60 s MCP ceiling; the request will be abandoned client-side before the backoff completes. Backoff should be capped to the remaining tool budget.
+- **Atomic commits (`createAtomicCommit`):** 5-step Git Trees flow; deletes via `sha:null` tree entries. Carries a hard-won correctness comment about the **`GET /git/ref/` (singular) vs `PATCH /git/refs/` (plural)** asymmetry (the S40 C3 bug that went unnoticed 5 days). Guarded by `tests/atomic-commit-url.test.ts`. This is solid.
+- **`pushFile` (non-atomic):** `fetchSha` → PUT; 409 → one retry with fresh SHA. Used for single-file writes (boot-test, backups); the atomic path (`safeMutation`/`createAtomicCommit`) is used for multi-file/finalize/patch/log-*.
+- **`listRepos`:** paginates 100/page with no cap — invoked at boot for **dynamic slug resolution** (`resolveSlugDynamic`) whenever the static map misses. On a large account this is several sequential round-trips on the boot critical path. **Finding 4-C (Low).**
+
+### 4.3 Middleware, validation, config, safe-mutation, doc-resolver
+
+- **Auth** (`middleware/auth.ts`): `/health` always open (Railway healthcheck); else Bearer token via **timing-safe compare** + optional IP allowlist (`ANTHROPIC_CIDRS` + `ALLOWED_CIDRS`). Dev mode (neither set) = open. Sound.
+- **Validation** (`validation/*`): synchronous, no I/O; `validateFile` routes by path to handoff/decisions/common checks (EOF sentinel, `## Meta`, decision-table columns, `D-N` format, status enum). Enforced in `prism_push` and `commitPhase`.
+- **`safe-mutation.ts`** (the atomic primitive): snapshots HEAD **before** reading, `readAll` in parallel (one missing path aborts), `computeMutation` runs against fresh content (so the dedup/patch logic re-runs on retry), `createAtomicCommit`, 409 → re-read + retry (default 1), optional `deadlineMs` via `Promise.race`. Diagnostic codes: `MUTATION_CONFLICT`, `MUTATION_RETRY_EXHAUSTED`, `HEAD_SHA_UNKNOWN`, `DEADLINE_EXCEEDED`. This is the best-engineered part of the server.
+- **`doc-resolver.ts`:** resolves `.prism/{doc}` with root-path fallback (D-67 back-compat). `resolveDocFilesOptimized` cuts 2N calls to 1 `listDirectory` + N targeted fetches.
+
+### 4.4 Patch engine — the ZWS / `sanitizeContentField` behavior (INS-240 / INS-246 / KI-26)
+
+- **KI-26 (RESOLVED S116):** user-supplied content beginning with `## ` would be parsed as a real section header on the next read, corrupting the section tree. Fix: `sanitizeContentField` (`sanitize-content.ts:20`) inserts a zero-width space `​` after leading `#{1,6} ` clusters: `text.replace(/(^|\n)(#{1,6}) /g, "$1$2​ ")`. Applied to `prism_log_decision` (title/reasoning/assumptions/impact) and `prism_patch` (content). **Caveat:** the ZWS persists in the stored file — invisible but present; any downstream exact-match on header text must account for it. A queued follow-up, **`brief-421-ki26-header-injection-sanitization`, sits terminal-failed in `.prism/briefs/queue/`** (Phase 6/7).
+- **INS-240 (STANDING RULE):** `prism_patch replace` on a `##`/parent header replaces *everything* to the next sibling-or-higher header — it destroyed ~14 KB of nested subsections in S111. `validateIntegrity` does **not** catch this (the result is structurally valid, just shorter).
+- **INS-246 (STANDING RULE):** `replace` operates on the section **body only** and does *not* consume the header; including the header in `content` yields silent duplicate-header corruption.
+
+These are **behavioral hazards mitigated by standing rules, not by code**. The integrity check flags duplicate/empty sections but not "you just deleted a subtree" or "you replaced less/more than you intended." **Finding 4-D (Medium):** add a pre-replace structural guard (refuse `replace` on a header that has child headers unless `force:true`; compare pre/post byte delta against an expected band) so the hazard is enforced server-side rather than relying on Claude recalling INS-240/246.
+
+### 4.5 Slowness / error / timeout sources (named)
+
+| Location | Cost | Trigger |
+|---|---|---|
+| `synthesize.ts:generateIntelligenceBrief/PendingDocUpdates` | reads ~1.2 MB doc bundle | every finalize synthesis (Phase 5) — **the dominant cost** |
+| `bootstrap.ts:812` standing-rule extraction | reads full 448 KB `insights.md` | every boot |
+| `bootstrap.ts:checkSynthesisObservation` | Railway GraphQL log fetch (limit 200) | every boot when `RAILWAY_API_TOKEN`+env set |
+| `bootstrap.ts:resolveSlugDynamic`→`listRepos` | paginated repo list | boot when static slug map misses |
+| `github/client.ts:fetchWithRetry` | up to 120 s 429 backoff | rate-limit storm |
+| `prism_status`/`prism_analytics`/`prism_search` | unbounded fleet/doc fan-out, **no deadline** | large fleet or bloated docs |
+| `finalize.ts:auditPhase` | `getCommit` per-commit N+1 (capped 5) | every finalize audit |
+
+---
+
+## Phase 5 — Synthesis Layer
+
+### 5.1 Call-site routing (CS-1 … CS-4)
+
+| Call-site | Function | Input bundle | thinking | Per-attempt timeout | Deadline (finalize) | `callSite` |
+|---|---|---|---|---|---|---|
+| **CS-1 draft** | `finalize.ts:draftPhase` | `DRAFT_RELEVANT_DOCS` = living docs **minus** architecture/glossary/brief/archives — **but still includes `insights.md` (448 KB)** | yes, retries 0 | `resolveDraftTimeout` = **150 s** msg / 600 s cc | `resolveDraftDeadline` = **180 s** msg / 300 s cc | `"draft"` |
+| **CS-2 brief** | `synthesize.ts:generateIntelligenceBrief` | **all 10 living docs (−brief) + 7 decision-domain files** | yes | `SYNTHESIS_TIMEOUT_MS` = 240 s msg / 600 s cc | n/a (fire-and-forget) | `"brief"` |
+| **CS-3 PDU** | `synthesize.ts:generatePendingDocUpdates` | same as CS-2, minus brief+pdu | yes | 240 s msg / 600 s cc | n/a (fire-and-forget) | `"pdu"` |
+| **CS-4 dispatch** | `claude-code/client.ts:dispatchTask` | Agent SDK against a cloned repo | n/a | `CC_DISPATCH_SYNC_TIMEOUT_MS`≈45 s (sync) | n/a | separate (OAuth) |
+
+**Transport selection** (`ai/client.ts:resolveCallSiteRouting`): per call-site, reads `SYNTHESIS_${SITE}_TRANSPORT` ∈ {`messages_api`,`cc_subprocess`} and `SYNTHESIS_${SITE}_MODEL`. `cc_subprocess` routes through `synthesizeViaCcSubprocess` (OAuth/Max subscription); **on subprocess failure it falls back to `messages_api` with the default model** and logs `SYNTHESIS_TRANSPORT_FALLBACK` (which boot surfaces via `checkSynthesisObservation`). The `messages_api` path honors the per-site model override. Adaptive thinking is sent as `thinking:{type:"adaptive"}` (Opus 4.7+ accepts only the adaptive variant).
+
+**Env control surface (complete):** `SYNTHESIS_MODEL` (global default, now `claude-opus-4-8` via `models.ts`), `SYNTHESIS_ENABLED` (derived from `ANTHROPIC_API_KEY`), `SYNTHESIS_{DRAFT,BRIEF,PDU}_TRANSPORT`, `SYNTHESIS_{DRAFT,BRIEF,PDU}_MODEL`, `SYNTHESIS_TIMEOUT_MS` (240 s), `CC_SUBPROCESS_SYNTHESIS_TIMEOUT_MS` (600 s), `FINALIZE_DRAFT_TIMEOUT_MS` (150 s), `FINALIZE_DRAFT_DEADLINE_MS` (180 s), `FINALIZE_DRAFT_DEADLINE_CC_MS` (300 s). Per recent history, CS-3→OAuth (Phase 3c-A), CS-2→OAuth (Phase 3c-B, ~81 % API-spend cut), CS-1→OAuth (Phase 5b, gated on `SYNTHESIS_DRAFT_TRANSPORT`).
+
+### 5.2 Root cause of the synthesis timeouts
+
+**Quantified.** Synthesis cost is dominated by *input* size. For the `prism` project:
+
+- **CS-2/CS-3 input** = handoff (11) + `_INDEX` (24) + session-log (9) + task-queue (67) + eliminated (2) + architecture (50) + glossary (58) + known-issues (35) + **insights (448)** + decisions/architecture (127) + **decisions/operations (208)** + optimization (59) + … ≈ **~1.2 MB ≈ ~340K input tokens**.
+- **CS-1 draft input** ≈ handoff + _INDEX + session-log + task-queue + eliminated + known-issues + **insights (448)** ≈ **~600 KB ≈ ~170K tokens**.
+
+At Opus inference rates with adaptive thinking, 170K–340K input tokens plus generation **exceed the 150 s per-attempt / 180 s draft deadline** → `SYNTHESIS_TIMEOUT` diagnostic (`finalize.ts:1465`), which is why S145 ran `skip_synthesis:true`.
+
+- **One-time cause:** `insights.md` is 448 KB (Phase 6). It alone is ~128K tokens.
+- **Durable cause (two parts):** (1) **no enforced retention** — living docs grow without bound (D-80 never fires; Phase 6); (2) **synthesis reads inputs unbounded** — `generateIntelligenceBrief` deliberately pulls the **full decision-domain files** (`operations.md` 208 KB, `architecture.md` 127 KB) with **no per-doc cap and no summarization**. *Archiving insights.md alone will NOT fix this* — even at a 20 KB insights.md, `operations.md`(208) + `decisions/architecture.md`(127) keep CS-2/CS-3 input above ~120K tokens.
+
+### 5.3 Recommendations (immediate + durable, with acceptance criteria)
+
+**Immediate unblock (Quick win, Critical):** emergency-archive `insights.md` to the D-80 target (Phase 6, Rec 1). *Acceptance:* `insights.md` ≤ ~40 KB; a manual `prism_finalize action=draft` against `prism` completes < 150 s and returns parseable drafts; no `SYNTHESIS_TIMEOUT` diagnostic.
+
+**Durable fix (Medium, Critical): bound synthesis inputs.** Introduce a synthesis input budget (e.g., `SYNTHESIS_MAX_INPUT_BYTES`, default ~250 KB) enforced in `buildSynthesisUserMessage`/`buildFinalizationDraftMessage`:
+1. Per-doc cap with section-aware truncation (keep headers + most-recent entries; drop the long tail) so no single file dominates.
+2. For decision-domain files, feed **`_INDEX.md` + only the domains touched this session** (or a pre-computed digest), not all 7 in full.
+3. Never feed archives (already invariant) and never feed a doc above the per-doc cap without truncation.
+*Acceptance:* total synthesis input ≤ budget for **any** project regardless of age; CS-2/CS-3 p95 < 120 s; 5 consecutive `prism` finalizes produce a brief with **zero** `SYNTHESIS_TIMEOUT`/`SYNTHESIS_TRANSPORT_FALLBACK`. **Risk tier: human-checkpoint** (synthesis-quality change — verify the bounded brief is not materially worse than the full-input brief on a sample before auto-merging).
+
+---
+
+## Phase 6 — Living-Document Lifecycle & Archival (the documentation/archival failure)
+
+This phase is the operator's headline complaint: *documents get reviewed/re-uploaded and are not archived or documented properly.* It is real, and it has multiple independent mechanical causes.
+
+### 6.1 Living-document inventory (`prism` repo, measured bytes)
+
+| Doc | Bytes | Target / bound | Status |
+|---|---:|---|---|
+| `insights.md` | **448,380** | D-80: 20 KB live | **22× over; never archived** |
+| `decisions/operations.md` | **208,166** | none | unbounded |
+| `decisions/architecture.md` | **126,969** | none | unbounded |
+| `task-queue.md` | 67,059 | only "Recently Completed" cap (15) | other sections unbounded |
+| `decisions/optimization.md` | 59,430 | none | unbounded |
+| `glossary.md` | 58,388 | none | unbounded |
+| `architecture.md` | 50,368 | none | unbounded |
+| `known-issues.md` | 34,600 | (has `-archive`, no auto-config) | manual only |
+| `decisions/_INDEX.md` | 24,389 | never compacted (by design) | ok |
+| `intelligence-brief.md` | 11,724 | synthesized | **stale (synthesis skipped)** |
+| `handoff.md` | 10,873 | 15 KB critical | ok |
+| `session-log.md` | 9,481 | 15 KB → archive (20-retention) | ok (archive exists) |
+
+Archive configs exist for **only two** docs (`finalize.ts`): `SESSION_LOG_ARCHIVE_CONFIG` (15 KB/20) and `INSIGHTS_ARCHIVE_CONFIG` (20 KB/15). The four largest decision-domain files, glossary, and architecture have **no archival mechanism at all**.
+
+### 6.2 Why D-80 insights archiving has *never* fired — triple failure
+
+`insights.md` is 448 KB with a `## Active` section holding **99.8 % of the bytes** (447,442 of 448,380), 164 `### INS-N` entries, and **230 `STANDING RULE` markers**; `## Formalized` is a vestigial 448 bytes / 1 entry. Tracing `splitForArchive` (`archive.ts:211`) with `INSIGHTS_ARCHIVE_CONFIG`:
+
+1. `input.length (448380) > thresholdBytes (20000)` ✓ — threshold *is* exceeded.
+2. `parseEntriesWithBounds(..., activeSection:"## Active")` → 164 entries.
+3. `entries.length (164) > retentionCount (15)` ✓.
+4. **Protection filter:** entries whose title/body contain `"STANDING RULE"` are `isProtected`. With 230 markers across 164 entries, the overwhelming majority are protected → `nonProtected.length ≤ 15` → returns `{archiveContent:null, skipReason:"all candidates are protected or within retention"}`. **Archiving is skipped every time.**
+
+Plus two compounding causes:
+- **(b) `activeSection` excludes Formalized.** The config only archives within `## Active`; graduated/cold insights are supposed to live in `## Formalized` and become archivable — but in practice entries are tagged `STANDING RULE` and kept in Active forever, so the Formalized lane is unused (448 bytes).
+- **(c) Archiving is contingent on the finalize `files` array.** `commitPhase.applyArchive` returns early if `insights.md` is not in `files` (`finalize.ts:847` `liveIdx === -1`). But **INS-178 (STANDING RULE, Tier A) instructs Claude to emit `handoff.md` *only*** and keep everything else current via `prism_log_*`/`prism_patch`. So a correctly-run finalize **never puts `insights.md` in the array** → `applyArchive` never even examines it. **INS-178 and the archive trigger are in direct contradiction.**
+
+**The design flaw is fundamental:** `STANDING RULE` protection (correct intent — don't lose auto-loaded rules) combined with an ever-growing count of standing rules (230) means `insights.md` has a **permanent, monotonically-growing live floor** that archiving can never reduce. D-80's own protection clause guarantees the file cannot shrink.
+
+### 6.3 The "re-uploaded / re-reviewed, not archived/documented" pattern — every silent-failure point
+
+| # | State that should persist/archive | Where it silently fails |
+|---|---|---|
+| 1 | **Decisions** → `decisions/_INDEX.md` + domain file | Logged in commit message / brief but never via `prism_log_decision` → D-235…D-240 absent from any index (Phase 2). No reconciliation. |
+| 2 | **Insights archive** → `insights-archive.md` | Triple failure (6.2) → file never created; live file grows unbounded. |
+| 3 | **Intelligence brief / PDU** → synthesized files | Synthesis times out / `skip_synthesis:true` → brief goes stale, PDU not produced. |
+| 4 | **An edited living doc** → committed | INS-178 says emit handoff-only; if a doc was patched mid-session but the patch failed silently, nothing in finalize re-checks it. |
+| 5 | **Merged brief** → `briefs/archive/` | Trigger post-merge `archive` action can fail; brief stays in `queue/` and is re-polled (Phase 7). `brief-600` is `merged` yet still present. |
+| 6 | **Terminal-failed brief** → removed from queue | No cleanup; `brief-421` sits terminal-failed in `queue/` indefinitely (Phase 7). |
+| 7 | **Decision-domain / glossary / architecture growth** | No archival config exists at all → unbounded. |
+
+### 6.4 Enforcement design — "provably captured and archived exactly once" (top-priority deliverable)
+
+The fix is to stop relying on Claude *remembering* to capture/archive and make it **server-enforced, idempotent, and verifiable**:
+
+**A. Decouple archiving from the finalize `files` array (resolves 6.2c).** Run archiving as a server-side maintenance pass that **fetches the live doc itself** and archives independent of whether Claude included it — e.g., a new `prism_maintain(project_slug)` op, or an unconditional step in `commitPhase` that fetches `insights.md`/`session-log.md` and runs `splitForArchive` regardless of the array. This aligns archiving with INS-178 (Claude still emits handoff-only; the server maintains the rest).
+
+**B. Redesign insights retention so standing rules don't form an unbounded floor (resolves 6.2 root).** Options, in order of preference:
+   1. **Extract standing rules to a dedicated, bounded `standing-rules.md`** (boot reads only this for Tier-A/B). `insights.md` then holds only non-rule insights and can archive freely under D-80. This also speeds boot (no 448 KB read).
+   2. Or: cap *protected* entries too (keep the most-recent N standing rules live; archive older standing rules to an archive that boot can still read on demand), changing D-80's "never archived" clause.
+   *Acceptance:* after the pass, `insights.md` (or `standing-rules.md`) live size ≤ 40 KB on the `prism` project; all current Tier-A rules still delivered at boot; `insights-archive.md` exists and is append-only.
+
+**C. Make capture provable (resolves 6.3 #1).** At finalize, compute **decision-capture lag** (Phase 1.4 metric #2): scan the session's commit messages for `D-N`/`INS-N`/`KI-N` references and assert each exists in the index; emit a `CAPTURE_GAP` diagnostic listing the unrecorded IDs (e.g., today: D-235, D-236, D-239, D-240, INS-281). Surface it in the finalization banner so the operator sees it immediately. *Acceptance:* a finalize on a repo whose latest commit says "(D-999)" with no D-999 in the index emits `CAPTURE_GAP[D-999]`.
+
+**D. Archive-once invariants.** Archive files are append-only; the live file shrinks; an entry is moved exactly once (the existing `splitForArchive` is already idempotent — it only moves entries beyond retention). After any finalize, assert each bounded doc ≤ its target or emit `ARCHIVE_OVERDUE`. *Acceptance:* re-running finalize twice produces no duplicate archive entries and no further live-file shrinkage on the second run.
+
+**E. Brief lifecycle (resolves 6.3 #5–6) — see Phase 7.4.**
 <!-- EOF: brief-430-prism-framework-audit.md -->
