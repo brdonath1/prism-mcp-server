@@ -189,4 +189,57 @@ Reverse the 200K-era slimming, in priority order (all trivially affordable — e
 - **Deliver all Tier A + Tier B standing rules at boot** (closing the empty-`topics` unreachability gap) and surface a Tier-C *index* (id+title) so the session knows what is available to `prism_load_rules`.
 - **Fix the estimate (3.3) first** so the richer payload is measured accurately against 500K — otherwise Rule 9 will under-report and the operator won't see the true (still comfortable) usage.
 
+## Phase 4 — Full MCP server: every tool, process, and sub-process
+
+**The server exposes 23 MCP tools, not the 18 documented in CLAUDE.md** (stale). All 23 register on Railway (Railway+CC+GitHub flags set). `getExpectedToolSurface` (`tool-registry.ts:70`) advertises the surface and `POST_BOOT_TOOL_SEARCHES` drives client-side verification.
+
+### 4.1 Tool inventory (inputs · response · size · over-return · deadline · failure modes)
+
+| Tool (file) | Response size | Over-returns? | Deadline | Notable failure modes |
+|-------------|---------------|---------------|----------|------------------------|
+| `prism_bootstrap` (bootstrap.ts:413) | ~55–65KB | No (Phase 3) | none | handoff fetch required; rest fail-open |
+| `prism_fetch` (fetch.ts:52) | **full file bodies** | **YES** — `summary_mode` defaults **false** (`fetch.ts:45`); 5KB summary threshold only when caller opts in. handoff+session-log+insights = 40–80KB | none | per-file `FILE_FETCH_ERROR`/404 (partial OK) |
+| `prism_push` (push.ts:60) | ~1–3KB (paths/SHAs, not content) | No | **60s** `PUSH_WALL_CLOCK_DEADLINE_MS` | validation all-or-nothing; `MUTATION_RETRY_EXHAUSTED` |
+| `prism_patch` (patch.ts:57) | ~1KB | No | **60s** via `safeMutation` → `DEADLINE_EXCEEDED` | `PATCH_PARTIAL_FAILURE` (file untouched), `Ambiguous section` |
+| `prism_status` (status.ts:246) | single ~1KB; **multi = N×block** | mild | none | cache masks staleness (5–10 min) |
+| `prism_analytics` (analytics.ts:685) | most ~1–3KB; **`decision_graph` = O(decisions)** | **`decision_graph` over-returns** full adjacency+references | **none** | 30 parallel `getCommit` in `file_churn` |
+| `prism_scale_handoff` (scale.ts:925) | medium | plan round-trip | **50s pre-commit** | **atomicity gap** (4.4) |
+| `prism_search` (search.ts:180) | ≤ `max_results`×snippet ≈5KB | No | **none** | ~24 GitHub round-trips/call, no cache |
+| `prism_synthesize` (synthesize.ts:113) | small | No | synthesis timeouts (Phase 5) | unbounded input (Phase 5) |
+| `prism_log_decision` (log-decision.ts:75) | ~0.5KB | No | none | **dedup** rejects existing D-N (`DEDUP_TRIGGERED`) |
+| `prism_log_insight` (log-insight.ts:57) | ~0.5KB | No | none | **dedup**; `standing_rule` w/o `procedure`→error |
+| `prism_load_rules` (load-rules.ts:47) | small (matched procedures) | No | none | empty-`topics` Tier B unreachable (Phase 3) |
+| `cc_dispatch` (cc-dispatch.ts) | sync `result` **unbounded text** | possibly | **45s sync**; **async no deadline** | async failures only via `cc_status` |
+| `cc_status` (cc-status.ts) | by-id full record (large `result`) | by-id yes | none | — |
+| `railway_logs/status/deploy/env` | small–medium | **`railway_env get` returns unmasked secret** (by design) | none | name→ID resolution |
+| `gh_delete_branch/create_release/update_release/delete_tag` | tiny | No | none | guards default branch / open PRs; `delete_tag` idempotent |
+
+### 4.2 GitHub client (`src/github/client.ts`) — the write-path floor
+- **`createAtomicCommit` (`:626-739`) = 5 strictly-sequential round-trips** (getRef→getCommit→createTree→createCommit→updateRef). Worst case ~75s at the 15s per-request timeout — above the 60s push/patch deadlines and the ~60s MCP ceiling. This is the dominant cost of every write and cannot be parallelized (each step depends on the prior).
+- Rate-limit/retry with backoff up to ~120s (`client.ts:118`) — a single rate-limited request inside an un-deadlined tool (analytics/search/status) can blow well past the MCP ceiling.
+- Raw `fetch` (no Octokit), base64 decode, SHA read-modify-write for 409s.
+
+### 4.3 Patch engine — ZWS / `sanitizeContentField` / 409 (INS-240/INS-246/KI-26)
+- **`sanitizeContentField` (`utils/sanitize-content.ts:20`)** inserts a **U+200B zero-width space** after leading `#{1,6} ` so user-supplied content cannot splice a real markdown header into the section tree. Wired into `prism_patch` content (`patch.ts:138`) and `prism_log_decision` title/reasoning/assumptions/impact (`log-decision.ts:134-137`). **KI-26 is resolved (S116, PR #39)** — so brief-421 (which targeted KI-26) is a dead orphan (Phase 6). **Gap:** `sanitizeContentField` is **not** applied to `prism_log_insight` fields (`log-insight.ts:103-112` builds the entry raw) — a residual injection surface on the insight path.
+- **409 optimistic concurrency:** patch runs its operations *inside* `safeMutation`'s `computeMutation`, so a 409 re-reads the file and re-applies against fresh content (`safe-mutation.ts:106-205`); null HEAD SHA refuses retry. Raced against a 60s deadline sentinel.
+- `validateIntegrity` only flags **duplicate** headers (empty sections are warnings) — confirming the rationale for the ZWS approach (novel injected headers would otherwise pass).
+
+### 4.4 Other sub-processes
+- **Validation** (`validation/*`): all-`.md` EOF-sentinel + commit-prefix; handoff section/size rules; `_INDEX.md` table/status/no-dup-ID. **`validation/slug.ts` (path-traversal/null-byte guards) is dead code — imported nowhere** (security debt, low real risk).
+- **Middleware** (`middleware/auth.ts` + `utils/cidr.ts`): `/health` bypass → timing-safe Bearer → IPv4 CIDR allowlist → dev allow-all. **`cidr.ts` is IPv4-only** — a native-IPv6 token-less client gets a hard 403 (low likelihood; Bearer is set). With a valid Bearer the IP check is skipped.
+- **Transport** (`index.ts`): stateless — a fresh `McpServer`+transport per POST `/mcp` (`sessionIdGenerator: undefined`); 5MB request cap.
+- **Cache** (`utils/cache.ts`): `templateCache` (5 min) + status caches (5/10 min). Safe in stateless mode (read-only) but introduces up-to-10-min staleness in multi-project status.
+- **`scale.ts` atomicity gap (`:907-915`):** when the atomic commit fails and HEAD is unchanged, it falls back to a **sequential `pushFile` loop** — a crash mid-loop leaves handoff+destinations partially written. The 50s safety timeout is checked only *before* network I/O, so the commit itself is un-deadlined.
+- **Model classifier (`models.ts`):** **knows Opus 4.8** — `RECOMMENDATION_MODELS` maps `reasoning_heavy`/`mixed`→`opus-4-8`, `executional`→`sonnet-4-6` (`models.ts:47-51`); `SYNTHESIS_MODEL_ID = "claude-opus-4-8"` (`:60`, though the docstring stale-claims 4-7). `session-classifier.ts` scores `next_steps` keywords into a reasoning:executional ratio. This classifier exists in the server but is **not** consulted by Trigger's launch path (Phase 7) — the obvious source for per-brief model pinning.
+
+### 4.5 Error / timeout / slowness hot-spots (file:function → why)
+1. `fetch.ts` registerFetch — **over-returns full bodies** (`summary_mode` default false). Primary context-bloat surface on the read path.
+2. `analytics.ts decisionGraph` (`:391-475`) — full adjacency+references payload, O(decisions); `fileChurn` (`:302-334`) — 30 parallel `getCommit`; **no tool deadline**.
+3. `github/client.ts createAtomicCommit` (`:626-739`) — 5 sequential round-trips; ~75s worst case > deadlines.
+4. `search.ts` registerSearch — ~24 GitHub round-trips/call, no cache, no deadline; fresh `RegExp` per term per section.
+5. `status.ts` / `analytics.ts healthSummary`/`freshEyesCheck` — N×(probe+fetch) cross-project fan-out; healthSummary lacks status's caching; no deadline.
+6. `scale.ts atomicCommitScaled` (`:907-915`) — non-atomic sequential fallback; un-deadlined commit.
+7. `cc_dispatch` async (`cc-dispatch.ts:184-200`) — `timeoutMs:0`, unbounded; only visible via `cc_status` poll.
+8. **Only 4 of 23 tools carry a wall-clock deadline.** `analytics`/`search`/`status`/`fetch`/`log_decision`/`log_insight` are bounded only by 15s × fan-out — they can exceed the ~60s MCP ceiling and surface as a client timeout with **no server diagnostic**.
+
 <!-- EOF: brief-431-prism-framework-audit.md -->
