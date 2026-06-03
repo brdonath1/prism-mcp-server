@@ -166,14 +166,18 @@ export async function synthesizeViaCcSubprocess(
     let resultText = "";
     let inputTokens = 0;
     let outputTokens = 0;
+    let cacheCreationTokens = 0;
+    let cacheReadTokens = 0;
     let success = false;
     let errorMsg: string | undefined;
 
     for await (const message of q) {
       if (message.type === "result") {
-        const usage = (message as unknown as { usage?: { input_tokens?: number; output_tokens?: number } }).usage;
+        const usage = (message as unknown as { usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } }).usage;
         inputTokens = usage?.input_tokens ?? 0;
         outputTokens = usage?.output_tokens ?? 0;
+        cacheCreationTokens = usage?.cache_creation_input_tokens ?? 0;
+        cacheReadTokens = usage?.cache_read_input_tokens ?? 0;
         if (message.subtype === "success") {
           success = true;
           resultText = (message as unknown as { result?: string }).result ?? "";
@@ -248,6 +252,9 @@ export async function synthesizeViaCcSubprocess(
     logger.info("cc_subprocess synthesis complete", {
       model,
       input_tokens: inputTokens,
+      cache_creation_input_tokens: cacheCreationTokens,
+      cache_read_input_tokens: cacheReadTokens,
+      total_input_tokens: inputTokens + cacheCreationTokens + cacheReadTokens,
       output_tokens: outputTokens,
       thinking_enabled: !!thinking,
       ms: Date.now() - start,
