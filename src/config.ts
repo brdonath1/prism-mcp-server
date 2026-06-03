@@ -158,6 +158,14 @@ export const FINALIZE_DRAFT_TIMEOUT_MS =
 export const FINALIZE_DRAFT_DEADLINE_MS =
   parseInt(process.env.FINALIZE_DRAFT_DEADLINE_MS ?? "180000", 10) || 180_000;
 
+/** Deadline for the fullPhase draft race when the draft transport is
+ *  cc_subprocess. cc_subprocess draft runs longer than the messages_api
+ *  default (observed 130–240s), so 300s gives headroom above the observed
+ *  latency while bounding the worst-case background-finalize block.
+ *  Configurable via env var for per-deployment tuning. */
+export const FINALIZE_DRAFT_DEADLINE_CC_MS =
+  parseInt(process.env.FINALIZE_DRAFT_DEADLINE_CC_MS ?? "300000", 10) || 300_000;
+
 /** The 10 mandatory PRISM living documents (D-18, D-41, D-44, D-67) */
 export const LIVING_DOCUMENTS = [
   `${DOC_ROOT}/handoff.md`,
