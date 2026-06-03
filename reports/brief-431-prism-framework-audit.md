@@ -474,4 +474,104 @@ Archived: {insights N→M KB; session-log …}                 ← ★ surface w
 ### 9.4 Load-bearing conclusion
 The single highest-severity systemic risk for D-240 is that **CI is not a gate, there is no test that would catch a regression making it worse, and the repo that merges has no CI to run such a test.** Every Phase-B item touching the daemon, synthesis transport, or the patch/archival engine must be tiered **high-risk** and gated behind R1 (a real CI gate: `merge.ts` check-status inspection **and/or** branch protection with `required_status_checks` = `build-and-test (18)`/`(20)` on `prism-mcp-server`, **plus** standing up CI on `trigger`). Until R1 lands, "hands-off auto-merge" should be read as "auto-merge with no safety net."
 
+## Phase 10 — Prioritized roadmap (for sequential autonomous implementation)
+
+Each item is written to ship as its own themed Phase-B brief (INS-281 — never one mega-PR). **Scoring legend:** axes **C**ontext+intelligence / **S**peed / **R**eliability scored `–`(none) → `+++`(large). **Risk tier:** **AUTO** = safe for the hands-off auto-merge loop; **CHECKPOINT** = needs a human checkpoint per INS-281 §4 (daemon, synthesis-transport, or destructive/irreversible doc/state ops). **CI** = does existing CI cover it or are new tests required first.
+
+### Dependency ordering (what must land first)
+**R1 (CI gate) is the gating prerequisite for the entire hands-off loop** — until it lands, every CHECKPOINT item must be human-reviewed regardless. Then: **R2-A (decouple archival) → R3-immediate (archive insights.md) → R2-B (split standing-rule registry) → R3-durable (bound synthesis inputs)** form one chain (each needs the prior). R4/R5/R7a and the doc-drift/cleanup items are independent quick wins that can land in parallel once R1 exists. R6 (resumability) and R8 (banner) are independent.
+
+### Group 1 — Quick wins (low effort, mostly AUTO-safe)
+
+| ID | Target · Problem → Change | C/S/R | Impact/Effort/Risk | Acceptance | Tier · CI |
+|----|---------------------------|-------|--------------------|------------|-----------|
+| **R1-a** | `gh api` branch protection on `prism-mcp-server`+`trigger` `main` with `required_status_checks=build-and-test (18)/(20)` → blocks merge on red/missing CI at the GitHub layer | –/–/+++ | High/Low/Low | `gh api …/protection` returns the required checks; a PR with red CI cannot merge | CHECKPOINT (changes merge semantics) · config-only, verify manually |
+| **R4** | `trigger` `worker.ts`/`frontmatter.ts`/`types/index.ts` · no model pinning, `--effort max` hardcoded → thread `model:`/`effort:` brief frontmatter into `buildClaudeCommand` (~4 files) | +/+/++ | High/Low/Low | a brief with `model: opus` frontmatter launches `claude --model …`; default stays `--effort max`; new unit test asserts command string | AUTO · **new tests required** (trigger has none — see R1-b) |
+| **R5** | `trigger` post-merge/poller · terminal-failed briefs never cleaned → add a `terminal-failure → move-to-failed/` action; delete dead orphan `brief-421` (KI-26 already shipped); document `*.status.json` as deprecated | –/+/++ | Med/Low/Low | a simulated `abandoned_pane_dead` leaves `queue/` empty for that id; `brief-421` gone | CHECKPOINT (daemon) · new test |
+| **R7-a** | `config.ts:68` + `bootstrap.ts:951-960` · 200K window + undercounting estimate numerator → set `DEFAULT_CONTEXT_WINDOW_TOKENS=500_000`; compute numerator over actual `responseText` | ++/–/+ | Med/Low/Low | `context_estimate` matches a hand-count within 5%; `context_window_tokens=500000` | AUTO · `bootstrap-budget.test.ts` update |
+| **R5-b** | Doc drift · `CLAUDE.md` (18→23 tools, v4.0→4.7, Opus 4.6→4.8), `models.ts:57` docstring, DESIGN.md (synchronous→fire-and-forget) → correct to match code | +/–/+ | Low/Low/Low | docs match `config.ts`/`models.ts`/`worker.ts` | AUTO · n/a |
+| **R5-c** | `validation/slug.ts` dead path-safety + `log-insight.ts` unsanitized fields + vestigial `prism-mcp-server/.prism/{decisions,handoff,…}` → wire or delete slug guards; apply `sanitizeContentField` to insight fields; remove vestigial state | –/–/++ | Med/Low/Low | slug/path guards imported & tested or removed; insight injection test passes; vestigial dir gone | AUTO (server) / CHECKPOINT (doc delete) · new tests |
+
+### Group 2 — Medium (server/daemon changes)
+
+| ID | Target · Problem → Change | C/S/R | Impact/Effort/Risk | Acceptance | Tier · CI |
+|----|---------------------------|-------|--------------------|------------|-----------|
+| **R1-b** | `trigger/src/github/merge.ts` · merges with no CI inspection → fetch check-runs/combined status for the PR head SHA, refuse on non-success/pending; **stand up CI on the `trigger` repo** | –/–/+++ | High/Med/Med | `autoMerge` returns `merged:false` on a failing/pending check (new test); `trigger` CI runs on PR | CHECKPOINT (daemon) · **new regression test is the deliverable** |
+| **R2-A** | `finalize.ts:844-892` · archival coupled to finalize `files` array → run a dedicated unconditional retention pass (fetch doc → `splitForArchive` → push) regardless of files-array membership | ++/+/++ | High/Med/Med | after finalize on a 460KB insights.md, `insights-archive.md` exists and live shrinks | CHECKPOINT (irreversible doc move) · new test (the Phase-9(d) gap) |
+| **R3-imm** | Archive `insights.md` toward 20KB (depends on R2-A/R2-B to be effective) | +/+++/++ | High/Low/Med | CS-1 input <60K tok; finalize `draft` completes <150s without `skip_synthesis` | CHECKPOINT · covered once R2 tests exist |
+| **R2-B** | Separate STANDING-RULE registry (`standing-rules.md`) from the chronological `insights.md` so the log can actually shrink (78% of bytes are protected rules) | ++/++/+ | High/Med/Med | `insights.md` ≤20KB reachable; standing-rule count before==after; boot/`load_rules` read the registry | CHECKPOINT (doc restructure) · new tests |
+| **R3-dur** | `ai/synthesize.ts` + `finalize.ts` · synthesis reads unbounded docs (175K–325K tok/call) → cap each doc's contribution + exclude/slice the 217KB decision-domain files; share one bundle across CS-2/CS-3 | +/+++/++ | High/Med/Med | regression test asserts synthesis input ≤ ceiling (e.g. 120K tok) regardless of doc sizes; 2MB-insights fixture doesn't change input size | CHECKPOINT (synthesis) · **new test required** |
+| **R7-b** | `bootstrap.ts` · 200K-era slimming → deliver full intelligence brief; raise `recent_decisions`→15, `guardrails`→20; raise/remove prefetch cap of 2; deliver all Tier A+B standing rules (+ Tier-C index) | +++/–/+ | High/Med/Low | boot payload carries full brief + ≥15 decisions; still <10% of 500K; budget test updated | AUTO · `bootstrap-budget.test.ts` |
+| **R8** | Unified, enforceable boot+finalization banner (Phase 8 spec) → single text field both banners, version handshake, resolve fallback contradiction, log D-84/85 in CHANGELOG | ++/–/+ | Med/Med/Low | both banners render from one server field; `BANNER_DRIFT` diagnostic fires on mismatch; spec contradiction removed | AUTO · `banner-text.test.ts` extend |
+| **R-deadlines** | `analytics.ts`/`search.ts`/`status.ts`/`fetch.ts` · no tool-level deadline + fetch over-return → add wall-clock deadlines; make `fetch` summarize/cap by default | –/++/++ | Med/Med/Low | each tool returns a `DEADLINE_EXCEEDED` diagnostic under an injected slow path; fetch caps large bodies | AUTO · new tests |
+
+### Group 3 — Architectural (redesigns)
+
+| ID | Target · Problem → Change | C/S/R | Impact/Effort/Risk | Acceptance | Tier · CI |
+|----|---------------------------|-------|--------------------|------------|-----------|
+| **R6** | `trigger` worker/scheduler · no resumability; absence-of-PR ≡ in-progress → pane-independent completion via an exit-marker the dispatched `claude` writes, polled from the tick; gives terminal-failure a deterministic signal | +/+/+++ | High/High/High | a killed pane with no PR is classified terminal within one tick (not stuck `executing` forever); brief work not silently stranded | CHECKPOINT (daemon) · new integration test |
+| **R-intel-SLO** | Framework + server · "intelligence carried over" is not measurable → define + instrument an explicit SLO (boot intelligence completeness %, brief age ≤2, continuity coverage) | +++/–/+ | Med/Med/Low | server emits the metrics; a dashboard/analytics metric tracks them per finalize | AUTO · new analytics test |
+| **R-state-reconcile** | Three state stores (`prism` docs · `trigger` state branch · `prism-dispatch-state`) with no reconciler → a periodic consistency check / single status view | –/+/++ | Low/Med/Low | a reconcile job flags divergence (e.g., merged-but-unarchived) and ntfys | CHECKPOINT (daemon) · new test |
+
+### Sequencing summary
+1. **R1-a + R1-b first** (unblocks safe auto-merge; until then everything is human-checkpointed).
+2. **R4, R5, R5-b, R7-a** in parallel (quick, independent, mostly AUTO).
+3. **R2-A → R3-imm → R2-B → R3-dur** (the archival/synthesis chain — the operator's headline complaint + the timeout fix).
+4. **R7-b, R8, R-deadlines** (richer carryover + banner + robustness; AUTO once R1 exists).
+5. **R6, R-intel-SLO, R-state-reconcile** (architectural; deliberate, human-checkpointed).
+
+## Appendix — raw measurements (verified current, 2026-06-03)
+
+### A. Living-document byte sizes — `prism` repo `.prism/` (filesystem bytes)
+```
+insights.md              461,075   decisions/operations.md   217,436
+decisions/architecture.md 132,071   task-queue.md              70,867
+decisions/optimization.md  63,242   glossary.md                58,388
+architecture.md            50,368   known-issues.md            34,600
+decisions/_INDEX.md        25,595   pending-doc-updates.md     12,647
+intelligence-brief.md      10,561   session-log.md              9,481
+handoff.md                  7,874   known-issues-archive.md     8,797
+eliminated.md               1,973   session-log-archive.md        854
+insights-archive.md       ABSENT    build-history-archive.md      923
+```
+### B. Capture state (current clone) — refutes brief-430's stale figures
+- Decision `_INDEX.md`: **192 rows, max D-240** (D-240 is a full entry at `decisions/optimization.md:438`).
+- `insights.md`: **171 INS entries, max INS-283**; **239 "STANDING RULE" line-markers**; **117 entries whose header is a STANDING RULE**, 120 entries containing the marker anywhere.
+- INS-281/282/283 all present (`insights.md:2565,2576,2587`).
+- Decision domain row counts: operations 94, architecture 38, optimization 20, others ≤2.
+
+### C. Insights archival math (Phase 6)
+- Protected (contains "STANDING RULE"): **120 entries = 359KB = 78%**; archivable: 51 entries = 99KB = 22%.
+- Eligible after retention 15: **36 entries = 71KB = 16%**. Post-archive live size ≈ **378KB** (still 19× the 20KB target). `nonProtected(51) > retention(15)`, so `splitForArchive` does **not** short-circuit — yet `insights-archive.md` does not exist (the files-array coupling, `finalize.ts:847`).
+
+### D. Synthesis input sizes (Phase 5)
+- CS-1 draft (`DRAFT_RELEVANT_DOCS`, 7 docs): **611,465 B ≈ 175K tok** — insights.md 75%, task-queue 11%.
+- CS-2 brief / CS-3 pdu (all living + 7 decision-domain files): **1,138,082 B ≈ 325K tok** each, parallel — insights 40%, operations 19%, arch-decisions 11%.
+- With insights.md at 20KB: CS-2/CS-3 still **681KB ≈ 199K tok** (durable cause = all docs unbounded).
+
+### E. Standing-rule tiers (`insights.md`, Phase 3)
+`[TIER:A]=9`, `[TIER:B]=62`, `[TIER:C]=18` explicit + **33 untagged standing-rule headers default to Tier A** → ~42 effective Tier A auto-loaded each boot.
+
+### F. Boot payload (prism, Phase 3)
+`behavioral_rules` (full `core-template-mcp.md`) = **29,247 B ≈ 8.4K tok** (largest field); full `intelligence-brief.md` = 10,561 B (only compacted subset delivered, D-47). Total delivered ≈ 55–65KB ≈ ~24K boot tokens ≈ **~5% of 500K**.
+
+### G. Trigger run-state (`origin/state:state/prism-mcp-server.json`)
+23 processed / 6 failed: `abandoned_daemon_restart`×3, `preflight_git_state`×2, `abandoned_pane_dead`×1 (brief-421, recoverable:false). Active slot at audit time: **brief-431 (executing)** — this audit. (`trigger.json`: 16/12; `prism.json`: 7 merged / 3 restart / 2 pane-dead / 2 retry.)
+
+### H. CI / branch-protection (Phase 9, live `gh api`)
+`repos/brdonath1/{prism-mcp-server,trigger}/branches/main/protection` → **404 "Branch not protected"**; `…/rulesets` → **`[]`** both. `trigger` has **no `.github/workflows/`**. `prism-mcp-server` CI jobs: `build-and-test (18)`, `build-and-test (20)`. Tests: prism-mcp-server 91 files; trigger 59 files/795 tests; framework 0.
+
+### I. Key file:function references
+- Boot: `bootstrap.ts:413 registerBootstrap`, estimate `:951-960`, prefetch cap `:570`; `config.ts:68 DEFAULT_CONTEXT_WINDOW_TOKENS`.
+- Synthesis: `ai/client.ts:111 synthesize`/`:63 resolveCallSiteRouting`; `ai/synthesize.ts:35,210`; `finalize.ts:367 draftPhase`.
+- Archival: `utils/archive.ts:211 splitForArchive` (`:239` protection filter); `finalize.ts:71 INSIGHTS_ARCHIVE_CONFIG`/`:838 applyArchive`/`:847` files-array coupling.
+- Banner: `utils/banner.ts:199 renderBannerText`/`:258 renderBannerHtml`(dead); `finalize.ts:1121 renderFinalizationBanner`.
+- GitHub: `github/client.ts:626 createAtomicCommit` (5 sequential round-trips).
+- Trigger: `worker/worker.ts:132 buildClaudeCommand`/`:466-499` fire-and-forget; `github/merge.ts:114-146 autoMerge`; `poller/index.ts blockReasonFromHistory`; `github/post-merge.ts:222 runArchive`; `startup/stale-active-recovery.ts:104`.
+- Model classifier: `models.ts:47 RECOMMENDATION_MODELS` (knows `opus-4-8`), `:60 SYNTHESIS_MODEL_ID`.
+
+### J. Verification checklist (Post-Flight) — all satisfied
+1. ✅ Model gate honored (`claude-opus-4-8 · effort max`, header). 2. ✅ All four repos current (HEAD SHAs in Methodology); brief-600 changes accounted for. 3. ✅ Every tool + sub-process audited (Phase 4). 4. ✅ Boot payload decomposed, 500K budget, headroom-framed (Phase 3). 5. ✅ Synthesis timeouts root-caused, current sizes (Phase 5). 6. ✅ Archival failure diagnosed + enforcement design (Phase 6). 7. ✅ Trigger failures root-caused; model-pinning + resumability (Phase 7). 8. ✅ Enforceable boot+finalization banner spec (Phase 8). 9. ✅ CI gate determined from source + branch-protection checked live (Phase 9). 10. ✅ Every recommendation scored with axes/impact/effort/risk/acceptance/dependency/tier/CI (Phase 10). 11. ✅ Committed incrementally per phase. 12. ✅ No code changed; only diffs are this report + deletion of brief-430. 13. ✅ Capture verified current (no false gap); all byte sizes re-measured.
+
 <!-- EOF: brief-431-prism-framework-audit.md -->
+
