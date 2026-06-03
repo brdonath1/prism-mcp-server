@@ -947,18 +947,6 @@ export function registerBootstrap(server: McpServer): void {
           warnings,
         };
 
-        // ME-5: Context budget estimation
-        const responseJson = JSON.stringify({
-          project: resolvedSlug, handoff_version: handoffVersion,
-          behavioral_rules: behavioralRules, standing_rules: standingRules,
-          intelligence_brief: intelligenceBrief, banner_text: bannerText,
-        });
-        const bootstrapTokens = Math.round(responseJson.length / 3.5);
-        const platformOverheadTokens = 5000;
-        const toolSchemaTokens = 2500;
-        const totalBootTokens = bootstrapTokens + platformOverheadTokens + toolSchemaTokens;
-        const totalBootPercent = Math.round((totalBootTokens / DEFAULT_CONTEXT_WINDOW_TOKENS) * 1000) / 10;
-
         const result: Record<string, unknown> = {
           project: resolvedSlug,
           handoff_version: handoffVersion,
@@ -986,14 +974,6 @@ export function registerBootstrap(server: McpServer): void {
           trigger_enrollment: triggerEnrollment,        // brief-105: marker drop outcome
           bytes_delivered: bytesDelivered,
           files_fetched: filesFetched,
-          context_estimate: {                          // ME-5: context budget estimation
-            bootstrap_tokens: bootstrapTokens,
-            platform_overhead_tokens: platformOverheadTokens,
-            tool_schema_tokens: toolSchemaTokens,
-            total_boot_tokens: totalBootTokens,
-            total_boot_percent: totalBootPercent,
-            context_window_tokens: DEFAULT_CONTEXT_WINDOW_TOKENS,
-          },
           expected_tool_surface: getExpectedToolSurface(RAILWAY_ENABLED, CC_DISPATCH_ENABLED, !!GITHUB_PAT),  // D-83 (S44); github category added in brief-403
           post_boot_tool_searches: POST_BOOT_TOOL_SEARCHES,                                     // D-83 (S44)
           recommended_session_settings: recommendedSessionSettings,                             // brief-405 / D-191 — advisory model + thinking suggestion
@@ -1006,6 +986,29 @@ export function registerBootstrap(server: McpServer): void {
         if (!bannerText) {
           result.banner_data = bannerData;
         }
+
+        // ME-5: Context budget estimation (brief-433 / D-240 Phase B R7-a).
+        // The numerator is measured from the COMPLETE assembled response —
+        // the exact payload returned to the caller — not a hand-picked field
+        // subset (the brief-431 audit found the old subset omitted ~13
+        // response fields, undercounting the real boot payload). The chars/3.5
+        // token proxy is unchanged; only the completeness of its input is.
+        // context_estimate itself is attached after measurement — its ~0.2KB
+        // self-contribution is negligible against the proxy's own error bars.
+        const responseJson = JSON.stringify(result);
+        const bootstrapTokens = Math.round(responseJson.length / 3.5);
+        const platformOverheadTokens = 5000;
+        const toolSchemaTokens = 2500;
+        const totalBootTokens = bootstrapTokens + platformOverheadTokens + toolSchemaTokens;
+        const totalBootPercent = Math.round((totalBootTokens / DEFAULT_CONTEXT_WINDOW_TOKENS) * 1000) / 10;
+        result.context_estimate = {
+          bootstrap_tokens: bootstrapTokens,
+          platform_overhead_tokens: platformOverheadTokens,
+          tool_schema_tokens: toolSchemaTokens,
+          total_boot_tokens: totalBootTokens,
+          total_boot_percent: totalBootPercent,
+          context_window_tokens: DEFAULT_CONTEXT_WINDOW_TOKENS,
+        };
 
         // QW-5: component_sizes removed from response (logged only)
         const componentSizes = {
