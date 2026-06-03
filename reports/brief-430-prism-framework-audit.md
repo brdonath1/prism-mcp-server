@@ -571,4 +571,137 @@ This is a self-contained spec for the first Phase-B brief. It unifies boot + fin
 - `banner_contract_version` present in the bootstrap and finalize responses; template declares the matching version.
 - Re-running boot twice with identical state yields byte-identical `banner_text` (determinism check).
 
+---
+
+## Phase 10 — Prioritized Roadmap (structured for autonomous implementation)
+
+Each item is written as its own themed Phase-B brief (per INS-281 — never a mega-PR). **Scoring legend:** 3-axis impact on **C** (context+intelligence), **S** (speed), **R** (reliability), each ▲▲▲ high / ▲▲ med / ▲ low / – none. **Impact/Effort/Risk** = H/M/L. **Risk tier:** `AUTO` = safe for the hands-off auto-merge loop · `HUMAN` = needs a human checkpoint per INS-281 §4 (destructive/irreversible, synthesis-transport, or daemon changes). **CI:** whether existing CI covers it or new tests are required first.
+
+### Master table (ordered for sequential implementation)
+
+| ID | Recommendation | Group | C / S / R | Imp/Eff/Risk | Risk tier | CI | Depends on |
+|----|----------------|-------|-----------|--------------|-----------|----|-----------|
+| **R1** | Emergency-archive `insights.md` to ≤40 KB (one-time) | Quick | ▲▲▲ / ▲▲▲ / ▲▲ | H/L/M | **HUMAN** (irreversible content move) | new test for splitter | — |
+| **R2** | Bound synthesis inputs (per-doc cap; domain-file digest) | Medium | ▲▲ / ▲▲▲ / ▲▲▲ | H/M/M | **HUMAN** (synthesis quality) | new tests first | R1 |
+| **R3** | Model-aware context window (200K→500K) + count all fields | Quick | ▲▲▲ / – / ▲ | H/L/L | AUTO | covered + 1 test | — |
+| **R4** | Ship the **full** intelligence brief at boot (reverse D-47) | Quick | ▲▲▲ / – / ▲ | H/L/L | AUTO | covered + 1 test | R3 |
+| **R5** | Continuity Scorecard (boot field + banner line) | Medium | ▲▲▲ / – / ▲▲ | H/M/L | AUTO | new tests | R3, R8 |
+| **R6** | Extract `standing-rules.md`; let `insights.md` archive freely | Arch | ▲▲ / ▲▲ / ▲▲ | H/H/M | **HUMAN** (changes D-80; boot read path) | new tests first | R1, R7 |
+| **R7** | Decouple archiving from the finalize `files` array (server-side maintenance) | Medium | ▲ / ▲▲ / ▲▲▲ | H/M/M | **HUMAN** (write path) | new tests first | — |
+| **R8** | Decision/insight capture enforcement (`CAPTURE_GAP`) + reconcile D-235…D-240 | Medium | ▲▲▲ / – / ▲▲ | H/M/L | AUTO (detection only) | new tests | — |
+| **R9** | Per-brief `model`+`effort` in Trigger frontmatter → `--model`/`--effort` | Medium | ▲ / ▲▲ / ▲▲ | H/M/M | **HUMAN** (daemon dispatch path) | new tests + trigger CI (R10b) | R10b |
+| **R10a** | Gate Trigger auto-merge on CI (assert required checks before merge) | Medium | – / – / ▲▲▲ | H/M/M | **HUMAN** (daemon merge path) | new test first | R10b |
+| **R10b** | Add GitHub Actions CI to the `trigger` repo + branch protection | Quick | – / – / ▲▲▲ | H/L/L | **HUMAN** (infra/settings) | establishes CI | — |
+| **R11** | Brief-lifecycle hygiene: reliably archive merged briefs; clean terminal-failed; remove `brief-421`/`brief-600` now | Quick | ▲ / – / ▲▲ | M/L/L | AUTO (file moves) + HUMAN (daemon code) | new test | — |
+| **R12** | Resumability: status-file heartbeat + late-PR sweep + auto re-queue + preflight auto-heal | Arch | – / ▲ / ▲▲▲ | H/H/M | **HUMAN** (daemon) | new tests first + trigger CI | R10b |
+| **R13** | Implement unified **Banner v4.0** (text-canonical; retire dead HTML) | Medium | ▲▲ / ▲ / ▲ | M/M/L | AUTO | golden-master tests | R5, R8 |
+| **R14** | Patch-engine structural guard (INS-240 subtree / INS-246 header) | Medium | ▲ / – / ▲▲ | M/M/L | AUTO | new tests first | — |
+| **R15** | Bound/archive decision-domain + glossary + architecture docs | Medium | ▲ / ▲▲ / ▲ | M/M/M | **HUMAN** (content move) | new tests first | R2, R7 |
+| **R16** | Read-path deadlines (`status`/`analytics`/`search`); cap 429 backoff to budget | Quick | – / ▲▲ / ▲▲ | M/L/L | AUTO | new tests | — |
+| **R17** | Raise prefetch cap; proactive prefetch; more generous standing-rule delivery | Quick | ▲▲ / ▲ / – | M/L/L | AUTO | covered + test | R3 |
+
+### Group A — Quick wins (low effort; mostly AUTO-safe; land first)
+
+**R1 — Emergency-archive `insights.md`.** *Target:* `prism` repo `insights.md` → new `insights-archive.md` (via the new R7 maintenance op, or a one-shot script using `splitForArchive` with a corrected config). *Problem:* 448 KB / 22× target jams all synthesis (Phase 5/6). *Change:* move non-`STANDING RULE` Active entries (and any Formalized) to the archive; keep standing rules + last-15 non-protected live. *Acceptance:* `insights.md` ≤ 40 KB; `insights-archive.md` exists, append-only; all Tier-A standing rules still extracted at boot; a manual `prism_finalize action=draft` on `prism` completes < 150 s with no `SYNTHESIS_TIMEOUT`. *Note:* HUMAN tier because it irreversibly relocates institutional knowledge — operator reviews the split once.
+
+**R3 — Model-aware context window + complete the estimate.** *Target:* `config.ts:68`, `bootstrap.ts:951–960`. *Problem:* 200K denominator overstates cost 2.5× and the numerator omits ~19 fields (Phase 3.4). *Change:* accept `client_context_window` (or default 500K for the Opus/Sonnet-4.x surface); serialize the full result object for the token estimate. *Acceptance:* `total_boot_percent` for `prism` ≤ 3 % on 500K; numerator within 10 % of `responseBytes`. *CI:* extend `tests/bootstrap-budget.test.ts`.
+
+**R4 — Ship the full intelligence brief at boot.** *Target:* `bootstrap.ts:767–795` (stop discarding `intelligenceBriefFull`). *Problem:* only 3 sentences reach the session (D-47), against D-240's mandate. *Change:* deliver the full brief (gate on a size cap as a backstop). *Acceptance:* `intelligence_brief` contains all six brief sections for `prism`; boot percent still ≤ 4 % on 500K.
+
+**R10b — Trigger CI + branch protection.** *Target:* `trigger/.github/workflows/ci.yml` (mirror prism-mcp-server), repo branch-protection settings. *Acceptance:* CI runs on every `trigger` PR; `main` requires the check. *Prerequisite for the entire hands-off loop.*
+
+**R11 — Brief-lifecycle hygiene (immediate cleanup + guard).** *Target:* `trigger/src/github/post-merge.ts` (verify the archive move landed via re-read; on failure, record `archive_failed` and retry next tick) + a queue-cleanup for terminal-failed briefs; **and remove `brief-421` (terminal-failed) and `brief-600` (merged) from their queues now.** *Acceptance:* a merged brief is provably absent from `queue/`; a terminal-failed brief is moved to `archive/` or `quarantine/` with a history record; the two stale briefs are gone.
+
+**R16 — Read-path deadlines + backoff cap.** *Target:* `status.ts`/`analytics.ts`/`search.ts` (add a `Promise.race` wall-clock deadline like the write tools) + `github/client.ts:fetchWithRetry` (cap 429 backoff to the remaining tool budget). *Acceptance:* each read tool returns a structured partial/timeout result within its deadline on a synthetic slow-fleet fixture.
+
+**R17 — Richer boot prefetch & standing-rule delivery.** *Target:* `bootstrap.ts:570` (raise the 2-doc cap), `config.ts` prefetch/topic maps. *Acceptance:* engineering-session boots include an `architecture.md` summary by default; Tier-B delivery widened; boot percent ≤ 4 % on 500K.
+
+### Group B — Medium (server/daemon changes; several HUMAN-tier)
+
+**R2 — Bound synthesis inputs.** *(Phase 5.3 — full detail there.)* *Target:* `ai/prompts.ts`, `ai/synthesize.ts`, new `SYNTHESIS_MAX_INPUT_BYTES`. *Acceptance:* total synthesis input ≤ budget for any project; CS-2/CS-3 p95 < 120 s; 5 consecutive `prism` finalizes produce a brief with zero timeouts. *HUMAN* — verify bounded brief quality vs full-input on a sample.
+
+**R5 — Continuity Scorecard.** *(Phase 1.4 / 8.3.2 line 6.)* *Target:* new `utils/continuity-score.ts`, `bootstrap.ts`, banner. *Acceptance:* `prism` scores `critical` with the specific reasons (brief stale, decisions +5 unlogged, insights 22× target) in one boot line.
+
+**R7 — Decouple archiving from the finalize files array.** *(Phase 6.4-A.)* *Target:* `finalize.ts:commitPhase` (fetch live `insights.md`/`session-log.md` and archive unconditionally) or new `prism_maintain`. *Acceptance:* archiving runs and shrinks the live file even when the finalize `files` array contains only `handoff.md` (the INS-178-compliant case). *HUMAN* — write path.
+
+**R8 — Capture enforcement.** *(Phase 6.4-C.)* *Target:* `finalize.ts` audit/commit + a commit-scan util. *Acceptance:* a finalize whose commits reference an unrecorded `D-N` emits `CAPTURE_GAP[D-N]`; running it against `prism` today lists D-235/236/239/240 + INS-281. Also: **reconcile those IDs into the index as part of this brief.**
+
+**R9 — Per-brief model + effort.** *(Phase 7.3.)* *Target:* `trigger/src/poller/frontmatter.ts`, `worker.ts:buildClaudeCommand`. *Acceptance:* `model:`/`effort:` frontmatter flows to the CLI; `complexity` defaults effort below `max`; brief-430 re-dispatched pins Opus 4.8. *HUMAN* — daemon dispatch path.
+
+**R10a — Gate auto-merge on CI.** *(Phase 9.4.)* *Target:* `trigger/src/github/merge.ts` (read required-checks/combined-status before `pulls.merge`; refuse + record `ci_failed`). *Acceptance:* a PR with a failing check is not merged and is recorded `ci_failed`. *HUMAN* — daemon merge path; **prerequisite for unattended operation.**
+
+**R13 — Implement Banner v4.0.** *(Phase 8.3.)* *Target:* `utils/banner.ts` (+ new `renderFinalizationText`), `finalize.ts`, framework templates (Rule 2/11), golden tests. *Acceptance:* §8.3.6.
+
+**R14 — Patch structural guard.** *(Phase 4.4.)* *Target:* `tools/patch.ts` (refuse `replace` on a header with child headers unless `force:true`; pre/post byte-delta band check). *Acceptance:* a `replace` that would delete nested subsections is rejected with a clear error unless forced; INS-240/246 fixtures pass.
+
+**R15 — Bound the other large docs.** *Target:* archive configs for `decisions/*` domain files (or feed digests per R2), `glossary.md`, `architecture.md`. *Acceptance:* no living doc exceeds a configured live bound after finalize, or its excess is in an archive.
+
+### Group C — Architectural (redesigns; HUMAN-tier; later, after the quick wins de-risk the system)
+
+**R6 — Standing-rules extraction / retention redesign.** *(Phase 6.4-B.)* *Target:* new `standing-rules.md`, `bootstrap.ts` boot read, `extractStandingRules`, D-80 update. *Problem:* `STANDING RULE` protection makes `insights.md` an unbounded live floor (230 markers). *Change:* standing rules live in a dedicated bounded file boot reads; `insights.md` archives freely under D-80. *Acceptance:* `insights.md` ≤ 40 KB and stays bounded as new insights accrue; all Tier-A/B rules still delivered; boot no longer reads a 448 KB file. *HUMAN* — changes a settled decision + the boot read path.
+
+**R12 — Trigger resumability.** *(Phase 7.4.)* *Target:* `trigger` worker/scheduler/orchestrator + the `docs/briefs/{brief}.status.json` heartbeat. *Problem:* completion depends on pane liveness; pane/daemon death strands completed work (KI-87, ×3 daemon-restart + ×1 pane). *Change:* status-file heartbeat as a pane-independent completion signal; final late-PR sweep before abandoning; auto re-queue within retry budget; preflight auto-heal of known stray files. *Acceptance:* §7.4. *HUMAN* — daemon.
+
+### Recommended landing sequence
+
+1. **De-risk the loop first:** R10b → R10a (CI gate) so everything after can run unattended; R11 (cleanup) in parallel.
+2. **Unblock intelligence:** R1 (emergency archive) → R2 (bound synthesis). Now finalize/synthesis works again.
+3. **Exploit 500K:** R3 → R4 → R17 (boot enrichment), R8 (capture), R5 (scorecard), R13 (banner v4.0).
+4. **Harden:** R9 (model/effort), R14 (patch guard), R16 (read deadlines), R15 (bound docs).
+5. **Redesign:** R6 (retention) and R12 (resumability) once the system is observable and CI-gated.
+
+---
+
+## Appendix — Raw Measurements
+
+### A. `prism` project-state living-document byte sizes (measured `wc -c`)
+
+| File | Bytes | | File | Bytes |
+|---|---:|---|---|---:|
+| `insights.md` | **448,380** | | `glossary.md` | 58,388 |
+| `decisions/operations.md` | **208,166** | | `architecture.md` | 50,368 |
+| `decisions/architecture.md` | **126,969** | | `known-issues.md` | 34,600 |
+| `task-queue.md` | 67,059 | | `decisions/_INDEX.md` | 24,389 |
+| `decisions/optimization.md` | 59,430 | | `intelligence-brief.md` | 11,724 |
+| `handoff.md` | 10,873 | | `session-log.md` | 9,481 |
+| `known-issues-archive.md` | 8,797 | | `pending-doc-updates.md` | 6,008 |
+| `audit-harness.md` | 6,419 | | `eliminated.md` | 1,973 |
+| `session-log-archive.md` | 854 | | `build-history-archive.md` | 923 |
+
+`insights.md` internals: 2,554 lines; `## Active` (lines 9–2545) = **447,442 bytes (99.8 %)**, 164 `### INS-` entries, **230 `STANDING RULE` markers**; `## Formalized` = 448 bytes / 1 entry. **`insights-archive.md` does not exist.**
+
+### B. Decision/insight numbering (capture gap)
+
+- `prism` `decisions/_INDEX.md`: 186 rows, max **D-234**. Max across all `decisions/*`: **D-234**.
+- Referenced in prism-mcp-server commits but **absent from any index:** **D-235, D-236, D-239, D-240**.
+- Max recorded insight: **INS-277**; brief cites **INS-281** (unrecorded). Max KI: **KI-87** (recorded, `decisions/operations.md`).
+- `prism-mcp-server/.prism/` (own state): 5 decisions, max **D-5**; no `insights.md`/`intelligence-brief.md` (abandoned scaffold).
+
+### C. Framework template sizes
+
+`core-template-mcp.md` 29,247 B (v2.19.1) · `core-template.md` 21,737 B · `finalization-banner-spec.md` 13,077 B (v1.0 HTML) · `banner-spec.md` 8,164 B (v3.0 text) · `project-instructions.md` 6,013 B · `rules-session-end.md` 5,399 B · `brief-finalize-template.md` 3,239 B.
+
+### D. Boot payload (estimated) & context budget
+
+Components: `behavioral_rules` 29.2 KB + compact `intelligence_brief` ~3 KB + handoff-derived ~3–4 KB + `standing_rules` ~2–6 KB + `banner_text` ~1.5 KB + ≤2 prefetch summaries ~1–2 KB ≈ **~40–45 KB JSON ≈ ~11–13K tokens**. vs **200K** (server constant) ≈ 6–7 %; vs **500K** (actual) ≈ **2.4–3 %**.
+
+### E. Key file:function references
+
+`bootstrap.ts:412` register · `:767` `intelligenceBriefFull` discarded · `:812` full-insights read · `:951` token estimate · `config.ts:68` `DEFAULT_CONTEXT_WINDOW_TOKENS=200_000` · `finalize.ts:99` `DRAFT_RELEVANT_DOCS` · `:847` `applyArchive` files-array gate · `:1465` draft-deadline error · `archive.ts:211` `splitForArchive` · `:244` protection skip · `synthesize.ts:50` CS-2 doc bundle · `ai/client.ts:63` `resolveCallSiteRouting` · `github/client.ts:90` `fetchWithRetry` · `:626` `createAtomicCommit` · `sanitize-content.ts:20` `sanitizeContentField` · `trigger/worker.ts:141` `buildClaudeCommand` · `trigger/merge.ts:140` `pulls.merge` (no CI gate).
+
+### F. Verification checklist (brief §Verification)
+
+1. ✅ Model gate honored — `claude-opus-4-8 · effort max` recorded in header & methodology.
+2. ✅ All four repos loaded & analyzed; `brief-600` changes accounted for (Phase 7.1, not re-recommended).
+3. ✅ Every MCP tool + sub-process audited (Phase 4, 23 tools + 7 sub-processes).
+4. ✅ Boot payload decomposed field-by-field with a 500K-window budget, framed as headroom-for-richer-context (Phase 3).
+5. ✅ Synthesis timeouts root-caused with immediate + durable fixes (Phase 5).
+6. ✅ Living-doc/archival failure diagnosed with enforcement design (Phase 6).
+7. ✅ Trigger failures root-caused; model-pinning + resumability addressed (Phase 7).
+8. ✅ Complete, enforceable boot + finalization banner spec delivered (Phase 8, Banner v4.0).
+9. ✅ CI auto-merge gating determined (**not gated**); coverage gaps + required tests listed (Phase 9).
+10. ✅ Every recommendation carries impact/effort/risk + 3-axis scores + acceptance criteria + dependency order + risk tier (Phase 10).
+11. ✅ Report committed incrementally (per-phase pushes), not a single end-of-run commit.
+12. ✅ No code changed in any repo; the only diff is this report file.
+
 <!-- EOF: brief-430-prism-framework-audit.md -->
