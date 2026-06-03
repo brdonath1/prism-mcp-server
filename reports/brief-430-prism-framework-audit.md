@@ -394,4 +394,94 @@ The fix is to stop relying on Claude *remembering* to capture/archive and make i
 **D. Archive-once invariants.** Archive files are append-only; the live file shrinks; an entry is moved exactly once (the existing `splitForArchive` is already idempotent — it only moves entries beyond retention). After any finalize, assert each bounded doc ≤ its target or emit `ARCHIVE_OVERDUE`. *Acceptance:* re-running finalize twice produces no duplicate archive entries and no further live-file shrinkage on the second run.
 
 **E. Brief lifecycle (resolves 6.3 #5–6) — see Phase 7.4.**
+---
+
+## Phase 7 — Trigger Reliability Layer
+
+### 7.1 Daemon flow, end to end
+
+`poller` (`git fetch` + `git ls-tree origin/main` over `brief_dir`, dedup vs `state.queue/active/history`, frontmatter parsed by `poller/frontmatter.ts`) → `scheduler.tick()` (round-robin across projects, FIFO within; gates: `depends_on`, overlap on `affects`, worker availability, global cap) → `worker.execute()` (git preflight → `pullLatest` → open iTerm pane → send `claude` command → **return immediately**) → `scheduler.advanceActiveBriefs()` (per-tick `prManager.detectPr` from `state.active`) → `merge.autoMerge()` → `post-merge` (`notify`, `archive`). State per project lives at `brdonath1/trigger:state/<slug>.json` (`{project, queue[], active|null, history[]}`).
+
+**What brief-600 already shipped (do NOT re-recommend):** the **wrong-repo guard** (parse `**Repo:**` from the brief body; quarantine to `briefs/quarantine/` on mismatch) and the **pane-liveness supervisor** (AppleScript probe every 30 s after a 60 s grace; on dead pane → history record `abandoned_pane_dead`, clear active, ntfy; escalate after 10 consecutive probe errors). These mitigate *detection* of two failure modes; they do not add resumability.
+
+### 7.2 Root cause of each observed failure class
+
+| Failure class | Count (state history) | Mechanism (verified) | Already mitigated? |
+|---|---|---|---|
+| **`abandoned_daemon_restart`** | ×3 | `startup/stale-active-recovery.ts:abandonActive()` — at daemon start, any `state.active` with `execution_started_at` > 60 s old is moved to history as `abandoned_daemon_restart`. **No re-queue, no resume.** The in-flight worker died with the previous daemon. | Detection only; **work lost** |
+| **`preflight_git_state`** | ×2 (stray `.env.bak.*`) | `worker/git-preflight.ts:checkGitState()` requires: branch == `main`, clean tree, **and zero untracked (`??`) files**. A stray `.env.bak.*` shows as `?? .env.bak.*` → `untracked_files` → dispatch blocked. `git-preflight-recovery.ts` only auto-recovers the **`wrong_branch`-only** case (`git checkout main`); it deliberately will **not** delete untracked files (could destroy uncommitted work). | Partial (wrong-branch only) |
+| **`pane_liveness_failed` / pane death (KI-87)** | ×1 | `worker.ts` sends the command and returns (`claude --dangerously-skip-permissions` runs interactively and never auto-exits, so the worker cannot await it). Completion is inferred only by the scheduler-tick PR detector reading `state.active`. If the pane dies after the work completes but **before** the PR is opened, no PR is ever detected. | brief-600 clears the slot, but **completed work is still lost** |
+| **terminal-failed briefs never cleaned** | observed (`brief-421`) | A brief whose run errors/exits without opening a PR leaves no PR for `detectPr`; the file remains in `.prism/briefs/queue/`. There is no "terminal failure → move out of queue" path. `brief-421` sits terminal-failed in the queue. | **No** |
+| **merged briefs not archived** | observed (`brief-600`) | `post-merge.ts` `archive` action moves `queue/`→`archive/` via follow-up commits; if it fails (git error / path-convention mismatch) the brief stays in `queue/`. The poller's history dedup (`status:merged`) prevents *re-dispatch*, but the **file is never removed**, so it shows as "reviewed/re-uploaded, not archived." `brief-600` is `merged` yet still in `trigger/briefs/` (and `prism-mcp-server` has merged briefs still under `.prism/briefs/queue/`). | **No (silent failure)** |
+
+### 7.3 Model / effort launch policy
+
+`buildClaudeCommand` (`worker.ts:141`) emits, verbatim:
+
+```
+cd <workingDir> && unset ANTHROPIC_API_KEY && claude --dangerously-skip-permissions --effort max "<prompt>"
+```
+
+- **`--effort max` is hardcoded** for *every* brief — wasteful for trivial mechanical work (a one-line config bump runs at the same max-effort spend as a full audit).
+- **No `--model` flag** — the dispatched Claude runs on the local `claude` CLI's default model. **This is why brief-430 needs a §0 model gate:** there is no way to *target* Opus 4.8 for a brief that requires it; the audit can only check after the fact and abort.
+- Brief frontmatter (`poller/frontmatter.ts`) supports `parallel`, `depends_on`, `affects`, `complexity`, `workflow` — but **not `model` or `effort`**.
+
+**Recommendation (Medium, High):** add `model:` and `effort:` to the frontmatter schema and thread them into `buildClaudeCommand` (`--model ${model}` when set; `--effort ${effort}` defaulting from `complexity`: low→`medium`, medium→`high`, high→`max`). Tie the default to the MCP server's **existing model-recommendation classifier** (brief-405 / D-191, which already emits `recommended_session_settings`) so a brief can inherit the recommended model/effort rather than always paying max. *Acceptance:* a brief with `model: claude-opus-4-8` in frontmatter dispatches with `--model claude-opus-4-8`; a brief with `complexity: low` and no `effort` dispatches with `--effort high` (not `max`); brief-430 re-dispatched would pin Opus 4.8 and skip the abort path. **Risk tier: human-checkpoint** (changes the dispatch command on every brief — verify on a low-risk brief first).
+
+### 7.4 Resumability — the central reliability gap
+
+**Today a brief cannot survive a pane or daemon restart without losing work.** Completion detection depends entirely on pane liveness + a PR existing while `state.active` is still `executing`. brief-600 added pane-death *detection* but explicitly left resumption out of scope. The brief author's own §0b checkpointing instructions in *this* brief (commit incrementally; open the PR only at the end) are a **manual workaround** for exactly this gap — and brief-421 reportedly lost a 65-minute run to it.
+
+**Design (Architectural, High) — completion detection that does not depend on pane liveness:**
+1. **Status-file heartbeat (already half-specified).** `CLAUDE.md` already mandates a `docs/briefs/{brief}.status.json` (`executing`→`completed`, with `pr_url`/commits). Make the dispatched Claude **write and push** this file at start and on completion, and have the scheduler **poll the status file** (committed to the branch/repo) as a completion signal independent of the pane. A `completed` status with a `pr_url` confirms success even if the pane already died.
+2. **Late-PR sweep.** Before `abandonActive()` (daemon restart) or `abandoned_pane_dead` (pane death), run a **final `detectPr` sweep**, and after abandoning, keep a short grace window watching for a late PR matching the brief id — so a run that finished moments before the pane died is recovered, not discarded.
+3. **Idempotent re-dispatch.** When a brief is abandoned with no PR and no `completed` status, re-queue it automatically (bounded by `max_retries`) instead of requiring manual `trigger reset-brief`, since incremental commits make re-running safe.
+4. **Preflight auto-heal for known-safe strays.** Extend `git-preflight-recovery` to move (not delete) recognized stray files (`.env.bak.*`, `*.orig`) into a quarantine dir so `preflight_git_state` self-heals for the exact files that caused the ×2 failures, without risking real uncommitted work.
+
+*Acceptance:* killing the pane after the dispatched Claude has pushed a `completed` status + opened a PR results in the brief being **merged**, not `abandoned_pane_dead`; a stray `.env.bak.x` no longer blocks dispatch; an abandoned brief with no PR re-queues automatically within retry budget.
+
+---
+
+## Phase 9 — Test & CI Coverage (safety net for autonomous implementation)
+
+*(Phase 8, the banner spec, follows Phase 9 to keep the reliability findings contiguous; both are complete.)*
+
+### 9.1 Is Trigger's PR auto-merge gated on CI? — **No.**
+
+This is the load-bearing question for the INS-281 hands-off loop, and the answer is unambiguous from source. `trigger/src/github/merge.ts:autoMerge()`:
+
+- reads `status.merged` and `status.mergeable`; polls until `mergeable` resolves;
+- if `mergeable === false` or stays `null` → `conflicted`;
+- otherwise calls `octokit.pulls.merge({ merge_method: 'squash' })` (`merge.ts:140`).
+
+It **never** inspects check-runs, the combined commit status, `required_status_checks`, or even `mergeable_state` (which can be `"blocked"` when required checks are pending/failing). **The daemon has zero CI awareness.** The only thing that can stop a red-CI PR from merging is **GitHub branch protection** with required status checks configured on `brdonath1/prism-mcp-server` — which the daemon neither sets nor verifies, and which is therefore an **undocumented, unverified, load-bearing assumption.** If branch protection is absent or misconfigured, a PR with failing CI auto-merges.
+
+### 9.2 What CI exists, and what it covers
+
+| Repo | CI | Coverage |
+|---|---|---|
+| **prism-mcp-server** | `.github/workflows/ci.yml` — on push/PR to `main` (path-whitelisted to `src/**`,`tests/**`, build config): `npm ci` → **lint → typecheck → `npm audit` (continue-on-error) → build → test** on Node 18 & 20 | Strong: ~140 test files (`tests/**`), covers bootstrap budget, finalize, archive, patch, safe-mutation, synthesis routing, banner, validation |
+| **trigger** | **None** — no `.github/workflows/`. Local `vitest` only, `.coverage-thresholds.json` at 80 % lines/branches/functions/statements | The daemon that *performs autonomous merges* has **no CI of its own** |
+| **prism** (project state) | n/a (docs repo) | — |
+| **prism-framework** | n/a (templates) | — |
+
+**Two critical gaps for the hands-off loop:**
+1. **The merge step is not gated on CI (9.1).** Even though prism-mcp-server *has* good CI, nothing in the autonomous path *requires* it to be green before merge unless branch protection enforces it.
+2. **The daemon itself has no remote CI.** A change to `merge.ts`/`worker.ts`/`poller.ts` that breaks the autonomous loop would not be caught by any pipeline before it ships.
+
+### 9.3 Coverage gaps & required regression tests before high-risk changes
+
+The Phase-B work touches three high-risk subsystems. Before any of these can merge **unattended** (INS-281 §4), add:
+
+- **Synthesis transport (CS-1/2/3):** a test asserting the **input budget cap** (Phase 5.3) bounds total synthesis input regardless of doc sizes; a test that `cc_subprocess` failure falls back to `messages_api` and logs `SYNTHESIS_TRANSPORT_FALLBACK`; a fixture with a 448 KB insights.md asserting draft completes under deadline after bounding.
+- **Patch engine:** a regression test for the INS-240 subtree-destruction guard and the INS-246 duplicate-header guard (Phase 4.4) — these are currently enforced only by standing rules.
+- **Archival:** a test that `splitForArchive` actually shrinks a standing-rule-heavy `insights.md` under the new retention design (Phase 6.4-B); a test that archiving runs **independent of the finalize files array** (6.4-A).
+- **Daemon:** establish **GitHub Actions CI on the `trigger` repo** (mirror prism-mcp-server's workflow); add a `merge.ts` test asserting the merge path **refuses to merge when required checks are not green** (the gate from 9.4); a status-file-heartbeat completion test (Phase 7.4).
+
+### 9.4 Recommendation — make CI a real gate (Critical, prerequisite for INS-281)
+
+1. **Configure branch protection** on `brdonath1/prism-mcp-server` (and `trigger`) requiring the CI check to pass before merge, and **have the daemon assert it** (read `required_status_checks` / combined status before `octokit.pulls.merge`; refuse + record `conflict`/`ci_failed` if not green).
+2. **Add CI to the `trigger` repo.**
+*Acceptance:* a PR with a deliberately failing test is **not** merged by the daemon and is recorded with a `ci_failed`-class status; `trigger` CI runs on every PR. Until this lands, the hands-off auto-merge loop should be treated as **human-checkpoint only**.
+
 <!-- EOF: brief-430-prism-framework-audit.md -->
