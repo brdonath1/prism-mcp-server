@@ -23,6 +23,8 @@ import {
   FINALIZE_COMMIT_DEADLINE_MS,
   FINALIZE_DRAFT_TIMEOUT_MS,
   FINALIZE_DRAFT_DEADLINE_MS,
+  FINALIZE_DRAFT_DEADLINE_CC_MS,
+  CC_SUBPROCESS_SYNTHESIS_TIMEOUT_MS,
   DOC_ROOT,
 } from "../config.js";
 import { splitForArchive, type ArchiveConfig } from "../utils/archive.js";
@@ -32,6 +34,26 @@ const FINALIZE_COMMIT_DEADLINE_SENTINEL = Symbol("finalize.commit.deadline");
 
 /** Sentinel used to signal that the finalize-draft deadline fired (S41). */
 const FINALIZE_DRAFT_DEADLINE_SENTINEL = Symbol("finalize.draft.deadline");
+
+/** Resolve the per-attempt timeout for draftPhase based on transport.
+ *  cc_subprocess runs through the Agent SDK subprocess which has higher
+ *  overhead; use the cc_subprocess-specific timeout for that transport,
+ *  otherwise fall back to the standard FINALIZE_DRAFT_TIMEOUT_MS. */
+export function resolveDraftTimeout(transport: string | undefined): number {
+  return transport === "cc_subprocess"
+    ? CC_SUBPROCESS_SYNTHESIS_TIMEOUT_MS
+    : FINALIZE_DRAFT_TIMEOUT_MS;
+}
+
+/** Resolve the fullPhase draft-deadline race ceiling based on transport.
+ *  cc_subprocess drafts run 130–240s (observed), so the standard 180s
+ *  deadline would abort most runs. Use the wider cc_subprocess-specific
+ *  deadline for that transport, otherwise the standard deadline. */
+export function resolveDraftDeadline(transport: string | undefined): number {
+  return transport === "cc_subprocess"
+    ? FINALIZE_DRAFT_DEADLINE_CC_MS
+    : FINALIZE_DRAFT_DEADLINE_MS;
+}
 
 /** Archive lifecycle configs (S40 FINDING-14). Applied during commitPhase
  *  before the atomic commit so live + archive changes land together. */
@@ -385,7 +407,10 @@ async function draftPhase(projectSlug: string, sessionNumber: number) {
   // S41 — single env-configurable timeout. The prior size-branching was
   // vestigial (both branches aimed under a 50s MCP_SAFE_TIMEOUT ceiling that
   // no longer matches empirical client timeout behavior).
-  const draftTimeoutMs = FINALIZE_DRAFT_TIMEOUT_MS;
+  // Transport-aware: cc_subprocess runs through Agent SDK with higher
+  // overhead, so use CC_SUBPROCESS_SYNTHESIS_TIMEOUT_MS for that transport.
+  const draftTransport = process.env.SYNTHESIS_DRAFT_TRANSPORT;
+  const draftTimeoutMs = resolveDraftTimeout(draftTransport);
 
   logger.info("Finalization draft: calling Opus", {
     projectSlug,
@@ -1269,15 +1294,18 @@ async function fullPhase(
   const auditResult = await auditPhase(projectSlug, sessionNumber);
   const auditStatus = auditResult.audit.living_documents.some(d => !d.exists) ? "warn" : "ok";
 
-  // Step 2 — Draft (CS-1): race with the same deadline used by the draft action handler
+  // Step 2 — Draft (CS-1): race with a transport-aware deadline.
+  // cc_subprocess drafts run longer (130–240s observed) so use the wider
+  // FINALIZE_DRAFT_DEADLINE_CC_MS when that transport is active.
   let draftStatus: "ok" | "warn" = "warn";
   let draftResult: Awaited<ReturnType<typeof draftPhase>> | null = null;
+  const draftDeadlineMs = resolveDraftDeadline(process.env.SYNTHESIS_DRAFT_TRANSPORT);
 
   let draftDeadlineTimer: ReturnType<typeof setTimeout> | undefined;
   const draftDeadlinePromise = new Promise<typeof FINALIZE_DRAFT_DEADLINE_SENTINEL>((resolve) => {
     draftDeadlineTimer = setTimeout(
       () => resolve(FINALIZE_DRAFT_DEADLINE_SENTINEL),
-      FINALIZE_DRAFT_DEADLINE_MS,
+      draftDeadlineMs,
     );
   });
   const draftWork = draftPhase(projectSlug, sessionNumber);
@@ -1287,7 +1315,7 @@ async function fullPhase(
   if (raced === FINALIZE_DRAFT_DEADLINE_SENTINEL) {
     draftStatus = "warn";
     draftResult = null;
-    logger.warn("fullPhase draft deadline exceeded", { projectSlug, deadlineMs: FINALIZE_DRAFT_DEADLINE_MS });
+    logger.warn("fullPhase draft deadline exceeded", { projectSlug, deadlineMs: draftDeadlineMs });
   } else {
     draftResult = raced;
     draftStatus = draftResult.success === false ? "warn" : "ok";
@@ -1413,6 +1441,9 @@ export function registerFinalize(server: McpServer): void {
         if (action === "draft") {
           const phaseStart = Date.now();
 
+          // The interactive draft action stays bounded by the MCP client
+          // response ceiling (~60s) and is not the intended cc_subprocess-draft
+          // consumer; the background `full` action is.
           let draftDeadlineTimer: ReturnType<typeof setTimeout> | undefined;
           const draftDeadlinePromise = new Promise<typeof FINALIZE_DRAFT_DEADLINE_SENTINEL>((resolve) => {
             draftDeadlineTimer = setTimeout(

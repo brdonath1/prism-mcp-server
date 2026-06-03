@@ -25,9 +25,11 @@ describe("Timeout architecture (C-3)", () => {
     expect(source).toContain("MCP_SAFE_TIMEOUT");
 
     // Post-finalization synthesis is fire-and-forget (D-78) — finalize.ts no longer
-    // imports SYNTHESIS_TIMEOUT_MS. The constant lives in config.ts and is still
-    // used by generateIntelligenceBrief as a per-API-call safety net.
-    expect(source).not.toContain("SYNTHESIS_TIMEOUT_MS");
+    // imports the generic SYNTHESIS_TIMEOUT_MS. The constant lives in config.ts
+    // and is still used by generateIntelligenceBrief as a per-API-call safety
+    // net. CC_SUBPROCESS_SYNTHESIS_TIMEOUT_MS IS allowed — it's a distinct
+    // constant for the gated cc_subprocess transport path.
+    expect(source).not.toMatch(/(?<!CC_SUBPROCESS_)SYNTHESIS_TIMEOUT_MS/);
   });
 
   it("ai/client.ts uses MCP_SAFE_TIMEOUT as default", () => {

@@ -32,6 +32,9 @@ describe("S41 C5 — finalize draft timeout + deadline + no-retry", () => {
     savedEnv.FINALIZE_DRAFT_TIMEOUT_MS = process.env.FINALIZE_DRAFT_TIMEOUT_MS;
     savedEnv.FINALIZE_DRAFT_DEADLINE_MS = process.env.FINALIZE_DRAFT_DEADLINE_MS;
     savedEnv.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+    savedEnv.SYNTHESIS_DRAFT_TRANSPORT = process.env.SYNTHESIS_DRAFT_TRANSPORT;
+    // Ensure no cross-test env leakage selects the cc_subprocess path
+    delete process.env.SYNTHESIS_DRAFT_TRANSPORT;
   });
 
   afterEach(() => {
@@ -39,6 +42,7 @@ describe("S41 C5 — finalize draft timeout + deadline + no-retry", () => {
       "FINALIZE_DRAFT_TIMEOUT_MS",
       "FINALIZE_DRAFT_DEADLINE_MS",
       "ANTHROPIC_API_KEY",
+      "SYNTHESIS_DRAFT_TRANSPORT",
     ]) {
       if (savedEnv[key] === undefined) delete process.env[key];
       else process.env[key] = savedEnv[key];
