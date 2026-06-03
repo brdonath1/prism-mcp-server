@@ -242,4 +242,47 @@ Reverse the 200K-era slimming, in priority order (all trivially affordable — e
 7. `cc_dispatch` async (`cc-dispatch.ts:184-200`) — `timeoutMs:0`, unbounded; only visible via `cc_status` poll.
 8. **Only 4 of 23 tools carry a wall-clock deadline.** `analytics`/`search`/`status`/`fetch`/`log_decision`/`log_insight` are bounded only by 15s × fan-out — they can exceed the ~60s MCP ceiling and surface as a client timeout with **no server diagnostic**.
 
+## Phase 5 — Synthesis layer
+
+### 5.1 Per-call-site routing & transport selection
+`synthesize()` (`ai/client.ts:111`) takes a `callSite ∈ {draft, brief, pdu}` and resolves per-call-site overrides via `resolveCallSiteRouting` (`:63`), reading env vars `SYNTHESIS_{DRAFT|BRIEF|PDU}_TRANSPORT` and `SYNTHESIS_{…}_MODEL`:
+
+| Call-site | Producer | Reads | Output | Default transport / model | Timeout |
+|-----------|----------|-------|--------|---------------------------|---------|
+| **CS-1 draft** | `finalize.ts draftPhase:424` | `DRAFT_RELEVANT_DOCS` | finalization-file drafts (JSON) | messages_api / `SYNTHESIS_MODEL` (`claude-opus-4-8`) | 150s (`FINALIZE_DRAFT_TIMEOUT_MS`), 180s deadline race |
+| **CS-2 brief** | `synthesize.ts generateIntelligenceBrief:97` | **all 10 living docs + 7 decision-domain files** | `intelligence-brief.md` | messages_api / `SYNTHESIS_MODEL` | 240s (`SYNTHESIS_TIMEOUT_MS`) |
+| **CS-3 pdu** | `synthesize.ts generatePendingDocUpdates:278` | same as CS-2 (minus brief+pdu) | `pending-doc-updates.md` | messages_api / `SYNTHESIS_MODEL` | 240s |
+| **CS-4 dispatch** | `cc_dispatch` | n/a (Agent SDK) | PR | `CLAUDE_CODE_OAUTH_TOKEN` Agent SDK subprocess | 45s sync / unbounded async |
+
+- **Transport selection:** default `messages_api` (uses `ANTHROPIC_API_KEY`); set `SYNTHESIS_*_TRANSPORT=cc_subprocess` to route through the OAuth Claude-Code subprocess (uses `CLAUDE_CODE_OAUTH_TOKEN`). On `cc_subprocess` failure, `synthesize()` **auto-falls back** to messages_api with the default model and logs `SYNTHESIS_TRANSPORT_FALLBACK` (`client.ts:138`) — surfaced at next boot (brief-419). Transport is tagged on the result (`messages_api` / `cc_subprocess` / `messages_api_fallback`).
+- **Transport-aware timeouts** (`finalize.ts:42-56`): cc_subprocess uses the wider `CC_SUBPROCESS_SYNTHESIS_TIMEOUT_MS` (600s) and a 300s draft-deadline race because the subprocess adds CLI spawn + OAuth + model-load overhead on top of inference.
+- All three synthesis call-sites pass `thinking: true` (adaptive). All are **fire-and-forget per D-78** (CS-2/CS-3 via `Promise.allSettled` in the finalize commit action) — so their latency is invisible to the operator, **but their failure means a stale brief / unapplied PDU at the next boot.**
+
+### 5.2 Root cause of the synthesis timeouts (current measured sizes)
+
+The brief's draft/brief deadlines are blown because **the synthesis input is unbounded and dominated by oversized living docs.** Measured against the *current* files:
+
+| Call-site | Input docs | **Input size** | **≈ tokens** | Dominant contributors | Deadline |
+|-----------|-----------|----------------|--------------|------------------------|----------|
+| **CS-1 draft** | `DRAFT_RELEVANT_DOCS` (7 docs) | **611KB** | **~175K** | insights.md **75%**, task-queue 11% | 150s / 180s |
+| **CS-2 brief & CS-3 pdu** (each, fired in parallel) | all living + decision-domain files | **1,138KB (1.1MB)** | **~325K** | insights.md 40%, operations.md 19%, architecture-decisions 11%, glossary 5%, architecture.md 4%, task-queue 6% | 240s |
+
+**Two distinct causes, as the brief asks them to be separated:**
+- **One-time cause:** `insights.md` is **461KB** (40–75% of every synthesis input). It alone pushes CS-1 to ~175K input tokens with adaptive thinking inside 150–180s — enough to blow the deadline. This is why S145 ran `skip_synthesis=true`.
+- **Durable cause:** **synthesis reads whole, unbounded living docs with no input bound.** Even if `insights.md` were archived to the 20KB D-80 target, **CS-2/CS-3 input would still be 681KB / ~199K tokens** because `operations.md` (217KB), the architecture decision file (132KB), `glossary.md` (58KB), `architecture.md` (50KB), and `task-queue.md` (71KB) are *also* unbounded and *also* fed in whole. Archiving insights.md is necessary but **not sufficient**; the durable fix is to bound what synthesis reads.
+
+A secondary durable issue: **CS-2 and CS-3 read the same ~1.1MB twice, in parallel**, doubling the inference load at the exact moment of finalize.
+
+### 5.3 Recommendations (immediate unblock + durable fix, with acceptance criteria)
+
+**Immediate unblock (R3-a, Quick):** archive `insights.md` toward the 20KB target (Phase 6 must be done first because today's archival can't reach that — see 6.3). 
+*Acceptance:* CS-1 input < 60K tokens; a finalize `draft` completes within 150s on the `prism` project without `skip_synthesis`; `intelligence-brief.md` re-synthesizes with `brief_age_sessions ≤ 1`.
+
+**Durable fix (R3-b, Medium):** bound synthesis inputs independent of doc size:
+1. **Exclude or slice the heavy decision-domain files** from CS-2/CS-3 (today `generateIntelligenceBrief`/`generatePendingDocUpdates` pull all 7 domain files including the 217KB `operations.md`). Synthesis needs *recent* decisions, not the full 217KB history — feed `_INDEX.md` + the last N decisions per domain.
+2. **Cap each doc's contribution** (e.g., last K entries of insights.md / session-log.md / task-queue.md) so a single file can never dominate. The standing-rule procedures the brief prompt wants "reproduced exactly" should come from the **bounded extracted procedure set** (already computed for boot), not the raw 461KB file.
+3. **Don't read insights.md in full for CS-1** — the draft is about handoff/session-log/task-queue; institutional insights are not needed to draft a session log.
+4. **Consider serializing CS-2/CS-3** or sharing one fetched bundle so the 1.1MB is read once, not twice.
+*Acceptance:* a regression test asserts total synthesis input ≤ a configured ceiling (e.g., 120K tokens) regardless of living-doc sizes; CS-2 and CS-3 each complete within 240s on a project whose raw living docs exceed 1MB; a synthetic 2MB `insights.md` fixture does not change the measured synthesis input size.
+
 <!-- EOF: brief-431-prism-framework-audit.md -->
