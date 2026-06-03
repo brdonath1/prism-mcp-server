@@ -146,4 +146,47 @@ The top-level split is clean and correct: **reasoning** (claude.ai) · **mechani
 5. **Two parallel boot templates** (`core-template.md` v2.2.0 full/fallback vs `core-template-mcp.md` v2.19.1 MCP-primary) with a *third* deprecated description in `docs/THREE_TIER_ARCHITECTURE.md` — Rule 2 differs across them, and MCP template versions 2.10.0–2.18.0 are unlogged in the CHANGELOG. Drift hazard for anyone reading docs/ before _templates/.
 6. **Doc drift in the server's own identity:** `CLAUDE.md` says v4.0.0 / 18 tools / Opus 4.6; the code says v4.7.0 / 23 tools / Opus 4.8 (`config.ts:55`, `models.ts:60`). `models.ts:57-58` docstring claims synthesis model is `claude-opus-4-7` while the constant is `claude-opus-4-8`.
 
+## Phase 3 — Boot payload & context-budget (framed for the 500K window)
+
+The whole framing of this phase follows D-240: the window is **500K**, and the goal is to **use the headroom to carry richer intelligence, not to shrink the payload.** The current boot payload is already small (~5% of 500K); several deliberate slimming measures (D-47, D-193) now leave intelligence on the table.
+
+### 3.1 `prism_bootstrap` response, field-by-field (`src/tools/bootstrap.ts:962-1003`)
+
+| Field | Source | Delivered size (prism) | Notes / redundancy |
+|-------|--------|------------------------|--------------------|
+| `behavioral_rules` | full `core-template-mcp.md` (cached) | **29KB / ~8.4K tok** — largest field | Full template every boot. Correct to keep; it is the Tier-2 contract. |
+| `standing_rules` | `insights.md` → `extractStandingRules` → Tier A + matched Tier B (procedure-only, D-47) | ~10–18KB / ~3–5K tok | Server parses the full **461KB** insights.md every boot to extract these. |
+| `intelligence_brief` | `intelligence-brief.md` → **compacted** (Project State first 3 sentences + Risk Flags + Quality Audit, D-47) | ~1–2KB | Full brief is **10.5KB**; ~80% is dropped. **Headroom: deliver it whole** (+~2.5K tok). |
+| `critical_context` | handoff `## Critical Context` (numbered list) | ~1KB | Also implicitly in `resumption`/`current_state`. |
+| `current_state` | handoff `## Where We Are` | ~1KB | Feeds `resumption` (banner) too — mild duplication. |
+| `resumption_point` | handoff `## Resumption Point`/`## Next Action` | ~0.5KB | Re-parsed into `banner_text` (`parseResumptionForBanner`). |
+| `next_steps` | handoff `## Next Steps` | ~0.5KB | Appears in top-level field **AND** `banner_text` **AND** feeds prefetch **AND** feeds the model recommendation — 4 uses of one parse. |
+| `recent_decisions` | `_INDEX.md` → **last 5 only** | ~0.4KB | **Headroom: deliver 10–15** (the index is 192 rows / 25.6KB; only 5 surface). |
+| `guardrails` | `_INDEX.md` SETTLED → **first 10 only** | ~0.6KB | **Headroom: more guardrails** is exactly the negative-memory PRISM prizes. |
+| `open_questions` | handoff `## Open Questions` | ~0.3KB | — |
+| `prefetched_documents` | keyword/next-step match, **hard cap 2** (`:570 .slice(0,2)`) + always pending-doc-updates | ~1–2KB summaries | **Headroom: raise/remove the cap of 2** (D-193-era slimming). |
+| `banner_text` | `renderBannerText` | ~0.3–0.5KB | Phase 8. |
+| `recommended_session_settings` | persisted handoff recommendation or `classifySession(next_steps)` | ~0.2KB | Advisory model+thinking (D-191). |
+| `context_estimate` | computed | ~0.2KB | **Inaccurate — see 3.3.** |
+| `expected_tool_surface`, `post_boot_tool_searches` | `tool-registry.ts` | ~1–2KB | D-83 client-side tool-surface verification. |
+| `warnings`, `diagnostics`, `trigger_enrollment`, `pdu_applied_at_boot`, `boot_test_verified`, `bytes_delivered`, `files_fetched`, misc scalars | computed | ~1–2KB | Operational. |
+
+**Total delivered ≈ 55–65KB ≈ ~16–19K content tokens; with the server's +5K platform / +2.5K tool-schema adders, ~24–26K boot tokens ≈ ~5% of the 500K window.** There is enormous room (≈ 95%) to carry more.
+
+### 3.2 Prefetch logic & standing-rule tiering — is the right material reaching the session?
+- **Prefetch** (`config.ts:270` `PREFETCH_KEYWORDS` + `bootstrap.ts:66`): keyword→doc map over the opening message *and* the handoff's next-steps, deduped, **capped at 2** docs delivered as summaries (D-193/QW-4). Reasonable under 200K; under 500K the cap is now the binding constraint, not the budget.
+- **Standing-rule tiering** (D-156, measured current): **[TIER:A]=9, [TIER:B]=62, [TIER:C]=18 explicit + 33 untagged standing-rule headers default to Tier A** → **~42 effective Tier A rules auto-load every boot** (procedure-only). Tier B loads on `opening_message` keyword match; Tier C never at boot (lazy via `prism_load_rules`). **Coverage gap (confirmed):** Tier B rules with an empty `topics[]` (likely many of the 62 — the server has a `STANDING_RULES_TOPICS_UNPOPULATED` diagnostic for exactly this) can **never** be matched by either the boot keyword-expansion path or the explicit-topic path, so they are effectively **unreachable after boot**. Under 500K the simplest fix is to deliver all Tier A+B at boot and treat Tier C as the only lazy tier.
+
+### 3.3 Context-budget accuracy (two real defects, both cheap)
+1. **`DEFAULT_CONTEXT_WINDOW_TOKENS = 200_000` (`config.ts:68`)** → the bootstrap response's `context_estimate.total_boot_percent` and `context_window_tokens` are computed against **200K**, so the server-emitted percentage is **2.5× too high** for an Opus-4.8 (500K) session. *Mitigating fact:* the client-side **Rule 9 formula already resolves `W = 500_000` for Opus 4.8/4.7/4.6/Sonnet 4.6** and recomputes the percentage itself from `total_boot_tokens`, so the misleading server field is not load-bearing for the displayed context line — but it is wrong, it confuses anyone reading the raw response, and it is the kind of "200K thinking" D-240 is reversing. **Fix: 200_000 → 500_000** (or emit only the token count and let Rule 9 own the percentage).
+2. **The token-estimate numerator omits ~13 delivered fields (`bootstrap.ts:951-956`).** `bootstrapTokens = JSON({project, handoff_version, behavioral_rules, standing_rules, intelligence_brief, banner_text}).length / 3.5` — it does **not** include `critical_context`, `current_state`, `resumption_point`, `recent_decisions`, `guardrails`, `next_steps`, `open_questions`, `prefetched_documents`, `expected_tool_surface`, `post_boot_tool_searches`, `recommended_session_settings`, `warnings`, or `diagnostics`. So `total_boot_tokens` **undercounts the real payload by ~3–6K tokens**, and because **Rule 9 consumes `total_boot_tokens`**, the client's running context estimate is biased low from the first exchange. **Fix: compute the numerator over the actual `responseText`** (the server already serializes it at line 1037) instead of a hand-picked subset.
+
+### 3.4 Where the 500K headroom should buy richer carryover (the D-240 mandate, concretely)
+Reverse the 200K-era slimming, in priority order (all trivially affordable — even the richest version below is <10% of 500K):
+- **Deliver the full intelligence brief** (un-compact D-47): +~2.5K tok — the single highest-value carryover item, since the brief *is* the situational-intelligence distillation.
+- **Raise `recent_decisions` to ~15 and `guardrails` to ~20**, and consider delivering a one-line-per-decision index digest (the 192-row `_INDEX.md` is only 25.6KB).
+- **Raise/remove the prefetch cap of 2** and deliver full prefetched docs (not just summaries) when total stays within a generous budget (say 60K tokens).
+- **Deliver all Tier A + Tier B standing rules at boot** (closing the empty-`topics` unreachability gap) and surface a Tier-C *index* (id+title) so the session knows what is available to `prism_load_rules`.
+- **Fix the estimate (3.3) first** so the richer payload is measured accurately against 500K — otherwise Rule 9 will under-report and the operator won't see the true (still comfortable) usage.
+
 <!-- EOF: brief-431-prism-framework-audit.md -->
