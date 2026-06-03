@@ -447,4 +447,31 @@ Archived: {insights N→M KB; session-log …}                 ← ★ surface w
 - **Claude renders:** the fenced wrapper + the Rule 9 context line (it knows exchange count) + (until 8.3.3 lands) the single Tool Surface line. Nothing else.
 - **Drift-proofing:** pass-through + FORBIDDEN list + version handshake + `BANNER_DRIFT` diagnostic. A self-contained Phase-B brief; **auto-merge-safe** (additive, well-tested banner code path, no daemon/synthesis-transport risk).
 
+## Phase 9 — Test & CI coverage (the autonomous-merge safety net)
+
+### 9.1 CI-as-merge-gate VERDICT (CRITICAL) — determined from source + live API, not assumed
+**CI is NOT a merge gate at either available layer. The Phase-B hands-off auto-merge loop (INS-281/282) is unsafe as built — it will merge PRs with red, pending, or entirely-absent CI.**
+
+- **Gate (a) — Trigger's merge code does not inspect CI.** `trigger/src/github/merge.ts autoMerge` decides on `merged`, `mergeable` (boolean), and a bounded poll on `mergeable===null` only (`merge.ts:114-146`). It never reads check-runs, the combined commit status, or required checks. It squash-merges whenever `mergeable===true`, which GitHub sets on **absence of conflicts** — `true` even with failing/running CI when no branch protection requires checks. `mergeable_state` (the one field that *could* reflect CI via `blocked`/`unstable`/`behind`) is captured at `merge.ts:83` / `pr-manager.ts:216` but **never branched on anywhere** in `trigger/src/`. The scheduler calls `autoMerge` directly with no CI check before or after (`scheduler/index.ts:494`, `orchestrator.ts:941`).
+- **Gate (b) — GitHub branch protection does not exist.** Verbatim: `gh api repos/brdonath1/prism-mcp-server/branches/main/protection` → **404 "Branch not protected"**; same for `trigger`; `…/rulesets` → **`[]`** on both. So no `required_status_checks` exists on either `main`; GitHub blocks nothing.
+- **Synthesis:** neither gate is real → an autonomous loop merges whatever passes conflict detection. Worse, even the CI that exists runs `on: pull_request` **and** `on: push:[main]`, so `prism-mcp-server`'s post-merge CI executes *after* the squash already landed — it cannot retroactively block.
+
+### 9.2 CI workflow & test inventory
+| Repo | CI? | Jobs / checks | Tests | Coverage thresholds |
+|------|-----|---------------|-------|---------------------|
+| **prism-mcp-server** | ✅ `ci.yml` (push+PR to main, paths-filtered, node 18+20) | `build-and-test (18)` / `(20)`: `lint` (biome), `typecheck` (tsc), `npm audit` (**`continue-on-error`**), `build`, `test` (vitest). `model-freshness.yml` weekly. | **91 files** (last 5 CI runs green, 39–48s) | **NONE** (`vitest.config.ts` sets no coverage block) |
+| **trigger** | ❌ **NO CI AT ALL** (no `.github/workflows/`) | **59 files / 795 tests pass locally (1.2s)** | 80% (`vitest.config.ts` + `.coverage-thresholds.json`) — but **never run in CI** → advisory only |
+| **prism-framework** | ❌ none | 0 | — |
+
+**The repo that performs the merges (`trigger`) has no CI whatsoever** — it merges code into its own `main` with zero automated lint/typecheck/test gate. The check-run names branch protection would reference on `prism-mcp-server` are `build-and-test (18)` and `build-and-test (20)`.
+
+### 9.3 Coverage gaps for high-risk subsystems (what's needed before unattended merges)
+- **(a) Synthesis transport — WELL COVERED.** `ai/__tests__/client-routing.test.ts` (cc_subprocess→messages_api fallback, per-call-site namespaces, unknown-transport) + `cc-subprocess.test.ts` (AUTH/TIMEOUT/zero-token/key-scrub). No major gap.
+- **(b) Trigger daemon merge — CRITICAL GAP.** `tests/github/merge.test.ts` (7 tests) covers clean-merge / conflict / already-merged / 409 / null-poll but has **zero assertion about CI/check state** — because the code has no such behavior to test. **There is no test that `autoMerge` refuses red or pending CI.** This is the missing regression guard that must accompany the R1 fix. Compounding: none of `trigger`'s 795 tests run in CI, so even existing coverage isn't enforced on change.
+- **(c) Patch engine — WELL COVERED.** `apply-pdu.test.ts`, `patch-integration.test.ts` (atomic, 409 re-apply, KI-26 sanitization), `sanitize-content.test.ts` (12, all h1–h6 + ZWS edges), `patch-deadline.test.ts`. No notable gap.
+- **(d) Archival — COVERED for the splitter, but not the failure modes Phase 6 found.** `archive.test.ts` exercises under-threshold skip, boundary, oldest-archived, protected preservation, all-protected skip. But there is **no test that archival actually fires end-to-end at finalize when a doc is *not* in the files array** (the decisive Phase-6 coupling bug), and **no test that a real-shaped 78%-protected insights.md reaches the target** — both are required before the R2 retention rework merges unattended.
+
+### 9.4 Load-bearing conclusion
+The single highest-severity systemic risk for D-240 is that **CI is not a gate, there is no test that would catch a regression making it worse, and the repo that merges has no CI to run such a test.** Every Phase-B item touching the daemon, synthesis transport, or the patch/archival engine must be tiered **high-risk** and gated behind R1 (a real CI gate: `merge.ts` check-status inspection **and/or** branch protection with `required_status_checks` = `build-and-test (18)`/`(20)` on `prism-mcp-server`, **plus** standing up CI on `trigger`). Until R1 lands, "hands-off auto-merge" should be read as "auto-merge with no safety net."
+
 <!-- EOF: brief-431-prism-framework-audit.md -->
