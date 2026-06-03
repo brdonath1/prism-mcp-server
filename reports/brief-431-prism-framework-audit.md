@@ -342,4 +342,47 @@ The objective is that **every living document is bounded and every brief reaches
 - **(E) Document the retention policy in the framework templates** (the missing D-80 line in `finalization.md`) so implementation and spec agree.
 - **(F) Lightweight finalize safety net (optional, justified on its own merits — NOT a capture-gap fix):** warn at finalize when a D-N/INS-N is *referenced* in committed prose but not present in the index. This is cheap drift insurance; it is **not** the brief-430 "reconcile D-235…D-240" item (which is premised on a capture gap that does not exist).
 
+## Phase 7 — Trigger reliability layer
+
+The daemon is a single in-process tick loop (`Orchestrator.runTick`, `orchestrator.ts:899`, every 30s): refresh lock → poll (`ls-tree origin/main`) → schedule → dispatch (fire-and-forget worker) → reconcile completions → advance active brief (detectPr → autoMerge → post-merge) → push state every 5 ticks. Two out-of-band timers run a pane-liveness probe (30s) and periodic marker re-discovery (300s). **The central architectural fact: the worker launches `claude` into an iTerm pane and returns — it never awaits Claude, and the dispatched process is not a child of the daemon** (`worker/worker.ts:9-14`, `466-499`). Completion is inferred only from a PR appearing or an AppleScript pane probe — never from process supervision.
+
+### 7.1 Observed failure history (verified from `origin/state:state/prism-mcp-server.json`)
+23 briefs processed, **6 failed** (all infrastructure, not logic):
+
+| Failure class | Count | Briefs | Recoverable |
+|---------------|------:|--------|-------------|
+| `abandoned_daemon_restart` | 3 | brief-412, brief-413, trigger-marker-template | true (but not auto-re-run) |
+| `preflight_git_state` (untracked `.env.bak.*`) | 2 | brief-401 (×2) | true |
+| `abandoned_pane_dead` | 1 | **brief-421** (64.7 min, then pane vanished) | **false** |
+
+(The `trigger` repo's own state is worse: 16 processed / 12 failed, mostly self-dispatch preflight contamination from writing its own `.bak`/state files into its working tree; it hasn't run since 2026-05-01.)
+
+### 7.2 Failure-class root causes
+- **A — Pane death strands work (KI-87, HIGH, by design).** `runInPane` only awaits the osascript that *types* the command (`terminal.ts:242-250`), then the worker returns `executing` (`worker.ts:499`). PR detection is a single `detectPr` per tick from `state.active` (`scheduler/index.ts:435`). If the pane dies *before* a PR exists, `detectPr` returns `null` every tick forever and `state.active` stays `executing` — **absence-of-PR is indistinguishable from still-working.** The only safety net is the pane-liveness probe, which **abandons** (not resumes): on a confirmed `dead` it records `abandoned_pane_dead`, clears the slot, does not re-queue (`state/manager.ts:621-650`). brief-421 is the live example.
+- **B — Daemon restart kills the worker (HIGH, by design).** On startup `recoverStaleActive` (`startup/stale-active-recovery.ts:104-204`) moves any `active` brief older than 60s to `abandoned_daemon_restart` — it *cannot* reconnect because the worker is iTerm-parented, not a daemon child. The abandoned status is **not** poller-re-eligible (`poller/index.ts:158-161`), so it is neither resumed nor auto-retried; it only re-runs if the operator re-adds the file or resets state.
+- **C — Preflight blocks on any stray file (HIGH, over-broad fail-closed).** `checkGitState` (`git-preflight.ts:111-202`) fails dispatch on wrong-branch, dirty tree, **or any untracked file** (`?? ` porcelain line). Recovery (`git-preflight-recovery.ts:92-100`) only handles the `wrong_branch`-only shape — so a benign untracked `.env.bak.*` / `.DS_Store` / `*.orig` halts **all** dispatch for that project until the operator manually cleans the tree. Highest-friction operational failure; the documented brief-401 `.env.bak` incident is exactly this.
+- **D — pane-liveness false-failure (MEDIUM).** The real risk is the `error` path (osascript 5s timeout, or output ≠ the two literals): ~10 consecutive errors fires a spurious operator escalation (it does *not* abandon — correct fail-safe). **The probe is iTerm-only** — on a tmux host the `dead` path never triggers, so stuck-slot recovery silently doesn't work there.
+- **E — Merged-not-archived (MEDIUM-HIGH).** `runArchive` hard-requires `/queue/` in the path (`post-merge.ts:229-236`); the statically-configured project (platformforge-v2) uses `docs/briefs/` with no `archive` action, so its merged briefs' files persist (don't re-dispatch, but leak). Archive failures are swallowed (`scheduler/index.ts:652-657`) with **no ntfy** — silent file leaks.
+- **F — Terminal-failed-not-cleaned (HIGH).** Covered in Phase 6.3 — `archive` only runs after a *merge*; there is **no fail→cleanup path**, so brief-421's file is stranded forever.
+- **Plus:** `detectPr` line-85 does a raw `ref.includes(briefId)` substring match *before* the INS-211-hardened numeric path — an id that is a string-prefix of another (`brief-12` vs `brief-123`) can still mis-attach and **auto-merge the wrong PR** (`pr-manager.ts:81-97`); `detectPr` scans only the 10 newest PRs (a burst can push a brief's PR out of the window → stuck `executing`); `global_max_concurrent` falls back to `Infinity` if host detection misses (`orchestrator.ts:1058-1122`); DESIGN.md is materially stale (claims synchronous monitoring + no auto-retry, both false); the worktree-isolation capability (`worker/worktree.ts`) is **specified but unused** (all markers are `max_parallel_briefs: 1`).
+
+### 7.3 Model/effort launch policy — `--effort max` hardcoded, **no model pinning**
+`buildClaudeCommand` (`worker/worker.ts:132-144`) emits, verbatim:
+```
+cd <workingDir> && unset ANTHROPIC_API_KEY && claude --dangerously-skip-permissions --effort max "<prompt>"
+```
+`--effort max` is **hardcoded**; there is **no `--model` flag anywhere** (full-tree grep finds only `--effort`). `BriefFrontmatter` (`types/index.ts:65-73`) parses 7 fields — none model/effort. So the model is whatever `claude` resolves at runtime; **this very audit's "must run on Opus 4.8" requirement depended on luck**, and `--effort max` is wasteful for trivial briefs. The server's model-recommendation classifier (Phase 4, *knows Opus 4.8*) is the obvious source but is not consulted.
+
+**Per-brief model+effort is a clean ~4-file change** (daemon agent traced it precisely):
+1. `types/index.ts:65-73` — add `model?`, `effort?` to `BriefFrontmatter`.
+2. `poller/frontmatter.ts:39-69` — validate+extract them (mirror the `VALID_COMPLEXITY` allow-list).
+3. `worker/worker.ts:132-144` — accept `model?`/`effort?`, emit `--model <m>` and `--effort <e>` (default `max`).
+4. `worker/worker.ts:478` — pass `brief.frontmatter?.model`/`.effort` (already in scope via the `QueueEntry`).
+No scheduler/state plumbing needed. Optionally set `model_used` (currently always `''`) for observability, and tie the default to the server classifier's recommendation.
+
+### 7.4 Resumability — none today; minimal fix
+**A brief survives neither pane death nor daemon restart** — both *abandon* in-flight work (7.2 A/B), and absence-of-PR is ambiguous with in-progress. There is no checkpoint/resume, no marker, no PID, no re-attach (KI-87 deliberately removed the marker write to keep the worker non-blocking).
+
+**Recommended minimal fix (Option 1 — pane-independent completion, highest leverage):** have the dispatched command write an **exit marker** the tick polls, e.g. append `; echo "$?" > <statedir>/done/<briefId>.exit` to `buildClaudeCommand`, and add a tick step that reads markers to (a) complete a brief whose PR exists and (b) **distinguish "claude exited with no PR" (terminal failure → free slot + classify + run cleanup) from "still running" (no marker yet).** This closes A's core ambiguity *without* depending on pane liveness or process parentage, and it gives Failure F a deterministic signal to run failure-cleanup. (Option 2, full checkpoint/resume, is higher effort and weaker for the "died before any commit" case.) Either way this is a daemon change → human-checkpoint risk tier.
+
 <!-- EOF: brief-431-prism-framework-audit.md -->
