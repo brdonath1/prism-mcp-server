@@ -385,4 +385,66 @@ No scheduler/state plumbing needed. Optionally set `model_used` (currently alway
 
 **Recommended minimal fix (Option 1 — pane-independent completion, highest leverage):** have the dispatched command write an **exit marker** the tick polls, e.g. append `; echo "$?" > <statedir>/done/<briefId>.exit` to `buildClaudeCommand`, and add a tick step that reads markers to (a) complete a brief whose PR exists and (b) **distinguish "claude exited with no PR" (terminal failure → free slot + classify + run cleanup) from "still running" (no marker yet).** This closes A's core ambiguity *without* depending on pane liveness or process parentage, and it gives Failure F a deterministic signal to run failure-cleanup. (Option 2, full checkpoint/resume, is higher effort and weaker for the "died before any commit" case.) Either way this is a daemon change → human-checkpoint risk tier.
 
+## Phase 8 — Boot + finalization banner specification (implementation-ready)
+
+### 8.1 History & current state
+- **D-35** server-rendered HTML boot banner (`renderBannerHtml`) → **ME-1 (S29)** migrated boot to compact **text** (`renderBannerText`, ~200–500B) to save ~5KB/boot under the 200K budget; **D-83 (S44)** added the client-side Tool Surface line; **D-84** hard-structured the Rule 2 boot / Rule 11 finalization response templates; **D-85** triple-restated Rule 9. **D-46** kept the **finalization** banner as server-rendered **HTML** (`renderFinalizationBanner`, `finalize.ts:1121`, red gradient, passed to `show_widget` verbatim).
+- **Provenance gaps (verified):** **D-59 ("locked banner spec") and D-34 ("server-rendered banner") are referenced nowhere in the framework repo**; the boot banner's actual lock authority is ME-1 + D-83 + D-84/D-85 + "code is canonical." **D-84/D-85 are used by the templates but absent from the CHANGELOG**, and MCP template versions 2.10.0–2.18.0 are unlogged.
+- **Current split & defects:** **boot = text/inline, finalization = HTML/`show_widget`** — two architectures for one visual family. `finalization-banner-spec.md:3` still cross-references the *deprecated v2.0* boot spec. **A live contradiction:** `finalization-banner-spec.md:19` says construct HTML manually on null fallback; `rules-session-end.md:53` says do **NOT**. The **Tool Surface and Suggested lines are client-rendered and unenforceable** — the one real drift surface the server-render architecture doesn't cover.
+
+### 8.2 What "drift-proof" requires
+Determinism comes from **the server computing every value and the client emitting the server's string verbatim** — the client has nothing to drift on because it is pure pass-through. The current design is 90% there; the gaps are (a) the client-rendered Tool Surface/Suggested lines, (b) two divergent architectures, (c) the null-fallback contradiction, (d) no version/integrity handshake so a drifted client is undetectable. The spec below closes all four while exploiting 500K to carry **more** intelligence in the banner.
+
+### 8.3 Unified banner contract (the enforcement mechanism)
+1. **Single opaque field per banner.** Server returns `banner_text` (startup) / `finalization_banner_text` (finalization) as a **complete, ready-to-display string**, plus `banner_spec_version` (integer). Deprecate `banner_html`/`banner_data` and the HTML finalization widget in favor of one text contract for both (text is copy-paste-safe across every client and removes the HTML-fallback contradiction; under 500K there is no token reason to prefer the ~200B text over a richer ~1–2KB text, so the banner can be **richer** and still trivially affordable).
+2. **Verbatim pass-through (Rule 2 / Rule 11).** Claude emits the server string **inside exactly one fenced code block, byte-for-byte**, with an exhaustive FORBIDDEN list (no added prose, no reordering, no omissions, no markdown headings/widgets). This already exists for both responses — keep it, point it at the single field.
+3. **Eliminate client-rendered values.** Either (a) the server computes the Tool Surface line from a `loaded_tools[]` array the client passes into `prism_bootstrap` (making it server-verifiable and drift-proof), or (b) it stays the single explicitly-client-rendered line, clearly delimited, and is the *only* exception. The `Suggested:` line is already server-emitted inside `banner_text` — keep it there.
+4. **Integrity handshake.** Claude echoes `banner_spec_version` on its next tool call (or the server stamps it into the response); a mismatch surfaces a `BANNER_DRIFT` diagnostic at next boot. This makes drift *detectable*, not merely discouraged.
+5. **One spec file** (`banner-spec.md`) covering both banners; delete the contradictory fallback clause; log D-84/D-85 + a "v4.0 unified text banner" entry in the CHANGELOG.
+
+### 8.4 Startup banner — exact fields & ordering (richer, 500K-enabled)
+Server renders these lines in this exact order; conditional sections omitted entirely when empty. (★ = new carryover the 500K headroom enables, reversing ME-1 slimming.)
+```
+PRISM v{templateVersion} · {ProjectDisplayName} · Session {N} · {MM-DD-YY HH:MM:SS} CST
+Handoff v{hv} ({kb}KB) · {decisions} decisions ({guardrails} guardrails) · {docCount}/{docTotal} docs {healthLabel}
+{✓/⚠/✗ tool} | {✓/⚠/✗ tool} | …                         ← tool status (server)
+Suggested: {model} — {rationale}                          ← server (classifier; omit if none)
+Brief: {fresh|N sessions old} · Risk: {top risk flag}     ← ★ from intelligence-brief.md (omit if none)
+
+Resumption: {stripped, ≤400 chars}
+Next:
+▸ {step 1} [priority]
+▸ {step 2…}
+Recent: {D-N title; D-N title; …}                          ← ★ last 5–10 decisions (id+short title)
+Standing rules: {A active}; new this session: {INS-N …}    ← ★ count + any newly-added
+⚠ {warning …}                                             ← conditional
+Tool Surface: ✓ N/N loaded (core ✓/… )                    ← the one client line (or server, per 8.3.3)
+[S{N} · Ex 1 · 🟢 ~{pct}%]                                 ← Rule 9 context line (client), accurate vs 500K
+```
+**Formatting rules:** markdown stripped from `resumption`/`next`/`recent`; `resumption` truncated (raise the cap from 200→400 chars now that budget allows); icons `✓`U+2713 / `⚠`U+26A0 / `✗`U+2717 / `▸`U+25B8; the `Brief/Risk`, `Recent`, and `Standing rules` lines are the new intelligence carryover.
+
+### 8.5 Finalization banner — exact fields & ordering (symmetric)
+Same single-text contract, finalization values, this order:
+```
+PRISM v{templateVersion} · {ProjectDisplayName} · Session {N} Finalized · {timestamp} CST
+Handoff v{hv} ({handoffLabel}) · {docsUpdated}/{docsTotal} docs updated · {decisions} decisions ({note})
+{✓/⚠/✗ audit} | {✓/⚠/✗ draft} | {✓/⚠/✗ commit} | {✓/⚠/✗ verified}   ← finalization steps (server)
+Synthesis: {regenerated|skipped|fallback}                  ← server (CS-2/CS-3 outcome)
+
+Deliverables:
+▸ {deliverable 1}
+▸ {deliverable 2…}
+Resumption (next session): {stripped resumption}
+Suggested next session: {model} — {rationale}             ← server (omit if none)
+Archived: {insights N→M KB; session-log …}                 ← ★ surface what retention actually did (Phase 6)
+⚠ {warning …}   /   ✗ {error …}                            ← conditional
+[S{N} · Ex {k} · {emoji} ~{pct}%]                          ← Rule 9 context line (client)
+```
+**Confirmation sentence (Claude, verbatim, after the fenced banner):** `Session {N} finalized. Handoff v{hv} pushed and verified. {X}/10 living documents updated. Memory synced.`
+
+### 8.6 Server vs Claude render split (final)
+- **Server renders 100% of the banner body** for both banners (every value computed server-side) and returns it as one string + `banner_spec_version`.
+- **Claude renders:** the fenced wrapper + the Rule 9 context line (it knows exchange count) + (until 8.3.3 lands) the single Tool Surface line. Nothing else.
+- **Drift-proofing:** pass-through + FORBIDDEN list + version handshake + `BANNER_DRIFT` diagnostic. A self-contained Phase-B brief; **auto-merge-safe** (additive, well-tested banner code path, no daemon/synthesis-transport risk).
+
 <!-- EOF: brief-431-prism-framework-audit.md -->
