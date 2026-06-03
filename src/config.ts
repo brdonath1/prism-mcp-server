@@ -59,13 +59,17 @@ export const SERVER_VERSION = "4.7.0";
  *  and any long-running operations. */
 export const MCP_SAFE_TIMEOUT = 50_000;
 
-/** Conservative default context window (tokens) for the server-side boot
- *  estimate. The true window is model-dependent — 500K for Opus 4.8/4.7/4.6
- *  and Sonnet 4.6 in the chat surface
- *  (https://support.claude.com/en/articles/8606394-how-large-is-the-context-window-on-paid-claude-plans)
- *  — and is resolved client-side per core-template Rule 9. The server cannot
- *  know the active model, so it uses 200K as the conservative default. */
-export const DEFAULT_CONTEXT_WINDOW_TOKENS = 200_000;
+/** Default context window (tokens) for the server-side boot estimate.
+ *  500K matches the documented window of every chat-surface model PRISM
+ *  actually runs on — Opus 4.8/4.7/4.6 and Sonnet 4.6
+ *  (https://support.claude.com/en/articles/8606394-how-large-is-the-context-window-on-paid-claude-plans).
+ *  The true window is still resolved client-side per core-template Rule 9 —
+ *  the server cannot know the exact active model; this default only feeds
+ *  the boot-cost percentage in the banner. The prior 200K default overstated
+ *  boot cost ~2.5× against the real budget (brief-433 / D-240 Phase B R7-a).
+ *  Env-overridable for per-deployment tuning without code change. */
+export const DEFAULT_CONTEXT_WINDOW_TOKENS =
+  Number(process.env.DEFAULT_CONTEXT_WINDOW_TOKENS ?? 500_000) || 500_000;
 
 /** GitHub API base URL */
 export const GITHUB_API_BASE = "https://api.github.com";

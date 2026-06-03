@@ -131,13 +131,85 @@ describe("T-1: bootstrap response size budget", () => {
       parsed.context_estimate.platform_overhead_tokens +
       parsed.context_estimate.tool_schema_tokens
     );
-    // context_window_tokens is exposed and equals the conservative default
+    // context_window_tokens is exposed and equals the 500K default — the
+    // documented window of every current chat-surface model (brief-433 / R7-a)
     expect(typeof parsed.context_estimate.context_window_tokens).toBe("number");
-    expect(parsed.context_estimate.context_window_tokens).toBe(200000);
+    expect(parsed.context_estimate.context_window_tokens).toBe(500000);
     // total_boot_percent is derived from context_window_tokens
     expect(parsed.context_estimate.total_boot_percent).toBe(
       Math.round((parsed.context_estimate.total_boot_tokens / parsed.context_estimate.context_window_tokens) * 1000) / 10
     );
+  });
+
+  it("estimate numerator covers the complete response payload (brief-433)", async () => {
+    const result = await bootstrapHandler({ project_slug: "prism", opening_message: "Begin next session" });
+    const parsed = JSON.parse(result.content[0].text);
+    // Reconstruct the exact payload the numerator was measured from: the full
+    // assembled response minus context_estimate itself, which is attached
+    // after measurement (it is the last key, so key order is preserved by
+    // the parse → delete → stringify round trip). Any field added to the
+    // response without flowing into the estimate breaks this equality —
+    // guarding against regression to a hand-picked field subset.
+    const measured = { ...parsed };
+    delete measured.context_estimate;
+    expect(parsed.context_estimate.bootstrap_tokens).toBe(
+      Math.round(JSON.stringify(measured).length / 3.5)
+    );
+  });
+
+  it("fields omitted by the old subset numerator now move the estimate (brief-433)", async () => {
+    // Baseline run with the standard mock handoff
+    const baseline = await bootstrapHandler({ project_slug: "prism", opening_message: "Begin next session" });
+    const baselineTokens = JSON.parse(baseline.content[0].text).context_estimate.bootstrap_tokens;
+
+    // Same handoff but with a much larger ## Critical Context section.
+    // critical_context was NOT part of the pre-433 hand-picked numerator
+    // subset, so under the old code the estimate would not change.
+    const fatItems = Array.from({ length: 20 }, (_, i) =>
+      `${i + 1}. Critical context item number ${i + 1} with enough descriptive text to visibly move the byte count`
+    ).join("\n");
+    mockFetchFile.mockImplementation(async (_repo: string, path: string) => {
+      if (path === ".prism/handoff.md" || path === "handoff.md") {
+        return {
+          content: `# Handoff\n\n## Meta\n- Handoff Version: 33\n- Session Count: 28\n- Template Version: 2.10.0\n- Status: Active\n\n## Critical Context\n${fatItems}\n\n## Where We Are\nCurrent state.\n\n## Resumption Point\nResume here.\n\n## Next Steps\n1. Do thing A\n2. Do thing B\n\n<!-- EOF: handoff.md -->`,
+          sha: "abc123",
+          size: 350,
+        };
+      }
+      if (path === ".prism/decisions/_INDEX.md" || path === "decisions/_INDEX.md") {
+        return {
+          content: "| ID | Title | Domain | Status | Session |\n|---|---|---|---|---|\n| D-1 | Test | arch | SETTLED | 1 |\n\n<!-- EOF: _INDEX.md -->",
+          sha: "def456",
+          size: 120,
+        };
+      }
+      if (path.includes("core-template-mcp.md")) {
+        return {
+          content: "# PRISM Core Template v2.10.0\nRules here.\n<!-- EOF: core-template-mcp.md -->",
+          sha: "ghi789",
+          size: 80,
+        };
+      }
+      if (path === ".prism/intelligence-brief.md" || path === "intelligence-brief.md") {
+        return {
+          content: "# Intelligence Brief\n\n## Project State\nProject is healthy.\n\n## Risk Flags\nNone.\n\n## Quality Audit\nAll good.\n\n<!-- EOF: intelligence-brief.md -->",
+          sha: "jkl012",
+          size: 150,
+        };
+      }
+      if (path === ".prism/insights.md" || path === "insights.md") {
+        return {
+          content: "# Insights\n\n## Active\n\n### INS-6: Test — STANDING RULE\n**Standing procedure:** Do the thing.\n\n<!-- EOF: insights.md -->",
+          sha: "mno345",
+          size: 120,
+        };
+      }
+      throw new Error(`Not found: ${path}`);
+    });
+
+    const fat = await bootstrapHandler({ project_slug: "prism", opening_message: "Begin next session" });
+    const fatTokens = JSON.parse(fat.content[0].text).context_estimate.bootstrap_tokens;
+    expect(fatTokens).toBeGreaterThan(baselineTokens);
   });
 
   it("standing_rules array length < 10 entries", async () => {
