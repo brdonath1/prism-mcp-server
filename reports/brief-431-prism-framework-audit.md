@@ -285,4 +285,61 @@ A secondary durable issue: **CS-2 and CS-3 read the same ~1.1MB twice, in parall
 4. **Consider serializing CS-2/CS-3** or sharing one fetched bundle so the 1.1MB is read once, not twice.
 *Acceptance:* a regression test asserts total synthesis input ≤ a configured ceiling (e.g., 120K tokens) regardless of living-doc sizes; CS-2 and CS-3 each complete within 240s on a project whose raw living docs exceed 1MB; a synthetic 2MB `insights.md` fixture does not change the measured synthesis input size.
 
+## Phase 6 — Living-document lifecycle & archival (TOP PRIORITY)
+
+This is the operator's "documents get reviewed/re-uploaded and are not archived" complaint. The failure is in **archival/retention and brief-lifecycle hygiene**, *not* in capture (capture works — see Methodology). Diagnosed below with current numbers.
+
+### 6.1 Living-document inventory (current byte sizes, `prism` repo)
+
+| Doc | Bytes | KB | Archive exists? | Note |
+|-----|------:|---:|-----------------|------|
+| **insights.md** | **461,075** | **450** | ❌ **NONE** | 171 INS entries; 239 STANDING-RULE markers; the headline |
+| decisions/operations.md | 217,436 | 212 | n/a (decisions never compressed) | 94 rows |
+| decisions/architecture.md | 132,071 | 129 | n/a | 38 rows |
+| task-queue.md | 70,867 | 69 | n/a | large; `Recently Completed` capped at 15 (brief-422) |
+| decisions/optimization.md | 63,242 | 62 | n/a | 20 rows (holds D-240) |
+| glossary.md | 58,388 | 57 | n/a | append-only by policy |
+| architecture.md | 50,368 | 49 | n/a | append-only by policy |
+| known-issues.md | 34,600 | 34 | ✅ known-issues-archive.md (8.8KB) | 14 active KI |
+| decisions/_INDEX.md | 25,595 | 25 | n/a (NEVER compressed) | 192 decisions through D-240 |
+| pending-doc-updates.md | 12,647 | 12 | ❌ none | synthesis staging — see 6.4 |
+| intelligence-brief.md | 10,561 | 10 | n/a | synthesized |
+| session-log.md | 9,481 | 9 | ✅ session-log-archive.md | **rotated** (S127 cut ~342 lines) — the counter-example |
+| handoff.md | 7,874 | 8 | n/a (handoff-history/) | healthy, <10KB |
+| eliminated.md | 1,973 | 2 | n/a (NEVER delete) | — |
+
+The two unbounded outliers are **insights.md (450KB)** and the **decision domain files** (operations 212KB, architecture 129KB) — and `insights.md` is the only large living doc with **no archive file at all.** `session-log.md` proves rotation *can* work; insights.md is the gap.
+
+### 6.2 Why insights.md archival has never fired — THREE stacked causes
+The D-80 retention policy is implemented (`INSIGHTS_ARCHIVE_CONFIG`, `finalize.ts:71-84`: threshold 20KB, retention 15, `protectedMarkers: ["STANDING RULE"]`, `activeSection: "## Active"`) and the pure splitter (`archive.ts splitForArchive`) is correct and tested. Yet **`insights-archive.md` does not exist** — archival has produced zero output. Three independent failures, each sufficient on its own:
+
+1. **Coupling to the finalize `files` array (the decisive one).** `applyArchive` runs only if the doc is in the operator-supplied finalize `files` (`finalize.ts:844-847`: `if (liveIdx === -1) return`). But insights are written **out-of-band** by `prism_log_insight` *during* the session (Rule 5/7 "push immediately"), so by finalize time `insights.md` is already committed and **not** in the finalize files array → `applyArchive("insights.md", …)` returns immediately, every time. This is the INS-178 "files array discipline" cutting the wrong way: incremental logging means the doc never rides the finalize commit, so the archival that's wired to that commit never sees it. The absent `insights-archive.md` is the proof.
+2. **STANDING-RULE protection covers 78% of the bytes.** Even when `splitForArchive` *does* run, the `protectedMarkers: ["STANDING RULE"]` filter (`archive.ts:239`, `title.includes(m) || body.includes(m)`) protects **120 of 171 entries = 78% of the bytes (359KB)**. Only 51 entries (22%, 99KB) are archivable; with retention 15, just **36 entries / 71KB (16%)** are eligible. **Archiving everything eligible still leaves insights.md at ~378KB — 19× over the 20KB target.** The policy protects exactly the entries that dominate the size, so it is *structurally incapable* of bounding the file. (Minor sub-bug: 3 of the 120 are protected only because their *body* mentions "STANDING RULE" in a cross-reference — `body.includes` over-protects; but fixing that recovers only ~2 entries.)
+3. **No documented policy to enforce.** The D-80 retention rule is **absent from the framework templates** — `insights.md` is the only mandatory living doc with no compression-policy line in `finalization.md`'s per-file audit. There is no spec for a maintainer to check the implementation against.
+
+### 6.3 Brief-lifecycle hygiene (the merged-vs-failed asymmetry)
+Two orthogonal mechanisms, and the gap is between them:
+- **Done-detection is by STATE** (`trigger/src/poller/index.ts blockReasonFromHistory`): a brief is skipped if its id appears in `state/<repo>.json` history with a terminal status. Location is irrelevant.
+- **Archival is by LOCATION, gated on MERGE** (`trigger/src/github/post-merge.ts runArchive`): only `post_merge: [archive]` after a *successful merge* moves the file `/queue/ → /archive/` (and it hard-requires the `/queue/` path convention).
+
+**Corrections to the brief's stated ground truth (verified on current clones — the brief directs current-clone truth):**
+- **brief-600 is CORRECTLY archived**, not "merged yet still polled." It is in `trigger/briefs/archive/`, state status `merged` with `post_merge.actions_completed: ['archive']`, and is not polled. Its only residue is a stale frontmatter `Status: PENDING` line (decorative; the poller ignores frontmatter status) and a lingering merged branch. **What brief-600 already shipped (do NOT re-recommend):** D-196 Pieces 1+2 — the **wrong-repo guard** (parse `**Repo:**`, quarantine on mismatch) and **pane-liveness recovery** (AppleScript probe → `abandoned_pane_dead` → clear active slot).
+- **brief-421 is the real orphan**, and it is worse than "pending": it terminal-failed `abandoned_pane_dead` (recoverable:false) after a 64.7-min run, so it **never merged → never archived**, and it still sits in `prism-mcp-server/.prism/briefs/queue/`. The poller blocks it (terminal status) but never cleans the file. **And its work already shipped** — KI-26 was resolved at S116 (PR #39); `sanitizeContentField` is live. So brief-421 is a **dead orphan whose deliverable already exists elsewhere** — it should simply be deleted, never re-dispatched.
+
+**Root cause:** there is a `merge → archive` path but **no `terminal-failure → cleanup` path.** Pane-dead / unrecoverable-preflight / crash briefs leave their queue files stranded forever. (Secondary piles: `prism-mcp-server/briefs/` (33 legacy), `trigger/briefs/` (13 legacy, explicitly "not polled"), `reports/` accreting 84–92KB audit reports with no rotation, and the `{brief}.status.json` convention is dead — exactly one orphan file across all repos.)
+
+### 6.4 The "re-uploaded / re-reviewed" pattern (two concrete instances)
+1. **insights.md monotonic append.** `git log --numstat -- .prism/insights.md` shows every recent commit is `+N / -0` (pure insertion); the file grew **429KB → 461KB over the last 15 commits.** Each `prism_log_insight`/`prism_patch` re-commits the whole growing file — the "re-uploaded, not archived" pattern exactly.
+2. **pending-doc-updates.md is an undrained staging area.** It is **overwritten wholesale each synthesis** (CS-3), oscillating 5–13KB, with **no `pending-doc-updates-archive.md`** and **no record of whether proposals were applied or rejected.** The current 12.6KB still proposes "mark INS-250/INS-247 dormant" from S144 — and `git log` shows those dormancy edits were **never applied** (latest insights commits are INS-281/282/283 *additions*). So CS-3 re-proposes, the operator may or may not apply, and the prior batch is silently discarded on the next overwrite — a second "reviewed/re-uploaded but never documented as done" loop, at the proposal layer.
+
+### 6.5 Enforcement design: provably captured-and-archived exactly once
+The objective is that **every living document is bounded and every brief reaches a terminal, recorded, file-system-clean state exactly once.** Concretely (each is its own Phase-B brief — see Roadmap):
+
+- **(A) Decouple retention from the finalize files array.** Run a dedicated **maintenance pass** at finalize (and/or a periodic Trigger maintenance brief) that, for each retention-eligible doc, *fetches it unconditionally*, runs `splitForArchive`, and pushes live+archive — regardless of whether the doc was in the session's `files`. *Acceptance:* after a finalize on a project with a 460KB insights.md, `insights-archive.md` exists and `insights.md` shrinks.
+- **(B) Separate the STANDING-RULE registry from the chronological insight log** so the log can actually shrink. Move standing rules into their own bounded registry (e.g., `standing-rules.md`, tier-tagged) that boot/`load_rules` read directly; let `insights.md` hold only chronological, archivable insights. This removes the 78%-protected-bytes problem at the root and makes both files bounded. *Acceptance:* `insights.md` ≤ 20KB target reachable; standing-rule extraction reads the registry, not a 460KB file; no standing rule is lost in the move (count before == count after).
+- **(C) Add a terminal-failure cleanup action.** Mirror brief-600's wrong-repo quarantine for *all* terminal-failure classes: on `abandoned_pane_dead`/`permanently_failed`/unrecoverable-preflight, move the queue file to `failed/` (or delete with an audit record) and ntfy. *Acceptance:* a simulated pane-dead brief leaves the polled `queue/` empty for that id; brief-421 specifically is removed.
+- **(D) Drain pending-doc-updates with provenance.** When CS-3 proposals are applied via `prism_patch`, record the apply (and archive the consumed batch to `pending-doc-updates-archive.md`) so a proposal is provably applied-or-rejected once, never silently overwritten.
+- **(E) Document the retention policy in the framework templates** (the missing D-80 line in `finalization.md`) so implementation and spec agree.
+- **(F) Lightweight finalize safety net (optional, justified on its own merits — NOT a capture-gap fix):** warn at finalize when a D-N/INS-N is *referenced* in committed prose but not present in the index. This is cheap drift insurance; it is **not** the brief-430 "reconcile D-235…D-240" item (which is premised on a capture gap that does not exist).
+
 <!-- EOF: brief-431-prism-framework-audit.md -->
