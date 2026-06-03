@@ -484,4 +484,91 @@ The Phase-B work touches three high-risk subsystems. Before any of these can mer
 2. **Add CI to the `trigger` repo.**
 *Acceptance:* a PR with a deliberately failing test is **not** merged by the daemon and is recorded with a `ci_failed`-class status; `trigger` CI runs on every PR. Until this lands, the hands-off auto-merge loop should be treated as **human-checkpoint only**.
 
+---
+
+## Phase 8 — Boot + Finalization Banner Specification (revive D-59/D-34/D-84, richer, 500K-enabled)
+
+### 8.1 Banner history & current state
+
+| Marker | What it did | Status now |
+|---|---|---|
+| **D-34** | Server-rendered boot banner as **SVG** | superseded |
+| **D-35** | Boot banner evolved SVG → **HTML/CSS** (`renderBannerHtml`) | **dead code** — still in `banner.ts:258` but boot sets `banner_html:null` |
+| **D-59** | **Locked** boot-banner spec (`banner-spec.md`, pixel-level golden master) | spec now at **v3.0** |
+| **D-84** | **Hard-structured** boot (Rule 2) + finalization (Rule 11) response *templates* — REQUIRED STRUCTURE / FORBIDDEN / FALLBACK | **active, strong** |
+| **ME-1 (S29)** | Replaced the ~5 KB HTML boot banner with a ~200-byte **text** banner (`renderBannerText`) | **current boot path** |
+| **D-46** | Finalization banner as **HTML** (`renderFinalizationBanner`, red accent) | **current finalize path** (`finalization-banner-spec.md` v1.0) |
+
+**The inconsistency (Finding 8-A, Medium):** the **boot banner is text** (banner-spec v3.0, ME-1) while the **finalization banner is HTML** (finalization-banner-spec v1.0, D-46). Two render formats, two specs, two enforcement styles, plus dead HTML boot code (`renderBannerHtml`). For a framework whose whole banner thesis (D-84) is "make presentation deterministic," running two divergent banner formats is itself drift.
+
+**Why text is the right canonical format (and HTML should be demoted to optional):** text cannot be "interpreted" differently across surfaces, renders identically everywhere, survives copy/paste, and is what ME-1 already proved. The 500K headroom does **not** argue for going back to HTML — it argues for a **richer text banner** carrying more intelligence. HTML may remain an *optional* parallel field for surfaces that render widgets, but the **text banner is canonical and authoritative**.
+
+### 8.2 The enforcement model (what makes drift impossible)
+
+Three layers, all already partially present — the spec below makes them complete and symmetric:
+
+1. **Server is the single source of truth.** The server renders the entire banner body deterministically (`renderBannerText` / a new `renderFinalizationText`). Claude never composes banner content — it emits the server string **verbatim** inside a code fence.
+2. **Template contract (D-84).** Rule 2 (boot) and Rule 11 (finalize) specify exact ordering, verbatim-emission, and a FORBIDDEN list. This makes the *Claude-side* deterministic.
+3. **Golden-master test (D-59).** A unit test pins the rendered output for a fixed input so any drift fails CI. (`tests/banner-text.test.ts` exists for boot; an equivalent is needed for finalize.)
+
+The missing piece is a **machine-checkable contract version + checksum**: the server emits `banner_contract_version` and a `banner_checksum` (hash of the canonical text); a downstream check (and the golden test) can assert the structure didn't silently change.
+
+### 8.3 SPEC — PRISM Banner v4.0 (unified, text-canonical, 500K-enriched) — implementation-ready
+
+This is a self-contained spec for the first Phase-B brief. It unifies boot + finalize under one grammar and enriches both using the 500K headroom (per D-240).
+
+**8.3.1 Shared design tokens**
+- **Format:** monospace text, one field per line, `Label: value` grammar. Icons: `✓` ok · `⚠` warn · `✗` critical · `▸` step · `•` bullet. Timestamp: `MM-DD-YY HH:MM:SS CST` (`generateCstTimestamp`).
+- **Server fields:** `banner_text` (canonical string), `banner_contract_version` (e.g. `"4.0"`), `banner_checksum` (sha256 of `banner_text`), `banner_html` (optional, may be null).
+- **Drift rule:** every line is server-rendered; Claude emits the block verbatim; no Claude-composed banner content ever.
+
+**8.3.2 Startup banner — required line order**
+
+| # | Line | Source | New @ v4.0? |
+|---|---|---|---|
+| 1 | `PRISM v{tmpl} | Session {N} | {timestamp}` | handoff meta + clock | — |
+| 2 | `Handoff v{hv} ({kb}KB) | {decisions} decisions ({guardrails} guardrails) | {d}/{t} docs healthy` | bootstrap | — |
+| 3 | `{tool status row}` (`✓ bootstrap | …`) | tool surface | — |
+| 4 | `Tool Surface: ✓ N/N loaded (core … | railway … | cc …)` | D-83 post-boot search | — |
+| 5 | `Suggested: {display} — {rationale}` (omit if absent) | D-191 classifier | — |
+| 6 | **`Continuity: {score} — brief {age}s stale · decisions +{lag} unlogged · insights {kb}KB ({mult}× target)`** | **new Continuity Scorecard (Phase 1.4)** | **YES** |
+| 7 | `Resumption: {…}` (≤200 chars) | handoff | — |
+| 8 | `Next:` + each `▸ {step}` (first marked `[priority]`) | handoff | — |
+| 9 | `⚠ {warning}` lines (stale-active, CAPTURE_GAP, ARCHIVE_OVERDUE, synthesis fallback) | diagnostics | enriched |
+
+*500K enrichment:* line 6 is the headline new value — it surfaces the exact failures this audit found (stale brief, unlogged decisions, bloated insights) **at every boot**, in one line, deterministically. Because budget is no longer scarce, the startup response (Rule 2 Block 4) may also carry the **full** intelligence brief in-context (Phase 3.5) — the banner stays compact; the richer payload rides in the response body.
+
+**8.3.3 Finalization banner — required line order (text, replacing the D-46 HTML)**
+
+| # | Line | Source |
+|---|---|---|
+| 1 | `PRISM v{server} | Session {N} Finalized | {timestamp}` | server |
+| 2 | `Handoff v{hv} {status} | {docs_updated}/{total} docs updated | {decisions} decisions` | commit result |
+| 3 | `Steps: ✓ audit | ✓ draft | ✓ commit | ✓ verified` (icon per step status) | phases |
+| 4 | `Synthesis: {background|completed|skipped|timed_out}` + reason | synthesis outcome |
+| 5 | **`Captured: decisions +{n} logged · insights {archived|ARCHIVE_OVERDUE} · brief {synthesizing|stale}`** | **new — closes the loop on Phase 6** |
+| 6 | `Resumption: {…}` | handoff |
+| 7 | `Deliverables:` + each `▸ {item}` | banner_data/results |
+| 8 | `Suggested (next): {display} — {rationale}` | D-191 |
+| 9 | `⚠/✗ {warning/error}` lines (CAPTURE_GAP, partial commit, synthesis timeout) | diagnostics |
+
+*Line 5 is the enforcement surface for Phase 6:* finalize tells the operator, every time, whether decisions were actually logged, whether insights archived, and whether the brief is synthesizing — so the "not documented/archived properly" failure becomes immediately visible instead of silent.
+
+**8.3.4 Server-render vs Claude-render split**
+- **Server renders:** every line above (lines 1–9 of each), as one `banner_text` string + `banner_checksum` + `banner_contract_version`.
+- **Claude renders:** only the *wrapper* per Rule 2/Rule 11 — the session-name code fence, the rename directive (boot), the banner code fence (verbatim `banner_text`), then plain-prose opening/closing. Claude composes **zero** banner field values.
+
+**8.3.5 Enforcement mechanism (drift-proof)**
+1. `renderBannerText`/`renderFinalizationText` are pure functions with **golden-master tests** (`tests/banner-text.test.ts` + new `tests/finalization-banner-text.test.ts`) pinning output for fixed inputs — drift fails CI (D-59).
+2. Rule 2 / Rule 11 keep the REQUIRED-STRUCTURE + FORBIDDEN lists (D-84); add the v4.0 lines to both.
+3. Server emits `banner_contract_version`; the framework template declares the version it expects; a mismatch surfaces a one-line warning (so a server/template skew is visible, not silent).
+4. Retire `renderBannerHtml` (dead) or gate it behind an explicit optional `banner_html` request; converge finalize onto the text renderer so there is exactly **one** banner format.
+
+**8.3.6 Acceptance criteria**
+- Boot and finalize banners share one format (text), one token set, and one enforcement path; no HTML on the default path.
+- Golden-master tests exist for **both** banners and fail on any structural change.
+- The Continuity line (boot) and Captured line (finalize) render correctly for the `prism` project today and read `critical` (brief stale, decisions +5 unlogged, insights 22× target).
+- `banner_contract_version` present in the bootstrap and finalize responses; template declares the matching version.
+- Re-running boot twice with identical state yields byte-identical `banner_text` (determinism check).
+
 <!-- EOF: brief-430-prism-framework-audit.md -->
