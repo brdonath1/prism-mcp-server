@@ -148,6 +148,40 @@ export const FINALIZE_COMMIT_DEADLINE_MS =
 export const PATCH_WALL_CLOCK_DEADLINE_MS =
   parseInt(process.env.PATCH_WALL_CLOCK_DEADLINE_MS ?? "60000", 10) || 60_000;
 
+/** Tool-level wall-clock deadlines for the four read-path tools (brief-444
+ *  R-deadlines / D-240 Phase B / audit brief-431). prism_analytics,
+ *  prism_search, prism_status, and prism_fetch previously had NO deadline —
+ *  only 4/23 tools (push, finalize, patch, cc_dispatch) carried one — so a
+ *  hung GitHub fan-out held the MCP client connection until the ~60s
+ *  transport timeout with no structured error. Same pattern as
+ *  PUSH_WALL_CLOCK_DEADLINE_MS: hard backstop on top of the per-request
+ *  GitHub fetch timeout (15s), env-overridable so tests can inject a small
+ *  value without waiting in CI. Default is MCP_SAFE_TIMEOUT (50s): for
+ *  read-only tools the structured error must reach the client BEFORE the
+ *  transport gives up — unlike the mutation tools, there is no partial
+ *  repo state worth waiting longer to report on. */
+export const ANALYTICS_WALL_CLOCK_DEADLINE_MS =
+  parseInt(process.env.ANALYTICS_WALL_CLOCK_DEADLINE_MS ?? `${MCP_SAFE_TIMEOUT}`, 10) || MCP_SAFE_TIMEOUT;
+export const SEARCH_WALL_CLOCK_DEADLINE_MS =
+  parseInt(process.env.SEARCH_WALL_CLOCK_DEADLINE_MS ?? `${MCP_SAFE_TIMEOUT}`, 10) || MCP_SAFE_TIMEOUT;
+export const STATUS_WALL_CLOCK_DEADLINE_MS =
+  parseInt(process.env.STATUS_WALL_CLOCK_DEADLINE_MS ?? `${MCP_SAFE_TIMEOUT}`, 10) || MCP_SAFE_TIMEOUT;
+export const FETCH_WALL_CLOCK_DEADLINE_MS =
+  parseInt(process.env.FETCH_WALL_CLOCK_DEADLINE_MS ?? `${MCP_SAFE_TIMEOUT}`, 10) || MCP_SAFE_TIMEOUT;
+
+/** Per-file content cap (bytes) for prism_fetch full-content delivery
+ *  (brief-444 R-deadlines, second half). Without a cap, fetching one large
+ *  file (oversize session log, JSON artifact, generated report) could blow
+ *  the ~25K-token (~100KB) MCP response ceiling and flood session context.
+ *  Files larger than this deliver the leading bytes (cut at a line
+ *  boundary) plus an explicit truncation notice; callers opt out per-call
+ *  with `full_content: true`. 50KB ≈ 14K tokens — passes every healthy
+ *  living document untouched (handoff critical threshold is 15KB) while
+ *  keeping any single file under half the response ceiling. Summary mode
+ *  (`summary_mode: true`) is unaffected — summaries are already compact. */
+export const FETCH_CONTENT_CAP_BYTES =
+  parseInt(process.env.FETCH_CONTENT_CAP_BYTES ?? "50000", 10) || 50_000;
+
 /** Per-attempt timeout for the Opus call inside prism_finalize draft phase.
  *  Accommodates large-project single-attempt latency (S41 — observed ~100s
  *  ceiling on PF-v2-scale inputs). Configurable via env for per-deployment

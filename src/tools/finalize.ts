@@ -122,6 +122,9 @@ import {
 import { DiagnosticsCollector } from "../utils/diagnostics.js";
 import { classifySession, injectPersistedRecommendation, type SessionRecommendation } from "../utils/session-classifier.js";
 import { applyPendingDocUpdates, type ApplyPduResult } from "../utils/apply-pdu.js";
+import { findUnloggedIds } from "../utils/unlogged-ids.js";
+import { parseExistingDecisionIds } from "./log-decision.js";
+import { parseExistingInsightIds } from "./log-insight.js";
 
 /**
  * Robust JSON extraction from AI responses (B.8).
@@ -637,6 +640,75 @@ export async function updateArchitectureMetadata(
 }
 
 /**
+ * brief-444 (optional sub-change): assemble the registry ID sets for the
+ * unlogged-ID reference check. Committed file versions take precedence over
+ * repo state — a finalize commit that itself adds the D-N row to
+ * decisions/_INDEX.md counts as logged. Per family:
+ *   - D-N:   decisions/_INDEX.md (the canonical registry — never compressed)
+ *   - INS-N: insights.md + standing-rules.md + insights-archive.md (INS-N is
+ *            one shared sequence per R2-B, and archived insights were logged
+ *            once — scanning the archive avoids false positives)
+ * "Not found" = source genuinely absent (contributes nothing, family stays
+ * known). Any operational fetch error = family unknown → null, and the
+ * caller skips that family entirely (fail-open, no false positives).
+ */
+async function collectRegistryIdSets(
+  projectSlug: string,
+  files: Array<{ path: string; content: string }>,
+): Promise<{ decisionIds: Set<string> | null; insightIds: Set<string> | null }> {
+  const committed = (docName: string): string | null => {
+    const f = files.find(
+      (x) => x.path === docName || x.path === `${DOC_ROOT}/${docName}`,
+    );
+    return f ? f.content : null;
+  };
+
+  type SourceOutcome = { ok: true; content: string | null } | { ok: false };
+  const loadSource = async (docName: string): Promise<SourceOutcome> => {
+    const fromCommit = committed(docName);
+    if (fromCommit !== null) return { ok: true, content: fromCommit };
+    try {
+      const resolved = await resolveDocPath(projectSlug, docName);
+      return { ok: true, content: resolved.content };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("Not found")) return { ok: true, content: null };
+      return { ok: false };
+    }
+  };
+
+  const [indexOutcome, insightsOutcome, standingRulesOutcome, insightsArchiveOutcome] =
+    await Promise.all([
+      loadSource("decisions/_INDEX.md"),
+      loadSource("insights.md"),
+      loadSource("standing-rules.md"),
+      loadSource("insights-archive.md"),
+    ]);
+
+  const decisionIds = indexOutcome.ok
+    ? new Set(
+        indexOutcome.content !== null
+          ? parseExistingDecisionIds(indexOutcome.content).keys()
+          : [],
+      )
+    : null;
+
+  let insightIds: Set<string> | null = null;
+  if (insightsOutcome.ok && standingRulesOutcome.ok && insightsArchiveOutcome.ok) {
+    insightIds = new Set<string>();
+    for (const outcome of [insightsOutcome, standingRulesOutcome, insightsArchiveOutcome]) {
+      if (outcome.content !== null) {
+        for (const id of parseExistingInsightIds(outcome.content).keys()) {
+          insightIds.add(id);
+        }
+      }
+    }
+  }
+
+  return { decisionIds, insightIds };
+}
+
+/**
  * Commit phase — backup handoff, validate, push all files, verify.
  */
 async function commitPhase(
@@ -1019,6 +1091,40 @@ async function commitPhase(
 
   const allSucceeded = succeeded.length === files.length;
 
+  // brief-444 (optional sub-change): unlogged-ID reference warning.
+  // Scans the committed session text for D-N / INS-N references that exist
+  // in no registry source — the operator mentioned an ID in prose but never
+  // logged it via prism_log_decision / prism_log_insight, so the registry
+  // silently lacks the entry. Diagnostics-only and fail-open: it never
+  // affects the commit result, and an operational fetch error skips the
+  // affected ID family rather than risking false positives.
+  try {
+    const registry = await collectRegistryIdSets(projectSlug, files);
+    const unlogged = findUnloggedIds(files, registry);
+    if (unlogged.decisions.length > 0 || unlogged.insights.length > 0) {
+      const allIds = [...unlogged.decisions, ...unlogged.insights];
+      const display =
+        allIds.slice(0, 15).join(", ") +
+        (allIds.length > 15 ? `, … (+${allIds.length - 15} more)` : "");
+      diagnostics.warn(
+        "UNLOGGED_ID_REFERENCED",
+        `Session text references ${allIds.length} ID(s) never logged via prism_log_decision / prism_log_insight: ${display}`,
+        { decisions: unlogged.decisions, insights: unlogged.insights },
+      );
+      logger.warn("unlogged ID references detected at finalize", {
+        projectSlug,
+        sessionNumber,
+        decisions: unlogged.decisions,
+        insights: unlogged.insights,
+      });
+    }
+  } catch (err) {
+    logger.warn("unlogged-ID check failed — skipping (non-blocking)", {
+      projectSlug,
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
+
   // brief-422 Piece 1 + Piece 3: post-commit, pre-synthesis sweeps.
   // PDU auto-apply runs only when synthesis is enabled (the PDU file is
   // produced by synthesis — applying nonexistent proposals is a no-op).
@@ -1043,7 +1149,7 @@ async function commitPhase(
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         logger.warn("PDU auto-apply threw — continuing", { projectSlug, err: msg });
-        pduResult = { applied: [], skipped: [], errors: [{ title: "(applyPendingDocUpdates)", error: msg }], cleared: false };
+        pduResult = { applied: [], skipped: [], errors: [{ title: "(applyPendingDocUpdates)", error: msg }], cleared: false, archived: false };
       }
     }
     try {
@@ -1144,6 +1250,7 @@ async function commitPhase(
     pdu_skipped: pduResult?.skipped ?? null,
     pdu_errors: pduResult?.errors ?? null,
     pdu_cleared: pduResult?.cleared ?? null,
+    pdu_archived: pduResult?.archived ?? null,   // brief-444: consumed-batch provenance archived
     architecture_updated: architectureResult?.updated ?? null,
     architecture_update_reason: architectureResult?.reason ?? null,
     task_queue_pruned: taskQueuePruned,

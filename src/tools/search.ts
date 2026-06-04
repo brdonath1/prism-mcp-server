@@ -9,10 +9,13 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { fetchFile, } from "../github/client.js";
-import { LIVING_DOCUMENT_NAMES } from "../config.js";
+import { LIVING_DOCUMENT_NAMES, SEARCH_WALL_CLOCK_DEADLINE_MS } from "../config.js";
 import { resolveDocPath, resolveDocExists } from "../utils/doc-resolver.js";
 import { logger } from "../utils/logger.js";
 import { DiagnosticsCollector } from "../utils/diagnostics.js";
+
+/** Sentinel used to signal that the tool-level deadline fired (brief-444 R-deadlines). */
+const SEARCH_DEADLINE_SENTINEL = Symbol("search.deadline");
 
 /** Input schema for prism_search */
 const inputSchema = {
@@ -187,6 +190,16 @@ export function registerSearch(server: McpServer): void {
       const limit = max_results ?? 10;
       logger.info("prism_search", { project_slug, query, max_results: limit });
 
+      // brief-444 R-deadlines — tool-level wall-clock deadline. The search
+      // fan-out fetches all 10 living docs plus up to 7 decision domain
+      // files; a hung GitHub call previously held the connection until the
+      // MCP client gave up. Mirrors prism_push (S40 C4).
+      let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+      const deadlinePromise = new Promise<typeof SEARCH_DEADLINE_SENTINEL>((resolve) => {
+        deadlineTimer = setTimeout(() => resolve(SEARCH_DEADLINE_SENTINEL), SEARCH_WALL_CLOCK_DEADLINE_MS);
+      });
+
+      const workPromise = (async () => {
       try {
         // Step 1: Discover all searchable files (D-67: use resolver for backward compat)
         const domainFiles = await discoverDecisionDomainFiles(project_slug);
@@ -295,6 +308,34 @@ export function registerSearch(server: McpServer): void {
           }],
           isError: true,
         };
+      }
+      })();
+
+      try {
+        const raced = await Promise.race([workPromise, deadlinePromise]);
+        if (raced === SEARCH_DEADLINE_SENTINEL) {
+          const deadlineSec = Math.round(SEARCH_WALL_CLOCK_DEADLINE_MS / 1000);
+          logger.error("prism_search deadline exceeded", {
+            project_slug,
+            query,
+            deadlineMs: SEARCH_WALL_CLOCK_DEADLINE_MS,
+            elapsedMs: Date.now() - start,
+          });
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({
+                error: `prism_search deadline exceeded (${deadlineSec}s)`,
+                project: project_slug,
+                query,
+              }),
+            }],
+            isError: true,
+          };
+        }
+        return raced;
+      } finally {
+        if (deadlineTimer) clearTimeout(deadlineTimer);
       }
     }
   );

@@ -12,7 +12,7 @@ import {
   getCommit,
   listRepos,
 } from "../github/client.js";
-import { LIVING_DOCUMENTS, LIVING_DOCUMENT_NAMES } from "../config.js";
+import { ANALYTICS_WALL_CLOCK_DEADLINE_MS, LIVING_DOCUMENTS, LIVING_DOCUMENT_NAMES } from "../config.js";
 import { resolveDocPath, resolveDocExists, resolveDocFiles } from "../utils/doc-resolver.js";
 import { logger } from "../utils/logger.js";
 import { DiagnosticsCollector } from "../utils/diagnostics.js";
@@ -20,6 +20,9 @@ import {
   parseMarkdownTable,
 } from "../utils/summarizer.js";
 import { parseHandoffVersion, parseSessionCount } from "../validation/handoff.js";
+
+/** Sentinel used to signal that the tool-level deadline fired (brief-444 R-deadlines). */
+const ANALYTICS_DEADLINE_SENTINEL = Symbol("analytics.deadline");
 
 const METRICS = [
   "decision_velocity",
@@ -710,6 +713,16 @@ export function registerAnalytics(server: McpServer): void {
       const diagnostics = new DiagnosticsCollector();
       logger.info("prism_analytics", { project_slug: project_slug ?? "all", metric: effectiveMetric });
 
+      // brief-444 R-deadlines — tool-level wall-clock deadline. Hard backstop
+      // on top of the per-request GitHub timeout; the multi-project fan-outs
+      // (health_summary, fresh_eyes_check) and the 30-commit file_churn sweep
+      // are the slowest read paths on the server. Mirrors prism_push (S40 C4).
+      let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+      const deadlinePromise = new Promise<typeof ANALYTICS_DEADLINE_SENTINEL>((resolve) => {
+        deadlineTimer = setTimeout(() => resolve(ANALYTICS_DEADLINE_SENTINEL), ANALYTICS_WALL_CLOCK_DEADLINE_MS);
+      });
+
+      const workPromise = (async () => {
       try {
         let data: Record<string, any> = {};
         let summary = "";
@@ -854,6 +867,34 @@ export function registerAnalytics(server: McpServer): void {
           }],
           isError: true,
         };
+      }
+      })();
+
+      try {
+        const raced = await Promise.race([workPromise, deadlinePromise]);
+        if (raced === ANALYTICS_DEADLINE_SENTINEL) {
+          const deadlineSec = Math.round(ANALYTICS_WALL_CLOCK_DEADLINE_MS / 1000);
+          logger.error("prism_analytics deadline exceeded", {
+            metric: effectiveMetric,
+            project_slug: project_slug ?? "all",
+            deadlineMs: ANALYTICS_WALL_CLOCK_DEADLINE_MS,
+            elapsedMs: Date.now() - start,
+          });
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({
+                error: `prism_analytics deadline exceeded (${deadlineSec}s)`,
+                metric: effectiveMetric,
+                project: project_slug ?? "all",
+              }),
+            }],
+            isError: true,
+          };
+        }
+        return raced;
+      } finally {
+        if (deadlineTimer) clearTimeout(deadlineTimer);
       }
     }
   );

@@ -15,6 +15,7 @@ import { resolveDocPath, resolveDocPushPath } from "../utils/doc-resolver.js";
 import { guardPushPath } from "../utils/doc-guard.js";
 import { DiagnosticsCollector } from "../utils/diagnostics.js";
 import { safeMutation } from "../utils/safe-mutation.js";
+import { sanitizeContentField } from "../utils/sanitize-content.js";
 
 /**
  * Parse existing insight IDs from an insights.md content string.
@@ -118,17 +119,31 @@ export function registerLogInsight(server: McpServer): void {
         }
 
         // 3. Build the entry (does not depend on existing file content).
+        //
+        // KI-26 (brief-444 R5-c): neutralize embedded markdown headers in the
+        // user-supplied fields before they are written. Matches the write-time
+        // U+200B sanitization already live in prism_log_decision and
+        // prism_patch — without it, a description containing a line that
+        // starts with `## ` would parse as a real section header on the next
+        // read, breaking the section tree silently (validateIntegrity only
+        // flags duplicate headers, not novel ones). The commit message below
+        // keeps the RAW title — Git plain text is a non-markdown channel and
+        // ZWS injection there would only hurt readability.
+        const safeTitle = sanitizeContentField(title);
+        const safeDescription = sanitizeContentField(description);
+        const safeProcedure = procedure ? sanitizeContentField(procedure) : undefined;
+
         const standingTag = standing_rule ? " — STANDING RULE" : "";
         const categoryTag = standing_rule ? `${category} — **STANDING RULE**` : category;
 
         const entryLines = [
-          `### ${id}: ${title}${standingTag}`,
+          `### ${id}: ${safeTitle}${standingTag}`,
           `- Category: ${categoryTag}`,
           `- Discovered: Session ${session}`,
-          `- Description: ${description}`,
+          `- Description: ${safeDescription}`,
         ];
-        if (standing_rule && procedure) {
-          entryLines.push(`- **Standing procedure:** ${procedure}`);
+        if (standing_rule && safeProcedure) {
+          entryLines.push(`- **Standing procedure:** ${safeProcedure}`);
         }
         const entry = entryLines.join("\n");
 
