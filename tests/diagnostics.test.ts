@@ -170,16 +170,15 @@ vi.mock("../src/utils/cache.js", () => ({
   })),
 }));
 
-// Mock banner
+// Mock banner (brief-439 / R8: unified generator surface)
 vi.mock("../src/utils/banner.js", () => ({
+  BANNER_SPEC_VERSION: "3.0",
   generateCstTimestamp: vi.fn().mockReturnValue("2026-04-25 10:00:00"),
-  renderBannerText: vi.fn().mockReturnValue("banner text"),
-  renderBannerHtml: vi.fn().mockReturnValue("<div>banner</div>"),
+  renderUnifiedBanner: vi.fn().mockReturnValue("banner text"),
+  renderBannerFallback: vi.fn().mockReturnValue("PRISM | Session 1 | Handoff v1 | 10/10 docs"),
+  parseTemplateBannerSpecVersion: vi.fn().mockReturnValue(null),
   parseResumptionForBanner: vi.fn().mockReturnValue("resume point"),
-  escapeHtml: vi.fn().mockImplementation((s: string) => s),
   stripMarkdown: vi.fn().mockImplementation((s: string) => s),
-  formatResumptionHtml: vi.fn().mockReturnValue("resume"),
-  toolIcon: vi.fn().mockReturnValue("✓"),
 }));
 
 // Mock tool-registry

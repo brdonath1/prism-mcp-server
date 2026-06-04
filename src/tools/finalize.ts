@@ -18,7 +18,6 @@ import {
   LIVING_DOCUMENTS,
   LIVING_DOCUMENT_NAMES,
   SYNTHESIS_ENABLED,
-  SERVER_VERSION,
   FRAMEWORK_REPO,
   FINALIZE_COMMIT_DEADLINE_MS,
   FINALIZE_DRAFT_TIMEOUT_MS,
@@ -107,12 +106,19 @@ import { resolveDocPath, resolveDocFiles, resolveDocPushPath } from "../utils/do
 import { guardPushPath } from "../utils/doc-guard.js";
 import { logger } from "../utils/logger.js";
 import { extractHeaders, extractSection, parseNumberedList } from "../utils/summarizer.js";
-import { parseHandoffVersion } from "../validation/handoff.js";
+import { parseHandoffVersion, parseTemplateVersion } from "../validation/handoff.js";
 import { validateFile } from "../validation/index.js";
 import { parseMarkdownTable } from "../utils/summarizer.js";
 import { generateIntelligenceBrief, generatePendingDocUpdates } from "../ai/synthesize.js";
 import { computeCurrencyWarning, type CurrencyWarning } from "../utils/doc-currency.js";
-import { escapeHtml, stripMarkdown, formatResumptionHtml, toolIcon, generateCstTimestamp } from "../utils/banner.js";
+import {
+  BANNER_SPEC_VERSION,
+  generateCstTimestamp,
+  parseTemplateBannerSpecVersion,
+  renderBannerFallback,
+  renderUnifiedBanner,
+  type BannerStatusEntry,
+} from "../utils/banner.js";
 import { DiagnosticsCollector } from "../utils/diagnostics.js";
 import { classifySession, injectPersistedRecommendation, type SessionRecommendation } from "../utils/session-classifier.js";
 import { applyPendingDocUpdates, type ApplyPduResult } from "../utils/apply-pdu.js";
@@ -1009,9 +1015,7 @@ async function commitPhase(
   }
 
   const succeeded = results.filter((r) => r.success);
-  const livingDocsUpdated = results.filter((r) =>
-    r.success && LIVING_DOCUMENTS.some((ld) => r.path === ld || r.path.endsWith(ld))
-  ).length;
+  const livingDocsUpdated = countLivingDocumentsUpdated(results);
 
   const allSucceeded = succeeded.length === files.length;
 
@@ -1150,167 +1154,197 @@ async function commitPhase(
 }
 
 /**
- * Render a finalization banner as self-contained HTML+CSS.
- * Mirrors boot banner architecture (D-35) with red accent and commit-specific data.
+ * Count living documents successfully committed, normalized across both
+ * repo layouts (.prism/ and legacy root-level — the pre-R8 counters missed
+ * the legacy form and reported 0 for unmigrated repos).
+ *
+ * Counts ONLY the 10 mandatory living documents: domain decision files
+ * (decisions/{domain}.md) are not living documents — decisions/_INDEX.md is
+ * the registry entry in the 10-doc list. Distinct paths only, so the result
+ * is bounded by LIVING_DOCUMENTS.length by construction. Used by BOTH the
+ * commit confirmation (`living_documents_updated`) and the finalization
+ * banner so the two never disagree (brief-439 review finding).
  */
-function renderFinalizationBanner(data: {
-  version: string;
-  session: number;
-  timestamp: string;
-  handoff_version: number;
-  handoff_status: "ok" | "warn";
-  handoff_label: string;
-  docs_updated: number;
-  docs_total: number;
-  decisions_count: number;
-  decisions_note: string;
-  steps: Array<{ label: string; status: "ok" | "warn" | "critical" }>;
-  resumption: string;
-  deliverables: Array<{ text: string; status: "ok" | "warn" }>;
-  warnings: string[];
-  errors: string[];
-  /**
-   * brief-405 / D-191: optional pre-boot model+thinking recommendation.
-   * When present, render a "Suggested for next session" section between
-   * Resumption Point and Deliverables. Omit the section entirely when
-   * null/undefined — defensive contract per the brief.
-   */
-  suggested?: SessionRecommendation | null;
-}): string {
-  const e = (s: string) => escapeHtml(stripMarkdown(s));
-
-  const resumptionHtml = formatResumptionHtml(data.resumption);
-
-  const stepsHtml = data.steps
-    .map((s) => {
-      const cls = s.status !== "ok" ? ` ${s.status}` : "";
-      return `<div class="bn-tool${cls}">${toolIcon(s.status)} ${e(s.label)}</div>`;
-    })
-    .join("\n      ");
-
-  const deliverablesHtml = data.deliverables
-    .map((d) => {
-      const cls = d.status === "warn" ? " warn" : "";
-      return `<div class="bn-step${cls}">\u25b8 ${e(d.text)}</div>`;
-    })
-    .join("\n        ");
-
-  const warningsHtml = data.warnings
-    .map((w) => `<div class="bn-alert warn">\u26a0 ${e(w)}</div>`)
-    .join("\n    ");
-
-  const errorsHtml = data.errors
-    .map((err) => `<div class="bn-alert critical">\u2717 ${e(err)}</div>`)
-    .join("\n    ");
-
-  // brief-405 / D-191: render the model+thinking recommendation section
-  // (between Resumption Point and Deliverables) when present. Defensive
-  // contract \u2014 empty/null suggested means no markup is emitted.
-  const suggestedHtml = data.suggested
-    ? `
-    <div class="bn-suggested">
-      <div class="bn-section-label">Suggested for next session</div>
-      <div class="bn-suggested-card">
-        <div class="bn-suggested-display">${e(data.suggested.display)}</div>
-        <div class="bn-suggested-rationale">${e(data.suggested.rationale)}</div>
-      </div>
-    </div>`
-    : "";
-
-  return `<style>
-:root {
-  --bn-bg: #1e1e2e;
-  --bn-surface: #2a2a3e;
-  --bn-border: #3a3a4e;
-  --bn-text: #eee;
-  --bn-text-muted: #aaa;
-  --bn-accent-start: #dc2626;
-  --bn-accent-end: #ef4444;
-  --bn-ok: #22c55e;
-  --bn-warn: #eab308;
-  --bn-critical: #ef4444;
-  --bn-info: #60a5fa;
+export function countLivingDocumentsUpdated(
+  results: Array<{ path: string; success: boolean }>,
+): number {
+  const matched = new Set<string>();
+  for (const r of results) {
+    if (!r.success) continue;
+    const bare = r.path.startsWith(`${DOC_ROOT}/`)
+      ? r.path.slice(DOC_ROOT.length + 1)
+      : r.path;
+    if ((LIVING_DOCUMENTS as readonly string[]).includes(`${DOC_ROOT}/${bare}`)) {
+      matched.add(bare);
+    }
+  }
+  return matched.size;
 }
-* { box-sizing: border-box; margin: 0; padding: 0; }
-.bn { font-family: system-ui, -apple-system, sans-serif; background: var(--bn-bg); border-radius: 12px; border: 1px solid var(--bn-border); overflow: hidden; color: var(--bn-text); }
-.bn-header { background: linear-gradient(90deg, var(--bn-accent-start), var(--bn-accent-end)); padding: 14px 20px; display: flex; justify-content: space-between; align-items: center; }
-.bn-header-text { display: flex; flex-direction: column; gap: 4px; }
-.bn-version { font-size: 11px; font-weight: 600; letter-spacing: 1.5px; opacity: 0.8; color: white; }
-.bn-title { font-size: 18px; font-weight: 700; color: white; }
-.bn-badge { background: rgba(255,255,255,0.2); border-radius: 12px; padding: 4px 14px; font-size: 11px; font-weight: 600; color: white; white-space: nowrap; }
-.bn-body { padding: 16px 20px 20px; display: flex; flex-direction: column; gap: 14px; }
-.bn-timestamp { font-size: 12px; color: var(--bn-text-muted); }
-.bn-metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
-.bn-card { background: var(--bn-surface); border: 0.5px solid var(--bn-border); border-radius: 8px; padding: 12px 14px; }
-.bn-card-label { font-size: 10px; font-weight: 500; color: var(--bn-text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
-.bn-card-value { font-size: 22px; font-weight: 700; line-height: 1.2; }
-.bn-card-sub { font-size: 12px; font-weight: 400; color: var(--bn-text-muted); margin-left: 4px; }
-.bn-card-sub.ok { color: var(--bn-ok); font-weight: 600; }
-.bn-card-sub.warn { color: var(--bn-warn); font-weight: 600; }
-.bn-card-sub.critical { color: var(--bn-critical); font-weight: 600; }
-.bn-toolbar { display: grid; grid-template-columns: repeat(4, 1fr); background: var(--bn-surface); border-radius: 8px; overflow: hidden; }
-.bn-tool { text-align: center; font-size: 12px; font-weight: 500; padding: 9px 8px; color: var(--bn-ok); border-right: 0.5px solid var(--bn-border); }
-.bn-tool:last-child { border-right: none; }
-.bn-tool.warn { color: var(--bn-warn); }
-.bn-tool.critical { color: var(--bn-critical); }
-.bn-section-label { font-size: 11px; font-weight: 600; letter-spacing: 1px; color: var(--bn-text-muted); text-transform: uppercase; margin-bottom: 6px; }
-.bn-resumption { background: var(--bn-surface); border-radius: 8px; padding: 14px 18px; font-size: 12px; line-height: 1.7; color: var(--bn-text-muted); }
-.bn-steps { display: flex; flex-direction: column; gap: 6px; }
-.bn-step { font-size: 12px; line-height: 1.6; color: var(--bn-text); padding-left: 4px; }
-.bn-step.warn { color: var(--bn-warn); }
-.bn-alert { display: flex; align-items: flex-start; gap: 10px; border-radius: 8px; padding: 9px 16px; font-size: 12px; font-weight: 500; line-height: 1.5; }
-.bn-alert.warn { background: rgba(234,179,8,0.1); border: 1px solid rgba(234,179,8,0.3); color: var(--bn-warn); }
-.bn-alert.critical { background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3); color: var(--bn-critical); }
-.bn-suggested-card { background: var(--bn-surface); border: 0.5px solid var(--bn-border); border-left: 3px solid var(--bn-accent-start); border-radius: 8px; padding: 12px 14px; }
-.bn-suggested-display { font-size: 14px; font-weight: 700; color: var(--bn-text); line-height: 1.3; }
-.bn-suggested-rationale { font-size: 12px; font-weight: 400; color: var(--bn-text-muted); margin-top: 4px; line-height: 1.4; }
-</style>
 
-<div class="bn">
-  <div class="bn-header">
-    <div class="bn-header-text">
-      <div class="bn-version">PRISM v${e(data.version)}</div>
-      <div class="bn-title">Session ${data.session} \u2014 Finalized</div>
-    </div>
-    <div class="bn-badge">COMMITTED \u2713</div>
-  </div>
-  <div class="bn-body">
-    <div class="bn-timestamp">${e(data.timestamp)} CST</div>
-    <div class="bn-metrics">
-      <div class="bn-card">
-        <div class="bn-card-label">Session</div>
-        <div class="bn-card-value">${data.session}</div>
-      </div>
-      <div class="bn-card">
-        <div class="bn-card-label">Handoff</div>
-        <div class="bn-card-value">v${data.handoff_version} <span class="bn-card-sub ${data.handoff_status}">${e(data.handoff_label)}</span></div>
-      </div>
-      <div class="bn-card">
-        <div class="bn-card-label">Docs updated</div>
-        <div class="bn-card-value">${data.docs_updated}/${data.docs_total}</div>
-      </div>
-      <div class="bn-card">
-        <div class="bn-card-label">Decisions</div>
-        <div class="bn-card-value">${data.decisions_count} <span class="bn-card-sub">(${e(data.decisions_note)})</span></div>
-      </div>
-    </div>
-    <div class="bn-toolbar">
-      ${stepsHtml}
-    </div>
-    <div>
-      <div class="bn-section-label">Resumption point</div>
-      <div class="bn-resumption">${resumptionHtml}</div>
-    </div>${suggestedHtml}
-    <div>
-      <div class="bn-section-label">Deliverables</div>
-      <div class="bn-steps">
-        ${deliverablesHtml}
-      </div>
-    </div>
-    ${warningsHtml}
-    ${errorsHtml}
-  </div>
-</div>`;
+/**
+ * Assemble the finalization banner via the unified generator (brief-439 / R8).
+ *
+ * Shares the single banner code path with prism_bootstrap — boot and
+ * finalization banners are byte-consistent by construction. Replaces the
+ * deprecated HTML finalization widget (D-46, consumed by Rule 11 Step 6 /
+ * D-84): `finalization_banner_html` stays null for backward compatibility
+ * and `banner_text` carries this output instead. Contract: docs/banner-spec.md.
+ *
+ * Never throws — render failure falls back to the Rule 2 single-line format.
+ */
+async function assembleFinalizeBannerText(
+  projectSlug: string,
+  sessionNumber: number,
+  handoffVersion: number,
+  files: Array<{ path: string; content: string }>,
+  results: Array<{ path: string; success: boolean; verified: boolean }>,
+  allSucceeded: boolean,
+  bannerData?: {
+    deliverables?: Array<{ text: string; status: "ok" | "warn" }>;
+    decisions_note?: string;
+    step_statuses?: {
+      audit?: "ok" | "warn" | "critical";
+      draft?: "ok" | "warn" | "critical";
+      commit?: "ok" | "warn" | "critical";
+      verified?: "ok" | "warn" | "critical";
+    };
+  },
+): Promise<string> {
+  const docsTotal = LIVING_DOCUMENTS.length;
+
+  try {
+    // Same normalized count the commit confirmation uses — banner L2 and
+    // the confirmation sentence agree by construction, and {C} ≤ {T}.
+    const docsUpdated = countLivingDocumentsUpdated(results);
+
+    // Extract resumption + next steps from the handoff content in the commit
+    const handoffFile = files.find(
+      (f) => f.path === "handoff.md" || f.path === `${DOC_ROOT}/handoff.md`,
+    );
+    let resumption = "See handoff.md for resumption point.";
+    let nextStepsForRecommendation: string[] = [];
+    if (handoffFile) {
+      const whereWeAre = extractSection(handoffFile.content, "Where We Are")
+        ?? extractSection(handoffFile.content, "Current State")
+        ?? "";
+      if (whereWeAre.trim()) {
+        const firstParagraph = whereWeAre.split("\n\n")[0]?.trim();
+        if (firstParagraph) resumption = firstParagraph;
+      }
+      // brief-405 / D-191: parse next_steps for the classifier. The
+      // finalization banner is the primary pre-boot signal —
+      // handoff_next_steps is the canonical source.
+      nextStepsForRecommendation = parseNumberedList(
+        extractSection(handoffFile.content, "Next Steps")
+          ?? extractSection(handoffFile.content, "Immediate Next")
+          ?? ""
+      );
+    }
+
+    // Banner line 1 version segment: the framework template version the
+    // handoff declares — the same semantic the boot banner renders. Falls
+    // back to "unknown" exactly like boot when unparseable.
+    const templateVersion = handoffFile
+      ? (parseTemplateVersion(handoffFile.content) ?? "unknown")
+      : "unknown";
+
+    // brief-405 / D-191: classify the next session. Pure function, no I/O.
+    // Failure is non-fatal — the banner renders without the Suggested line.
+    let recommendation: SessionRecommendation | null = null;
+    try {
+      recommendation = classifySession({
+        next_steps: nextStepsForRecommendation,
+      });
+    } catch (classifyErr) {
+      logger.warn("session classifier failed (finalize)", {
+        error: classifyErr instanceof Error ? classifyErr.message : String(classifyErr),
+      });
+    }
+
+    // Handoff push status → line 2 parenthetical
+    const handoffResult = results.find(
+      (r) => r.path === "handoff.md" || r.path === `${DOC_ROOT}/handoff.md`,
+    );
+    let handoffNote = "pushed";
+    if (!handoffResult?.success) {
+      handoffNote = "push failed";
+    } else if (handoffResult && !handoffResult.verified) {
+      handoffNote = "unverified";
+    }
+
+    // Count decisions from the repo index, falling back to the commit files
+    // array (handles legacy paths and unmigrated repos).
+    let decisionsCount = 0;
+    try {
+      const indexDoc = await resolveDocPath(projectSlug, "decisions/_INDEX.md");
+      decisionsCount = parseMarkdownTable(indexDoc.content).length;
+    } catch {
+      const indexFile = files.find(
+        (f) =>
+          f.path === "decisions/_INDEX.md" ||
+          f.path === `${DOC_ROOT}/decisions/_INDEX.md`,
+      );
+      if (indexFile) {
+        decisionsCount = parseMarkdownTable(indexFile.content).length;
+      }
+    }
+
+    // Deliverables list — operator-supplied via banner_data, or a default
+    // push-count line. Per-item status is no longer rendered (push failures
+    // already surface as warning lines); the field is still accepted for
+    // backward compatibility.
+    const succeededCount = results.filter((r) => r.success).length;
+    const listItems = (
+      bannerData?.deliverables ?? [
+        { text: `${succeededCount} file${succeededCount === 1 ? "" : "s"} pushed`, status: "ok" as const },
+      ]
+    ).map((d) => d.text);
+
+    // Step row — operator overrides win; otherwise derived from the commit
+    const stepStatuses = bannerData?.step_statuses ?? {};
+    const allVerified = results.every((r) => r.success && r.verified);
+    const statusRow: BannerStatusEntry[] = [
+      { label: "audit", status: stepStatuses.audit ?? "ok" },
+      { label: "draft", status: stepStatuses.draft ?? "ok" },
+      { label: "commit", status: stepStatuses.commit ?? (allSucceeded ? "ok" : "critical") },
+      { label: "verified", status: stepStatuses.verified ?? (allVerified ? "ok" : "warn") },
+    ];
+
+    const bannerText = renderUnifiedBanner({
+      surface: "finalize",
+      templateVersion,
+      sessionNumber,
+      timestamp: generateCstTimestamp(),
+      handoffVersion,
+      handoffNote,
+      decisionCount: decisionsCount,
+      decisionNote: bannerData?.decisions_note ?? null,
+      docCount: docsUpdated,
+      docTotal: docsTotal,
+      statusRow,
+      suggested: recommendation
+        ? { display: recommendation.display, rationale: recommendation.rationale }
+        : null,
+      resumption,
+      listItems,
+      warnings: results
+        .filter((r) => !r.success)
+        .map((r) => `Push failed: ${r.path}`),
+    });
+
+    logger.info("finalization banner text rendered", { textLength: bannerText.length });
+    return bannerText;
+  } catch (bannerError) {
+    const msg = bannerError instanceof Error ? bannerError.message : String(bannerError);
+    logger.warn("finalization banner render failed — using single-line fallback", { error: msg });
+    const docsUpdatedFallback = results.filter((r) => r.success).length;
+    return renderBannerFallback({
+      sessionNumber,
+      handoffVersion,
+      docCount: Math.min(docsUpdatedFallback, docsTotal),
+      docTotal: docsTotal,
+    });
+  }
 }
 
 /**
@@ -1323,7 +1357,7 @@ async function fullPhase(
   handoffVersion: number,
   handoffContent: string,
   skipSynthesis: boolean,
-  _bannerData?: { deliverables?: Array<{text: string; status: "ok"|"warn"}>; decisions_note?: string; step_statuses?: { audit?: "ok"|"warn"|"critical"; draft?: "ok"|"warn"|"critical"; commit?: "ok"|"warn"|"critical"; verified?: "ok"|"warn"|"critical" } },
+  bannerData?: { deliverables?: Array<{text: string; status: "ok"|"warn"}>; decisions_note?: string; step_statuses?: { audit?: "ok"|"warn"|"critical"; draft?: "ok"|"warn"|"critical"; commit?: "ok"|"warn"|"critical"; verified?: "ok"|"warn"|"critical" } },
 ) {
   // Step 1 — Audit
   const auditResult = await auditPhase(projectSlug, sessionNumber);
@@ -1383,7 +1417,28 @@ async function fullPhase(
     diagnostics,
   );
 
-  // Step 5 — Return combined result.
+  // Step 5 — Finalization banner (brief-439 / R8). fullPhase previously
+  // returned no banner at all; the unified generator now serves all finalize
+  // surfaces. Real audit/draft outcomes feed the step row; operator-supplied
+  // step_statuses still win.
+  const bannerText = await assembleFinalizeBannerText(
+    projectSlug,
+    sessionNumber,
+    handoffVersion,
+    files,
+    commitResult.results,
+    commitResult.all_succeeded,
+    {
+      ...bannerData,
+      step_statuses: {
+        audit: auditStatus,
+        draft: draftStatus,
+        ...bannerData?.step_statuses,
+      },
+    },
+  );
+
+  // Step 6 — Return combined result.
   // Note: commitResult already contains project, session_number, handoff_version etc.
   // action and phases are unique to fullPhase; diagnostics overrides the one inside commitResult.
   return {
@@ -1397,8 +1452,10 @@ async function fullPhase(
       },
       commit: { all_succeeded: commitResult.all_succeeded, living_documents_updated: commitResult.living_documents_updated },
     },
-    // Spread top-level commit result fields for banner compatibility
     ...commitResult,
+    banner_text: bannerText,                    // brief-439 / R8: unified generator output
+    banner_spec_version: BANNER_SPEC_VERSION,   // brief-439 / R8: banner contract version this server emits
+    finalization_banner_html: null,             // brief-439 / R8: HTML widget deprecated — always null
     diagnostics: diagnostics.list(),
   };
 }
@@ -1463,13 +1520,47 @@ export function registerFinalize(server: McpServer): void {
             logger.warn("Could not fetch rules-session-end.md — session-end rules not delivered");
           }
 
+          // brief-439 / R8: banner_spec_version handshake on the finalize
+          // side. Rule 11 Step 6 (D-84) — the finalization banner consumer —
+          // lives in rules-session-end.md, so its declared Banner-Spec-Version
+          // is compared here. Mismatch logs a BANNER_DRIFT warn diagnostic —
+          // visibility only, never blocking. No declaration = pre-handshake
+          // template = not drift. Contract: docs/banner-spec.md.
+          let templateBannerSpecVersion: string | null = null;
+          if (sessionEndRules) {
+            templateBannerSpecVersion = parseTemplateBannerSpecVersion(sessionEndRules);
+            if (
+              templateBannerSpecVersion !== null &&
+              templateBannerSpecVersion !== BANNER_SPEC_VERSION
+            ) {
+              diagnostics.warn(
+                "BANNER_DRIFT",
+                `Session-end rules template declares banner spec ${templateBannerSpecVersion}; server emits ${BANNER_SPEC_VERSION}. Align rules-session-end.md with docs/banner-spec.md.`,
+                {
+                  template_declared: templateBannerSpecVersion,
+                  server_emitted: BANNER_SPEC_VERSION,
+                },
+              );
+              logger.warn("banner spec drift detected (finalize audit)", {
+                template_declared: templateBannerSpecVersion,
+                server_emitted: BANNER_SPEC_VERSION,
+              });
+            }
+          }
+
           logger.info("prism_finalize audit complete", {
             project_slug,
             sessionEndRulesDelivered: !!sessionEndRules,
             ms: Date.now() - start,
           });
           return {
-            content: [{ type: "text" as const, text: JSON.stringify({ ...result, session_end_rules: sessionEndRules, diagnostics: diagnostics.list() }) }],
+            content: [{ type: "text" as const, text: JSON.stringify({
+              ...result,
+              session_end_rules: sessionEndRules,
+              banner_spec_version: BANNER_SPEC_VERSION,                   // brief-439 / R8
+              template_banner_spec_version: templateBannerSpecVersion,    // brief-439 / R8 (null = pre-handshake template)
+              diagnostics: diagnostics.list(),
+            }) }],
           };
         }
 
@@ -1637,126 +1728,21 @@ export function registerFinalize(server: McpServer): void {
           ms: Date.now() - phaseStart,
         });
 
-        // Render finalization banner (D-46)
-        let finalization_banner_html: string | null = null;
-        try {
-          // Count living docs updated from the files array
-          const livingDocPatterns = [...LIVING_DOCUMENTS, "decisions/"];
-          const docsUpdated = result.results.filter((r) =>
-            r.success && livingDocPatterns.some((ld) => r.path === ld || r.path.startsWith(ld))
-          ).length;
-
-          // Extract resumption from handoff.md content in files array
-          const handoffFile = files.find(
-            (f) => f.path === "handoff.md" || f.path === `${DOC_ROOT}/handoff.md`,
-          );
-          let resumption = "See handoff.md for resumption point.";
-          let nextStepsForRecommendation: string[] = [];
-          if (handoffFile) {
-            const whereWeAre = extractSection(handoffFile.content, "Where We Are")
-              ?? extractSection(handoffFile.content, "Current State")
-              ?? "";
-            if (whereWeAre.trim()) {
-              // Grab first paragraph
-              const firstParagraph = whereWeAre.split("\n\n")[0]?.trim();
-              if (firstParagraph) resumption = firstParagraph;
-            }
-            // brief-405 / D-191: parse next_steps for the classifier. The
-            // commit-phase finalization banner is the primary pre-boot
-            // signal — handoff_next_steps is the canonical source.
-            nextStepsForRecommendation = parseNumberedList(
-              extractSection(handoffFile.content, "Next Steps")
-                ?? extractSection(handoffFile.content, "Immediate Next")
-                ?? ""
-            );
-          }
-
-          // brief-405 / D-191: classify the next session. Pure function,
-          // no I/O. Failure here is non-fatal — banner just renders without
-          // the suggested section.
-          let recommendation: SessionRecommendation | null = null;
-          try {
-            recommendation = classifySession({
-              next_steps: nextStepsForRecommendation,
-            });
-          } catch (classifyErr) {
-            logger.warn("session classifier failed (finalize)", {
-              error: classifyErr instanceof Error ? classifyErr.message : String(classifyErr),
-            });
-          }
-
-          // Determine handoff push status
-          const handoffResult = result.results.find(
-            (r) => r.path === "handoff.md" || r.path === `${DOC_ROOT}/handoff.md`,
-          );
-          let handoffStatus: "ok" | "warn" = "ok";
-          let handoffLabel = "pushed";
-          if (!handoffResult?.success) {
-            handoffStatus = "warn";
-            handoffLabel = "push failed";
-          } else if (handoffResult && !handoffResult.verified) {
-            handoffStatus = "warn";
-            handoffLabel = "unverified";
-          }
-
-          // Count decisions from _INDEX.md in files array
-          let decisionsCount = 0;
-          try {
-            const indexDoc = await resolveDocPath(project_slug, "decisions/_INDEX.md");
-            decisionsCount = parseMarkdownTable(indexDoc.content).length;
-          } catch {
-            // Fall back to commit files array (handles legacy paths and unmigrated repos)
-            const indexFile = files.find(
-              (f) =>
-                f.path === "decisions/_INDEX.md" ||
-                f.path === `${DOC_ROOT}/decisions/_INDEX.md`,
-            );
-            if (indexFile) {
-              decisionsCount = parseMarkdownTable(indexFile.content).length;
-            }
-          }
-
-          // Build deliverables
-          const deliverables = banner_data?.deliverables ?? [
-            { text: `\u2713 ${result.results.filter((r) => r.success).length} files pushed`, status: "ok" as const },
-          ];
-
-          // Build steps toolbar
-          const stepStatuses = banner_data?.step_statuses ?? {};
-          const allVerified = result.results.every((r) => r.success && r.verified);
-          const steps: Array<{ label: string; status: "ok" | "warn" | "critical" }> = [
-            { label: "audit", status: stepStatuses.audit ?? "ok" },
-            { label: "draft", status: stepStatuses.draft ?? "ok" },
-            { label: "commit", status: stepStatuses.commit ?? (result.all_succeeded ? "ok" : "critical") },
-            { label: "verified", status: stepStatuses.verified ?? (allVerified ? "ok" : "warn") },
-          ];
-
-          finalization_banner_html = renderFinalizationBanner({
-            version: SERVER_VERSION,
-            session: session_number,
-            timestamp: generateCstTimestamp(),
-            handoff_version: handoff_version ?? 1,
-            handoff_status: handoffStatus,
-            handoff_label: handoffLabel,
-            docs_updated: docsUpdated,
-            docs_total: 10,
-            decisions_count: decisionsCount,
-            decisions_note: banner_data?.decisions_note ?? "see index",
-            steps,
-            resumption,
-            deliverables,
-            warnings: result.results
-              .filter((r) => !r.success)
-              .map((r) => `Push failed: ${r.path}`),
-            errors: [],
-            suggested: recommendation,
-          });
-
-          logger.info("finalization banner rendered", { htmlLength: finalization_banner_html.length });
-        } catch (bannerError) {
-          const bannerMsg = bannerError instanceof Error ? bannerError.message : String(bannerError);
-          logger.warn("finalization banner render failed", { error: bannerMsg });
-        }
+        // brief-439 / R8: finalization banner via the unified generator —
+        // the single code path shared with prism_bootstrap. The HTML widget
+        // (D-46) is deprecated: finalization_banner_html is always null
+        // (kept for backward compatibility with Rule 11 Step 6 consumers,
+        // whose null path falls back to the minimal text confirmation) and
+        // banner_text carries the banner. Contract: docs/banner-spec.md.
+        const bannerText = await assembleFinalizeBannerText(
+          project_slug,
+          session_number,
+          handoff_version ?? 1,
+          files,
+          result.results,
+          result.all_succeeded,
+          banner_data,
+        );
 
         // Surface diagnostics for partial commits and synthesis outcomes
         if (!result.all_succeeded) {
@@ -1770,12 +1756,18 @@ export function registerFinalize(server: McpServer): void {
         logger.info("prism_finalize commit complete", {
           project_slug,
           allSucceeded: result.all_succeeded,
-          bannerRendered: !!finalization_banner_html,
+          bannerTextBytes: bannerText.length,
           ms: Date.now() - start,
         });
 
         return {
-          content: [{ type: "text" as const, text: JSON.stringify({ ...result, finalization_banner_html, diagnostics: diagnostics.list() }) }],
+          content: [{ type: "text" as const, text: JSON.stringify({
+            ...result,
+            banner_text: bannerText,                    // brief-439 / R8: unified generator output
+            banner_spec_version: BANNER_SPEC_VERSION,   // brief-439 / R8: banner contract version this server emits
+            finalization_banner_html: null,             // brief-439 / R8: HTML widget deprecated — always null
+            diagnostics: diagnostics.list(),
+          }) }],
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
