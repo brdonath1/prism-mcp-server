@@ -4,10 +4,17 @@
  */
 
 import { pushFile } from "../github/client.js";
-import { CC_SUBPROCESS_SYNTHESIS_TIMEOUT_MS, LIVING_DOCUMENT_NAMES, SYNTHESIS_ENABLED, SYNTHESIS_TIMEOUT_MS } from "../config.js";
+import {
+  CC_SUBPROCESS_SYNTHESIS_TIMEOUT_MS,
+  LIVING_DOCUMENT_NAMES,
+  SYNTHESIS_ENABLED,
+  SYNTHESIS_INPUT_MAX_TOKENS,
+  SYNTHESIS_TIMEOUT_MS,
+} from "../config.js";
 import { resolveDocFiles, resolveDocPushPath } from "../utils/doc-resolver.js";
 import { logger } from "../utils/logger.js";
 import { synthesize } from "./client.js";
+import { boundSynthesisInput, type SynthesisInputBudgetReport } from "./input-budget.js";
 import {
   FINALIZATION_SYNTHESIS_PROMPT,
   PENDING_DOC_UPDATES_PROMPT,
@@ -27,6 +34,12 @@ export interface SynthesisOutcome {
   input_tokens?: number;
   output_tokens?: number;
   error?: string;
+  /** brief-445 / R3-dur: pre/post-trim token estimates for the assembled
+   *  synthesis input, plus what (if anything) the input bound trimmed.
+   *  Present once the input has been assembled — including on failures after
+   *  assembly, so a timeout can be correlated with the input size that
+   *  produced it. Log-only observability; never an error condition. */
+  input_budget?: SynthesisInputBudgetReport;
 }
 
 /**
@@ -42,6 +55,9 @@ export async function generateIntelligenceBrief(
   }
 
   const start = Date.now();
+  // brief-445 / R3-dur: populated once the input is assembled, so every
+  // outcome (including failures after assembly) carries the budget report.
+  let inputBudget: SynthesisInputBudgetReport | undefined;
 
   try {
     // 1. Fetch ALL living documents (exclude intelligence-brief.md itself to avoid circular reference).
@@ -73,15 +89,41 @@ export async function generateIntelligenceBrief(
     // Merge all documents
     const allDocs = new Map([...docMap, ...domainMap]);
 
-    // 2. Build the user message
+    // 2. Bound the combined input (brief-445 / R3-dur — durable CS-1 timeout
+    //    backstop), then build the user message from the bounded doc set.
+    //    Normal-case inputs (post-438, under the ceiling) pass through
+    //    unchanged; over-ceiling inputs are deterministically priority-trimmed
+    //    (see src/ai/input-budget.ts for the trim order) instead of running
+    //    into SYNTHESIS_TIMEOUT.
     const timestamp = generateCstTimestamp();
-    const userMessage = buildSynthesisUserMessage(projectSlug, sessionNumber, timestamp, allDocs);
+    const bounded = boundSynthesisInput(allDocs, (docs) =>
+      buildSynthesisUserMessage(projectSlug, sessionNumber, timestamp, docs),
+    );
+    inputBudget = {
+      pre_trim_tokens: bounded.pre_trim_tokens,
+      post_trim_tokens: bounded.post_trim_tokens,
+      trimmed: bounded.trimmed,
+      trimmed_docs: bounded.trimmed_docs,
+    };
+    const userMessage = buildSynthesisUserMessage(
+      projectSlug,
+      sessionNumber,
+      timestamp,
+      bounded.docs,
+    );
 
     logger.info("Synthesis input assembled", {
       projectSlug,
       sessionNumber,
-      documentCount: allDocs.size,
-      totalBytes: Array.from(allDocs.values()).reduce((sum, d) => sum + d.size, 0),
+      documentCount: bounded.docs.size,
+      totalBytes: Array.from(bounded.docs.values()).reduce((sum, d) => sum + d.size, 0),
+      // brief-445 / R3-dur observability: pre/post token estimates + what was
+      // trimmed, so an operator can read input headroom straight off the logs.
+      pre_trim_tokens: inputBudget.pre_trim_tokens,
+      post_trim_tokens: inputBudget.post_trim_tokens,
+      input_trimmed: inputBudget.trimmed,
+      trimmed_docs: inputBudget.trimmed_docs,
+      input_token_ceiling: SYNTHESIS_INPUT_MAX_TOKENS,
     });
 
     // 3. Call Opus 4.7 with adaptive thinking (Phase 3a — CS-2).
@@ -115,7 +157,7 @@ export async function generateIntelligenceBrief(
         error: result.error,
         duration_ms: Date.now() - start,
       });
-      return { success: false, error: result.error };
+      return { success: false, error: result.error, input_budget: inputBudget };
     }
 
     // 4. Validate the response has required sections. The canonical section
@@ -147,6 +189,7 @@ export async function generateIntelligenceBrief(
       bytes_written: new TextEncoder().encode(content).length,
       input_tokens: result.input_tokens,
       output_tokens: result.output_tokens,
+      input_budget: inputBudget,
     };
 
     logger.info("Intelligence brief generated and pushed", {
@@ -186,7 +229,7 @@ export async function generateIntelligenceBrief(
       duration_ms: duration,
     });
 
-    return { success: false, error: message };
+    return { success: false, error: message, input_budget: inputBudget };
   }
 }
 
@@ -210,6 +253,9 @@ export async function generatePendingDocUpdates(
   }
 
   const start = Date.now();
+  // brief-445 / R3-dur: populated once the input is assembled, so every
+  // outcome (including failures after assembly) carries the budget report.
+  let inputBudget: SynthesisInputBudgetReport | undefined;
 
   try {
     // 1. Fetch ALL living documents minus intelligence-brief.md AND
@@ -241,20 +287,37 @@ export async function generatePendingDocUpdates(
 
     const allDocs = new Map([...docMap, ...domainMap]);
 
-    // 2. Build the user message
+    // 2. Bound the combined input (brief-445 / R3-dur), then build the user
+    //    message from the bounded doc set — same backstop as
+    //    generateIntelligenceBrief; see src/ai/input-budget.ts.
     const timestamp = generateCstTimestamp();
+    const bounded = boundSynthesisInput(allDocs, (docs) =>
+      buildPendingDocUpdatesUserMessage(projectSlug, sessionNumber, timestamp, docs),
+    );
+    inputBudget = {
+      pre_trim_tokens: bounded.pre_trim_tokens,
+      post_trim_tokens: bounded.post_trim_tokens,
+      trimmed: bounded.trimmed,
+      trimmed_docs: bounded.trimmed_docs,
+    };
     const userMessage = buildPendingDocUpdatesUserMessage(
       projectSlug,
       sessionNumber,
       timestamp,
-      allDocs,
+      bounded.docs,
     );
 
     logger.info("Pending doc-updates synthesis input assembled", {
       projectSlug,
       sessionNumber,
-      documentCount: allDocs.size,
-      totalBytes: Array.from(allDocs.values()).reduce((sum, d) => sum + d.size, 0),
+      documentCount: bounded.docs.size,
+      totalBytes: Array.from(bounded.docs.values()).reduce((sum, d) => sum + d.size, 0),
+      // brief-445 / R3-dur observability — mirrors the intelligence-brief log.
+      pre_trim_tokens: inputBudget.pre_trim_tokens,
+      post_trim_tokens: inputBudget.post_trim_tokens,
+      input_trimmed: inputBudget.trimmed,
+      trimmed_docs: inputBudget.trimmed_docs,
+      input_token_ceiling: SYNTHESIS_INPUT_MAX_TOKENS,
     });
 
     // 3. Call synthesize with callSite="pdu" so per-call-site routing
@@ -290,7 +353,7 @@ export async function generatePendingDocUpdates(
         duration_ms: Date.now() - start,
         synthesis_kind: "pending_updates",
       });
-      return { success: false, error: result.error };
+      return { success: false, error: result.error, input_budget: inputBudget };
     }
 
     // 4. Validate response sections — lenient (warn-and-push, don't fail).
@@ -368,6 +431,7 @@ export async function generatePendingDocUpdates(
       bytes_written: new TextEncoder().encode(content).length,
       input_tokens: result.input_tokens,
       output_tokens: result.output_tokens,
+      input_budget: inputBudget,
     };
 
     logger.info("Pending doc-updates generated and pushed", {
@@ -417,6 +481,6 @@ export async function generatePendingDocUpdates(
       synthesis_kind: "pending_updates",
     });
 
-    return { success: false, error: message };
+    return { success: false, error: message, input_budget: inputBudget };
   }
 }
