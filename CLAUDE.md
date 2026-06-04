@@ -6,7 +6,7 @@ This is the **PRISM MCP Server** — a custom remote MCP (Model Context Protocol
 
 **Owner:** Brian (brdonath1 on GitHub)
 **Framework:** PRISM — current version pinned by the framework repo's core-template; fetched dynamically at bootstrap.
-**Server Version:** 4.0.0
+**Server Version:** 4.7.0
 **Status:** Production — deployed on Railway, serving all active PRISM projects.
 
 ## What PRISM Is
@@ -25,11 +25,12 @@ The MCP server is the v2 evolution — separating Claude into a pure reasoning a
 └───────────────┬───────────────────────────────┘
                 │ MCP Protocol (HTTPS)
 ┌───────────────▼───────────────────────────────┐
-│  PRISM MCP Server (Railway) — v4.0.0          │
-│  18 MCP tools — stateless proxy               │
-│  ├── 12 PRISM  (bootstrap/fetch/push/...)     │
+│  PRISM MCP Server (Railway) — v4.7.0          │
+│  23 MCP tools — stateless proxy               │
+│  ├── 13 PRISM  (bootstrap/fetch/push/...)     │
 │  ├──  4 Railway (logs/deploy/env/status)      │
-│  └──  2 Claude Code (cc_dispatch/cc_status)   │
+│  ├──  2 Claude Code (cc_dispatch/cc_status)   │
+│  └──  4 GitHub (branch/release/tag ops)       │
 │  Parallelized GitHub API operations           │
 │  Server-side validation + synthesis + dedup   │
 └──┬──────────────────────┬──────────────────┬──┘
@@ -53,7 +54,7 @@ The MCP server is the v2 evolution — separating Claude into a pure reasoning a
 - **HTTP framework:** Express 5.x
 - **Transport:** MCP Streamable HTTP, **stateless mode** (`sessionIdGenerator: undefined`)
 - **Validation:** Zod
-- **AI Synthesis:** `@anthropic-ai/sdk` (Opus 4.6 for intelligence briefs)
+- **AI Synthesis:** `@anthropic-ai/sdk` (Opus 4.8 for intelligence briefs)
 - **Claude Code orchestration:** `@anthropic-ai/claude-agent-sdk` + `@anthropic-ai/claude-code` (subprocess)
 - **GitHub API client:** Plain `fetch` (Node.js 18+ built-in) — no Octokit
 - **Hosting:** Railway (persistent Node.js service)
@@ -117,9 +118,11 @@ prism-mcp-server/
 │   │   ├── log-decision.ts       # prism_log_decision (dedup — brief-104 A.1)
 │   │   ├── log-insight.ts        # prism_log_insight
 │   │   ├── patch.ts              # prism_patch
+│   │   ├── load-rules.ts         # prism_load_rules
 │   │   ├── railway-*.ts          # 4 Railway tools (brief-103)
 │   │   ├── cc-dispatch.ts        # cc_dispatch (brief-104)
-│   │   └── cc-status.ts          # cc_status (brief-104)
+│   │   ├── cc-status.ts          # cc_status (brief-104)
+│   │   └── gh-*.ts               # 4 GitHub utility tools (brief-403/404)
 │   ├── middleware/               # auth + request logging
 │   ├── validation/               # Server-side push validation
 │   └── utils/                    # doc-resolver, doc-guard, logger, etc.
