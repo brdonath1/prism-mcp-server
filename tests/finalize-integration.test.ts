@@ -1027,6 +1027,160 @@ describe("prism_finalize archive lifecycle (S40 FINDING-14 C2)", () => {
   });
 });
 
+// ── Archival decoupled from files[] (brief-435 / D-240 Phase B R2-A) ────────────
+//
+// prism_log_insight commits insights.md out-of-band during the session, so at
+// finalize time it is already committed and absent from the files[] array. The
+// pre-brief-435 applyArchive bailed on `liveIdx === -1`, which meant D-80
+// retention NEVER fired for insights.md (audit brief-431 §6.3.1). These tests
+// pin the decoupled behavior: retention-eligible docs absent from files[] are
+// fetched from the repo, split, and land in the same atomic finalize commit.
+
+describe("prism_finalize archival decoupled from files[] (brief-435 R2-A)", () => {
+  /** Build an insights.md exceeding 20KB with the D-80 `## Active` section shape. */
+  function buildLargeInsights(entryCount: number, bodyChars = 800): string {
+    const lines = ["# Insights — PRISM Framework", "", "## Active", ""];
+    for (let n = 1; n <= entryCount; n++) {
+      lines.push(`### INS-${n}: entry ${n}`);
+      lines.push("x".repeat(bodyChars));
+      lines.push("");
+    }
+    lines.push("## Formalized", "");
+    lines.push("<!-- EOF: insights.md -->");
+    return lines.join("\n");
+  }
+
+  const SMALL_SESSION_LOG =
+    "# Session Log -- PRISM Framework\n\n### Session 146 (2026-06-03)\nbody\n\n<!-- EOF: session-log.md -->";
+
+  it("over-threshold insights.md absent from files[] → fetched, pruned, archived in the same atomic commit (audit §9(d) regression)", async () => {
+    const bigInsights = buildLargeInsights(30, 800);
+    expect(bigInsights.length).toBeGreaterThan(20_000);
+
+    // insights.md lives in the repo (committed out-of-band by prism_log_insight);
+    // archive does not exist yet; everything else resolves to handoff content.
+    mockFetchFile.mockImplementation(async (_repo: string, path: string) => {
+      if (path === ".prism/insights.md") {
+        return { content: bigInsights, sha: "inssha", size: bigInsights.length };
+      }
+      if (path.includes("-archive.md")) throw new Error("Not found");
+      return { content: HANDOFF_CONTENT, sha: "sha", size: HANDOFF_CONTENT.length };
+    });
+    mockListDirectory.mockResolvedValue([]);
+    mockPushFile.mockResolvedValue({ success: true, size: 100, sha: "new" });
+
+    let capturedFiles: Array<{ path: string; content: string }> = [];
+    mockCreateAtomicCommit.mockImplementation(async (_repo, files, _msg) => {
+      capturedFiles = files;
+      return { success: true, sha: "atomic_sha", files_committed: files.length };
+    });
+
+    // NOTE: insights.md is deliberately NOT in files[] — that's the bug under test.
+    const result = await callFinalizeTool({
+      project_slug: "test-project",
+      action: "commit",
+      session_number: 146,
+      handoff_version: 31,
+      skip_synthesis: true,
+      files: [{ path: "session-log.md", content: SMALL_SESSION_LOG }],
+    });
+
+    const data = parseResult(result);
+    expect(data.all_succeeded).toBe(true);
+
+    const paths = capturedFiles.map(f => f.path);
+    // Archive produced even though insights.md was not declared in files[]
+    expect(paths).toContain(".prism/insights-archive.md");
+    // Pruned live doc rides the SAME atomic commit
+    expect(paths).toContain(".prism/insights.md");
+
+    const liveFile = capturedFiles.find(f => f.path === ".prism/insights.md")!;
+    const archiveFile = capturedFiles.find(f => f.path === ".prism/insights-archive.md")!;
+
+    // Live doc shrinks (archivedCount > 0 ⇒ entries moved out)
+    expect(liveFile.content.length).toBeLessThan(bigInsights.length);
+    expect(liveFile.content).toContain("<!-- EOF: insights.md -->");
+    // Oldest entries moved to archive (mostRecentAt: bottom, retention 15 of 30)
+    expect(archiveFile.content).toContain("# Insights Archive");
+    expect(archiveFile.content).toContain("### INS-1: entry 1");
+    // Most-recent entries stay live; archived ones are gone from live
+    expect(liveFile.content).toContain("### INS-30: entry 30");
+    expect(liveFile.content).not.toContain("### INS-1: entry 1");
+    // Operator-declared session-log.md still committed untouched
+    const sessionLog = capturedFiles.find(f => f.path === "session-log.md")!;
+    expect(sessionLog.content).toBe(SMALL_SESSION_LOG);
+  });
+
+  it("doc absent from files[] AND absent from repo → archival skips fail-open, nothing injected", async () => {
+    mockFetchFile.mockImplementation(async (_repo: string, path: string) => {
+      if (path === ".prism/insights.md" || path.includes("-archive.md")) {
+        throw new Error("Not found");
+      }
+      return { content: HANDOFF_CONTENT, sha: "sha", size: HANDOFF_CONTENT.length };
+    });
+    mockListDirectory.mockResolvedValue([]);
+    mockPushFile.mockResolvedValue({ success: true, size: 100, sha: "new" });
+
+    let capturedFiles: Array<{ path: string; content: string }> = [];
+    mockCreateAtomicCommit.mockImplementation(async (_repo, files, _msg) => {
+      capturedFiles = files;
+      return { success: true, sha: "atomic_sha", files_committed: files.length };
+    });
+
+    const result = await callFinalizeTool({
+      project_slug: "test-project",
+      action: "commit",
+      session_number: 146,
+      handoff_version: 31,
+      skip_synthesis: true,
+      files: [{ path: "session-log.md", content: SMALL_SESSION_LOG }],
+    });
+
+    const data = parseResult(result);
+    // Finalize still succeeds — a missing doc is genuinely nothing to archive
+    expect(data.all_succeeded).toBe(true);
+    expect(capturedFiles).toHaveLength(1);
+    expect(capturedFiles[0].path).toBe("session-log.md");
+    expect(capturedFiles[0].content).toBe(SMALL_SESSION_LOG);
+  });
+
+  it("fetched out-of-band doc under threshold → no injection, commit unchanged", async () => {
+    const smallInsights =
+      "# Insights — PRISM Framework\n\n## Active\n\n### INS-1: small\nbody\n\n## Formalized\n\n<!-- EOF: insights.md -->";
+
+    mockFetchFile.mockImplementation(async (_repo: string, path: string) => {
+      if (path === ".prism/insights.md") {
+        return { content: smallInsights, sha: "inssha", size: smallInsights.length };
+      }
+      if (path.includes("-archive.md")) throw new Error("Not found");
+      return { content: HANDOFF_CONTENT, sha: "sha", size: HANDOFF_CONTENT.length };
+    });
+    mockListDirectory.mockResolvedValue([]);
+    mockPushFile.mockResolvedValue({ success: true, size: 100, sha: "new" });
+
+    let capturedFiles: Array<{ path: string; content: string }> = [];
+    mockCreateAtomicCommit.mockImplementation(async (_repo, files, _msg) => {
+      capturedFiles = files;
+      return { success: true, sha: "atomic_sha", files_committed: files.length };
+    });
+
+    const result = await callFinalizeTool({
+      project_slug: "test-project",
+      action: "commit",
+      session_number: 146,
+      handoff_version: 31,
+      skip_synthesis: true,
+      files: [{ path: "session-log.md", content: SMALL_SESSION_LOG }],
+    });
+
+    const data = parseResult(result);
+    expect(data.all_succeeded).toBe(true);
+    // Under-threshold fetched doc must NOT be re-committed
+    expect(capturedFiles).toHaveLength(1);
+    expect(capturedFiles[0].path).toBe("session-log.md");
+  });
+});
+
 // ── Auto-Backup Behavior (INS-14 / Bug-A + Bug-B) ────────────────────────────
 
 describe("prism_finalize auto-backup (INS-14)", () => {
