@@ -96,9 +96,12 @@ export function extractStandingRules(insightsContent: string | null): StandingRu
  * (case-insensitive substring match). Returns false when openingMessage is empty/undefined or
  * the rule has no topics.
  *
- * This matcher powers the bootstrap path — it expands a free-form opening message into the set
- * of topics it implies, then checks rule.topics against that set. The explicit-topic path
- * (prism_load_rules) uses {@link matchesExplicitTopic} instead.
+ * History: this matcher powered the bootstrap path until R7-b (D-240 Phase B)
+ * made Tier B delivery unconditional at boot — it expands a free-form opening
+ * message into the set of topics it implies, then checks rule.topics against
+ * that set. Kept exported per the INS-28 back-compat contract (bootstrap.ts
+ * re-exports it). The explicit-topic path (prism_load_rules) uses
+ * {@link matchesExplicitTopic} instead.
  */
 export function topicMatch(openingMessage: string | undefined, ruleTopics: string[]): boolean {
   if (!openingMessage || ruleTopics.length === 0) return false;
@@ -114,24 +117,21 @@ export function topicMatch(openingMessage: string | undefined, ruleTopics: strin
 }
 
 /**
- * Select which standing rules to deliver at bootstrap based on tier (D-156).
+ * Select which standing rules to deliver at bootstrap based on tier.
  *
- * Selection rules:
+ * Selection rules (R7-b / D-240 Phase B — deliberate reversal of the D-156
+ * topic-gated Tier B selection under the 500K-context rationale; do NOT
+ * re-introduce topic gating as a token optimization):
  * - Tier A: always include (behavioral judgment rules effective across every session)
- * - Tier B: include if topicMatch returns true (rule's topics overlap with opening_message keywords)
- * - Tier C: never include at bootstrap (reference-only; available via prism_load_rules in PR 4)
+ * - Tier B: always include (pre-R7-b these loaded only when the opening
+ *   message's keyword profile matched the rule's topics via {@link topicMatch})
+ * - Tier C: bodies never included at bootstrap (reference-only; available via
+ *   prism_load_rules) — bootstrap ships a Tier-C INDEX (IDs + titles) instead
  *
  * Returns a new array — does not mutate the input. Order is preserved from the input.
  */
-export function selectStandingRulesForBoot(
-  rules: StandingRule[],
-  openingMessage: string | undefined,
-): StandingRule[] {
-  return rules.filter(rule => {
-    if (rule.tier === "A") return true;
-    if (rule.tier === "B") return topicMatch(openingMessage, rule.topics);
-    return false; // tier C
-  });
+export function selectStandingRulesForBoot(rules: StandingRule[]): StandingRule[] {
+  return rules.filter(rule => rule.tier === "A" || rule.tier === "B");
 }
 
 /**

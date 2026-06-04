@@ -39,42 +39,41 @@ describe("topicMatch", () => {
   });
 });
 
-describe("selectStandingRulesForBoot", () => {
+describe("selectStandingRulesForBoot (R7-b / D-240 Phase B: Tier A + ALL Tier B, no topic gate)", () => {
   it("includes all Tier A rules unconditionally", () => {
     const rules = [tierA("INS-1"), tierA("INS-2")];
-    expect(selectStandingRulesForBoot(rules, undefined)).toHaveLength(2);
-    expect(selectStandingRulesForBoot(rules, "")).toHaveLength(2);
-    expect(selectStandingRulesForBoot(rules, "anything")).toHaveLength(2);
+    expect(selectStandingRulesForBoot(rules)).toHaveLength(2);
   });
 
-  it("excludes Tier B rules when openingMessage is undefined", () => {
-    const rules = [tierA("INS-1"), tierB("INS-2", ["cc_dispatch"])];
-    const out = selectStandingRulesForBoot(rules, undefined);
-    expect(out.map(r => r.id)).toEqual(["INS-1"]);
-  });
-
-  it("includes Tier B rules when topic keywords match the opening message", () => {
+  it("includes Tier B rules even when no opening-message topics would have matched (gate reversed by R7-b)", () => {
+    // Pre-R7-b these only loaded on a topic match against the opening
+    // message; D-240 Phase B delivers ALL Tier B at boot.
     const rules = [tierA("INS-1"), tierB("INS-2", ["cc_dispatch"]), tierB("INS-3", ["trigger"])];
-    const out = selectStandingRulesForBoot(rules, "let me dispatch a CC brief");
-    expect(out.map(r => r.id).sort()).toEqual(["INS-1", "INS-2"]);
+    const out = selectStandingRulesForBoot(rules);
+    expect(out.map(r => r.id)).toEqual(["INS-1", "INS-2", "INS-3"]);
   });
 
-  it("never includes Tier C rules even when topic keywords match", () => {
+  it("includes Tier B rules that have no topics at all", () => {
+    const rules = [tierB("INS-2", [])];
+    expect(selectStandingRulesForBoot(rules).map(r => r.id)).toEqual(["INS-2"]);
+  });
+
+  it("never includes Tier C rule bodies (reference-only; index ships separately)", () => {
     const rules = [tierA("INS-1"), tierC("INS-2", ["cc_dispatch"])];
-    const out = selectStandingRulesForBoot(rules, "let me dispatch a CC brief");
+    const out = selectStandingRulesForBoot(rules);
     expect(out.map(r => r.id)).toEqual(["INS-1"]);
   });
 
   it("preserves input order", () => {
     const rules = [tierB("INS-3", ["cc_dispatch"]), tierA("INS-1"), tierB("INS-2", ["cc_dispatch"])];
-    const out = selectStandingRulesForBoot(rules, "dispatch");
+    const out = selectStandingRulesForBoot(rules);
     expect(out.map(r => r.id)).toEqual(["INS-3", "INS-1", "INS-2"]);
   });
 
   it("does not mutate the input array", () => {
     const rules = [tierA("INS-1"), tierB("INS-2", ["cc_dispatch"])];
     const before = rules.length;
-    selectStandingRulesForBoot(rules, "");
+    selectStandingRulesForBoot(rules);
     expect(rules.length).toBe(before);
   });
 
@@ -82,7 +81,7 @@ describe("selectStandingRulesForBoot", () => {
     // Every rule has tier "A" and topics [] (the default when no tag present)
     const rules: StandingRule[] = ["INS-22","INS-32","INS-33","INS-34","INS-35","INS-37","INS-39","INS-40","INS-43"]
       .map(id => tierA(id));
-    const out = selectStandingRulesForBoot(rules, undefined);
+    const out = selectStandingRulesForBoot(rules);
     expect(out).toHaveLength(rules.length);
   });
 });
