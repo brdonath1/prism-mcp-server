@@ -212,16 +212,25 @@ describe("T-1: bootstrap response size budget", () => {
     expect(fatTokens).toBeGreaterThan(baselineTokens);
   });
 
-  it("standing_rules array length < 10 entries", async () => {
+  it("standing_rules delivers every Tier A + Tier B rule (R7-b — D-47-era cap reversed)", async () => {
+    // Fixture insights.md carries exactly one Tier A rule (INS-6); the R7-b
+    // contract is all-A+B delivery, so exactly that one arrives.
     const result = await bootstrapHandler({ project_slug: "prism", opening_message: "Begin next session" });
     const parsed = JSON.parse(result.content[0].text);
-    expect(parsed.standing_rules.length).toBeLessThan(10);
+    expect(parsed.standing_rules.map((r: { id: string }) => r.id)).toEqual(["INS-6"]);
+    expect(parsed.standing_rules_tier_c_index).toEqual([]);
   });
 
-  it("prefetched_documents array length <= 2 entries", async () => {
+  it("prefetched_documents is bounded only by the distinct PREFETCH_KEYWORDS targets (QW-4 cap removed, R7-b)", async () => {
     const result = await bootstrapHandler({ project_slug: "prism", opening_message: "Begin next session" });
     const parsed = JSON.parse(result.content[0].text);
-    expect(parsed.prefetched_documents.length).toBeLessThanOrEqual(2);
+    // "Begin next session" matches no prefetch keyword — nothing prefetched.
+    // The structural bound is the distinct document count in the keyword map,
+    // not the old hard cap of 2.
+    const { PREFETCH_KEYWORDS } = await import("../src/config.js");
+    const distinctDocs = new Set(Object.values(PREFETCH_KEYWORDS)).size;
+    expect(parsed.prefetched_documents.length).toBeLessThanOrEqual(distinctDocs);
+    expect(parsed.prefetched_documents.length).toBe(0);
   });
 
   it("response is compact JSON (no pretty-printing)", async () => {

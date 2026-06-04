@@ -15,6 +15,7 @@ import {
   buildPendingDocUpdatesUserMessage,
 } from "./prompts.js";
 import { generateCstTimestamp } from "../utils/banner.js";
+import { INTELLIGENCE_BRIEF_SPEC_SECTIONS } from "../utils/intelligence-brief-spec.js";
 import {
   getRecentSuccessful,
   recordSynthesisEvent,
@@ -117,17 +118,10 @@ export async function generateIntelligenceBrief(
       return { success: false, error: result.error };
     }
 
-    // 4. Validate the response has required sections
-    const requiredSections = [
-      "## Project State",
-      "## Standing Rules & Workflows",
-      "## Active Operational Knowledge",
-      "## Recent Trajectory",
-      "## Risk Flags",
-      "## Quality Audit",
-    ];
-
-    const missingSections = requiredSections.filter(s => !result.content.includes(s));
+    // 4. Validate the response has required sections. The canonical section
+    //    list is shared with bootstrap's R-intel-SLO completeness computation
+    //    (src/utils/intelligence-brief-spec.ts) — single source per INS-30.
+    const missingSections = INTELLIGENCE_BRIEF_SPEC_SECTIONS.filter(s => !result.content.includes(s));
     if (missingSections.length > 0) {
       logger.warn("Synthesis output missing sections", { missingSections });
       // Still push — partial brief is better than no brief

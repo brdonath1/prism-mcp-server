@@ -256,7 +256,7 @@ describe("bootstrap diagnostics integration", () => {
     mockGetHeadSha.mockResolvedValue("HEAD_SHA");
   });
 
-  it("returns empty diagnostics[] on clean bootstrap", async () => {
+  it("emits only the INTEL_SLO info diagnostic on clean bootstrap (R-intel-SLO is always-on)", async () => {
     const { registerBootstrap } = await import("../src/tools/bootstrap.js");
 
     // Handoff present and small
@@ -291,7 +291,13 @@ describe("bootstrap diagnostics integration", () => {
     const data = parseResult(result);
     expect(data.diagnostics).toBeDefined();
     expect(Array.isArray(data.diagnostics)).toBe(true);
-    expect(data.diagnostics).toEqual([]);
+    // R-intel-SLO (D-240 Phase B): every bootstrap carries the info-level
+    // INTEL_SLO block. A clean boot has nothing else — in particular no
+    // warn/error-level diagnostics.
+    expect(data.diagnostics).toHaveLength(1);
+    expect(data.diagnostics[0].code).toBe("INTEL_SLO");
+    expect(data.diagnostics[0].level).toBe("info");
+    expect(data.diagnostics.filter((d: { level: string }) => d.level !== "info")).toEqual([]);
   });
 
   it("surfaces BOOT_TEST_FAILED when boot-test push fails", async () => {

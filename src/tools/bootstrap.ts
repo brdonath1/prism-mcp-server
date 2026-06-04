@@ -50,6 +50,7 @@ import {
   type StandingRule,
 } from "../utils/standing-rules.js";
 import { unionStandingRules } from "../utils/standing-rules-union.js";
+import { INTELLIGENCE_BRIEF_SPEC_SECTIONS } from "../utils/intelligence-brief-spec.js";
 import { classifySession, parsePersistedRecommendation, type SessionRecommendation } from "../utils/session-classifier.js";
 import { applyPendingDocUpdates, isPduEmpty, parseLastSynthesizedSession, type ApplyPduResult } from "../utils/apply-pdu.js";
 
@@ -71,8 +72,10 @@ const inputSchema = {
 
 /**
  * Determine which living documents to pre-fetch based on keywords in the opening message.
+ * Exported for direct unit testing (tests/prefetch-keywords.test.ts previously
+ * asserted against a re-implemented copy — metaswarm review brief-443).
  */
-function determinePrefetchFiles(openingMessage: string): string[] {
+export function determinePrefetchFiles(openingMessage: string): string[] {
   const lower = openingMessage.toLowerCase();
   const filesToFetch = new Set<string>();
 
@@ -83,6 +86,110 @@ function determinePrefetchFiles(openingMessage: string): string[] {
   }
 
   return Array.from(filesToFetch);
+}
+
+/**
+ * R-intel-SLO (D-240 Phase B): target maximum intelligence-brief age, in
+ * sessions. Mirrors the S30 BRIEF_STALE warning threshold (warn when
+ * age > 2) — the SLO reports against the same line the staleness warning
+ * fires on.
+ */
+export const INTEL_SLO_BRIEF_AGE_TARGET_SESSIONS = 2;
+
+/** R-intel-SLO: inputs to the boot-payload SLO computation. */
+export interface IntelSloInputs {
+  /** The intelligence-brief content as DELIVERED in the response (null when absent). */
+  intelligenceBrief: string | null;
+  /** Brief age in sessions (sessionCount − last-synthesized session), null when unparseable/absent. */
+  briefAgeSessions: number | null;
+  /** handoff.md fetched and delivered (bootstrap throws without it, so true on any success path). */
+  handoffPresent: boolean;
+  /** decisions/_INDEX.md fetched and delivered. */
+  decisionsPresent: boolean;
+  /** insights.md fetched (rule source / institutional knowledge). */
+  insightsPresent: boolean;
+  /** Behavioral-rules template (core-template-mcp.md) delivered. */
+  behavioralRulesPresent: boolean;
+}
+
+/** R-intel-SLO: the structured SLO block emitted in bootstrap diagnostics. */
+export interface IntelSlo {
+  /** Percent (0–100) of spec items delivered: 6 brief sections + 4 core fields. */
+  boot_completeness_percent: number;
+  brief_sections_delivered: number;
+  brief_sections_spec: number;
+  /** Spec section headers absent from the delivered brief (all 6 when the brief is missing). */
+  brief_sections_missing: string[];
+  brief_age_sessions: number | null;
+  brief_age_target_sessions: number;
+  /** null when age is unknown (brief absent or header unparseable). */
+  brief_age_within_target: boolean | null;
+  continuity_coverage: {
+    handoff: boolean;
+    decisions: boolean;
+    insights: boolean;
+    covered: number;
+    total: number;
+  };
+}
+
+/**
+ * Compute the intelligence SLO for a bootstrap response (R-intel-SLO,
+ * D-240 Phase B / audit brief-431).
+ *
+ * Boot completeness measures "sections/fields delivered vs spec" over 10
+ * items: the 6 intelligence-brief spec sections
+ * (INTELLIGENCE_BRIEF_SPEC_SECTIONS, matched as literal substrings of the
+ * DELIVERED brief content — the same check synthesize.ts validates output
+ * with) plus 4 core boot fields (handoff, decisions index, insights,
+ * behavioral rules). Section matching against the delivered payload makes
+ * the metric sensitive to exactly the failure INS-249 documented: a
+ * renamed or dropped section shows up as lost completeness.
+ *
+ * Pure function, exported for direct unit testing. Log-only — callers MUST
+ * NOT gate behavior on the result.
+ */
+export function computeIntelSlo(inputs: IntelSloInputs): IntelSlo {
+  const sectionsDelivered = inputs.intelligenceBrief
+    ? INTELLIGENCE_BRIEF_SPEC_SECTIONS.filter(s => inputs.intelligenceBrief!.includes(s))
+    : [];
+  const sectionsMissing = INTELLIGENCE_BRIEF_SPEC_SECTIONS.filter(
+    s => !sectionsDelivered.includes(s),
+  );
+
+  const fieldFlags = [
+    inputs.handoffPresent,
+    inputs.decisionsPresent,
+    inputs.insightsPresent,
+    inputs.behavioralRulesPresent,
+  ];
+  const specTotal = INTELLIGENCE_BRIEF_SPEC_SECTIONS.length + fieldFlags.length;
+  const deliveredTotal =
+    sectionsDelivered.length + fieldFlags.filter(Boolean).length;
+
+  const continuityFlags = {
+    handoff: inputs.handoffPresent,
+    decisions: inputs.decisionsPresent,
+    insights: inputs.insightsPresent,
+  };
+
+  return {
+    boot_completeness_percent: Math.round((deliveredTotal / specTotal) * 100),
+    brief_sections_delivered: sectionsDelivered.length,
+    brief_sections_spec: INTELLIGENCE_BRIEF_SPEC_SECTIONS.length,
+    brief_sections_missing: sectionsMissing,
+    brief_age_sessions: inputs.briefAgeSessions,
+    brief_age_target_sessions: INTEL_SLO_BRIEF_AGE_TARGET_SESSIONS,
+    brief_age_within_target:
+      inputs.briefAgeSessions === null
+        ? null
+        : inputs.briefAgeSessions <= INTEL_SLO_BRIEF_AGE_TARGET_SESSIONS,
+    continuity_coverage: {
+      ...continuityFlags,
+      covered: Object.values(continuityFlags).filter(Boolean).length,
+      total: 3,
+    },
+  };
 }
 
 /**
@@ -473,8 +580,11 @@ export function registerBootstrap(server: McpServer): void {
         bytesDelivered += handoff.size;
         filesFetched++;
 
-        // Decision index is optional
+        // Decision index is optional. Presence (file fetched, even if the
+        // table is empty) feeds the R-intel-SLO continuity-coverage metric.
         let decisions: Array<{ id: string; title: string; status: string }> = [];
+        const decisionsPresent =
+          coreResults[1].status === "fulfilled" && coreResults[1].value !== null;
         if (coreResults[1].status === "fulfilled" && coreResults[1].value) {
           const decisionResolved = coreResults[1].value as { content: string; sha: string };
           decisions = parseDecisions(decisionResolved.content);
@@ -562,14 +672,16 @@ export function registerBootstrap(server: McpServer): void {
           extractSection(handoff.content, "Open Questions") ?? ""
         );
 
-        // Parse guardrails from decisions
+        // Parse guardrails from decisions.
+        // R7-b (D-240 Phase B): cap raised 10 → 20 under the 500K-context
+        // rationale — deliberate reversal of the token-economy slimming.
         const guardrails = decisions
           .filter(d => d.status.toUpperCase() === "SETTLED")
-          .slice(0, 10)
+          .slice(0, 20)
           .map(d => ({ id: d.id, summary: d.title }));
 
-        // Recent decisions (last 5)
-        const recentDecisions = decisions.slice(-5);
+        // Recent decisions (last 15 — R7-b raised the cap from 5, D-240 Phase B)
+        const recentDecisions = decisions.slice(-15);
 
         // 3. Intelligent pre-fetching + boot-test push (in parallel)
         const sessionTimestamp = generateCstTimestamp();
@@ -606,9 +718,13 @@ export function registerBootstrap(server: McpServer): void {
           }
         }
 
-        // QW-4 (PF-3): Hard cap of 2 documents per prefetch to prevent keyword-dense
-        // opening messages from triggering excessive document fetches.
-        const prefetchPaths = Array.from(prefetchSet).slice(0, 2);
+        // R7-b (D-240 Phase B): the QW-4 hard cap of 2 prefetched documents is
+        // REMOVED under the 500K-context rationale — a deliberate reversal of
+        // the token-economy slimming; do not re-introduce the cap. The set is
+        // naturally bounded by the distinct documents PREFETCH_KEYWORDS maps
+        // to (7 today), and each entry delivers a bounded summarizeMarkdown
+        // summary (500-char preview + headers), not the full document.
+        const prefetchPaths = Array.from(prefetchSet);
 
         if (prefetchPaths.length > 0) {
           prefetchPromise = Promise.all(
@@ -718,7 +834,6 @@ export function registerBootstrap(server: McpServer): void {
         //    pending-doc-updates added per D-156 §3.5; standing-rules.md added
         //    per R2-B / D-240 Phase B).
         let intelligenceBrief: string | null = null;
-        let intelligenceBriefFull: string | null = null;
         let insightsContent: string | null = null;
 
         const [briefOutcome, insightsOutcome, pendingUpdatesOutcome, standingRulesFileOutcome] =
@@ -808,40 +923,26 @@ export function registerBootstrap(server: McpServer): void {
 
         if (briefOutcome.status === "fulfilled") {
           const briefFile = briefOutcome.value;
-          intelligenceBriefFull = briefFile.content;
           filesFetched++;
-          const briefSize = briefFile.content.length;
-          logger.info("intelligence brief loaded", { size: briefSize });
 
-          // D-47: Compact mode — extract only actionable sections
-          const projectState = extractSection(briefFile.content, "Project State");
-          const riskFlags = extractSection(briefFile.content, "Risk Flags");
-          const qualityAudit = extractSection(briefFile.content, "Quality Audit");
-
-          const compactParts: string[] = [];
-          if (projectState) {
-            const sentences = projectState.split(/(?<=[.!?])\s+/).slice(0, 3);
-            compactParts.push(`**Project State (compact):** ${sentences.join(" ")}`);
-          }
-          if (riskFlags) compactParts.push(`## Risk Flags\n${riskFlags}`);
-          if (qualityAudit) compactParts.push(`## Quality Audit\n${qualityAudit}`);
-
-          intelligenceBrief = compactParts.length > 0 ? compactParts.join("\n\n") : null;
-
-          if (intelligenceBrief) {
-            bytesDelivered += intelligenceBrief.length;
-            logger.info("intelligence brief compacted", {
-              fullSize: briefSize,
-              compactSize: intelligenceBrief.length,
-              sectionsExtracted: compactParts.length,
-            });
-          }
+          // R7-b (D-240 Phase B): deliver the FULL intelligence brief — a
+          // deliberate reversal of the D-47 three-section compaction under
+          // the 500K-context rationale. The old compactor matched section
+          // headers literally (INS-249), so only 3 of the 6 spec sections
+          // ever reached Claude and a renamed header silently dropped a
+          // section. Full passthrough has no header-name coupling. Do NOT
+          // re-introduce compaction here as a token optimization — see D-240.
+          intelligenceBrief = briefFile.content;
+          bytesDelivered += intelligenceBrief.length;
+          logger.info("intelligence brief loaded (full delivery, R7-b)", {
+            size: briefFile.content.length,
+          });
         }
 
         // S30: Brief staleness detection — parse session number from intelligence brief header
         let briefAgeResult: number | null = null;
-        if (intelligenceBriefFull) {
-          const briefSessionMatch = intelligenceBriefFull.match(/Last synthesized:\s*S(\d+)/);
+        if (intelligenceBrief) {
+          const briefSessionMatch = intelligenceBrief.match(/Last synthesized:\s*S(\d+)/);
           if (briefSessionMatch) {
             const briefSession = parseInt(briefSessionMatch[1], 10);
             const briefAge = sessionCount - briefSession;
@@ -875,45 +976,71 @@ export function registerBootstrap(server: McpServer): void {
         }
 
         const allStandingRules = rulesUnion.rules;
-        const standingRules = selectStandingRulesForBoot(allStandingRules, opening_message);
 
-        // D-156: Tier accounting for diagnostics + log
+        // R7-b (D-240 Phase B): deliver ALL Tier A + Tier B rule bodies at
+        // boot — a deliberate reversal of the D-156 topic-gated Tier B
+        // selection under the 500K-context rationale (pre-R7-b, Tier B only
+        // loaded when the opening message matched the rule's topics, so a
+        // boot without an opening message delivered Tier A alone). Tier C
+        // bodies stay excluded; a Tier-C INDEX (IDs + titles, no bodies)
+        // ships in `standing_rules_tier_c_index` so the session knows what
+        // prism_load_rules can pull on demand.
+        const standingRules = selectStandingRulesForBoot(allStandingRules);
+
+        // D-156: Tier accounting for diagnostics + log (R7-b: topic-match
+        // accounting removed with the gate; Tier C is now indexed, not silent)
         const tierA = allStandingRules.filter(r => r.tier === "A");
         const tierB = allStandingRules.filter(r => r.tier === "B");
         const tierC = allStandingRules.filter(r => r.tier === "C");
-        const tierBSelected = standingRules.filter(r => r.tier === "B");
-        const tierBExcluded = tierB.length - tierBSelected.length;
-        const topicsMatched = Array.from(new Set(tierBSelected.flatMap(r => r.topics)));
+        const standingRulesTierCIndex = tierC.map(r => ({ id: r.id, title: r.title }));
 
         if (allStandingRules.length > 0) {
           logger.info("standing rules extracted", {
             total: allStandingRules.length,
             delivered: standingRules.length,
             tier_a: tierA.length,
-            tier_b_loaded: tierBSelected.length,
-            tier_b_excluded: tierBExcluded,
-            tier_c_excluded: tierC.length,
-            topics_matched: topicsMatched,
+            tier_b_loaded: tierB.length,
+            tier_c_indexed: tierC.length,
             from_standing_rules_file: rulesUnion.fromStandingRulesFile,
             from_insights: rulesUnion.fromInsights,
             conflicts: rulesUnion.conflicts.length,
             ids: standingRules.map(r => r.id),
           });
 
-          // D-156: Diagnostics field surfacing tier accounting (only when rules exist —
-          // preserves back-compat with empty-diagnostics assertion on clean bootstrap).
-          diagnostics.info("STANDING_RULES_TIERED", "Standing rules selected by tier", {
+          // D-156: Diagnostics field surfacing tier accounting (only when rules exist).
+          diagnostics.info("STANDING_RULES_TIERED", "Standing rules delivered by tier (Tier A+B bodies, Tier C indexed — R7-b)", {
             total: allStandingRules.length,
             delivered: standingRules.length,
             tier_a: tierA.length,
-            tier_b_loaded: tierBSelected.length,
-            tier_b_excluded: tierBExcluded,
-            tier_c_excluded: tierC.length,
-            topics_matched: topicsMatched,
+            tier_b_loaded: tierB.length,
+            tier_c_indexed: tierC.length,
             from_standing_rules_file: rulesUnion.fromStandingRulesFile,
             from_insights: rulesUnion.fromInsights,
           });
         }
+
+        // R-intel-SLO (D-240 Phase B): intelligence SLO instrumentation.
+        // Emitted on EVERY bootstrap as an info-level diagnostic plus a
+        // structured log line. Log-only by contract — nothing downstream may
+        // gate on it (the BRIEF_STALE warning above remains the operator
+        //-facing staleness signal; this block is the measurable SLO record).
+        const intelSlo = computeIntelSlo({
+          intelligenceBrief,
+          briefAgeSessions: briefAgeResult,
+          handoffPresent: true, // bootstrap throws before this point when handoff.md is missing
+          decisionsPresent,
+          insightsPresent: insightsContent !== null,
+          behavioralRulesPresent: behavioralRules !== null,
+        });
+        diagnostics.info(
+          "INTEL_SLO",
+          `Boot completeness ${intelSlo.boot_completeness_percent}% (${intelSlo.brief_sections_delivered}/${intelSlo.brief_sections_spec} brief sections) — brief age ${intelSlo.brief_age_sessions ?? "unknown"} session(s) (target ≤ ${intelSlo.brief_age_target_sessions}), continuity ${intelSlo.continuity_coverage.covered}/${intelSlo.continuity_coverage.total}`,
+          { ...intelSlo },
+        );
+        logger.info("intelligence SLO", {
+          project_slug: resolvedSlug,
+          ...intelSlo,
+        });
 
         // 6. Banner rendering — unified generator, boot surface (brief-439 / R8).
         const projectDisplayName = getProjectDisplayName(resolvedSlug);
@@ -1016,6 +1143,7 @@ export function registerBootstrap(server: McpServer): void {
           open_questions: openQuestions,
           prefetched_documents: prefetchedDocuments,
           standing_rules: standingRules,
+          standing_rules_tier_c_index: standingRulesTierCIndex, // R7-b (D-240 Phase B): Tier-C IDs + titles, bodies via prism_load_rules
           intelligence_brief: intelligenceBrief,
           brief_age_sessions: briefAgeResult,
           behavioral_rules: behavioralRules,
@@ -1063,8 +1191,9 @@ export function registerBootstrap(server: McpServer): void {
           handoff: handoff.size,
           decisions_index: coreResults[1].status === "fulfilled" && coreResults[1].value ? (coreResults[1].value as { content: string }).content.length : 0,
           behavioral_rules: coreResults[2].status === "fulfilled" && coreResults[2].value ? (coreResults[2].value as { size: number }).size : 0,
-          intelligence_brief_compact: intelligenceBrief?.length ?? 0,
+          intelligence_brief: intelligenceBrief?.length ?? 0, // R7-b: full brief (compaction reversed)
           standing_rules: JSON.stringify(standingRules).length,
+          standing_rules_tier_c_index: JSON.stringify(standingRulesTierCIndex).length,
           banner_text: bannerText.length,
           prefetched_docs: prefetchedDocuments.reduce((sum, d) => sum + d.size_bytes, 0),
         };
@@ -1078,7 +1207,13 @@ export function registerBootstrap(server: McpServer): void {
           bannerTextBytes: bannerText.length,
           bannerSpecVersion: BANNER_SPEC_VERSION,
           standingRulesCount: standingRules.length,
-          intelligenceBriefCompacted: !!intelligenceBrief,
+          standingRulesTierCIndexCount: standingRulesTierCIndex.length,
+          intelligenceBriefDelivered: !!intelligenceBrief, // R7-b: full delivery, compaction reversed
+          intelSlo: {
+            completeness: intelSlo.boot_completeness_percent,
+            briefAge: intelSlo.brief_age_sessions,
+            continuity: intelSlo.continuity_coverage.covered,
+          },
           bootTestVerified: bootTestResult.success,
           componentSizes,
           contextEstimate: { totalBootTokens, totalBootPercent },

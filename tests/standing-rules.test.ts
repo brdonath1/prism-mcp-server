@@ -128,6 +128,6 @@ describe("back-compat: bootstrap helpers still callable from this module", () =>
     const rules: StandingRule[] = [
       { id: "INS-1", title: "t1", procedure: "p", tier: "A", topics: [] },
     ];
-    expect(selectStandingRulesForBoot(rules, undefined)).toHaveLength(1);
+    expect(selectStandingRulesForBoot(rules)).toHaveLength(1);
   });
 });
