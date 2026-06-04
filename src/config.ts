@@ -124,6 +124,45 @@ export const SYNTHESIS_TIMEOUT_MS =
 export const CC_SUBPROCESS_SYNTHESIS_TIMEOUT_MS =
   parseInt(process.env.CC_SUBPROCESS_SYNTHESIS_TIMEOUT_MS ?? "600000", 10) || 600_000;
 
+/** Hard ceiling (estimated tokens) for the COMBINED synthesis input — the
+ *  assembled user message that generateIntelligenceBrief and
+ *  generatePendingDocUpdates feed to the model (brief-445 / R3-dur / D-240
+ *  Phase B, audit brief-431 row R3). Pre-438 the assembled input reached
+ *  ~611KB / ~175K tokens (insights.md dominant) and tripped the CS-1
+ *  SYNTHESIS_TIMEOUT; R3-imm (brief-438) migrated the dominant data out.
+ *  This constant is the DURABLE backstop: when the assembled input would
+ *  exceed it, src/ai/input-budget.ts deterministically priority-trims the
+ *  largest / lowest-signal docs back under budget instead of letting the
+ *  call run into the timeout. Enforced in estimated tokens
+ *  (chars / SYNTHESIS_CHARS_PER_TOKEN), not raw bytes. */
+export const SYNTHESIS_INPUT_MAX_TOKENS =
+  parseInt(process.env.SYNTHESIS_INPUT_MAX_TOKENS ?? "120000", 10) || 120_000;
+
+/** Design target (estimated tokens) for the assembled synthesis input.
+ *  Two roles (brief-445 / R3-dur):
+ *  1. Trim goal — when the input exceeds SYNTHESIS_INPUT_MAX_TOKENS, the
+ *     trim reduces it to <= this target rather than stopping just under the
+ *     ceiling. Living docs only grow, so trimming to the ceiling would pin
+ *     every subsequent finalize at the timeout-adjacent boundary and re-trim
+ *     on every run with minimal headroom; trimming to the target restores
+ *     durable headroom and emits a clear signal (input_trimmed in the
+ *     synthesis logs) for the operator to schedule data hygiene like
+ *     brief-438.
+ *  2. NO-OP floor — inputs at or under the ceiling are NEVER trimmed
+ *     (normal-case NO-OP per the R3-dur brief author note); post-438 inputs
+ *     sit well under this target. */
+export const SYNTHESIS_INPUT_TARGET_TOKENS =
+  parseInt(process.env.SYNTHESIS_INPUT_TARGET_TOKENS ?? "60000", 10) || 60_000;
+
+/** Calibrated chars-per-token ratio for synthesis input estimation. Matches
+ *  the boot-cost estimator in src/tools/bootstrap.ts (ME-5 / brief-433) —
+ *  the codebase-standard proxy for Claude tokenization of markdown-heavy
+ *  English. A real tokenizer is deliberately NOT used: the Anthropic SDK
+ *  ships no local tokenizer, and the countTokens endpoint is a network call
+ *  — wrong for the fire-and-forget background path this cap exists to
+ *  protect (adds latency plus a new failure mode). */
+export const SYNTHESIS_CHARS_PER_TOKEN = 3.5;
+
 /** Tool-level wall-clock deadline for prism_push (S40 C4). Hard backstop on
  *  top of the per-request GitHub fetch timeout. Configurable via env var so
  *  tests can inject a much smaller value without waiting 60s in CI. */
