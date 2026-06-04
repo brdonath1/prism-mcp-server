@@ -6,12 +6,18 @@
 #   archive/    — completed briefs (auto-moved by post_merge: [archive] after PR merge)
 #
 # Edit values below to customize per-project behavior; set enabled: false to opt out.
+#
+# S146 / D-240: intra_project_parallel enabled + max_parallel_briefs raised 1 -> 5 to allow
+# concurrent dispatch of file-disjoint briefs. The cap is a CEILING, not a target — the
+# orchestrator co-schedules only briefs verified to touch disjoint files, and the scheduler
+# serializes any with overlapping `affects`. Sequential chains (e.g. the archival pipeline)
+# stay serial regardless of this value.
 enabled: true
 brief_dir: .prism/briefs/queue/
 brief_pattern: "brief-*.md"
 branch_strategy: main-only
-intra_project_parallel: false
-max_parallel_briefs: 1
+intra_project_parallel: true
+max_parallel_briefs: 5
 post_merge:
   - notify
   - archive
