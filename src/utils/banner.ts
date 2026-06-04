@@ -1,47 +1,87 @@
 /**
- * Server-side boot banner HTML renderer (D-35).
- * Produces a ready-to-render HTML+CSS string matching banner-spec.md v2.0.
- * Claude passes the output directly to show_widget — zero drift.
+ * Unified server-side banner generator (brief-439 / D-240 Phase B, R8).
+ *
+ * ONE text generator produces the `banner_text` field for BOTH surfaces:
+ * boot (`prism_bootstrap`) and finalization (`prism_finalize`). Boot and
+ * finalize banners are byte-consistent by construction — same line grammar,
+ * same separators, same icon set, same truncation rules — because they share
+ * this single code path. The authoritative contract lives in
+ * `docs/banner-spec.md`; cite that file for any future banner change.
+ *
+ * History: the HTML boot banner (D-35) was replaced by `banner_text` in ME-1
+ * (template v2.10.0); the HTML finalization widget (D-46, consumed by Rule 11
+ * Step 6 / D-84) is deprecated as of banner spec 3.0 — `finalization_banner_html`
+ * is now always null and the finalize response carries `banner_text` instead.
  */
 
-import { logger } from "./logger.js";
+export interface BannerStatusEntry {
+  label: string;
+  status: "ok" | "warn" | "critical";
+}
 
-export interface BannerData {
+/**
+ * Banner spec version emitted by the server (`banner_spec_version` response
+ * field) and compared against the version the framework template declares
+ * (`Banner-Spec-Version: X.Y`). On mismatch the server logs a BANNER_DRIFT
+ * warn diagnostic — visibility only, never blocking. Spec 2.0 was the HTML
+ * banner contract (banner-spec.md v2.0, D-35/D-46); 3.0 is the unified text
+ * contract defined in docs/banner-spec.md.
+ */
+export const BANNER_SPEC_VERSION = "3.0";
+
+/** Status glyphs shared by every banner surface. */
+const STATUS_ICONS: Record<BannerStatusEntry["status"], string> = {
+  ok: "✓",
+  warn: "⚠",
+  critical: "✗",
+};
+
+/** Max rendered length of the Resumption line's text. */
+const RESUMPTION_MAX_CHARS = 200;
+
+export type BannerSurface = "boot" | "finalize";
+
+/**
+ * Input to the unified banner generator. Surface-specific values are plain
+ * data; the structural grammar (line order, separators, icons, truncation)
+ * is fixed by the generator and documented in docs/banner-spec.md.
+ */
+export interface UnifiedBannerInput {
+  /** Which surface this banner is for. Controls the session tag ("finalized"),
+   *  the docs label ("docs healthy" vs "docs updated"), the list-block label
+   *  ("Next:" vs "Deliverables:"), and the boot-only [priority] tag. */
+  surface: BannerSurface;
+  /** Framework template version (e.g. "2.19.1"); "unknown" when unparseable. */
   templateVersion: string;
-  projectDisplayName: string;
   sessionNumber: number;
+  /** CST timestamp, "MM-DD-YY HH:MM:SS" (see generateCstTimestamp). */
   timestamp: string;
   handoffVersion: number;
-  handoffSizeKb: string;
+  /** Parenthetical after the handoff version — boot: "{size}KB";
+   *  finalize: "pushed" | "push failed" | "unverified". */
+  handoffNote: string;
   decisionCount: number;
-  decisionNote: string;
+  /** Optional parenthetical after the decision count — boot: "{N} guardrails";
+   *  finalize: operator-supplied note (banner_data.decisions_note) or null. */
+  decisionNote?: string | null;
   docCount: number;
   docTotal: number;
-  docStatus: "ok" | "warn" | "critical";
-  docLabel: string;
-  tools: Array<{
-    label: string;
-    status: "ok" | "warn" | "critical";
-  }>;
+  /** Line 3 status row — boot: tool checks; finalize: phase steps. */
+  statusRow: BannerStatusEntry[];
+  /** Optional model+thinking recommendation (brief-405 / D-191). Renders as
+   *  the `Suggested:` line immediately after the status row; omitted entirely
+   *  (no blank placeholder) when null/undefined. */
+  suggested?: {
+    display: string;
+    rationale: string;
+  } | null;
   resumption: string;
-  nextSteps: Array<{
-    text: string;
-    status: "priority" | "warn" | "normal";
-  }>;
+  /** List block items — boot: next steps; finalize: deliverables. */
+  listItems: string[];
   warnings: string[];
-  errors: string[];
 }
 
-// --- Helpers ---
-
-export function escapeHtml(str: string): string {
-  return str
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
+// --- Shared text helpers ---
 
 export function stripMarkdown(text: string): string {
   return text
@@ -51,65 +91,6 @@ export function stripMarkdown(text: string): string {
     .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
     .replace(/`([^`]+)`/g, "$1")
     .trim();
-}
-
-/**
- * Format resumption text for HTML display.
- * Converts markdown structure into readable HTML with line breaks,
- * bold section headers, and styled bullet points.
- */
-export function formatResumptionHtml(text: string): string {
-  const lines = text.split("\n");
-  const htmlLines: string[] = [];
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed) {
-      // Empty line = paragraph break
-      htmlLines.push('<div style="height:8px"></div>');
-      continue;
-    }
-
-    // Markdown headers (### Header) -> bold text with spacing
-    const headerMatch = trimmed.match(/^#{1,6}\s+(.+)$/);
-    if (headerMatch) {
-      htmlLines.push(`<div style="font-weight:600;margin-top:6px;color:#eee">${escapeHtml(stripMarkdown(headerMatch[1]))}</div>`);
-      continue;
-    }
-
-    // Bullet items (- text or * text) -> styled bullet
-    const bulletMatch = trimmed.match(/^[-*]\s+(.+)$/);
-    if (bulletMatch) {
-      // Convert **bold** to <strong> before escaping
-      let content = bulletMatch[1];
-      // Extract bold segments, escape, then re-wrap
-      content = content.replace(/\*\*(.+?)\*\*/g, '%%BOLD_START%%$1%%BOLD_END%%');
-      content = escapeHtml(stripMarkdown(content));
-      content = content.replace(/%%BOLD_START%%/g, '<strong style="color:#eee">').replace(/%%BOLD_END%%/g, '</strong>');
-      htmlLines.push(`<div style="padding-left:12px;margin-top:3px">\u2022 ${content}</div>`);
-      continue;
-    }
-
-    // Numbered items (1. text) -> keep numbering
-    const numberedMatch = trimmed.match(/^(\d+)\.\s+(.+)$/);
-    if (numberedMatch) {
-      let content = numberedMatch[2];
-      content = content.replace(/\*\*(.+?)\*\*/g, '%%BOLD_START%%$1%%BOLD_END%%');
-      content = escapeHtml(stripMarkdown(content));
-      content = content.replace(/%%BOLD_START%%/g, '<strong style="color:#eee">').replace(/%%BOLD_END%%/g, '</strong>');
-      htmlLines.push(`<div style="padding-left:12px;margin-top:3px">${escapeHtml(numberedMatch[1])}. ${content}</div>`);
-      continue;
-    }
-
-    // Regular text -> escape and render with bold support
-    let content = trimmed;
-    content = content.replace(/\*\*(.+?)\*\*/g, '%%BOLD_START%%$1%%BOLD_END%%');
-    content = escapeHtml(stripMarkdown(content));
-    content = content.replace(/%%BOLD_START%%/g, '<strong style="color:#eee">').replace(/%%BOLD_END%%/g, '</strong>');
-    htmlLines.push(`<div>${content}</div>`);
-  }
-
-  return htmlLines.join("\n");
 }
 
 /**
@@ -136,7 +117,6 @@ export function generateCstTimestamp(): string {
 /**
  * Extract the best resumption text for the banner from available sources.
  * Priority: explicit resumption_point > "Resumption point" paragraph in current_state > current_state.
- * Preserves newlines and markdown structure for formatResumptionHtml to render.
  */
 export function parseResumptionForBanner(
   resumptionPoint: string,
@@ -164,55 +144,53 @@ export function parseResumptionForBanner(
   return "No specific resumption point set.";
 }
 
-// --- Text Banner Renderer (ME-1: compact text replaces HTML) ---
-
-export interface BannerTextInput {
-  templateVersion: string;
-  sessionNumber: number;
-  timestamp: string;
-  handoffVersion: number;
-  handoffSizeKb: string;
-  decisionCount: number;
-  guardrailCount: number;
-  docCount: number;
-  docTotal: number;
-  tools: Array<{ label: string; status: "ok" | "warn" | "critical" }>;
-  resumption: string;
-  nextSteps: string[];
-  warnings: string[];
-  /**
-   * Optional model + thinking recommendation (brief-405 / D-191).
-   * When present, a `Suggested:` line is appended below the tool-status row
-   * so operators see the recommendation before their first prompt. Omitted
-   * entirely when null/undefined — older clients see no extra line.
-   */
-  suggested?: {
-    display: string;
-    rationale: string;
-  } | null;
-}
+// --- Unified banner generator (the ONE banner code path) ---
 
 /**
- * Render a compact text-based boot status (ME-1, S29).
- * Replaces the ~5KB HTML banner with a ~200-byte text block.
+ * Render the unified text banner for either surface.
+ *
+ * Grammar (docs/banner-spec.md, spec 3.0):
+ *
+ *   L1  PRISM v{tv} | Session {N}[ finalized] | {timestamp} CST
+ *   L2  Handoff v{V} ({note}) | {D} decisions[ ({note})] | {C}/{T} docs {healthy|updated}
+ *   L3  {icon} {label}[ | {icon} {label}...]
+ *   L4? Suggested: {display} — {rationale}
+ *       (blank)
+ *       Resumption: {text ≤200 chars, markdown stripped}
+ *      [(blank)
+ *       {Next:|Deliverables:}
+ *       ▸ {item}[ [priority]]   ← [priority] on the first boot item only
+ *       ...]
+ *      [(blank)
+ *       ⚠ {warning}
+ *       ...]
  */
-export function renderBannerText(data: BannerTextInput): string {
-  const toolStatus = data.tools
-    .map(t => `${t.status === "ok" ? "\u2713" : t.status === "warn" ? "\u26a0" : "\u2717"} ${t.label}`)
+export function renderUnifiedBanner(data: UnifiedBannerInput): string {
+  const isBoot = data.surface === "boot";
+
+  const sessionSegment = `Session ${data.sessionNumber}${isBoot ? "" : " finalized"}`;
+  const decisionSegment = `${data.decisionCount} decisions${
+    data.decisionNote ? ` (${data.decisionNote})` : ""
+  }`;
+  const docsSegment = `${data.docCount}/${data.docTotal} docs ${isBoot ? "healthy" : "updated"}`;
+
+  const statusRow = data.statusRow
+    .map((t) => `${STATUS_ICONS[t.status]} ${t.label}`)
     .join(" | ");
 
   // Truncate resumption to 200 chars if needed
-  const resumption = data.resumption.length > 200
-    ? data.resumption.slice(0, 197) + "..."
-    : data.resumption;
+  const resumption =
+    data.resumption.length > RESUMPTION_MAX_CHARS
+      ? data.resumption.slice(0, RESUMPTION_MAX_CHARS - 3) + "..."
+      : data.resumption;
 
   const lines: string[] = [
-    `PRISM v${data.templateVersion} | Session ${data.sessionNumber} | ${data.timestamp} CST`,
-    `Handoff v${data.handoffVersion} (${data.handoffSizeKb}KB) | ${data.decisionCount} decisions (${data.guardrailCount} guardrails) | ${data.docCount}/${data.docTotal} docs healthy`,
-    toolStatus,
+    `PRISM v${data.templateVersion} | ${sessionSegment} | ${data.timestamp} CST`,
+    `Handoff v${data.handoffVersion} (${data.handoffNote}) | ${decisionSegment} | ${docsSegment}`,
+    statusRow,
   ];
 
-  // brief-405 / D-191: emit a model-recommendation line below the tool row
+  // brief-405 / D-191: emit a model-recommendation line below the status row
   // when the classifier produced a recommendation. Omit entirely on null/
   // undefined so older clients render no blank line.
   if (data.suggested) {
@@ -222,171 +200,47 @@ export function renderBannerText(data: BannerTextInput): string {
   lines.push("");
   lines.push(`Resumption: ${stripMarkdown(resumption)}`);
 
-  if (data.nextSteps.length > 0) {
+  if (data.listItems.length > 0) {
     lines.push("");
-    lines.push("Next:");
-    data.nextSteps.forEach((step, i) => {
-      lines.push(`${i === 0 ? "\u25b8" : "\u25b8"} ${stripMarkdown(step)}${i === 0 ? " [priority]" : ""}`);
+    lines.push(isBoot ? "Next:" : "Deliverables:");
+    data.listItems.forEach((item, i) => {
+      lines.push(`▸ ${stripMarkdown(item)}${isBoot && i === 0 ? " [priority]" : ""}`);
     });
   }
 
   if (data.warnings.length > 0) {
     lines.push("");
     data.warnings.forEach((w) => {
-      lines.push(`\u26a0 ${w}`);
+      lines.push(`⚠ ${w}`);
     });
   }
 
   return lines.join("\n");
 }
 
-// --- HTML Renderer ---
-
 /**
- * Map tool status to the appropriate icon character.
+ * Single-line banner fallback — the Rule 2 fallback format, rendered
+ * server-side so `banner_text` carries it directly when the full render
+ * fails. Resolves the pre-R8 contradiction where the server fell back to a
+ * structured `banner_data` object while the template documented a
+ * single-line text fallback.
  */
-export function toolIcon(status: "ok" | "warn" | "critical"): string {
-  if (status === "ok") return "\u2713";
-  if (status === "warn") return "\u26a0";
-  return "\u2717";
+export function renderBannerFallback(data: {
+  sessionNumber: number;
+  handoffVersion: number;
+  docCount: number;
+  docTotal: number;
+}): string {
+  return `PRISM | Session ${data.sessionNumber} | Handoff v${data.handoffVersion} | ${data.docCount}/${data.docTotal} docs`;
 }
 
 /**
- * Render the boot banner as a self-contained HTML+CSS string.
- * Follows banner-spec.md v2.0 exactly.
+ * Parse the banner spec version a framework template declares
+ * (`Banner-Spec-Version: X.Y`, tolerant of bold/blockquote markup, spacing
+ * or underscore separators, and an optional `v` prefix). Returns null when
+ * the template declares nothing — pre-handshake templates are not drift.
  */
-export function renderBannerHtml(data: BannerData): string {
-  const e = (s: string) => escapeHtml(stripMarkdown(s));
-
-  // Resumption HTML — uses structured formatter instead of flat text
-  const resumptionHtml = formatResumptionHtml(data.resumption);
-
-  // Tools HTML
-  const toolsHtml = data.tools
-    .map((t, _i) => {
-      const cls = t.status !== "ok" ? ` ${t.status}` : "";
-      return `<div class="bn-tool${cls}">${toolIcon(t.status)} ${e(t.label)}</div>`;
-    })
-    .join("\n      ");
-
-  // Next steps HTML — first step is always priority regardless of status field
-  const stepsData = data.nextSteps.length > 0
-    ? data.nextSteps
-    : [{ text: "No next steps defined.", status: "normal" as const }];
-  const stepsHtml = stepsData
-    .map((step, i) => {
-      const cls = i === 0 ? "priority" : step.status !== "normal" ? step.status : "";
-      return `<div class="bn-step${cls ? ` ${cls}` : ""}">\u25b8 ${e(step.text)}</div>`;
-    })
-    .join("\n        ");
-
-  // Warning bars (conditional)
-  const warningsHtml = data.warnings
-    .map((w) => `<div class="bn-alert warn">\u26a0 ${e(w)}</div>`)
-    .join("\n    ");
-
-  // Error bars (conditional)
-  const errorsHtml = data.errors
-    .map((err) => `<div class="bn-alert critical">\u2717 ${e(err)}</div>`)
-    .join("\n    ");
-
-  logger.info("banner HTML rendered", {
-    tools: data.tools.length,
-    nextSteps: stepsData.length,
-    warnings: data.warnings.length,
-    errors: data.errors.length,
-  });
-
-  return `<style>
-:root {
-  --bn-bg: #1e1e2e;
-  --bn-surface: #2a2a3e;
-  --bn-border: #3a3a4e;
-  --bn-text: #eee;
-  --bn-text-muted: #aaa;
-  --bn-accent-start: #6366f1;
-  --bn-accent-end: #8b5cf6;
-  --bn-ok: #22c55e;
-  --bn-warn: #eab308;
-  --bn-critical: #ef4444;
-  --bn-info: #60a5fa;
-}
-* { box-sizing: border-box; margin: 0; padding: 0; }
-.bn { font-family: system-ui, -apple-system, sans-serif; background: var(--bn-bg); border-radius: 12px; border: 1px solid var(--bn-border); overflow: hidden; color: var(--bn-text); }
-.bn-header { background: linear-gradient(90deg, var(--bn-accent-start), var(--bn-accent-end)); padding: 14px 20px; display: flex; justify-content: space-between; align-items: center; }
-.bn-header-text { display: flex; flex-direction: column; gap: 4px; }
-.bn-version { font-size: 11px; font-weight: 600; letter-spacing: 1.5px; opacity: 0.8; color: white; }
-.bn-title { font-size: 18px; font-weight: 700; color: white; }
-.bn-badge { background: rgba(255,255,255,0.2); border-radius: 12px; padding: 4px 14px; font-size: 11px; font-weight: 600; color: white; white-space: nowrap; }
-.bn-body { padding: 16px 20px 20px; display: flex; flex-direction: column; gap: 14px; }
-.bn-timestamp { font-size: 12px; color: var(--bn-text-muted); }
-.bn-metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
-.bn-card { background: var(--bn-surface); border: 0.5px solid var(--bn-border); border-radius: 8px; padding: 12px 14px; }
-.bn-card-label { font-size: 10px; font-weight: 500; color: var(--bn-text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
-.bn-card-value { font-size: 22px; font-weight: 700; line-height: 1.2; }
-.bn-card-sub { font-size: 12px; font-weight: 400; color: var(--bn-text-muted); margin-left: 4px; }
-.bn-card-sub.ok { color: var(--bn-ok); font-weight: 600; }
-.bn-card-sub.warn { color: var(--bn-warn); font-weight: 600; }
-.bn-card-sub.critical { color: var(--bn-critical); font-weight: 600; }
-.bn-toolbar { display: grid; grid-template-columns: repeat(4, 1fr); background: var(--bn-surface); border-radius: 8px; overflow: hidden; }
-.bn-tool { text-align: center; font-size: 12px; font-weight: 500; padding: 9px 8px; color: var(--bn-ok); border-right: 0.5px solid var(--bn-border); }
-.bn-tool:last-child { border-right: none; }
-.bn-tool.warn { color: var(--bn-warn); }
-.bn-tool.critical { color: var(--bn-critical); }
-.bn-section-label { font-size: 11px; font-weight: 600; letter-spacing: 1px; color: var(--bn-text-muted); text-transform: uppercase; margin-bottom: 6px; }
-.bn-resumption { background: var(--bn-surface); border-radius: 8px; padding: 14px 18px; font-size: 12px; line-height: 1.7; color: var(--bn-text-muted); }
-.bn-steps { display: flex; flex-direction: column; gap: 6px; }
-.bn-step { font-size: 12px; line-height: 1.6; color: var(--bn-text); padding-left: 4px; }
-.bn-step.priority { color: var(--bn-ok); }
-.bn-step.warn { color: var(--bn-warn); }
-.bn-alert { display: flex; align-items: flex-start; gap: 10px; border-radius: 8px; padding: 9px 16px; font-size: 12px; font-weight: 500; line-height: 1.5; }
-.bn-alert.warn { background: rgba(234,179,8,0.1); border: 1px solid rgba(234,179,8,0.3); color: var(--bn-warn); }
-.bn-alert.critical { background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3); color: var(--bn-critical); }
-</style>
-
-<div class="bn">
-  <div class="bn-header">
-    <div class="bn-header-text">
-      <div class="bn-version">PRISM v${e(data.templateVersion)}</div>
-      <div class="bn-title">${e(data.projectDisplayName)} \u2014 Session ${data.sessionNumber}</div>
-    </div>
-    <div class="bn-badge">MCP \u2713</div>
-  </div>
-  <div class="bn-body">
-    <div class="bn-timestamp">${e(data.timestamp)} CST</div>
-    <div class="bn-metrics">
-      <div class="bn-card">
-        <div class="bn-card-label">Session</div>
-        <div class="bn-card-value">${data.sessionNumber}</div>
-      </div>
-      <div class="bn-card">
-        <div class="bn-card-label">Handoff</div>
-        <div class="bn-card-value">v${data.handoffVersion} <span class="bn-card-sub">${e(data.handoffSizeKb)} KB</span></div>
-      </div>
-      <div class="bn-card">
-        <div class="bn-card-label">Decisions</div>
-        <div class="bn-card-value">${data.decisionCount} <span class="bn-card-sub">(${e(data.decisionNote)})</span></div>
-      </div>
-      <div class="bn-card">
-        <div class="bn-card-label">Living docs</div>
-        <div class="bn-card-value">${data.docCount}/${data.docTotal} <span class="bn-card-sub ${data.docStatus}">${e(data.docLabel)}</span></div>
-      </div>
-    </div>
-    <div class="bn-toolbar">
-      ${toolsHtml}
-    </div>
-    <div>
-      <div class="bn-section-label">Resumption point</div>
-      <div class="bn-resumption">${resumptionHtml}</div>
-    </div>
-    <div>
-      <div class="bn-section-label">Next steps</div>
-      <div class="bn-steps">
-        ${stepsHtml}
-      </div>
-    </div>
-    ${warningsHtml}
-    ${errorsHtml}
-  </div>
-</div>`;
+export function parseTemplateBannerSpecVersion(content: string): string | null {
+  const match = content.match(/banner[-_\s]?spec[-_\s]?version[:\s*]*v?(\d+(?:\.\d+)+|\d+)/i);
+  return match ? match[1] : null;
 }

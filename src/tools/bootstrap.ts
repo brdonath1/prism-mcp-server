@@ -33,7 +33,15 @@ import {
   summarizeMarkdown,
 } from "../utils/summarizer.js";
 import { parseHandoffVersion, parseSessionCount, parseTemplateVersion } from "../validation/handoff.js";
-import { generateCstTimestamp, parseResumptionForBanner, renderBannerText, type BannerTextInput } from "../utils/banner.js";
+import {
+  BANNER_SPEC_VERSION,
+  generateCstTimestamp,
+  parseResumptionForBanner,
+  parseTemplateBannerSpecVersion,
+  renderBannerFallback,
+  renderUnifiedBanner,
+  type UnifiedBannerInput,
+} from "../utils/banner.js";
 import { DiagnosticsCollector } from "../utils/diagnostics.js";
 import {
   extractStandingRules,
@@ -484,11 +492,43 @@ export function registerBootstrap(server: McpServer): void {
           behavioralRules = templateData.content;
           bytesDelivered += templateData.size;
           filesFetched++;
-          const versionMatch = templateData.content.match(/version[:\s*]*([\d.]+)/i);
+          // brief-439 / R8: prefer the explicit "Template Version" declaration \u2014
+          // the generic first-"version" match would be polluted by the
+          // Banner-Spec-Version handshake line once templates declare it.
+          const versionMatch = templateData.content.match(/template version[:\s*]*v?([\d.]+)/i)
+            ?? templateData.content.match(/version[:\s*]*([\d.]+)/i);
           if (versionMatch) templateVersion = versionMatch[1];
           logger.info("behavioral rules delivered", { size: templateData.size, version: templateVersion });
         } else {
           warnings.push("Behavioral rules template not found \u2014 Claude should fetch core-template-mcp.md manually.");
+        }
+
+        // brief-439 / R8: banner_spec_version handshake. Compare the spec
+        // version this server emits against the one the behavioral-rules
+        // template declares (`Banner-Spec-Version: X.Y`). Mismatch logs a
+        // BANNER_DRIFT warn diagnostic \u2014 visibility only, never blocking.
+        // Templates that declare nothing predate the handshake and are not
+        // drift. Contract: docs/banner-spec.md.
+        let templateBannerSpecVersion: string | null = null;
+        if (behavioralRules) {
+          templateBannerSpecVersion = parseTemplateBannerSpecVersion(behavioralRules);
+          if (
+            templateBannerSpecVersion !== null &&
+            templateBannerSpecVersion !== BANNER_SPEC_VERSION
+          ) {
+            diagnostics.warn(
+              "BANNER_DRIFT",
+              `Template declares banner spec ${templateBannerSpecVersion}; server emits ${BANNER_SPEC_VERSION}. Align core-template-mcp.md with docs/banner-spec.md.`,
+              {
+                template_declared: templateBannerSpecVersion,
+                server_emitted: BANNER_SPEC_VERSION,
+              },
+            );
+            logger.warn("banner spec drift detected", {
+              template_declared: templateBannerSpecVersion,
+              server_emitted: BANNER_SPEC_VERSION,
+            });
+          }
         }
 
         // 2. Parse handoff into structured sections
@@ -875,14 +915,12 @@ export function registerBootstrap(server: McpServer): void {
           });
         }
 
-        // 6. Banner data + text rendering (ME-1: compact text replaces HTML)
+        // 6. Banner rendering — unified generator, boot surface (brief-439 / R8).
         const projectDisplayName = getProjectDisplayName(resolvedSlug);
         const resumption = parseResumptionForBanner(resumptionPoint, currentState);
         const guardrailCount = guardrails.length;
         const docCount = LIVING_DOCUMENTS.length;
         const docTotal = LIVING_DOCUMENTS.length;
-        const docStatus = docCount === docTotal ? "ok" as const : "critical" as const;
-        const docLabel = docStatus === "ok" ? "healthy" : `${docTotal - docCount} missing`;
 
         // Determine push verification status from boot-test result
         const pushToolStatus = bootTestResult.success ? "ok" as const : "warn" as const;
@@ -920,22 +958,28 @@ export function registerBootstrap(server: McpServer): void {
           });
         }
 
-        // ME-1: Render compact text banner instead of HTML
-        let bannerText: string | null = null;
+        // brief-439 / R8: render via the unified generator — the single code
+        // path shared with prism_finalize. On render failure, banner_text
+        // carries the Rule 2 single-line fallback instead of going null with
+        // a structured banner_data object (the pre-R8 contradiction with the
+        // template's documented fallback). banner_data is gone — banner_text
+        // is the only banner format (docs/banner-spec.md).
+        let bannerText: string;
         try {
-          const bannerTextInput: BannerTextInput = {
+          const bannerInput: UnifiedBannerInput = {
+            surface: "boot",
             templateVersion: handoffTemplateVersion,
             sessionNumber,
             timestamp: sessionTimestamp,
             handoffVersion,
-            handoffSizeKb: (handoff.size / 1024).toFixed(1),
+            handoffNote: `${(handoff.size / 1024).toFixed(1)}KB`,
             decisionCount: decisions.length,
-            guardrailCount,
+            decisionNote: `${guardrailCount} guardrails`,
             docCount,
             docTotal,
-            tools: toolsList,
+            statusRow: toolsList,
             resumption,
-            nextSteps,
+            listItems: nextSteps,
             warnings,
             suggested: recommendedSessionSettings
               ? {
@@ -944,37 +988,18 @@ export function registerBootstrap(server: McpServer): void {
                 }
               : null,
           };
-          bannerText = renderBannerText(bannerTextInput);
+          bannerText = renderUnifiedBanner(bannerInput);
           logger.info("boot banner text rendered", { textLength: bannerText.length });
         } catch (bannerError) {
           const msg = bannerError instanceof Error ? bannerError.message : String(bannerError);
-          logger.warn("boot banner text render failed", { error: msg });
+          logger.warn("boot banner render failed — using single-line fallback", { error: msg });
+          diagnostics.warn("BANNER_RENDER_FALLBACK", "Boot banner render failed — banner_text carries the single-line fallback", { error: msg });
+          bannerText = renderBannerFallback({ sessionNumber, handoffVersion, docCount, docTotal });
         }
-
-        // Build banner_data as fallback (only included when banner_text is null per QW-1)
-        const bannerData = {
-          template_version: handoffTemplateVersion,
-          project: projectDisplayName,
-          session: sessionNumber,
-          timestamp: sessionTimestamp,
-          handoff_version: handoffVersion,
-          handoff_kb: (handoff.size / 1024).toFixed(1),
-          decisions: decisions.length,
-          guardrails: guardrailCount,
-          docs: `${docCount}/${docTotal}`,
-          doc_status: docStatus,
-          doc_label: docLabel,
-          tools: toolsList,
-          resumption,
-          next_steps: nextSteps.map((text, i) => ({
-            text,
-            priority: i === 0,
-          })),
-          warnings,
-        };
 
         const result: Record<string, unknown> = {
           project: resolvedSlug,
+          project_display_name: projectDisplayName,    // brief-439: display name survives banner_data removal (Rule 2 Block 1 source)
           handoff_version: handoffVersion,
           template_version: handoffTemplateVersion,
           session_count: sessionCount,
@@ -994,8 +1019,10 @@ export function registerBootstrap(server: McpServer): void {
           intelligence_brief: intelligenceBrief,
           brief_age_sessions: briefAgeResult,
           behavioral_rules: behavioralRules,
-          banner_html: null,                           // ME-1: HTML replaced by banner_text
-          banner_text: bannerText,                     // ME-1: compact text boot status
+          banner_html: null,                           // ME-1: HTML replaced by banner_text; field kept null for back-compat (brief-439)
+          banner_text: bannerText,                     // brief-439 / R8: unified generator output (single-line fallback on render failure)
+          banner_spec_version: BANNER_SPEC_VERSION,    // brief-439 / R8: banner contract version this server emits
+          template_banner_spec_version: templateBannerSpecVersion, // brief-439 / R8: version the template declares (null = pre-handshake template)
           boot_test_verified: bootTestResult.success,
           trigger_enrollment: triggerEnrollment,        // brief-105: marker drop outcome
           bytes_delivered: bytesDelivered,
@@ -1007,11 +1034,6 @@ export function registerBootstrap(server: McpServer): void {
           warnings,
           diagnostics: diagnostics.list(),
         };
-
-        // QW-1: Only include banner_data as fallback when banner_text is absent
-        if (!bannerText) {
-          result.banner_data = bannerData;
-        }
 
         // ME-5: Context budget estimation (brief-433 / D-240 Phase B R7-a).
         // The numerator is measured from the COMPLETE assembled response —
@@ -1043,7 +1065,7 @@ export function registerBootstrap(server: McpServer): void {
           behavioral_rules: coreResults[2].status === "fulfilled" && coreResults[2].value ? (coreResults[2].value as { size: number }).size : 0,
           intelligence_brief_compact: intelligenceBrief?.length ?? 0,
           standing_rules: JSON.stringify(standingRules).length,
-          banner_text: bannerText?.length ?? 0,
+          banner_text: bannerText.length,
           prefetched_docs: prefetchedDocuments.reduce((sum, d) => sum + d.size_bytes, 0),
         };
 
@@ -1053,7 +1075,8 @@ export function registerBootstrap(server: McpServer): void {
           bytesDelivered,
           rulesDelivered: !!behavioralRules,
           rulesCached: templateCache.get(MCP_TEMPLATE_PATH) !== null,
-          bannerTextRendered: !!bannerText,
+          bannerTextBytes: bannerText.length,
+          bannerSpecVersion: BANNER_SPEC_VERSION,
           standingRulesCount: standingRules.length,
           intelligenceBriefCompacted: !!intelligenceBrief,
           bootTestVerified: bootTestResult.success,
