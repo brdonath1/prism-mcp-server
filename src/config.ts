@@ -88,9 +88,10 @@ export const DOC_ROOT = ".prism";
 export const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? "";
 
 /** Model to use for synthesis. Default centralized in src/models.ts
- *  (SYNTHESIS_MODEL_ID); override per-deployment via the SYNTHESIS_MODEL env
- *  var. Unchanged from the prior hard-coded "claude-opus-4-7" — centralization
- *  only; any bump is gated by INS-244 / INS-245 (OAuth-surface availability). */
+ *  (SYNTHESIS_MODEL_ID) so a model change touches one place; override
+ *  per-deployment via the SYNTHESIS_MODEL env var. Any bump to the
+ *  centralized default is gated by INS-244 / INS-245 (OAuth-surface
+ *  availability). */
 export const SYNTHESIS_MODEL = process.env.SYNTHESIS_MODEL ?? SYNTHESIS_MODEL_ID;
 
 /** Whether synthesis is enabled (requires API key) */
