@@ -143,8 +143,10 @@ function retainsTail(path: string): boolean {
  *  below the floor after the embedded truncation notice and line-boundary
  *  rounding (both paid inside the budget). 1K tokens × the full 16-doc set
  *  ≈ 16K tokens, comfortably under the 60K trim goal, which is what makes a
- *  single trim pass mathematically sufficient (see boundSynthesisInput). */
-const TRIM_DOC_FLOOR_TOKENS = 1_000;
+ *  single trim pass mathematically sufficient (see boundSynthesisInput).
+ *  Exported so tests can band-assert that trimmed docs retain a meaningful
+ *  fraction of the floor (metaswarm review, brief-445). */
+export const TRIM_DOC_FLOOR_TOKENS = 1_000;
 
 /** Small extra amount (estimated tokens) taken beyond the exact excess when
  *  trimming a doc. Token estimates round (Math.round) and cuts land on line

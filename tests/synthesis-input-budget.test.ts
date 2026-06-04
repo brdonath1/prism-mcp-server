@@ -75,6 +75,7 @@ import {
 import {
   boundSynthesisInput,
   estimateSynthesisTokens,
+  TRIM_DOC_FLOOR_TOKENS,
   type SynthesisDocEntry,
 } from "../src/ai/input-budget.js";
 import { buildSynthesisUserMessage } from "../src/ai/prompts.js";
@@ -373,10 +374,15 @@ describe("boundSynthesisInput — signal preservation", () => {
       "insights.md",
     ]);
 
-    // Every trim is reported with sane pre/post counts.
+    // Every trim is reported with sane pre/post counts, and every trimmed
+    // doc retains a meaningful fraction of the per-doc floor — a regression
+    // that gutted docs to a single line would fail here (metaswarm review).
+    // The 0.4 band (not >= floor) is deliberate: kept content can land
+    // somewhat below the floor after the embedded truncation notice and
+    // line-boundary rounding, both documented in input-budget.ts.
     for (const t of result.trimmed_docs) {
       expect(t.post_tokens).toBeLessThan(t.pre_tokens);
-      expect(t.post_tokens).toBeGreaterThan(0);
+      expect(t.post_tokens).toBeGreaterThanOrEqual(TRIM_DOC_FLOOR_TOKENS * 0.4);
     }
   });
 
@@ -398,12 +404,55 @@ describe("boundSynthesisInput — signal preservation", () => {
     expect(insights).not.toContain("### INS-1:");
     expect(insights.startsWith("# Insights — Test Project")).toBe(true);
     expect(insights).toContain("[synthesis input bound — brief-445/R3-dur]");
+    // A meaningful QUANTITY of recent insights survives — not just the single
+    // newest entry. With this fixture ~120 of 300 are retained; >=50 leaves
+    // wide slack for parameter drift while decisively failing a regression
+    // that kept only the newest item (metaswarm review).
+    const retainedInsightHeaders = insights.match(/### INS-\d+:/g) ?? [];
+    expect(retainedInsightHeaders.length).toBeGreaterThanOrEqual(50);
+    expect(insights).toContain("### INS-250:");
 
     // Trimmed docs' header sizes reflect the trimmed content (honest headers).
     const message = builderFor(result.docs);
     const trimmedInsightsSize = result.docs.get("insights.md")?.size ?? 0;
     expect(message).toContain(`### FILE: insights.md (${trimmedInsightsSize} bytes)`);
     expect(trimmedInsightsSize).toBeLessThan(docs.get("insights.md")?.content.length ?? 0);
+  });
+
+  it("preserves the RECENT end when a high-signal doc is ITSELF the bloat source", () => {
+    // The brief names "decisions accretion" as a growth vector this cap must
+    // absorb. When decisions/_INDEX.md alone exceeds the ceiling, the bound
+    // must trim IT — and the retained rows must be the most recent (highest
+    // D-N, inserted before the EOF sentinel by prism_log_decision), not the
+    // oldest. A retention-direction regression here would feed the model the
+    // OLDEST decisions and silently defeat "recent decisions survive"
+    // (metaswarm review — this exact mutation passed the prior suite).
+    const docs = new Map<string, SynthesisDocEntry>([
+      ["handoff.md", entry(HANDOFF_CONTENT)],
+      ["decisions/_INDEX.md", entry(makeDecisionIndex(8_000))],
+      ["insights.md", entry(makeInsights(10, 300))],
+    ]);
+    const pre = estimateSynthesisTokens(builderFor(docs));
+    expect(pre).toBeGreaterThan(SYNTHESIS_INPUT_MAX_TOKENS);
+
+    const result = boundSynthesisInput(docs, builderFor);
+
+    expect(result.trimmed).toBe(true);
+    expect(result.trimmed_docs.map((t) => t.path)).toContain("decisions/_INDEX.md");
+    expect(estimateSynthesisTokens(builderFor(result.docs))).toBeLessThanOrEqual(
+      SYNTHESIS_INPUT_MAX_TOKENS,
+    );
+
+    const index = result.docs.get("decisions/_INDEX.md")?.content ?? "";
+    // Most recent decisions retained, oldest dropped, title line preserved.
+    expect(index).toContain("| D-8000 |");
+    expect(index).toContain("| D-7000 |");
+    expect(index).not.toContain("| D-1 |");
+    expect(index.startsWith("# Decision Registry")).toBe(true);
+    expect(index).toContain("[synthesis input bound — brief-445/R3-dur]");
+    // The highest-priority doc (handoff) is still untouched even when the
+    // registry itself is the doc being cut.
+    expect(result.docs.get("handoff.md")?.content).toBe(HANDOFF_CONTENT);
   });
 });
 
