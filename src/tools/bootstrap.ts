@@ -41,6 +41,7 @@ import {
   topicMatch,
   type StandingRule,
 } from "../utils/standing-rules.js";
+import { unionStandingRules } from "../utils/standing-rules-union.js";
 import { classifySession, parsePersistedRecommendation, type SessionRecommendation } from "../utils/session-classifier.js";
 import { applyPendingDocUpdates, isPduEmpty, parseLastSynthesizedSession, type ApplyPduResult } from "../utils/apply-pdu.js";
 
@@ -672,17 +673,20 @@ export function registerBootstrap(server: McpServer): void {
           );
         }
 
-        // 5. Intelligence brief + insights + pending doc-updates loaded in parallel
-        //    (D.1 fix — was sequential; pending-doc-updates added per D-156 §3.5).
+        // 5. Intelligence brief + insights + pending doc-updates + standing-rules
+        //    registry loaded in parallel (D.1 fix — was sequential;
+        //    pending-doc-updates added per D-156 §3.5; standing-rules.md added
+        //    per R2-B / D-240 Phase B).
         let intelligenceBrief: string | null = null;
         let intelligenceBriefFull: string | null = null;
         let insightsContent: string | null = null;
 
-        const [briefOutcome, insightsOutcome, pendingUpdatesOutcome] =
+        const [briefOutcome, insightsOutcome, pendingUpdatesOutcome, standingRulesFileOutcome] =
           await Promise.allSettled([
             resolveDocPath(resolvedSlug, "intelligence-brief.md"),
             resolveDocPath(resolvedSlug, "insights.md"),
             resolveDocPath(resolvedSlug, "pending-doc-updates.md"),
+            resolveDocPath(resolvedSlug, "standing-rules.md"),
           ]);
 
         // Always-prefetch pending-doc-updates.md when it exists. Surfaced as an
@@ -813,7 +817,24 @@ export function registerBootstrap(server: McpServer): void {
           insightsContent = insightsOutcome.value.content;
         }
 
-        const allStandingRules = extractStandingRules(insightsContent);
+        // R2-B (D-240 Phase B): standing rules resolve from a UNION of the
+        // registry (.prism/standing-rules.md) and insights.md, dedup'd by
+        // INS-N with the registry winning on conflict. Projects that haven't
+        // migrated (no standing-rules.md) behave exactly as before.
+        const standingRulesFileContent =
+          standingRulesFileOutcome.status === "fulfilled"
+            ? standingRulesFileOutcome.value.content
+            : null;
+        const rulesUnion = unionStandingRules(standingRulesFileContent, insightsContent);
+        if (rulesUnion.conflicts.length > 0) {
+          diagnostics.warn(
+            "STANDING_RULE_SOURCE_CONFLICT",
+            `${rulesUnion.conflicts.length} INS id(s) present in BOTH standing-rules.md and insights.md — registry version used: ${rulesUnion.conflicts.join(", ")}. Finish the migration (R3-imm) to clear this.`,
+            { conflicts: rulesUnion.conflicts },
+          );
+        }
+
+        const allStandingRules = rulesUnion.rules;
         const standingRules = selectStandingRulesForBoot(allStandingRules, opening_message);
 
         // D-156: Tier accounting for diagnostics + log
@@ -833,6 +854,9 @@ export function registerBootstrap(server: McpServer): void {
             tier_b_excluded: tierBExcluded,
             tier_c_excluded: tierC.length,
             topics_matched: topicsMatched,
+            from_standing_rules_file: rulesUnion.fromStandingRulesFile,
+            from_insights: rulesUnion.fromInsights,
+            conflicts: rulesUnion.conflicts.length,
             ids: standingRules.map(r => r.id),
           });
 
@@ -846,6 +870,8 @@ export function registerBootstrap(server: McpServer): void {
             tier_b_excluded: tierBExcluded,
             tier_c_excluded: tierC.length,
             topics_matched: topicsMatched,
+            from_standing_rules_file: rulesUnion.fromStandingRulesFile,
+            from_insights: rulesUnion.fromInsights,
           });
         }
 
