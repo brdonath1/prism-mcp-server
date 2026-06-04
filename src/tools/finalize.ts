@@ -835,6 +835,14 @@ async function commitPhase(
   // atomic commit so live + archive changes land in a single commit. Fail-open:
   // any error is logged and skipped — a finalize that commits the live docs
   // without archiving is still a success.
+  //
+  // brief-435 (D-240 Phase B R2-A): archival is decoupled from the files[]
+  // array. Docs committed out-of-band during the session (e.g. insights.md via
+  // prism_log_insight push-immediately) are absent from files[] at finalize
+  // time — previously applyArchive bailed on liveIdx === -1, so D-80 retention
+  // never fired for them. Now the live doc is fetched from the repo instead;
+  // when archiving occurs, the pruned live doc + archive are injected into
+  // files[] so both land in the same atomic finalize commit.
   async function applyArchive(
     liveFileName: string,
     archiveFileName: string,
@@ -844,7 +852,25 @@ async function commitPhase(
       const liveIdx = files.findIndex(
         f => f.path === liveFileName || f.path === `${DOC_ROOT}/${liveFileName}`,
       );
-      if (liveIdx === -1) return; // Not being written this session — nothing to do
+
+      // In-array docs (e.g. session-log.md riding the finalize commit) use
+      // their files[] content; out-of-band docs are fetched from the repo.
+      // Fetch failure → skip: the doc doesn't exist, genuinely nothing to
+      // archive (fail-open). Note the asymmetry with the findIndex above:
+      // the fetch targets the standard `${DOC_ROOT}/` layout only, so a
+      // legacy root-resident doc absent from files[] skips archival — same
+      // as pre-brief-435 behavior (no regression).
+      let liveContent: string;
+      if (liveIdx !== -1) {
+        liveContent = files[liveIdx].content;
+      } else {
+        try {
+          const fetched = await fetchFile(projectSlug, `${DOC_ROOT}/${liveFileName}`);
+          liveContent = fetched.content;
+        } catch {
+          return;
+        }
+      }
 
       let existingArchive: string | null = null;
       try {
@@ -855,10 +881,19 @@ async function commitPhase(
         existingArchive = null; // First-time archive
       }
 
-      const result = splitForArchive(files[liveIdx].content, existingArchive, config);
+      const result = splitForArchive(liveContent, existingArchive, config);
 
       if (result.archiveContent !== null && result.archivedCount > 0) {
-        files[liveIdx] = { ...files[liveIdx], content: result.liveContent };
+        if (liveIdx !== -1) {
+          files[liveIdx] = { ...files[liveIdx], content: result.liveContent };
+        } else {
+          // Fetched out-of-band — add the pruned live doc to files[] so it
+          // lands in the same atomic commit as the archive file.
+          files.push({
+            path: `${DOC_ROOT}/${liveFileName}`,
+            content: result.liveContent,
+          });
+        }
         files.push({
           path: `${DOC_ROOT}/${archiveFileName}`,
           content: result.archiveContent,
