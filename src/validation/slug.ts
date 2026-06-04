@@ -1,8 +1,21 @@
 /**
  * Input sanitization for project slugs and file paths (B.11).
+ *
+ * brief-444 R5-c: these guards are now WIRED into the GitHub client's
+ * URL-construction choke points (src/github/client.ts) — every repo slug
+ * and contents path passes through them before any request is built.
  */
 
-const VALID_SLUG_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
+/**
+ * Repo-slug charset. Dots are permitted in non-leading positions
+ * (brief-444 review): GitHub repo names legally contain `.` (e.g.
+ * `brian.github.io`, `prism-2.0`) and the wired guard must not reject the
+ * platform's own valid names. The leading character stays alphanumeric —
+ * that single restriction is what keeps `..`, `.git`-style relatives, and
+ * option-injection (`-x`) out of request URLs; `/` and whitespace remain
+ * excluded entirely so a slug can never span URL path segments.
+ */
+const VALID_SLUG_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 const MAX_SLUG_LENGTH = 100;
 
 export function validateProjectSlug(slug: string): { valid: boolean; error?: string } {
@@ -16,7 +29,7 @@ export function validateProjectSlug(slug: string): { valid: boolean; error?: str
     return { valid: false, error: `Project slug exceeds ${MAX_SLUG_LENGTH} characters` };
   }
   if (!VALID_SLUG_PATTERN.test(slug)) {
-    return { valid: false, error: "Project slug must match ^[a-zA-Z0-9][a-zA-Z0-9_-]*$" };
+    return { valid: false, error: "Project slug must match ^[a-zA-Z0-9][a-zA-Z0-9._-]*$" };
   }
   return { valid: true };
 }

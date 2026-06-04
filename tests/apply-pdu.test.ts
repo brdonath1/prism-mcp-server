@@ -469,6 +469,54 @@ Some prose without an apply instruction.
     expect(content.match(/<!-- EOF: pending-doc-updates-archive\.md -->/g)).toHaveLength(1);
   });
 
+  it("is idempotent on re-run after a clear failure — no duplicate archive entry (brief-444 review fix)", async () => {
+    // Simulate the retry state: a prior run archived this exact batch
+    // (header carries session + date) but failed to clear the PDU, so the
+    // PDU still holds the proposals. Use a narrative-only batch so no
+    // target-file pushes interfere with the assertion.
+    const narrativeOnlyPdu = `# Pending Doc Updates — test
+
+> Last synthesized: S99 (04-26-26 12:00:00)
+
+## architecture.md
+
+### Proposed: Narrative only
+Some prose without an apply instruction.
+
+<!-- EOF: pending-doc-updates.md -->
+`;
+    const today = new Date().toISOString().split("T")[0];
+    const priorArchive = `# Pending Doc Updates Archive — test
+
+> Consumed pending-doc-updates batches with applied/rejected provenance (D-240 Phase B / brief-444).
+> Newest batch first. Archives are NEVER read by synthesis.
+
+## Batch: consumed S100 (${today})
+
+> Synthesized: S99 (04-26-26 12:00:00)
+> Outcome: 0 applied, 1 rejected/skipped
+
+### Rejected / Skipped
+- Narrative only (architecture.md) — no Apply instruction in proposal body
+
+<!-- EOF: ${PDU_ARCHIVE_DOC} -->
+`;
+    setupFetchByPath({
+      "pending-doc-updates.md": narrativeOnlyPdu,
+      [PDU_ARCHIVE_DOC]: priorArchive,
+    });
+
+    const result = await applyPendingDocUpdates("test", 100);
+
+    // Batch recognized as already archived: no second archive push, clear proceeds.
+    expect(result.archived).toBe(true);
+    expect(result.cleared).toBe(true);
+    const archivePushes = mockPushFile.mock.calls.filter(c => c[1] === `.prism/${PDU_ARCHIVE_DOC}`);
+    expect(archivePushes).toHaveLength(0);
+    const clearPush = mockPushFile.mock.calls.find(c => c[1] === ".prism/pending-doc-updates.md");
+    expect(clearPush).toBeDefined();
+  });
+
   it("does NOT clear the PDU file when any apply errors occurred (so operator can re-run)", async () => {
     setupFetchByPath({
       "pending-doc-updates.md": STRUCTURED_PDU,

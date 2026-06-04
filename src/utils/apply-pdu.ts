@@ -543,24 +543,38 @@ export async function applyPendingDocUpdates(
         if (!msg.includes("Not found")) throw err;
       }
 
-      const archiveContent = upsertPduArchive(existingArchive, projectSlug, entry);
-      const archivePushPath = await resolveDocPushPath(projectSlug, PDU_ARCHIVE_DOC);
-      const archivePush = await pushFile(
-        projectSlug,
-        archivePushPath,
-        archiveContent,
-        `prism: S${sessionNumber} archive consumed pending-doc-updates batch`,
-      );
-      if (!archivePush.success) {
-        throw new Error(archivePush.error ?? "archive push failed");
+      // Idempotency (brief-444 review): if a prior run archived this batch
+      // but failed on the subsequent PDU clear, the re-run would otherwise
+      // prepend the same batch a second time. The batch header carries the
+      // session + date, so its presence marks the batch as already archived
+      // — skip straight to the clear.
+      const batchHeader = `## Batch: consumed S${sessionNumber} (${today})`;
+      if (existingArchive?.includes(batchHeader)) {
+        result.archived = true;
+        logger.info("apply-pdu: batch already archived — skipping duplicate entry", {
+          projectSlug,
+          batchHeader,
+        });
+      } else {
+        const archiveContent = upsertPduArchive(existingArchive, projectSlug, entry);
+        const archivePushPath = await resolveDocPushPath(projectSlug, PDU_ARCHIVE_DOC);
+        const archivePush = await pushFile(
+          projectSlug,
+          archivePushPath,
+          archiveContent,
+          `prism: S${sessionNumber} archive consumed pending-doc-updates batch`,
+        );
+        if (!archivePush.success) {
+          throw new Error(archivePush.error ?? "archive push failed");
+        }
+        result.archived = true;
+        logger.info("apply-pdu: consumed batch archived", {
+          projectSlug,
+          applied: result.applied.length,
+          rejected: result.skipped.length,
+          path: archivePushPath,
+        });
       }
-      result.archived = true;
-      logger.info("apply-pdu: consumed batch archived", {
-        projectSlug,
-        applied: result.applied.length,
-        rejected: result.skipped.length,
-        path: archivePushPath,
-      });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       logger.warn("apply-pdu: archive push failed — leaving PDU in place", {

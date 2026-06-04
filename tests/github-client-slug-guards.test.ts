@@ -172,4 +172,18 @@ describe("B.11 guards — legitimate traffic passes through", () => {
     expect(entries).toEqual([]);
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
+
+  it("allows dotted repo names (GitHub-legal, e.g. user.github.io) — brief-444 review fix", async () => {
+    fetchSpy.mockResolvedValue(
+      okJson({
+        content: Buffer.from("# Handoff\n", "utf-8").toString("base64"),
+        sha: "abc",
+        size: 10,
+      }),
+    );
+    await expect(fetchFile("brian.github.io", ".prism/handoff.md")).resolves.toBeDefined();
+    await expect(fetchFile("prism-2.0", "handoff.md")).resolves.toBeDefined();
+    // Leading-dot stays rejected — that is the traversal guard.
+    await expect(fetchFile(".github", "handoff.md")).rejects.toThrow(/Invalid repo slug/);
+  });
 });

@@ -920,6 +920,7 @@ export function registerBootstrap(server: McpServer): void {
                       age_sessions: ageSessions,
                       skipped: pduAppliedAtBoot.skipped,
                       errors: pduAppliedAtBoot.errors,
+                      archived: pduAppliedAtBoot.archived, // brief-444: all-rejected batches are archived too
                     },
                   );
                 }
