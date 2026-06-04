@@ -51,7 +51,13 @@ export interface ApplyPduResult {
   errors: Array<{ title: string; error: string }>;
   /** True iff the PDU file was overwritten with the cleared template. */
   cleared: boolean;
+  /** True iff the consumed batch was archived to pending-doc-updates-archive.md
+   *  with applied/rejected provenance (brief-444 / D-240 Phase B). */
+  archived: boolean;
 }
+
+/** Archive doc name for consumed PDU batches (brief-444 / D-240 Phase B). */
+export const PDU_ARCHIVE_DOC = "pending-doc-updates-archive.md";
 
 const APPLY_INSTRUCTION_RE =
   /\*\*Apply via\s+`?prism_patch\s+(append|replace|prepend)`?\s+on\s+`([^`\n]+)`:\*\*/i;
@@ -238,14 +244,21 @@ export function insertGlossaryRow(content: string, row: string): string {
 
 /**
  * Build the cleared-state PDU body. Stamps the apply session + date so the
- * next session bootstrap can see when the cleanup ran.
+ * next session bootstrap can see when the cleanup ran. When `outcome` is
+ * provided (brief-444), the body records the consumed batch's applied/
+ * rejected split and points at the provenance archive instead of claiming
+ * everything was applied.
  */
 export function buildClearedPdu(
   projectSlug: string,
   syntheszedAt: string,
   appliedAtSession: number,
   appliedAtDate: string,
+  outcome?: { applied: number; rejected: number },
 ): string {
+  const summaryLine = outcome
+    ? `Prior synthesis batch consumed at S${appliedAtSession} — ${outcome.applied} applied, ${outcome.rejected} rejected/skipped. Provenance: ${PDU_ARCHIVE_DOC}.`
+    : "All proposals from the prior synthesis run were applied at finalize.";
   return `# Pending Doc Updates — ${projectSlug}
 
 > Auto-generated proposals. Operator review required before applying via \`prism_patch\`.
@@ -254,10 +267,79 @@ export function buildClearedPdu(
 
 ## No Updates Needed
 
-All proposals from the prior synthesis run were applied at finalize.
+${summaryLine}
 
 <!-- EOF: pending-doc-updates.md -->
 `;
+}
+
+/**
+ * Render one archive entry for a consumed PDU batch (brief-444). Pure —
+ * exported for direct unit testing. The entry is a `## Batch:` section with
+ * per-proposal applied/rejected provenance; empty subsections are omitted.
+ */
+export function buildPduArchiveEntry(input: {
+  sessionNumber: number;
+  date: string;
+  synthesizedAt: string;
+  applied: Array<{ title: string; targetFile: string }>;
+  rejected: Array<{ title: string; targetFile: string | null; reason: string }>;
+}): string {
+  const lines: string[] = [
+    `## Batch: consumed S${input.sessionNumber} (${input.date})`,
+    "",
+    `> Synthesized: ${input.synthesizedAt}`,
+    `> Outcome: ${input.applied.length} applied, ${input.rejected.length} rejected/skipped`,
+    "",
+  ];
+  if (input.applied.length > 0) {
+    lines.push("### Applied");
+    for (const a of input.applied) {
+      lines.push(`- ${a.title} → ${a.targetFile}`);
+    }
+    lines.push("");
+  }
+  if (input.rejected.length > 0) {
+    lines.push("### Rejected / Skipped");
+    for (const r of input.rejected) {
+      lines.push(`- ${r.title}${r.targetFile ? ` (${r.targetFile})` : ""} — ${r.reason}`);
+    }
+    lines.push("");
+  }
+  return lines.join("\n").trimEnd();
+}
+
+/**
+ * Insert a batch entry into the PDU archive, newest first (brief-444).
+ * Pure — exported for direct unit testing. `existing === null` starts a
+ * fresh archive with the standard preamble + EOF sentinel; otherwise the
+ * entry lands before the first `## Batch:` header (falling back to just
+ * above the EOF sentinel, then to plain append for malformed files).
+ */
+export function upsertPduArchive(
+  existing: string | null,
+  projectSlug: string,
+  entry: string,
+): string {
+  const eof = `<!-- EOF: ${PDU_ARCHIVE_DOC} -->`;
+  const block = `${entry.trimEnd()}\n\n`;
+  if (existing === null) {
+    return (
+      `# Pending Doc Updates Archive — ${projectSlug}\n\n` +
+      `> Consumed pending-doc-updates batches with applied/rejected provenance (D-240 Phase B / brief-444).\n` +
+      `> Newest batch first. Archives are NEVER read by synthesis.\n\n` +
+      `${block}${eof}\n`
+    );
+  }
+  const firstBatch = existing.search(/^## Batch:/m);
+  if (firstBatch !== -1) {
+    return existing.slice(0, firstBatch) + block + existing.slice(firstBatch);
+  }
+  const eofIdx = existing.indexOf(eof);
+  if (eofIdx !== -1) {
+    return existing.slice(0, eofIdx) + block + existing.slice(eofIdx);
+  }
+  return `${existing.trimEnd()}\n\n${block}${eof}\n`;
 }
 
 /**
@@ -292,6 +374,7 @@ export async function applyPendingDocUpdates(
     skipped: [],
     errors: [],
     cleared: false,
+    archived: false,
   };
 
   let pdu: { content: string; sha: string };
@@ -332,11 +415,14 @@ export async function applyPendingDocUpdates(
   }
 
   if (actionable.length === 0) {
-    logger.info("apply-pdu: no actionable proposals — leaving PDU file in place", {
+    // brief-444: all-unparsable batches no longer return early. They flow to
+    // the consume path below — archived as rejected with reasons, then
+    // cleared — so pending-doc-updates.md stops silently accreting stale
+    // proposals that can never apply.
+    logger.info("apply-pdu: no actionable proposals — consuming batch as rejected", {
       projectSlug,
       skipped: result.skipped.length,
     });
-    return result;
   }
 
   const grouped = groupByTarget(actionable);
@@ -410,27 +496,116 @@ export async function applyPendingDocUpdates(
     }
   }
 
-  // Clear the PDU file only when at least one proposal landed AND no errors
-  // occurred. Partial-error runs leave the file in place so the operator can
-  // see what's still pending.
-  if (result.applied.length > 0 && result.errors.length === 0) {
+  // brief-444 (PDU provenance): a batch is CONSUMED when processing finished
+  // without errors — whether proposals applied or every one was rejected/
+  // skipped. Consumed batches are archived to pending-doc-updates-archive.md
+  // with per-proposal provenance BEFORE the PDU file is cleared, so the file
+  // stops accreting stale proposals without erasing the record. Error runs
+  // leave the PDU in place (and unarchived) so the operator can re-run.
+  const consumed =
+    result.errors.length === 0 &&
+    (result.applied.length > 0 || result.skipped.length > 0);
+
+  if (consumed) {
+    const lastSynth = pdu.content.match(/^>\s*Last synthesized:.*$/m)?.[0]?.replace(/^>\s*Last synthesized:\s*/, "")
+      ?? "unknown";
+    const today = new Date().toISOString().split("T")[0];
+
+    // 1. Archive the consumed batch with applied/rejected provenance.
     try {
-      const lastSynth = pdu.content.match(/^>\s*Last synthesized:.*$/m)?.[0]?.replace(/^>\s*Last synthesized:\s*/, "")
-        ?? "unknown";
-      const today = new Date().toISOString().split("T")[0];
-      const cleared = buildClearedPdu(projectSlug, lastSynth, sessionNumber, today);
-      const pushPath = await resolveDocPushPath(projectSlug, "pending-doc-updates.md");
-      await pushFile(
-        projectSlug,
-        pushPath,
-        cleared,
-        `prism: S${sessionNumber} clear pending-doc-updates after auto-apply`,
-      );
-      result.cleared = true;
+      const targetByTitle = new Map<string, string>();
+      for (const p of proposals) {
+        if (!targetByTitle.has(p.title)) targetByTitle.set(p.title, p.targetFile);
+      }
+      const entry = buildPduArchiveEntry({
+        sessionNumber,
+        date: today,
+        synthesizedAt: lastSynth,
+        applied: result.applied.map((title) => ({
+          title,
+          targetFile: targetByTitle.get(title) ?? "unknown",
+        })),
+        rejected: result.skipped.map((s) => ({
+          title: s.title,
+          targetFile: targetByTitle.get(s.title) ?? null,
+          reason: s.reason,
+        })),
+      });
+
+      let existingArchive: string | null = null;
+      try {
+        const resolved = await resolveDocPath(projectSlug, PDU_ARCHIVE_DOC);
+        existingArchive = resolved.content;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        // "Not found" = first-time archive; anything else is operational and
+        // routes to the error path below (PDU stays in place, no clear).
+        if (!msg.includes("Not found")) throw err;
+      }
+
+      // Idempotency (brief-444 review): if a prior run archived this batch
+      // but failed on the subsequent PDU clear, the re-run would otherwise
+      // prepend the same batch a second time. The batch header carries the
+      // session + date, so its presence marks the batch as already archived
+      // — skip straight to the clear.
+      const batchHeader = `## Batch: consumed S${sessionNumber} (${today})`;
+      if (existingArchive?.includes(batchHeader)) {
+        result.archived = true;
+        logger.info("apply-pdu: batch already archived — skipping duplicate entry", {
+          projectSlug,
+          batchHeader,
+        });
+      } else {
+        const archiveContent = upsertPduArchive(existingArchive, projectSlug, entry);
+        const archivePushPath = await resolveDocPushPath(projectSlug, PDU_ARCHIVE_DOC);
+        const archivePush = await pushFile(
+          projectSlug,
+          archivePushPath,
+          archiveContent,
+          `prism: S${sessionNumber} archive consumed pending-doc-updates batch`,
+        );
+        if (!archivePush.success) {
+          throw new Error(archivePush.error ?? "archive push failed");
+        }
+        result.archived = true;
+        logger.info("apply-pdu: consumed batch archived", {
+          projectSlug,
+          applied: result.applied.length,
+          rejected: result.skipped.length,
+          path: archivePushPath,
+        });
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      logger.warn("apply-pdu: PDU clear push failed", { projectSlug, error: msg });
-      result.errors.push({ title: "(clear pending-doc-updates.md)", error: msg });
+      logger.warn("apply-pdu: archive push failed — leaving PDU in place", {
+        projectSlug,
+        error: msg,
+      });
+      result.errors.push({ title: `(archive ${PDU_ARCHIVE_DOC})`, error: msg });
+    }
+
+    // 2. Clear the PDU file — only after the archive landed (provenance
+    //    before erasure). An archive failure above leaves the batch intact
+    //    for a re-run, exactly like an apply error.
+    if (result.archived) {
+      try {
+        const cleared = buildClearedPdu(projectSlug, lastSynth, sessionNumber, today, {
+          applied: result.applied.length,
+          rejected: result.skipped.length,
+        });
+        const pushPath = await resolveDocPushPath(projectSlug, "pending-doc-updates.md");
+        await pushFile(
+          projectSlug,
+          pushPath,
+          cleared,
+          `prism: S${sessionNumber} clear pending-doc-updates after auto-apply`,
+        );
+        result.cleared = true;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.warn("apply-pdu: PDU clear push failed", { projectSlug, error: msg });
+        result.errors.push({ title: "(clear pending-doc-updates.md)", error: msg });
+      }
     }
   }
 

@@ -28,6 +28,9 @@ import {
   parseLastSynthesizedSession,
   parseProposals,
   buildClearedPdu,
+  buildPduArchiveEntry,
+  upsertPduArchive,
+  PDU_ARCHIVE_DOC,
 } from "../src/utils/apply-pdu.js";
 import { fetchFile, pushFile } from "../src/github/client.js";
 import { resolveDocPath, resolveDocPushPath } from "../src/utils/doc-resolver.js";
@@ -207,6 +210,56 @@ describe("insertGlossaryRow", () => {
   });
 });
 
+// ---- Provenance archive builders (brief-444, pure) ----
+
+describe("buildPduArchiveEntry", () => {
+  it("renders batch header, synthesis line, outcome counts, and both sections", () => {
+    const entry = buildPduArchiveEntry({
+      sessionNumber: 100,
+      date: "2026-06-04",
+      synthesizedAt: "S99 (04-26-26 12:00:00)",
+      applied: [{ title: "Add section", targetFile: "architecture.md" }],
+      rejected: [{ title: "Vague idea", targetFile: "insights.md", reason: "no Apply instruction" }],
+    });
+    expect(entry).toContain("## Batch: consumed S100 (2026-06-04)");
+    expect(entry).toContain("> Synthesized: S99 (04-26-26 12:00:00)");
+    expect(entry).toContain("> Outcome: 1 applied, 1 rejected/skipped");
+    expect(entry).toContain("### Applied\n- Add section → architecture.md");
+    expect(entry).toContain("### Rejected / Skipped\n- Vague idea (insights.md) — no Apply instruction");
+  });
+
+  it("omits empty sections instead of rendering empty headers", () => {
+    const noApplied = buildPduArchiveEntry({
+      sessionNumber: 1,
+      date: "2026-06-04",
+      synthesizedAt: "S1",
+      applied: [],
+      rejected: [{ title: "T", targetFile: null, reason: "r" }],
+    });
+    expect(noApplied).not.toContain("### Applied");
+    expect(noApplied).toContain("- T — r");
+  });
+});
+
+describe("upsertPduArchive", () => {
+  const entry = "## Batch: consumed S100 (2026-06-04)\n\n> Outcome: 1 applied, 0 rejected/skipped";
+
+  it("starts a fresh archive with preamble + EOF sentinel when none exists", () => {
+    const content = upsertPduArchive(null, "test", entry);
+    expect(content.startsWith("# Pending Doc Updates Archive — test")).toBe(true);
+    expect(content).toContain("Archives are NEVER read by synthesis");
+    expect(content).toContain("## Batch: consumed S100");
+    expect(content.trimEnd().endsWith(`<!-- EOF: ${PDU_ARCHIVE_DOC} -->`)).toBe(true);
+  });
+
+  it("inserts the new batch above the first existing batch (newest first)", () => {
+    const existing = upsertPduArchive(null, "test", "## Batch: consumed S90 (2026-05-01)\n\nold");
+    const updated = upsertPduArchive(existing, "test", entry);
+    expect(updated.indexOf("consumed S100")).toBeLessThan(updated.indexOf("consumed S90"));
+    expect(updated.match(/<!-- EOF: pending-doc-updates-archive\.md -->/g)).toHaveLength(1);
+  });
+});
+
 // ---- Apply-pipeline tests ----
 
 describe("applyPendingDocUpdates — pipeline", () => {
@@ -288,6 +341,180 @@ describe("applyPendingDocUpdates — pipeline", () => {
     expect(result.skipped.some(s => s.title === "Update Synthesis Routing diagram")).toBe(true);
     // PDU should still be cleared since no errors occurred (skipped is not error).
     expect(result.cleared).toBe(true);
+  });
+
+  it("archives the consumed batch with provenance BEFORE clearing (brief-444)", async () => {
+    setupFetchByPath({
+      "pending-doc-updates.md": STRUCTURED_PDU,
+      "architecture.md": ARCH_WITH_REPLACE_TARGET,
+      "glossary.md": GLOSSARY_BEFORE,
+    });
+
+    const result = await applyPendingDocUpdates("test", 100);
+
+    expect(result.archived).toBe(true);
+    expect(result.cleared).toBe(true);
+
+    const archivePush = mockPushFile.mock.calls.find(c => c[1] === `.prism/${PDU_ARCHIVE_DOC}`);
+    expect(archivePush).toBeDefined();
+    const archiveContent = archivePush![2] as string;
+    expect(archiveContent).toContain("# Pending Doc Updates Archive — test");
+    expect(archiveContent).toContain("## Batch: consumed S100");
+    expect(archiveContent).toContain("> Synthesized: S99 (04-26-26 12:00:00)");
+    expect(archiveContent).toContain("### Applied");
+    expect(archiveContent).toContain("- Add safeMutation primitive section → architecture.md");
+    expect(archiveContent).toContain("- Update Synthesis Routing diagram → architecture.md");
+    expect(archiveContent).toContain("- safeMutation → glossary.md");
+    // No rejections in this batch — the section is omitted, not rendered empty.
+    expect(archiveContent).not.toContain("### Rejected / Skipped");
+    expect(archiveContent).toContain(`<!-- EOF: ${PDU_ARCHIVE_DOC} -->`);
+
+    // The cleared PDU records the consumed outcome + provenance pointer.
+    const pduPush = mockPushFile.mock.calls.find(c => c[1] === ".prism/pending-doc-updates.md");
+    expect(pduPush?.[2]).toContain("3 applied, 0 rejected/skipped");
+    expect(pduPush?.[2]).toContain(`Provenance: ${PDU_ARCHIVE_DOC}`);
+  });
+
+  it("consumes an all-unparsable batch — archived as rejected + cleared (accretion fix, brief-444)", async () => {
+    const narrativeOnlyPdu = `# Pending Doc Updates — test
+
+> Last synthesized: S99 (04-26-26 12:00:00)
+
+## architecture.md
+
+### Proposed: Narrative only
+Some prose without an apply instruction.
+
+<!-- EOF: pending-doc-updates.md -->
+`;
+    setupFetchByPath({ "pending-doc-updates.md": narrativeOnlyPdu });
+
+    const result = await applyPendingDocUpdates("test", 100);
+
+    // Pre-brief-444 behavior left this batch in place forever (silent
+    // accretion). It is now consumed: rejected provenance archived, file cleared.
+    expect(result.applied).toEqual([]);
+    expect(result.skipped).toEqual([
+      { title: "Narrative only", reason: "no Apply instruction in proposal body" },
+    ]);
+    expect(result.errors).toEqual([]);
+    expect(result.archived).toBe(true);
+    expect(result.cleared).toBe(true);
+
+    const archivePush = mockPushFile.mock.calls.find(c => c[1] === `.prism/${PDU_ARCHIVE_DOC}`);
+    expect(archivePush).toBeDefined();
+    const archiveContent = archivePush![2] as string;
+    expect(archiveContent).toContain("### Rejected / Skipped");
+    expect(archiveContent).toContain("- Narrative only (architecture.md) — no Apply instruction in proposal body");
+    expect(archiveContent).not.toContain("### Applied");
+
+    const pduPush = mockPushFile.mock.calls.find(c => c[1] === ".prism/pending-doc-updates.md");
+    expect(pduPush?.[2]).toContain("0 applied, 1 rejected/skipped");
+  });
+
+  it("leaves the PDU in place when the archive push fails (provenance before erasure)", async () => {
+    setupFetchByPath({
+      "pending-doc-updates.md": STRUCTURED_PDU,
+      "architecture.md": ARCH_WITH_REPLACE_TARGET,
+      "glossary.md": GLOSSARY_BEFORE,
+    });
+    mockPushFile.mockImplementation(async (_repo, path) => {
+      if (path === `.prism/${PDU_ARCHIVE_DOC}`) throw new Error("github 502");
+      return { success: true, sha: "ok", size: 100 };
+    });
+
+    const result = await applyPendingDocUpdates("test", 100);
+
+    expect(result.archived).toBe(false);
+    expect(result.cleared).toBe(false);
+    expect(result.errors.some(e => e.title === `(archive ${PDU_ARCHIVE_DOC})`)).toBe(true);
+    // No clear push attempted — the batch stays for a re-run.
+    const clearAttempt = mockPushFile.mock.calls.find(c => c[1] === ".prism/pending-doc-updates.md");
+    expect(clearAttempt).toBeUndefined();
+  });
+
+  it("inserts the newest batch ABOVE existing batches in the archive", async () => {
+    const existingArchive = `# Pending Doc Updates Archive — test
+
+> Consumed pending-doc-updates batches with applied/rejected provenance (D-240 Phase B / brief-444).
+> Newest batch first. Archives are NEVER read by synthesis.
+
+## Batch: consumed S90 (2026-05-01)
+
+> Synthesized: S89
+> Outcome: 1 applied, 0 rejected/skipped
+
+### Applied
+- Old proposal → architecture.md
+
+<!-- EOF: ${PDU_ARCHIVE_DOC} -->
+`;
+    setupFetchByPath({
+      "pending-doc-updates.md": STRUCTURED_PDU,
+      "architecture.md": ARCH_WITH_REPLACE_TARGET,
+      "glossary.md": GLOSSARY_BEFORE,
+      [PDU_ARCHIVE_DOC]: existingArchive,
+    });
+
+    const result = await applyPendingDocUpdates("test", 100);
+    expect(result.archived).toBe(true);
+
+    const archivePush = mockPushFile.mock.calls.find(c => c[1] === `.prism/${PDU_ARCHIVE_DOC}`);
+    const content = archivePush![2] as string;
+    const newIdx = content.indexOf("## Batch: consumed S100");
+    const oldIdx = content.indexOf("## Batch: consumed S90");
+    expect(newIdx).toBeGreaterThan(-1);
+    expect(oldIdx).toBeGreaterThan(newIdx);
+    // Single EOF sentinel, still terminal.
+    expect(content.match(/<!-- EOF: pending-doc-updates-archive\.md -->/g)).toHaveLength(1);
+  });
+
+  it("is idempotent on re-run after a clear failure — no duplicate archive entry (brief-444 review fix)", async () => {
+    // Simulate the retry state: a prior run archived this exact batch
+    // (header carries session + date) but failed to clear the PDU, so the
+    // PDU still holds the proposals. Use a narrative-only batch so no
+    // target-file pushes interfere with the assertion.
+    const narrativeOnlyPdu = `# Pending Doc Updates — test
+
+> Last synthesized: S99 (04-26-26 12:00:00)
+
+## architecture.md
+
+### Proposed: Narrative only
+Some prose without an apply instruction.
+
+<!-- EOF: pending-doc-updates.md -->
+`;
+    const today = new Date().toISOString().split("T")[0];
+    const priorArchive = `# Pending Doc Updates Archive — test
+
+> Consumed pending-doc-updates batches with applied/rejected provenance (D-240 Phase B / brief-444).
+> Newest batch first. Archives are NEVER read by synthesis.
+
+## Batch: consumed S100 (${today})
+
+> Synthesized: S99 (04-26-26 12:00:00)
+> Outcome: 0 applied, 1 rejected/skipped
+
+### Rejected / Skipped
+- Narrative only (architecture.md) — no Apply instruction in proposal body
+
+<!-- EOF: ${PDU_ARCHIVE_DOC} -->
+`;
+    setupFetchByPath({
+      "pending-doc-updates.md": narrativeOnlyPdu,
+      [PDU_ARCHIVE_DOC]: priorArchive,
+    });
+
+    const result = await applyPendingDocUpdates("test", 100);
+
+    // Batch recognized as already archived: no second archive push, clear proceeds.
+    expect(result.archived).toBe(true);
+    expect(result.cleared).toBe(true);
+    const archivePushes = mockPushFile.mock.calls.filter(c => c[1] === `.prism/${PDU_ARCHIVE_DOC}`);
+    expect(archivePushes).toHaveLength(0);
+    const clearPush = mockPushFile.mock.calls.find(c => c[1] === ".prism/pending-doc-updates.md");
+    expect(clearPush).toBeDefined();
   });
 
   it("does NOT clear the PDU file when any apply errors occurred (so operator can re-run)", async () => {

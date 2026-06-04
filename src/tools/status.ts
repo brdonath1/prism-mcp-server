@@ -11,6 +11,7 @@ import {
   LIVING_DOCUMENT_NAMES,
   HANDOFF_CRITICAL_SIZE,
   HANDOFF_WARNING_SIZE,
+  STATUS_WALL_CLOCK_DEADLINE_MS,
   SYNTHESIS_ENABLED,
 } from "../config.js";
 import { resolveDocExists, resolveDocPath } from "../utils/doc-resolver.js";
@@ -80,6 +81,9 @@ async function getCachedHandoffExists(
   handoffExistenceCache.set(repo, fresh);
   return fresh;
 }
+
+/** Sentinel used to signal that the tool-level deadline fired (brief-444 R-deadlines). */
+const STATUS_DEADLINE_SENTINEL = Symbol("status.deadline");
 
 /** Input schema for prism_status */
 const inputSchema = {
@@ -252,6 +256,17 @@ export function registerStatus(server: McpServer): void {
       const diagnostics = new DiagnosticsCollector();
       logger.info("prism_status", { project_slug: project_slug ?? "all", include_details });
 
+      // brief-444 R-deadlines — tool-level wall-clock deadline. The
+      // multi-project sweep probes every repo for handoff.md and fans out
+      // 10 doc checks + 4 archive probes per PRISM project; a hung GitHub
+      // call previously held the connection until the MCP client gave up.
+      // Mirrors prism_push (S40 C4).
+      let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+      const deadlinePromise = new Promise<typeof STATUS_DEADLINE_SENTINEL>((resolve) => {
+        deadlineTimer = setTimeout(() => resolve(STATUS_DEADLINE_SENTINEL), STATUS_WALL_CLOCK_DEADLINE_MS);
+      });
+
+      const workPromise = (async () => {
       try {
         if (project_slug) {
           // Single project status
@@ -347,6 +362,32 @@ export function registerStatus(server: McpServer): void {
           }],
           isError: true,
         };
+      }
+      })();
+
+      try {
+        const raced = await Promise.race([workPromise, deadlinePromise]);
+        if (raced === STATUS_DEADLINE_SENTINEL) {
+          const deadlineSec = Math.round(STATUS_WALL_CLOCK_DEADLINE_MS / 1000);
+          logger.error("prism_status deadline exceeded", {
+            project_slug: project_slug ?? "all",
+            deadlineMs: STATUS_WALL_CLOCK_DEADLINE_MS,
+            elapsedMs: Date.now() - start,
+          });
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({
+                error: `prism_status deadline exceeded (${deadlineSec}s)`,
+                project: project_slug ?? "all",
+              }),
+            }],
+            isError: true,
+          };
+        }
+        return raced;
+      } finally {
+        if (deadlineTimer) clearTimeout(deadlineTimer);
       }
     }
   );

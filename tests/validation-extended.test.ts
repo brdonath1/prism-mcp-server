@@ -174,6 +174,20 @@ describe("validateProjectSlug", () => {
     }
   });
 
+  it("accepts dotted repo names in non-leading positions (brief-444 — GitHub-legal names)", () => {
+    const valid = ["brian.github.io", "prism-2.0", "notes.app", "v2.0-archive"];
+    for (const slug of valid) {
+      const result = validateProjectSlug(slug);
+      expect(result.valid).toBe(true);
+    }
+  });
+
+  it("still rejects leading-dot slugs (traversal guard)", () => {
+    for (const slug of ["..", "../evil", ".hidden", ".git"]) {
+      expect(validateProjectSlug(slug).valid).toBe(false);
+    }
+  });
+
   it("rejects empty slug", () => {
     const result = validateProjectSlug("");
     expect(result.valid).toBe(false);

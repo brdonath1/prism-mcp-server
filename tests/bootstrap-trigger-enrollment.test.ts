@@ -283,6 +283,38 @@ describe("brief-105: Trigger enrollment marker drop", () => {
     expect(contentArg).toContain("archive/");
   });
 
+  it("emits serial defaults + the D-241 dead-knob comment (brief-444)", async () => {
+    const { bootstrapHandler, mockPushFile } = await setupBootstrap();
+
+    const result = await bootstrapHandler({ project_slug: "prism" });
+    expect(result.isError).toBeFalsy();
+
+    const markerPushCall = mockPushFile.mock.calls.find(
+      ([, path]) => path === ".prism/trigger.yaml",
+    );
+    expect(markerPushCall).toBeDefined();
+    const contentArg = markerPushCall![2] as string;
+
+    // D-241: the knobs stay pinned to serial defaults…
+    expect(contentArg).toContain("intra_project_parallel: false");
+    expect(contentArg).toContain("max_parallel_briefs: 1");
+
+    // …and the generated comment states they are dead config so an operator
+    // edit can never look like it enables parallelism (the S146 trap).
+    expect(contentArg).toContain("D-241");
+    expect(contentArg).toContain("DEAD CONFIG");
+    expect(contentArg).toContain("ALWAYS serial");
+    expect(contentArg).toContain("does NOT enable parallel dispatch");
+
+    // Negative guard: nothing in the marker may imply the fields gate
+    // parallel dispatch (the S146 hand-edit claimed "raised 1 -> 5 to allow
+    // concurrent dispatch"). The only "enable parallel" phrasing permitted
+    // is the explicit negation asserted above.
+    expect(contentArg).not.toMatch(/allow(s|ed)?\s+concurrent dispatch/i);
+    expect(contentArg).not.toMatch(/raised\s+\d+\s*->\s*\d+/i);
+    expect(contentArg.replace("does NOT enable parallel dispatch", "")).not.toMatch(/enables?\s+parallel/i);
+  });
+
   it("returns error status when pushFile throws (bootstrap still succeeds)", async () => {
     const { bootstrapHandler, mockPushFile } = await setupBootstrap();
     mockPushFile.mockImplementation((_repo: string, path: string) => {

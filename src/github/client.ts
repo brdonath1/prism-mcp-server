@@ -4,6 +4,7 @@
  */
 
 import { GITHUB_PAT, GITHUB_OWNER, GITHUB_API_BASE, SERVER_VERSION } from "../config.js";
+import { validateFilePath, validateProjectSlug } from "../validation/slug.js";
 import { logger } from "../utils/logger.js";
 import type {
   FileResult,
@@ -34,6 +35,37 @@ function headers(): Record<string, string> {
 export const GITHUB_REQUEST_TIMEOUT_MS = 15_000;
 
 /**
+ * B.11 input guards — wired at the URL-construction choke point (brief-444
+ * R5-c / audit brief-431). `validateProjectSlug` / `validateFilePath`
+ * shipped in S28 as src/validation/slug.ts but were never called from
+ * production code (test-only — dead guards). Every Contents-API operation
+ * funnels through {@link contentsUrl}, and the repo-scoped builders below
+ * interpolate `repo` directly into request URLs, so validating here closes
+ * the path-traversal / null-byte / encoded-traversal injection surface for
+ * ALL callers at once instead of per-tool. Throws a plain Error — callers
+ * already route thrown errors into their structured error envelopes, and
+ * the result-shaped helpers (createAtomicCommit, deleteRef, releases) call
+ * these inside their try blocks so the guard surfaces as
+ * `{ success: false, error }` like any other failure.
+ */
+function assertValidRepo(repo: string, context: string): void {
+  const check = validateProjectSlug(repo);
+  if (!check.valid) {
+    throw new Error(`Invalid repo slug: ${check.error} (${context})`);
+  }
+}
+
+function assertValidPath(path: string, context: string): void {
+  // Empty path = repo-root listing — legitimate, and carries no traversal
+  // surface. validateFilePath's empty-check targets file operations.
+  if (path === "") return;
+  const check = validateFilePath(path);
+  if (!check.valid) {
+    throw new Error(`Invalid file path: ${check.error} (${context})`);
+  }
+}
+
+/**
  * Build the full API URL for a repo contents path.
  *
  * Optional `ref` (branch, tag, or commit SHA) is appended as a `?ref=`
@@ -45,6 +77,11 @@ export const GITHUB_REQUEST_TIMEOUT_MS = 15_000;
  * add surface area for misuse without a current caller need.
  */
 function contentsUrl(repo: string, path: string, ref?: string): string {
+  // B.11 (brief-444 R5-c): single choke point for every Contents-API URL —
+  // fetchFile, fetchSha, pushFile, fileExists, getFileSize, listDirectory,
+  // and deleteFile all build their URLs here.
+  assertValidRepo(repo, `contentsUrl ${repo}/${path}`);
+  assertValidPath(path, `contentsUrl ${repo}/${path}`);
   const base = `${GITHUB_API_BASE}/repos/${GITHUB_OWNER}/${repo}/contents/${path}`;
   return ref ? `${base}?ref=${encodeURIComponent(ref)}` : base;
 }
@@ -451,6 +488,7 @@ export async function listCommits(
   options?: { path?: string; since?: string; per_page?: number }
 ): Promise<CommitSummary[]> {
   const start = Date.now();
+  assertValidRepo(repo, `listCommits ${repo}`);
   const params = new URLSearchParams();
   if (options?.path) params.set("path", options.path);
   if (options?.since) params.set("since", options.since);
@@ -485,6 +523,7 @@ export async function getCommit(
   repo: string,
   sha: string
 ): Promise<CommitSummary> {
+  assertValidRepo(repo, `getCommit ${repo}`);
   const url = `${GITHUB_API_BASE}/repos/${GITHUB_OWNER}/${repo}/commits/${sha}`;
   const res = await fetchWithRetry(url, { headers: headers() });
 
@@ -505,11 +544,13 @@ export async function getCommit(
  * Delete a file from a repo.
  */
 export async function deleteFile(repo: string, path: string, message: string): Promise<{ success: boolean; error?: string }> {
-  const url = contentsUrl(repo, path);
   const start = Date.now();
   logger.debug("github.deleteFile", { repo, path });
 
   try {
+    // URL construction inside the try: contentsUrl now throws on invalid
+    // repo/path (B.11) and deleteFile's contract is result-shaped.
+    const url = contentsUrl(repo, path);
     const sha = await fetchSha(repo, path);
 
     const res = await fetchWithRetry(url, {
@@ -549,6 +590,10 @@ export async function getDefaultBranch(repo: string): Promise<string> {
   if (cached) return cached;
 
   try {
+    // B.11: guard inside the try — invalid repos take the existing silent
+    // "main" fallback; the calling operation hits a visible guard at its
+    // own URL builder.
+    assertValidRepo(repo, `getDefaultBranch ${repo}`);
     const url = `${GITHUB_API_BASE}/repos/${GITHUB_OWNER}/${repo}`;
     const res = await fetchWithRetry(url, { headers: headers() });
     if (!res.ok) {
@@ -583,6 +628,9 @@ export async function getDefaultBranch(repo: string): Promise<string> {
  */
 export async function getHeadSha(repo: string): Promise<string | undefined> {
   try {
+    // B.11: invalid repos return undefined — callers treat that as "can't
+    // verify" by contract, and the mutation itself hits a visible guard.
+    assertValidRepo(repo, `getHeadSha ${repo}`);
     const branch = await getDefaultBranch(repo);
     const refUrl = `${GITHUB_API_BASE}/repos/${GITHUB_OWNER}/${repo}/git/ref/heads/${branch}`;
     const refRes = await fetchWithRetry(refUrl, { headers: headers() });
@@ -633,6 +681,18 @@ export async function createAtomicCommit(
   logger.debug("github.createAtomicCommit", { repo, fileCount: files.length, deleteCount: deletes.length });
 
   try {
+    // B.11 (brief-444 R5-c): atomic-commit tree paths bypass contentsUrl —
+    // they travel in the Git Trees JSON body — so repo AND every write/
+    // delete path are validated here. Failure surfaces as the standard
+    // `{ success: false, error }` result shape.
+    assertValidRepo(repo, `createAtomicCommit ${repo}`);
+    for (const f of files) {
+      assertValidPath(f.path, `createAtomicCommit ${repo}/${f.path}`);
+    }
+    for (const path of deletes) {
+      assertValidPath(path, `createAtomicCommit delete ${repo}/${path}`);
+    }
+
     // 1. Get current HEAD ref (dynamic branch detection — KI-17).
     //    GET uses the singular /git/ref/{ref} endpoint.
     const branch = await getDefaultBranch(repo);
@@ -760,11 +820,12 @@ export async function deleteRef(
   repo: string,
   ref: string,
 ): Promise<{ success: boolean; note?: string; error?: string }> {
-  const url = `${GITHUB_API_BASE}/repos/${GITHUB_OWNER}/${repo}/git/refs/${ref}`;
   const start = Date.now();
   logger.debug("github.deleteRef", { repo, ref });
 
   try {
+    assertValidRepo(repo, `deleteRef ${repo}`);
+    const url = `${GITHUB_API_BASE}/repos/${GITHUB_OWNER}/${repo}/git/refs/${ref}`;
     const res = await fetchWithRetry(url, {
       method: "DELETE",
       headers: headers(),
@@ -820,11 +881,12 @@ export async function createRelease(
     generate_release_notes?: boolean;
   },
 ): Promise<ReleaseResult> {
-  const url = `${GITHUB_API_BASE}/repos/${GITHUB_OWNER}/${repo}/releases`;
   const start = Date.now();
   logger.debug("github.createRelease", { repo, tag_name: params.tag_name });
 
   try {
+    assertValidRepo(repo, `createRelease ${repo}`);
+    const url = `${GITHUB_API_BASE}/repos/${GITHUB_OWNER}/${repo}/releases`;
     const body: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(params)) {
       if (v !== undefined) body[k] = v;
@@ -892,11 +954,12 @@ export async function updateRelease(
     generate_release_notes?: boolean;
   },
 ): Promise<ReleaseResult> {
-  const url = `${GITHUB_API_BASE}/repos/${GITHUB_OWNER}/${repo}/releases/${releaseId}`;
   const start = Date.now();
   logger.debug("github.updateRelease", { repo, releaseId });
 
   try {
+    assertValidRepo(repo, `updateRelease ${repo}`);
+    const url = `${GITHUB_API_BASE}/repos/${GITHUB_OWNER}/${repo}/releases/${releaseId}`;
     const body: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(params)) {
       if (v !== undefined) body[k] = v;

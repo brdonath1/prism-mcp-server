@@ -6,7 +6,13 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { fetchFile } from "../github/client.js";
-import { DOC_ROOT, LIVING_DOCUMENT_NAMES, SUMMARY_SIZE_THRESHOLD } from "../config.js";
+import {
+  DOC_ROOT,
+  FETCH_CONTENT_CAP_BYTES,
+  FETCH_WALL_CLOCK_DEADLINE_MS,
+  LIVING_DOCUMENT_NAMES,
+  SUMMARY_SIZE_THRESHOLD,
+} from "../config.js";
 import { logger } from "../utils/logger.js";
 import { DiagnosticsCollector } from "../utils/diagnostics.js";
 import { summarizeMarkdown } from "../utils/summarizer.js";
@@ -38,11 +44,35 @@ export function shouldResolveDocPath(filePath: string): boolean {
   return false;
 }
 
+/** Sentinel used to signal that the tool-level deadline fired (brief-444 R-deadlines). */
+const FETCH_DEADLINE_SENTINEL = Symbol("fetch.deadline");
+
+/**
+ * Cap content at `capBytes`, cutting at the last complete line so a torn
+ * line is never delivered (brief-444). Byte-accurate: encodes once, slices
+ * the byte buffer, and strips any U+FFFD replacement character a mid-code-
+ * point cut may have produced. Returns the input unchanged when it already
+ * fits. Exported for direct unit testing.
+ */
+export function capContent(content: string, capBytes: number): string {
+  const bytes = new TextEncoder().encode(content);
+  if (bytes.length <= capBytes) return content;
+  let text = new TextDecoder("utf-8", { fatal: false }).decode(bytes.slice(0, capBytes));
+  // Prefer the last complete line; fall back to the raw byte cut for
+  // single-line bodies (minified JSON, long tables) where no newline exists.
+  const lastNewline = text.lastIndexOf("\n");
+  if (lastNewline > 0) text = text.slice(0, lastNewline + 1);
+  return text.replace(/�+$/, "");
+}
+
 /** Input schema for prism_fetch */
 const inputSchema = {
   project_slug: z.string().describe("Project repo name"),
   files: z.array(z.string()).describe("File paths relative to repo root"),
   summary_mode: z.boolean().optional().default(false).describe("Return summaries for files >5KB"),
+  full_content: z.boolean().optional().default(false).describe(
+    `Deliver complete file bodies, bypassing the default per-file content cap (~${Math.round(FETCH_CONTENT_CAP_BYTES / 1024)}KB). Use only when the full body is genuinely needed — large bodies consume session context.`,
+  ),
 };
 
 /**
@@ -53,11 +83,20 @@ export function registerFetch(server: McpServer): void {
     "prism_fetch",
     "Fetch files from a PRISM project repo. Summary mode returns summaries for files >5KB.",
     inputSchema,
-    async ({ project_slug, files, summary_mode }) => {
+    async ({ project_slug, files, summary_mode, full_content }) => {
       const start = Date.now();
       const diagnostics = new DiagnosticsCollector();
-      logger.info("prism_fetch", { project_slug, fileCount: files.length, summary_mode });
+      logger.info("prism_fetch", { project_slug, fileCount: files.length, summary_mode, full_content });
 
+      // brief-444 R-deadlines — tool-level wall-clock deadline. Mirrors
+      // prism_push (S40 C4): a hung parallel fetch previously held the MCP
+      // client connection until the transport gave up with no structured error.
+      let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+      const deadlinePromise = new Promise<typeof FETCH_DEADLINE_SENTINEL>((resolve) => {
+        deadlineTimer = setTimeout(() => resolve(FETCH_DEADLINE_SENTINEL), FETCH_WALL_CLOCK_DEADLINE_MS);
+      });
+
+      const workPromise = (async () => {
       try {
         let bytesDelivered = 0;
         let filesFetched = 0;
@@ -112,6 +151,7 @@ export function registerFetch(server: McpServer): void {
                 content: null,
                 summary: null,
                 is_summarized: false,
+                is_truncated: false,
                 fetch_error: null as string | null,
               };
             }
@@ -129,6 +169,31 @@ export function registerFetch(server: McpServer): void {
                 content: null,
                 summary,
                 is_summarized: true,
+                is_truncated: false,
+                fetch_error: null as string | null,
+              };
+            }
+
+            // brief-444: default per-file content cap. Large full-content
+            // bodies are truncated at a line boundary so one oversize file
+            // cannot blow the ~25K-token MCP response ceiling or flood
+            // session context. `full_content: true` is the explicit opt-out;
+            // size_bytes always carries the TRUE size so the caller can see
+            // what was withheld.
+            if (!full_content && file.size > FETCH_CONTENT_CAP_BYTES) {
+              const capped = capContent(file.content, FETCH_CONTENT_CAP_BYTES);
+              const deliveredBytes = new TextEncoder().encode(capped).length;
+              const notice = `\n[prism_fetch: content capped — delivered ${deliveredBytes} of ${file.size} bytes. Pass full_content: true for the complete body.]`;
+              const delivered = capped + notice;
+              bytesDelivered += new TextEncoder().encode(delivered).length;
+              return {
+                path: file.path,
+                exists: true,
+                size_bytes: file.size,
+                content: delivered,
+                summary: null,
+                is_summarized: false,
+                is_truncated: true,
                 fetch_error: null as string | null,
               };
             }
@@ -141,6 +206,7 @@ export function registerFetch(server: McpServer): void {
               content: file.content,
               summary: null,
               is_summarized: false,
+              is_truncated: false,
               fetch_error: null as string | null,
             };
           }
@@ -159,6 +225,7 @@ export function registerFetch(server: McpServer): void {
             content: null,
             summary: null,
             is_summarized: false,
+            is_truncated: false,
             fetch_error: errorMessage as string | null,
           };
         });
@@ -178,6 +245,14 @@ export function registerFetch(server: McpServer): void {
         }
         if (summary_mode && fileResults.some(fr => fr.is_summarized)) {
           diagnostics.info("SUMMARY_MODE_TRIGGERED", `Summary mode applied to ${fileResults.filter(fr => fr.is_summarized).length} file(s) exceeding ${(SUMMARY_SIZE_THRESHOLD / 1024).toFixed(0)}KB`);
+        }
+        const cappedCount = fileResults.filter(fr => fr.is_truncated).length;
+        if (cappedCount > 0) {
+          diagnostics.info(
+            "FETCH_CONTENT_CAPPED",
+            `Content cap applied to ${cappedCount} file(s) exceeding ${(FETCH_CONTENT_CAP_BYTES / 1024).toFixed(0)}KB — pass full_content: true to bypass`,
+            { cappedCount, capBytes: FETCH_CONTENT_CAP_BYTES, paths: fileResults.filter(fr => fr.is_truncated).map(fr => fr.path) },
+          );
         }
 
         const result = {
@@ -205,6 +280,33 @@ export function registerFetch(server: McpServer): void {
           content: [{ type: "text" as const, text: JSON.stringify({ error: message, project: project_slug }) }],
           isError: true,
         };
+      }
+      })();
+
+      try {
+        const raced = await Promise.race([workPromise, deadlinePromise]);
+        if (raced === FETCH_DEADLINE_SENTINEL) {
+          const deadlineSec = Math.round(FETCH_WALL_CLOCK_DEADLINE_MS / 1000);
+          logger.error("prism_fetch deadline exceeded", {
+            project_slug,
+            fileCount: files.length,
+            deadlineMs: FETCH_WALL_CLOCK_DEADLINE_MS,
+            elapsedMs: Date.now() - start,
+          });
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({
+                error: `prism_fetch deadline exceeded (${deadlineSec}s)`,
+                project: project_slug,
+              }),
+            }],
+            isError: true,
+          };
+        }
+        return raced;
+      } finally {
+        if (deadlineTimer) clearTimeout(deadlineTimer);
       }
     }
   );
