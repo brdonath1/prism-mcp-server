@@ -53,8 +53,8 @@ export const RECOMMENDATION_MODELS = {
 /**
  * Model the server calls for background synthesis (intelligence-brief +
  * pending-doc-updates). This is an API model id. Overridable per deployment
- * via the SYNTHESIS_MODEL env var (see config.ts). UNCHANGED at S143
- * ("claude-opus-4-7") — centralization only; any bump is gated by
- * INS-244 / INS-245 (OAuth-surface availability + cost).
+ * via the SYNTHESIS_MODEL env var (see config.ts). Currently pinned to
+ * "claude-opus-4-8"; any bump is gated by INS-244 / INS-245 (OAuth-surface
+ * availability + cost).
  */
 export const SYNTHESIS_MODEL_ID = "claude-opus-4-8";
