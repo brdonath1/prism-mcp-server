@@ -9,6 +9,11 @@
  * topic are not yet in context. This tool fetches them on demand without
  * re-running a full bootstrap.
  *
+ * R2-B (D-240 Phase B): rules resolve from a UNION of the standing-rule
+ * registry (`.prism/standing-rules.md`) and the legacy location
+ * (`insights.md`), dedup'd by INS-N with the registry winning on conflict.
+ * Projects with no standing-rules.md behave exactly as before.
+ *
  * Standard MCP tool response contract (L-5):
  * - Success: { content: [{ type: "text", text: JSON.stringify(result) }] }
  * - Error:   { content: [{ type: "text", text: JSON.stringify({ error }) }], isError: true }
@@ -21,12 +26,12 @@ import { resolveDocPath } from "../utils/doc-resolver.js";
 import { logger } from "../utils/logger.js";
 import { DiagnosticsCollector } from "../utils/diagnostics.js";
 import {
-  extractStandingRules,
   matchesExplicitTopic,
   normalizeTopic,
   selectStandingRulesByTopic,
   type StandingRule,
 } from "../utils/standing-rules.js";
+import { unionStandingRules } from "../utils/standing-rules-union.js";
 
 /**
  * Input schema for prism_load_rules.
@@ -46,7 +51,7 @@ const inputSchema = {
 export function registerLoadRules(server: McpServer): void {
   server.tool(
     "prism_load_rules",
-    "Mid-session lazy-load of Tier B / Tier C standing rules from a project's insights.md, filtered by an explicit topic keyword (D-156 §3.5). Tier A is always excluded — those rules are auto-loaded at bootstrap.",
+    "Mid-session lazy-load of Tier B / Tier C standing rules from a project's rule sources (.prism/standing-rules.md unioned with insights.md), filtered by an explicit topic keyword (D-156 §3.5). Tier A is always excluded — those rules are auto-loaded at bootstrap.",
     inputSchema,
     async ({ project_slug, topic, include_tier_c }) => {
       const start = Date.now();
@@ -62,19 +67,35 @@ export function registerLoadRules(server: McpServer): void {
       });
 
       try {
-        // Fetch insights.md via the same path-resolution mechanism bootstrap uses.
-        let insightsContent: string | null = null;
-        try {
-          const resolved = await resolveDocPath(resolvedSlug, "insights.md");
-          insightsContent = resolved.content;
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
+        // R2-B (D-240 Phase B): fetch BOTH rule sources in parallel via the
+        // same path-resolution mechanism bootstrap uses — the standing-rule
+        // registry (.prism/standing-rules.md) and the legacy location
+        // (insights.md). Rules are unioned by INS-N with the registry winning
+        // on conflict, so projects that have not migrated keep resolving from
+        // insights.md alone.
+        const [standingRulesOutcome, insightsOutcome] = await Promise.allSettled([
+          resolveDocPath(resolvedSlug, "standing-rules.md"),
+          resolveDocPath(resolvedSlug, "insights.md"),
+        ]);
+        const standingRulesContent =
+          standingRulesOutcome.status === "fulfilled" ? standingRulesOutcome.value.content : null;
+        const insightsContent =
+          insightsOutcome.status === "fulfilled" ? insightsOutcome.value.content : null;
+
+        // insights.md is a mandatory living document — its absence is signal
+        // even when the registry covers the rules. A missing standing-rules.md
+        // is NOT flagged: that's the normal pre-migration state.
+        if (insightsOutcome.status === "rejected") {
+          const reason = insightsOutcome.reason;
+          const message = reason instanceof Error ? reason.message : String(reason);
           diagnostics.warn(
             "INSIGHTS_FILE_NOT_FOUND",
             `insights.md could not be loaded for project "${resolvedSlug}": ${message}`,
             { project: resolvedSlug, error: message },
           );
+        }
 
+        if (standingRulesContent === null && insightsContent === null) {
           return {
             content: [{
               type: "text" as const,
@@ -90,13 +111,29 @@ export function registerLoadRules(server: McpServer): void {
                   tier_c_total: 0,
                   tier_c_matched: 0,
                 },
+                sources: {
+                  standing_rules_file: false,
+                  insights_file: false,
+                  from_standing_rules_file: 0,
+                  from_insights: 0,
+                  conflicts: [] as string[],
+                },
                 diagnostics: diagnostics.list(),
               }),
             }],
           };
         }
 
-        const allRules = extractStandingRules(insightsContent);
+        const union = unionStandingRules(standingRulesContent, insightsContent);
+        if (union.conflicts.length > 0) {
+          diagnostics.warn(
+            "STANDING_RULE_SOURCE_CONFLICT",
+            `${union.conflicts.length} INS id(s) present in BOTH standing-rules.md and insights.md — registry version used: ${union.conflicts.join(", ")}. Finish the migration (R3-imm) to clear this.`,
+            { conflicts: union.conflicts },
+          );
+        }
+
+        const allRules = union.rules;
         const tierB = allRules.filter(r => r.tier === "B");
         const tierC = allRules.filter(r => r.tier === "C");
         const tierBMatched = tierB.filter(r => matchesExplicitTopic(normalizedTopic, r.topics));
@@ -130,6 +167,9 @@ export function registerLoadRules(server: McpServer): void {
           tier_b_matched: tierBMatched.length,
           tier_c_total: tierC.length,
           tier_c_matched: tierCMatched.length,
+          from_standing_rules_file: union.fromStandingRulesFile,
+          from_insights: union.fromInsights,
+          conflicts: union.conflicts.length,
           ms: Date.now() - start,
         });
 
@@ -147,6 +187,13 @@ export function registerLoadRules(server: McpServer): void {
                 tier_b_matched: tierBMatched.length,
                 tier_c_total: tierC.length,
                 tier_c_matched: tierCMatched.length,
+              },
+              sources: {
+                standing_rules_file: standingRulesContent !== null,
+                insights_file: insightsContent !== null,
+                from_standing_rules_file: union.fromStandingRulesFile,
+                from_insights: union.fromInsights,
+                conflicts: union.conflicts,
               },
               diagnostics: diagnostics.list(),
             }),

@@ -1,6 +1,11 @@
 /**
  * prism_log_insight — Log an insight to insights.md with STANDING RULE support.
  * Eliminates full-file roundtrips for insight capture.
+ *
+ * R2-B (D-240 Phase B): entries with `standing_rule: true` land in the
+ * standing-rule registry (`.prism/standing-rules.md`, created from a fresh
+ * starter when absent); everything else still goes to insights.md. INS-N is
+ * ONE shared sequence across both files, so the dedup guard scans both.
  */
 
 import { z } from "zod";
@@ -38,7 +43,8 @@ export function parseExistingInsightIds(content: string): Map<string, string> {
 
 /**
  * Internal sentinel thrown from inside `computeMutation` when a duplicate
- * insight ID is detected on the freshly-read insights.md. Caught at the
+ * insight ID is detected on a freshly-read rule source (insights.md or
+ * standing-rules.md — INS-N is one shared sequence per R2-B). Caught at the
  * tool boundary to surface the existing duplicate response shape unchanged.
  */
 class InsightDedupError extends Error {
@@ -56,7 +62,7 @@ class InsightDedupError extends Error {
 export function registerLogInsight(server: McpServer): void {
   server.tool(
     "prism_log_insight",
-    "Log an insight to insights.md. Supports STANDING RULE tagging for auto-loading at bootstrap.",
+    "Log an insight. Standing rules (standing_rule: true) land in .prism/standing-rules.md and are auto-loaded at bootstrap; other insights go to insights.md.",
     {
       project_slug: z.string().describe("Project repo name"),
       id: z.string().regex(/^INS-\d{1,4}$/, "Insight ID must match INS-N format (e.g., 'INS-12')").describe("Insight ID (e.g., 'INS-12')"),
@@ -81,22 +87,37 @@ export function registerLogInsight(server: McpServer): void {
           };
         }
 
-        // 1. Resolve the insights.md path. If the file doesn't exist yet we
-        //    use the doc-resolver's push-path resolution and skip the read
-        //    in safeMutation.
-        let insightsResolvedPath: string;
-        let fileExisted = false;
-        try {
-          const resolved = await resolveDocPath(project_slug, "insights.md");
-          insightsResolvedPath = resolved.path;
-          fileExisted = true;
-        } catch {
-          const basePushPath = await resolveDocPushPath(project_slug, "insights.md");
+        // 1. Resolve both rule-source paths in parallel. R2-B: INS-N is ONE
+        //    shared sequence across insights.md and standing-rules.md, so the
+        //    dedup guard must scan both regardless of which file this entry
+        //    targets. A rejected resolution means the file doesn't exist.
+        const [insightsResolution, standingRulesResolution] = await Promise.allSettled([
+          resolveDocPath(project_slug, "insights.md"),
+          resolveDocPath(project_slug, "standing-rules.md"),
+        ]);
+        const insightsResolvedPath =
+          insightsResolution.status === "fulfilled" ? insightsResolution.value.path : null;
+        const standingRulesResolvedPath =
+          standingRulesResolution.status === "fulfilled" ? standingRulesResolution.value.path : null;
+
+        // 2. Pick the target file: standing rules land in the registry
+        //    (.prism/standing-rules.md per R2-B); everything else stays in
+        //    insights.md. If the target doesn't exist yet we use the
+        //    doc-resolver's push-path resolution and create it from a fresh
+        //    starter inside computeMutation.
+        const targetDocName = standing_rule ? "standing-rules.md" : "insights.md";
+        const resolvedTargetPath = standing_rule ? standingRulesResolvedPath : insightsResolvedPath;
+        const targetExisted = resolvedTargetPath !== null;
+        let targetPath: string;
+        if (resolvedTargetPath !== null) {
+          targetPath = resolvedTargetPath;
+        } else {
+          const basePushPath = await resolveDocPushPath(project_slug, targetDocName);
           const guarded = await guardPushPath(project_slug, basePushPath);
-          insightsResolvedPath = guarded.path;
+          targetPath = guarded.path;
         }
 
-        // 2. Build the entry (does not depend on existing file content).
+        // 3. Build the entry (does not depend on existing file content).
         const standingTag = standing_rule ? " — STANDING RULE" : "";
         const categoryTag = standing_rule ? `${category} — **STANDING RULE**` : category;
 
@@ -112,54 +133,78 @@ export function registerLogInsight(server: McpServer): void {
         const entry = entryLines.join("\n");
 
         const formalizedMarker = "## Formalized";
-        const eofSentinel = "<!-- EOF: insights.md -->";
+        const eofSentinel = `<!-- EOF: ${targetDocName} -->`;
 
-        const freshStarter =
-          `# Insights — ${project_slug}\n\n` +
-          `> Institutional knowledge. Entries tagged **STANDING RULE** are auto-loaded at bootstrap (D-44 Track 1).\n\n` +
-          `## Active\n\n` +
-          `## Formalized\n\n` +
-          `${eofSentinel}\n`;
+        const freshStarter = standing_rule
+          ? `# Standing Rules — ${project_slug}\n\n` +
+            `> Standing-rule registry (D-240 R2-B). Rules here are auto-loaded at bootstrap by tier (D-156) and lazy-loaded via prism_load_rules. Non-rule insights stay in insights.md.\n\n` +
+            `## Active\n\n` +
+            `## Formalized\n\n` +
+            `${eofSentinel}\n`
+          : `# Insights — ${project_slug}\n\n` +
+            `> Institutional knowledge. Entries tagged **STANDING RULE** are auto-loaded at bootstrap (D-44 Track 1).\n\n` +
+            `## Active\n\n` +
+            `## Formalized\n\n` +
+            `${eofSentinel}\n`;
 
-        // 3. safeMutation handles HEAD snapshot, atomic commit, and 409 retry
-        //    with re-read. The dedup check moves INSIDE computeMutation so
+        // Every existing rule source is re-read on each safeMutation attempt
+        // so the cross-file dedup always runs against fresh content.
+        const dedupSources: Array<{ path: string; doc: string }> = [];
+        if (insightsResolvedPath !== null) {
+          dedupSources.push({ path: insightsResolvedPath, doc: "insights.md" });
+        }
+        if (standingRulesResolvedPath !== null) {
+          dedupSources.push({ path: standingRulesResolvedPath, doc: "standing-rules.md" });
+        }
+
+        // 4. safeMutation handles HEAD snapshot, atomic commit, and 409 retry
+        //    with re-read. The dedup check runs INSIDE computeMutation so
         //    fresh data is checked on every retry.
-        const readPaths = fileExisted ? [insightsResolvedPath] : [];
         const result = await safeMutation({
           repo: project_slug,
           commitMessage: `prism: ${id} ${title}`,
-          readPaths,
+          readPaths: dedupSources.map(s => s.path),
           diagnostics,
           computeMutation: (files) => {
-            let content: string;
-            if (fileExisted) {
-              const insightsFile = files.get(insightsResolvedPath);
-              if (!insightsFile) {
+            // Dedup across BOTH rule sources — INS-N is one shared sequence.
+            for (const source of dedupSources) {
+              const sourceFile = files.get(source.path);
+              if (!sourceFile) {
                 throw new Error(
-                  `safeMutation did not return ${insightsResolvedPath} content`,
+                  `safeMutation did not return ${source.path} content`,
                 );
               }
-              content = insightsFile.content;
-
-              const existingIds = parseExistingInsightIds(content);
+              const existingIds = parseExistingInsightIds(sourceFile.content);
               if (existingIds.has(id)) {
                 const existingTitle = existingIds.get(id) ?? "";
                 const msg =
-                  `Insight ID ${id} already exists in insights.md` +
+                  `Insight ID ${id} already exists in ${source.doc}` +
                   (existingTitle ? ` (title: "${existingTitle}")` : "") +
                   `. Use a different ID or update the existing entry via prism_patch.`;
                 logger.warn("prism_log_insight duplicate rejected", {
                   project_slug,
                   id,
                   existingTitle,
+                  file: source.doc,
                 });
                 diagnostics.warn(
                   "STANDING_RULE_DUPLICATE_ID",
-                  `Insight ID ${id} already exists in insights.md`,
-                  { id, existingTitle },
+                  `Insight ID ${id} already exists in ${source.doc}`,
+                  { id, existingTitle, file: source.doc },
                 );
                 throw new InsightDedupError(id, existingTitle, msg);
               }
+            }
+
+            let content: string;
+            if (targetExisted) {
+              const targetFile = files.get(targetPath);
+              if (!targetFile) {
+                throw new Error(
+                  `safeMutation did not return ${targetPath} content`,
+                );
+              }
+              content = targetFile.content;
             } else {
               content = freshStarter;
             }
@@ -174,7 +219,7 @@ export function registerLogInsight(server: McpServer): void {
             }
 
             return {
-              writes: [{ path: insightsResolvedPath, content }],
+              writes: [{ path: targetPath, content }],
             };
           },
         });
@@ -183,6 +228,7 @@ export function registerLogInsight(server: McpServer): void {
           logger.error("prism_log_insight safeMutation failed", {
             project_slug,
             id,
+            file: targetPath,
             code: result.code,
             error: result.error,
           });
@@ -210,6 +256,7 @@ export function registerLogInsight(server: McpServer): void {
           project_slug,
           id,
           standing_rule: !!standing_rule,
+          file: targetPath,
           retried: result.retried,
           ms: Date.now() - start,
         });
@@ -222,6 +269,7 @@ export function registerLogInsight(server: McpServer): void {
               title,
               category,
               standing_rule: !!standing_rule,
+              file: targetPath,
               success: true,
               diagnostics: diagnostics.list(),
             }),
