@@ -329,6 +329,35 @@ describe("R7-b: decision payload caps raised", () => {
     expect(parsed.guardrails[19].id).toBe("D-20");
   });
 
+  it("guardrails excludes non-SETTLED decisions BEFORE applying the 20-cap (mixed-status fixture)", async () => {
+    // Metaswarm review (brief-443): the all-SETTLED fixture above cannot
+    // detect deletion of the SETTLED filter — this one can. 25 rows with
+    // D-2 PENDING, D-5 SUPERSEDED, D-9 OPEN interleaved → 22 SETTLED →
+    // guardrails = first 20 SETTLED, ending at D-23.
+    const nonSettled: Record<number, string> = { 2: "PENDING", 5: "SUPERSEDED", 9: "OPEN" };
+    const mixed =
+      "| ID | Title | Domain | Status | Session |\n" +
+      "|---|---|---|---|---|\n" +
+      Array.from({ length: 25 }, (_, i) => {
+        const n = i + 1;
+        return `| D-${n} | Decision ${n} | arch | ${nonSettled[n] ?? "SETTLED"} | ${n} |`;
+      }).join("\n") +
+      "\n\n<!-- EOF: _INDEX.md -->";
+    const handler = await setupBootstrap({ brief: FULL_BRIEF, decisions: mixed, insights: null, standingRules: null });
+    const parsed = await boot(handler);
+
+    const ids = (parsed.guardrails as Array<{ id: string }>).map(g => g.id);
+    expect(ids).toHaveLength(20);
+    expect(ids).not.toContain("D-2");
+    expect(ids).not.toContain("D-5");
+    expect(ids).not.toContain("D-9");
+    expect(ids[0]).toBe("D-1");
+    expect(ids[19]).toBe("D-23"); // 20th SETTLED row, skipping the three non-SETTLED
+    // recent_decisions is intentionally unfiltered — the last 15 of ALL rows.
+    expect(parsed.recent_decisions).toHaveLength(15);
+    expect((parsed.recent_decisions as Array<{ id: string }>).map(d => d.id)).toContain("D-11");
+  });
+
   it("returns everything when fewer decisions exist than the caps", async () => {
     const small =
       "| ID | Title | Domain | Status | Session |\n" +

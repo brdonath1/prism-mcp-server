@@ -72,8 +72,10 @@ const inputSchema = {
 
 /**
  * Determine which living documents to pre-fetch based on keywords in the opening message.
+ * Exported for direct unit testing (tests/prefetch-keywords.test.ts previously
+ * asserted against a re-implemented copy — metaswarm review brief-443).
  */
-function determinePrefetchFiles(openingMessage: string): string[] {
+export function determinePrefetchFiles(openingMessage: string): string[] {
   const lower = openingMessage.toLowerCase();
   const filesToFetch = new Set<string>();
 

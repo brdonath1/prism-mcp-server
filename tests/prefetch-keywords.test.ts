@@ -3,20 +3,11 @@ process.env.GITHUB_PAT = process.env.GITHUB_PAT || "test-dummy-pat";
 
 import { describe, it, expect } from "vitest";
 import { PREFETCH_KEYWORDS } from "../src/config.js";
-
-/** Simulate the determinePrefetchFiles logic from bootstrap.ts.
- * R7-b (D-240 Phase B): the QW-4 hard cap of 2 is removed — the set is
- * naturally bounded by the distinct documents PREFETCH_KEYWORDS maps to. */
-function determinePrefetchFiles(openingMessage: string): string[] {
-  const lower = openingMessage.toLowerCase();
-  const filesToFetch = new Set<string>();
-  for (const [keyword, file] of Object.entries(PREFETCH_KEYWORDS)) {
-    if (lower.includes(keyword)) {
-      filesToFetch.add(file);
-    }
-  }
-  return Array.from(filesToFetch);
-}
+// The REAL production function — pre-R7-b this file asserted against a local
+// re-implementation, so a production regression (e.g. re-adding the QW-4 cap
+// of 2) would not have failed here. Metaswarm review (brief-443) flagged it;
+// bootstrap.ts now exports the function so these assertions bind production.
+import { determinePrefetchFiles } from "../src/tools/bootstrap.js";
 
 describe("T-2: prefetch keyword accuracy", () => {
   it('"Begin next session" triggers 0 prefetches', () => {
