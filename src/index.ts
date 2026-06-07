@@ -41,6 +41,8 @@ import { registerGhDeleteBranch } from "./tools/gh-delete-branch.js";
 import { registerGhCreateRelease } from "./tools/gh-create-release.js";
 import { registerGhUpdateRelease } from "./tools/gh-update-release.js";
 import { registerGhDeleteTag } from "./tools/gh-delete-tag.js";
+import { registerGhGetBranchProtection } from "./tools/gh-get-branch-protection.js";
+import { registerGhSetBranchProtection } from "./tools/gh-set-branch-protection.js";
 import { hydrateStore } from "./dispatch-store.js";
 
 const app = express();
@@ -97,7 +99,8 @@ function createServer(): McpServer {
   }
 
   // GitHub utility tools (brief-403) — wraps stable REST endpoints not
-  // exposed by github/github-mcp-server (branch deletion + release CRUD).
+  // exposed by github/github-mcp-server (branch deletion + release CRUD +
+  // branch protection, the latter per brief-446).
   // Gated on GITHUB_PAT for symmetry with the other optional categories,
   // even though the server fatals on boot without it (see config.ts).
   if (GITHUB_PAT) {
@@ -105,6 +108,8 @@ function createServer(): McpServer {
     registerGhCreateRelease(server);
     registerGhUpdateRelease(server);
     registerGhDeleteTag(server);
+    registerGhGetBranchProtection(server);
+    registerGhSetBranchProtection(server);
   }
 
   return server;

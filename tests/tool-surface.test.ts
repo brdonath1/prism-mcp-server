@@ -18,11 +18,11 @@ import {
 } from "../src/tool-registry.js";
 
 describe("D-83 — TOOL_REGISTRY shape", () => {
-  it("contains exactly 23 tools", () => {
-    expect(TOOL_REGISTRY).toHaveLength(23);
+  it("contains exactly 25 tools", () => {
+    expect(TOOL_REGISTRY).toHaveLength(25);
   });
 
-  it("categorizes 13 prism_core, 4 railway, 2 claude_code, 4 github", () => {
+  it("categorizes 13 prism_core, 4 railway, 2 claude_code, 6 github", () => {
     const counts: Record<ToolCategory, number> = {
       prism_core: 0,
       railway: 0,
@@ -30,7 +30,7 @@ describe("D-83 — TOOL_REGISTRY shape", () => {
       github: 0,
     };
     for (const t of TOOL_REGISTRY) counts[t.category]++;
-    expect(counts).toEqual({ prism_core: 13, railway: 4, claude_code: 2, github: 4 });
+    expect(counts).toEqual({ prism_core: 13, railway: 4, claude_code: 2, github: 6 });
   });
 
   it("has unique tool names", () => {
@@ -40,12 +40,12 @@ describe("D-83 — TOOL_REGISTRY shape", () => {
 });
 
 describe("D-83 — getExpectedToolSurface() feature-flag gating", () => {
-  it("returns all 23 tools when all flags enabled", () => {
+  it("returns all 25 tools when all flags enabled", () => {
     const surface = getExpectedToolSurface(true, true, true);
     expect(surface.prism_core).toHaveLength(13);
     expect(surface.railway).toHaveLength(4);
     expect(surface.claude_code).toHaveLength(2);
-    expect(surface.github).toHaveLength(4);
+    expect(surface.github).toHaveLength(6);
     const flat = [
       ...surface.prism_core,
       ...surface.railway,
@@ -60,7 +60,7 @@ describe("D-83 — getExpectedToolSurface() feature-flag gating", () => {
     expect(surface.railway).toEqual([]);
     expect(surface.prism_core).toHaveLength(13);
     expect(surface.claude_code).toHaveLength(2);
-    expect(surface.github).toHaveLength(4);
+    expect(surface.github).toHaveLength(6);
   });
 
   it("excludes claude_code when CC_DISPATCH_ENABLED=false", () => {
@@ -68,7 +68,7 @@ describe("D-83 — getExpectedToolSurface() feature-flag gating", () => {
     expect(surface.claude_code).toEqual([]);
     expect(surface.prism_core).toHaveLength(13);
     expect(surface.railway).toHaveLength(4);
-    expect(surface.github).toHaveLength(4);
+    expect(surface.github).toHaveLength(6);
   });
 
   it("excludes github when GITHUB_PAT-derived flag is false", () => {
@@ -115,6 +115,8 @@ describe("D-83 — drift guard: src/index.ts registers every TOOL_REGISTRY entry
     gh_create_release: "registerGhCreateRelease",
     gh_update_release: "registerGhUpdateRelease",
     gh_delete_tag: "registerGhDeleteTag",
+    gh_get_branch_protection: "registerGhGetBranchProtection",
+    gh_set_branch_protection: "registerGhSetBranchProtection",
   };
 
   const indexSource = readFileSync("src/index.ts", "utf-8");

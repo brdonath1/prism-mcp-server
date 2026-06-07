@@ -109,3 +109,18 @@ export interface ReleaseResult {
   note?: string;
   error?: string;
 }
+
+/**
+ * Result of a branch-protection read or write via the GitHub Branch
+ * Protection API (brief-446).
+ *
+ * `protection` carries the parsed JSON GitHub returned. For
+ * `getBranchProtection` on a branch with no protection rule it is the
+ * sentinel `{ protected: false }` — a soft success, distinct from
+ * `{ success: false, error }` which signals a real API failure.
+ */
+export interface BranchProtectionResult {
+  success: boolean;
+  protection?: Record<string, unknown>;
+  error?: string;
+}
