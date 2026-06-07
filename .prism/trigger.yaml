@@ -16,6 +16,7 @@ enabled: true
 brief_dir: .prism/briefs/queue/
 brief_pattern: "brief-*.md"
 branch_strategy: main-only
+brief_branch: briefs           # S152: briefs detected/staged/archived on the `briefs` branch, not main (mirrors trigger brief_branch cutover; PRISM D-245)
 intra_project_parallel: true
 max_parallel_briefs: 5
 post_merge:
