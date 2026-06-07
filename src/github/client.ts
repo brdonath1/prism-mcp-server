@@ -19,6 +19,7 @@ import type {
   CommitSummary,
   GitHubCommitListItem,
   ReleaseResult,
+  BranchProtectionResult,
 } from "./types.js";
 
 /** Standard headers for all GitHub API requests */
@@ -995,6 +996,136 @@ export async function updateRelease(
   } catch (error) {
     const errMsg = (error as Error).message;
     logger.error("github.updateRelease error", { repo, releaseId, error: errMsg });
+    return { success: false, error: errMsg };
+  }
+}
+
+/**
+ * The four top-level keys GitHub REQUIRES in every branch-protection PUT
+ * body (brief-446). When the caller does not supply one of them it must be
+ * sent explicitly as `null`, or the API rejects the request with a 422.
+ */
+const PROTECTION_REQUIRED_OR_NULL_KEYS = [
+  "required_status_checks",
+  "enforce_admins",
+  "required_pull_request_reviews",
+  "restrictions",
+] as const;
+
+/**
+ * Read a branch's protection settings (brief-446).
+ *
+ * `GET /repos/{owner}/{repo}/branches/{branch}/protection`.
+ *
+ * Behavior:
+ *   - 200 → success with the parsed protection JSON.
+ *   - 404 "Branch not protected" → soft success with the sentinel
+ *     `{ protected: false }`, so callers can distinguish "no protection
+ *     rule" from a real error without a throw.
+ *   - Any other 404 (missing branch or repo) and any other non-2xx routes
+ *     through `handleApiError` and is returned as `{ success: false, error }`.
+ */
+export async function getBranchProtection(
+  repo: string,
+  branch: string,
+): Promise<BranchProtectionResult> {
+  const start = Date.now();
+  logger.debug("github.getBranchProtection", { repo, branch });
+
+  try {
+    assertValidRepo(repo, `getBranchProtection ${repo}`);
+    // encodeURIComponent keeps slash-containing branch names (feature/x)
+    // addressable as a single path segment.
+    const url =
+      `${GITHUB_API_BASE}/repos/${GITHUB_OWNER}/${repo}` +
+      `/branches/${encodeURIComponent(branch)}/protection`;
+    const res = await fetchWithRetry(url, { headers: headers() });
+
+    if (res.ok) {
+      const data = (await res.json()) as Record<string, unknown>;
+      logger.debug("github.getBranchProtection complete", { repo, branch, ms: Date.now() - start });
+      return { success: true, protection: data };
+    }
+
+    const errText = await res.text();
+    if (res.status === 404 && errText.includes("Branch not protected")) {
+      // GitHub 404s both for "branch has no protection rule" and for a
+      // missing branch/repo. Only the former is the documented soft case —
+      // it gets the sentinel; the latter falls through as a real error.
+      logger.debug("github.getBranchProtection branch not protected", { repo, branch });
+      return { success: true, protection: { protected: false } };
+    }
+
+    const errMsg = handleApiError(res.status, errText, `getBranchProtection ${repo}/${branch}`).message;
+    logger.error("github.getBranchProtection failed", { repo, branch, status: res.status, error: errMsg });
+    return { success: false, error: errMsg };
+  } catch (error) {
+    const errMsg = (error as Error).message;
+    logger.error("github.getBranchProtection error", { repo, branch, error: errMsg });
+    return { success: false, error: errMsg };
+  }
+}
+
+/**
+ * Replace a branch's protection settings (brief-446).
+ *
+ * `PUT /repos/{owner}/{repo}/branches/{branch}/protection`. The PUT
+ * replaces protection wholesale — callers that mean to preserve existing
+ * settings should GET first and merge.
+ *
+ * GitHub PUT quirk: `required_status_checks`, `enforce_admins`,
+ * `required_pull_request_reviews`, and `restrictions` are REQUIRED in the
+ * body and must be explicit `null` when not supplied, or the API returns
+ * 422. This helper normalizes the payload — any of those four absent from
+ * `protection` are sent as `null`; all other defined fields pass through
+ * unchanged (undefined values are stripped, like the release helpers).
+ *
+ * Behavior:
+ *   - 200 → success with the parsed resulting protection JSON.
+ *   - Any other non-2xx routes through `handleApiError` and is returned
+ *     as `{ success: false, error }`.
+ */
+export async function setBranchProtection(
+  repo: string,
+  branch: string,
+  protection: Record<string, unknown>,
+): Promise<BranchProtectionResult> {
+  const start = Date.now();
+  logger.debug("github.setBranchProtection", { repo, branch });
+
+  try {
+    assertValidRepo(repo, `setBranchProtection ${repo}`);
+    const url =
+      `${GITHUB_API_BASE}/repos/${GITHUB_OWNER}/${repo}` +
+      `/branches/${encodeURIComponent(branch)}/protection`;
+
+    const body: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(protection)) {
+      if (v !== undefined) body[k] = v;
+    }
+    for (const key of PROTECTION_REQUIRED_OR_NULL_KEYS) {
+      if (body[key] === undefined) body[key] = null;
+    }
+
+    const res = await fetchWithRetry(url, {
+      method: "PUT",
+      headers: { ...headers(), "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    if (res.ok) {
+      const data = (await res.json()) as Record<string, unknown>;
+      logger.debug("github.setBranchProtection complete", { repo, branch, ms: Date.now() - start });
+      return { success: true, protection: data };
+    }
+
+    const errText = await res.text();
+    const errMsg = handleApiError(res.status, errText, `setBranchProtection ${repo}/${branch}`).message;
+    logger.error("github.setBranchProtection failed", { repo, branch, status: res.status, error: errMsg });
+    return { success: false, error: errMsg };
+  } catch (error) {
+    const errMsg = (error as Error).message;
+    logger.error("github.setBranchProtection error", { repo, branch, error: errMsg });
     return { success: false, error: errMsg };
   }
 }
