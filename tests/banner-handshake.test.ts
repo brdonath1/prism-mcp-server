@@ -76,7 +76,13 @@ import { synthesize } from "../src/ai/client.js";
 import { generateIntelligenceBrief, generatePendingDocUpdates } from "../src/ai/synthesize.js";
 import { registerBootstrap } from "../src/tools/bootstrap.js";
 import { registerFinalize } from "../src/tools/finalize.js";
-import { BANNER_SPEC_VERSION } from "../src/utils/banner.js";
+import {
+  BANNER_SPEC_VERSION,
+  parseTemplateBannerSpecVersion,
+  renderBootMastheadSvg,
+  renderFinalizationBannerHtml,
+  type UnifiedBannerInput,
+} from "../src/utils/banner.js";
 
 const mockFetchFile = vi.mocked(fetchFile);
 const mockFetchFiles = vi.mocked(fetchFiles);
@@ -304,7 +310,7 @@ describe("prism_finalize unified banner", () => {
     expect(data.banner_text).toContain("▸ 1 file pushed");
   });
 
-  it("commit emits banner_spec_version and keeps finalization_banner_html null (HTML deprecated)", async () => {
+  it("commit emits banner_spec_version and populates finalization_banner_html (HTML widget restored — brief-447 / D-249)", async () => {
     const result = await handlers.prism_finalize({
       project_slug: "test-project",
       action: "commit",
@@ -315,10 +321,14 @@ describe("prism_finalize unified banner", () => {
     });
     const data = parse(result);
     expect(data.banner_spec_version).toBe(BANNER_SPEC_VERSION);
-    expect(data.finalization_banner_html).toBeNull();
-    // No HTML anywhere in the commit response.
-    expect(result.content[0].text).not.toContain("<style>");
-    expect(result.content[0].text).not.toContain("<div");
+    // D-249 restored the finalization HTML widget (it was always null at spec
+    // 3.0). banner_text remains the genuine fallback alongside it.
+    expect(data.finalization_banner_html).toBeTruthy();
+    expect(data.finalization_banner_html).toContain("<style>");
+    expect(data.finalization_banner_html).toContain("PRISM");
+    expect(data.finalization_banner_html).toContain("Session 26 finalized");
+    expect(data.finalization_banner_html).toContain("Handoff v30 → v31 · pushed");
+    expect(data.banner_text).toBeTruthy();
   });
 
   it("commit honors banner_data step_statuses and deliverables overrides", async () => {
@@ -463,5 +473,138 @@ describe("prism_finalize audit banner_spec_version handshake", () => {
       }),
     );
     expect(undeclared.diagnostics.filter((d: any) => d.code === "BANNER_DRIFT")).toHaveLength(0);
+  });
+});
+
+// ── Graphical banners: boot SVG masthead + finalization HTML widget (D-249) ──
+
+const MASTHEAD_INPUT: UnifiedBannerInput = {
+  surface: "boot",
+  templateVersion: "2.19.1",
+  sessionNumber: 156,
+  timestamp: "06-07-26 14:21:51",
+  handoffVersion: 163,
+  handoffNote: "7.3KB",
+  decisionCount: 201,
+  decisionNote: "20 guardrails",
+  docCount: 10,
+  docTotal: 10,
+  statusRow: [
+    { label: "bootstrap", status: "ok" },
+    { label: "push verified", status: "ok" },
+    { label: "template loaded", status: "ok" },
+    { label: "no scaling needed", status: "ok" },
+  ],
+  suggested: { display: "Opus 4.8 · Adaptive off", rationale: "mixed queue" },
+  resumption: "Resume here.",
+  listItems: ["Do thing A"],
+  warnings: [],
+};
+
+describe("renderBootMastheadSvg (brief-447 / D-249)", () => {
+  it("returns a non-empty <svg masthead with the session number and all four status glyph labels", () => {
+    const svg = renderBootMastheadSvg(MASTHEAD_INPUT);
+    expect(svg.length).toBeGreaterThan(0);
+    expect(svg.startsWith("<svg")).toBe(true);
+    expect(svg).toContain("Session 156");
+    for (const label of ["bootstrap", "push verified", "template loaded", "no scaling needed"]) {
+      expect(svg).toContain(label);
+    }
+    // Suggested line rendered when provided.
+    expect(svg).toContain("Suggested: Opus 4.8 · Adaptive off — mixed queue");
+    // Server-owned chips interpolate from the same boot data.
+    expect(svg).toContain("Handoff v163 · 7.3KB");
+    expect(svg).toContain("201 decisions · 20 guardrails");
+    expect(svg).toContain("10/10 docs healthy");
+  });
+
+  it("omits the Suggested line (and tightens the viewBox) when suggested is null", () => {
+    const svg = renderBootMastheadSvg({ ...MASTHEAD_INPUT, suggested: null });
+    expect(svg.startsWith("<svg")).toBe(true);
+    expect(svg).not.toContain("Suggested:");
+    // Panel/viewBox tighten when the suggested block is dropped.
+    expect(svg).toContain('viewBox="0 0 680 232"');
+    expect(svg).not.toContain('viewBox="0 0 680 256"');
+  });
+});
+
+describe("renderFinalizationBannerHtml (brief-447 / D-249)", () => {
+  it("returns non-empty HTML containing each supplied deliverable string", () => {
+    const deliverables = [
+      "Graphical banners restored — boot masthead (SVG) + finalization widget (HTML)",
+      "banner-spec.md raised to v4.0; finalization-banner-spec.md restored to widget-primary",
+      "prism-mcp-server: HTML/SVG renders re-added, BANNER_SPEC_VERSION 3.0 to 4.0",
+    ];
+    const html = renderFinalizationBannerHtml({
+      templateVersion: "2.19.1",
+      sessionNumber: 156,
+      timestamp: "06-07-26 15:40:02",
+      handoffFromVersion: 163,
+      handoffToVersion: 164,
+      handoffStatus: "pushed",
+      decisionCount: 203,
+      decisionDelta: 2,
+      docCount: 10,
+      docTotal: 10,
+      statusRow: [
+        { label: "docs updated", status: "ok" },
+        { label: "index synced", status: "ok" },
+        { label: "pushed", status: "ok" },
+        { label: "verified", status: "ok" },
+      ],
+      deliverables,
+      next: "D-249 follow-through → PAT rotation Phase 2",
+    });
+    expect(html.length).toBeGreaterThan(0);
+    expect(html).toContain("<style>");
+    expect(html).toContain("Session 156 finalized");
+    expect(html).toContain("Handoff v163 → v164 · pushed");
+    expect(html).toContain("203 decisions (+2)");
+    for (const deliverable of deliverables) {
+      expect(html).toContain(deliverable);
+    }
+    expect(html).toContain("Next: D-249 follow-through → PAT rotation Phase 2");
+  });
+
+  it("omits the Next line when next is null", () => {
+    const html = renderFinalizationBannerHtml({
+      templateVersion: "2.19.1",
+      sessionNumber: 156,
+      timestamp: "06-07-26 15:40:02",
+      handoffFromVersion: 163,
+      handoffToVersion: 164,
+      handoffStatus: "pushed",
+      decisionCount: 203,
+      decisionDelta: null,
+      docCount: 9,
+      docTotal: 10,
+      statusRow: [{ label: "verified", status: "ok" }],
+      deliverables: ["Only deliverable"],
+      next: null,
+    });
+    expect(html).not.toContain("Next:");
+    // No delta → the "(+N)" segment is dropped.
+    expect(html).toContain("203 decisions");
+    expect(html).not.toContain("203 decisions (+");
+  });
+});
+
+describe("banner spec version (brief-447 / D-249)", () => {
+  it("BANNER_SPEC_VERSION is bumped to 4.0", () => {
+    expect(BANNER_SPEC_VERSION).toBe("4.0");
+  });
+
+  it("parseTemplateBannerSpecVersion: a 3.x template declaration drifts from the 4.0 server spec", () => {
+    // A template still declaring spec 3.x parses to "3.0" and mismatches the
+    // server's current 4.0 — exactly the BANNER_DRIFT condition (expected and
+    // transient until the Stage-2 framework templates declare 4.0). A 4.0
+    // declaration matches and does not drift.
+    expect(parseTemplateBannerSpecVersion("> **Banner-Spec-Version:** 3.0")).toBe("3.0");
+    expect(parseTemplateBannerSpecVersion("> **Banner-Spec-Version:** 3.0")).not.toBe(
+      BANNER_SPEC_VERSION,
+    );
+    expect(
+      parseTemplateBannerSpecVersion(`> **Banner-Spec-Version:** ${BANNER_SPEC_VERSION}`),
+    ).toBe("4.0");
   });
 });

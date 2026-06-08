@@ -39,6 +39,7 @@ import {
   parseResumptionForBanner,
   parseTemplateBannerSpecVersion,
   renderBannerFallback,
+  renderBootMastheadSvg,
   renderUnifiedBanner,
   type UnifiedBannerInput,
 } from "../utils/banner.js";
@@ -1105,30 +1106,33 @@ export function registerBootstrap(server: McpServer): void {
         // a structured banner_data object (the pre-R8 contradiction with the
         // template's documented fallback). banner_data is gone — banner_text
         // is the only banner format (docs/banner-spec.md).
+        // Shared boot-banner input — pure data assembly, feeds BOTH the text
+        // generator and the SVG masthead so they agree by construction.
+        const bannerInput: UnifiedBannerInput = {
+          surface: "boot",
+          templateVersion: handoffTemplateVersion,
+          sessionNumber,
+          timestamp: sessionTimestamp,
+          handoffVersion,
+          handoffNote: `${(handoff.size / 1024).toFixed(1)}KB`,
+          decisionCount: decisions.length,
+          decisionNote: `${guardrailCount} guardrails`,
+          docCount,
+          docTotal,
+          statusRow: toolsList,
+          resumption,
+          listItems: nextSteps,
+          warnings,
+          suggested: recommendedSessionSettings
+            ? {
+                display: recommendedSessionSettings.display,
+                rationale: recommendedSessionSettings.rationale,
+              }
+            : null,
+        };
+
         let bannerText: string;
         try {
-          const bannerInput: UnifiedBannerInput = {
-            surface: "boot",
-            templateVersion: handoffTemplateVersion,
-            sessionNumber,
-            timestamp: sessionTimestamp,
-            handoffVersion,
-            handoffNote: `${(handoff.size / 1024).toFixed(1)}KB`,
-            decisionCount: decisions.length,
-            decisionNote: `${guardrailCount} guardrails`,
-            docCount,
-            docTotal,
-            statusRow: toolsList,
-            resumption,
-            listItems: nextSteps,
-            warnings,
-            suggested: recommendedSessionSettings
-              ? {
-                  display: recommendedSessionSettings.display,
-                  rationale: recommendedSessionSettings.rationale,
-                }
-              : null,
-          };
           bannerText = renderUnifiedBanner(bannerInput);
           logger.info("boot banner text rendered", { textLength: bannerText.length });
         } catch (bannerError) {
@@ -1136,6 +1140,19 @@ export function registerBootstrap(server: McpServer): void {
           logger.warn("boot banner render failed — using single-line fallback", { error: msg });
           diagnostics.warn("BANNER_RENDER_FALLBACK", "Boot banner render failed — banner_text carries the single-line fallback", { error: msg });
           bannerText = renderBannerFallback({ sessionNumber, handoffVersion, docCount, docTotal });
+        }
+
+        // brief-447 / D-249: boot SVG masthead built from the same server-owned
+        // data (Option M). Independent of banner_text — banner_text remains the
+        // genuine fallback, so a masthead render failure just omits the field
+        // (null) rather than affecting the text banner.
+        let bootMastheadSvg: string | null = null;
+        try {
+          bootMastheadSvg = renderBootMastheadSvg(bannerInput);
+          logger.info("boot masthead SVG rendered", { svgLength: bootMastheadSvg.length });
+        } catch (svgError) {
+          const msg = svgError instanceof Error ? svgError.message : String(svgError);
+          logger.warn("boot masthead SVG render failed — omitting (banner_text remains)", { error: msg });
         }
 
         const result: Record<string, unknown> = {
@@ -1163,6 +1180,7 @@ export function registerBootstrap(server: McpServer): void {
           behavioral_rules: behavioralRules,
           banner_html: null,                           // ME-1: HTML replaced by banner_text; field kept null for back-compat (brief-439)
           banner_text: bannerText,                     // brief-439 / R8: unified generator output (single-line fallback on render failure)
+          boot_masthead_svg: bootMastheadSvg,          // brief-447 / D-249: SVG masthead for visualize:show_widget (null on render failure — banner_text is the fallback)
           banner_spec_version: BANNER_SPEC_VERSION,    // brief-439 / R8: banner contract version this server emits
           template_banner_spec_version: templateBannerSpecVersion, // brief-439 / R8: version the template declares (null = pre-handshake template)
           boot_test_verified: bootTestResult.success,
