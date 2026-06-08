@@ -9,8 +9,8 @@
 //    parsing regardless of line ordering.
 //  - banner_data is gone from the bootstrap response (single format — D-240).
 //  - prism_finalize commit/full produce banner_text from the unified
-//    generator, emit banner_spec_version, and keep finalization_banner_html
-//    null (HTML widget deprecated).
+//    generator, emit banner_spec_version, and populate finalization_banner_html
+//    with the restored HTML widget (D-249; full surface wired in brief-448).
 //  - prism_finalize audit compares the session-end rules template declaration
 //    and raises BANNER_DRIFT on mismatch.
 process.env.GITHUB_PAT = process.env.GITHUB_PAT || "test-dummy-pat";
@@ -414,12 +414,36 @@ describe("prism_finalize unified banner", () => {
     expect(data.banner_text).toBeTruthy();
     expect(data.banner_text.split("\n")[0]).toContain(" | Session 26 finalized | ");
     expect(data.banner_spec_version).toBe(BANNER_SPEC_VERSION);
-    expect(data.finalization_banner_html).toBeNull();
+    // brief-448: the full surface now emits the HTML widget too (no longer null).
+    expect(data.finalization_banner_html).toBeTruthy();
     // fullPhase passes its real audit/draft outcomes into the step row: all
     // living docs are absent in this fixture (audit warn) and the draft mock
     // fails (draft warn).
     const stepRow = data.banner_text.split("\n")[2];
     expect(stepRow).toBe("⚠ audit | ⚠ draft | ✓ commit | ✓ verified");
+  });
+
+  it("full action populates finalization_banner_html (HTML widget — brief-448 / D-249 follow-up to brief-447)", async () => {
+    const result = await handlers.prism_finalize({
+      project_slug: "test-project",
+      action: "full",
+      session_number: 26,
+      handoff_version: 31,
+      skip_synthesis: true,
+      handoff_content: HANDOFF_FINALIZE,
+    });
+    const data = parse(result);
+    // brief-448 closed the gap: the single-call `full` surface now emits the
+    // graphical widget too — built from the same finalize data the commit
+    // surface uses, so the widget and banner_text agree by construction.
+    expect(data.finalization_banner_html).toBeTruthy();
+    expect(data.finalization_banner_html).toContain("<style>");
+    expect(data.finalization_banner_html).toContain("PRISM");
+    expect(data.finalization_banner_html).toContain("finalized");
+    expect(data.finalization_banner_html).toContain("Session 26 finalized");
+    expect(data.finalization_banner_html).toContain("Handoff v30 → v31 · pushed");
+    // banner_text stays the genuine fallback alongside the widget.
+    expect(data.banner_text).toBeTruthy();
   });
 });
 

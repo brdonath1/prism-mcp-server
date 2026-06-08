@@ -1561,12 +1561,13 @@ async function fullPhase(
     diagnostics,
   );
 
-  // Step 5 — Finalization banner (brief-439 / R8). fullPhase previously
-  // returned no banner at all; the unified generator now serves all finalize
-  // surfaces. Real audit/draft outcomes feed the step row; operator-supplied
-  // step_statuses still win. fullPhase emits banner_text only — the HTML
-  // widget (brief-447 / D-249) is populated on the commit surface (below).
-  const { text: bannerText } = await assembleFinalizeBanner(
+  // Step 5 — Finalization banner (brief-439 / R8 + brief-447 / D-249).
+  // fullPhase previously returned no banner at all; the unified generator now
+  // serves all finalize surfaces. Real audit/draft outcomes feed the step row;
+  // operator-supplied step_statuses still win. assembleFinalizeBanner returns
+  // both the text banner and a structured htmlInput — fullPhase emits the HTML
+  // widget too (D-249 follow-up), matching the commit surface (below).
+  const { text: bannerText, htmlInput } = await assembleFinalizeBanner(
     projectSlug,
     sessionNumber,
     handoffVersion,
@@ -1582,6 +1583,22 @@ async function fullPhase(
       },
     },
   );
+
+  // brief-447 / D-249: populate finalization_banner_html from the same
+  // finalize data. Wrapped so an HTML render failure (or a null htmlInput
+  // from the text fallback path) leaves the field null — banner_text is the
+  // genuine fallback. Mirrors the commit surface's render block.
+  let finalization_banner_html: string | null = null;
+  if (htmlInput) {
+    try {
+      finalization_banner_html = renderFinalizationBannerHtml(htmlInput);
+    } catch (htmlErr) {
+      logger.warn("finalization HTML widget render failed — leaving null (banner_text fallback)", {
+        project_slug: projectSlug,
+        error: htmlErr instanceof Error ? htmlErr.message : String(htmlErr),
+      });
+    }
+  }
 
   // Step 6 — Return combined result.
   // Note: commitResult already contains project, session_number, handoff_version etc.
@@ -1600,7 +1617,7 @@ async function fullPhase(
     ...commitResult,
     banner_text: bannerText,                    // brief-439 / R8: unified generator output
     banner_spec_version: BANNER_SPEC_VERSION,   // brief-439 / R8: banner contract version this server emits
-    finalization_banner_html: null,             // brief-447 / D-249: HTML widget restored on the commit surface; fullPhase emits banner_text only
+    finalization_banner_html,                   // brief-447 / D-249: HTML widget now emitted on the full surface too (matching the commit surface; null on render failure — banner_text is the fallback)
     diagnostics: diagnostics.list(),
   };
 }
