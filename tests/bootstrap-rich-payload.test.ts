@@ -671,6 +671,52 @@ describe("computeIntelSlo (pure computation)", () => {
   });
 });
 
+// ── session_name_line: deterministic session-name string ─────────────────────
+
+describe("session_name_line: server-composed session-name string", () => {
+  it("is present and is a string", async () => {
+    const handler = await setupBootstrap({ brief: FULL_BRIEF, insights: null, standingRules: null });
+    const parsed = await boot(handler);
+
+    expect(parsed).toHaveProperty("session_name_line");
+    expect(typeof parsed.session_name_line).toBe("string");
+  });
+
+  it("exactly equals the composition of project_display_name, session_number, session_timestamp + CST", async () => {
+    const handler = await setupBootstrap({ brief: FULL_BRIEF, insights: null, standingRules: null });
+    const parsed = await boot(handler);
+
+    const expected = `${parsed.project_display_name} \u2014 Session ${parsed.session_number}: ${parsed.session_timestamp} CST`;
+    expect(parsed.session_name_line).toBe(expected);
+  });
+
+  it("contains the em-dash \u2014 (U+2014), not a hyphen or double-dash", async () => {
+    const handler = await setupBootstrap({ brief: FULL_BRIEF, insights: null, standingRules: null });
+    const parsed = await boot(handler);
+
+    expect(parsed.session_name_line).toContain(" \u2014 ");
+    expect(parsed.session_name_line).not.toMatch(/ - /);
+    expect(parsed.session_name_line).not.toMatch(/ -- /);
+  });
+
+  it("ends with \" CST\"", async () => {
+    const handler = await setupBootstrap({ brief: FULL_BRIEF, insights: null, standingRules: null });
+    const parsed = await boot(handler);
+
+    expect(parsed.session_name_line).toMatch(/ CST$/);
+  });
+
+  it("embedded timestamp is byte-identical to session_timestamp (no second clock read)", async () => {
+    const handler = await setupBootstrap({ brief: FULL_BRIEF, insights: null, standingRules: null });
+    const parsed = await boot(handler);
+
+    // Extract the timestamp portion: everything after ": " and before " CST"
+    const match = (parsed.session_name_line as string).match(/: (.+) CST$/);
+    expect(match).not.toBeNull();
+    expect(match![1]).toBe(parsed.session_timestamp);
+  });
+});
+
 // ── Spec constant ↔ synthesis prompt coupling ────────────────────────────────
 
 describe("INTELLIGENCE_BRIEF_SPEC_SECTIONS single source of truth", () => {
