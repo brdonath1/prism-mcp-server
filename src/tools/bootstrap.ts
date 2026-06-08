@@ -1163,6 +1163,7 @@ export function registerBootstrap(server: McpServer): void {
           session_count: sessionCount,
           session_number: sessionNumber,
           session_timestamp: sessionTimestamp,
+          session_name_line: `${projectDisplayName} \u2014 Session ${sessionNumber}: ${sessionTimestamp} CST`,
           handoff_size_bytes: handoff.size,
           scaling_required: scalingRequired,
           critical_context: criticalContext,
