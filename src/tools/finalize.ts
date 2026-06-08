@@ -116,8 +116,11 @@ import {
   generateCstTimestamp,
   parseTemplateBannerSpecVersion,
   renderBannerFallback,
+  renderFinalizationBannerHtml,
   renderUnifiedBanner,
+  stripMarkdown,
   type BannerStatusEntry,
+  type FinalizationBannerHtmlInput,
 } from "../utils/banner.js";
 import { DiagnosticsCollector } from "../utils/diagnostics.js";
 import { classifySession, injectPersistedRecommendation, type SessionRecommendation } from "../utils/session-classifier.js";
@@ -1289,17 +1292,20 @@ export function countLivingDocumentsUpdated(
 }
 
 /**
- * Assemble the finalization banner via the unified generator (brief-439 / R8).
+ * Assemble the finalization banner via the unified generator (brief-439 / R8;
+ * brief-447 / D-249).
  *
- * Shares the single banner code path with prism_bootstrap — boot and
- * finalization banners are byte-consistent by construction. Replaces the
- * deprecated HTML finalization widget (D-46, consumed by Rule 11 Step 6 /
- * D-84): `finalization_banner_html` stays null for backward compatibility
- * and `banner_text` carries this output instead. Contract: docs/banner-spec.md.
+ * Returns BOTH the unified `banner_text` (shares the single banner code path
+ * with prism_bootstrap — boot and finalize text banners are byte-consistent by
+ * construction) AND a structured `htmlInput` for the restored finalization HTML
+ * widget (D-249). The caller renders the widget via renderFinalizationBannerHtml
+ * and sets `finalization_banner_html`; `banner_text` remains the genuine
+ * fallback. Contracts: _templates/banner-spec.md, _templates/finalization-banner-spec.md.
  *
- * Never throws — render failure falls back to the Rule 2 single-line format.
+ * Never throws — render failure falls back to the Rule 2 single-line text and a
+ * null `htmlInput` (so the caller emits a null widget, not a broken one).
  */
-async function assembleFinalizeBannerText(
+async function assembleFinalizeBanner(
   projectSlug: string,
   sessionNumber: number,
   handoffVersion: number,
@@ -1316,7 +1322,7 @@ async function assembleFinalizeBannerText(
       verified?: "ok" | "warn" | "critical";
     };
   },
-): Promise<string> {
+): Promise<{ text: string; htmlInput: FinalizationBannerHtmlInput | null }> {
   const docsTotal = LIVING_DOCUMENTS.length;
 
   try {
@@ -1417,11 +1423,14 @@ async function assembleFinalizeBannerText(
       { label: "verified", status: stepStatuses.verified ?? (allVerified ? "ok" : "warn") },
     ];
 
+    // One timestamp shared by the text banner and the HTML widget.
+    const timestamp = generateCstTimestamp();
+
     const bannerText = renderUnifiedBanner({
       surface: "finalize",
       templateVersion,
       sessionNumber,
-      timestamp: generateCstTimestamp(),
+      timestamp,
       handoffVersion,
       handoffNote,
       decisionCount: decisionsCount,
@@ -1439,18 +1448,46 @@ async function assembleFinalizeBannerText(
         .map((r) => `Push failed: ${r.path}`),
     });
 
-    logger.info("finalization banner text rendered", { textLength: bannerText.length });
-    return bannerText;
+    // brief-447 / D-249: structured input for the finalization HTML widget,
+    // built from the SAME finalize data so the widget and banner_text agree.
+    // The handoff chip shows the outgoing→incoming version transition; the
+    // `Next:` pointer reuses the first handoff next-step (omitted when none).
+    // decisionDelta has no source on the commit path, so the "(+N)" segment is
+    // dropped (null).
+    const htmlInput: FinalizationBannerHtmlInput = {
+      templateVersion,
+      sessionNumber,
+      timestamp,
+      handoffFromVersion: handoffVersion - 1,
+      handoffToVersion: handoffVersion,
+      handoffStatus: handoffNote,
+      decisionCount: decisionsCount,
+      decisionDelta: null,
+      docCount: docsUpdated,
+      docTotal: docsTotal,
+      statusRow,
+      deliverables: listItems,
+      next:
+        nextStepsForRecommendation.length > 0
+          ? stripMarkdown(nextStepsForRecommendation[0])
+          : null,
+    };
+
+    logger.info("finalization banner rendered", { textLength: bannerText.length });
+    return { text: bannerText, htmlInput };
   } catch (bannerError) {
     const msg = bannerError instanceof Error ? bannerError.message : String(bannerError);
     logger.warn("finalization banner render failed — using single-line fallback", { error: msg });
     const docsUpdatedFallback = results.filter((r) => r.success).length;
-    return renderBannerFallback({
-      sessionNumber,
-      handoffVersion,
-      docCount: Math.min(docsUpdatedFallback, docsTotal),
-      docTotal: docsTotal,
-    });
+    return {
+      text: renderBannerFallback({
+        sessionNumber,
+        handoffVersion,
+        docCount: Math.min(docsUpdatedFallback, docsTotal),
+        docTotal: docsTotal,
+      }),
+      htmlInput: null,
+    };
   }
 }
 
@@ -1527,8 +1564,9 @@ async function fullPhase(
   // Step 5 — Finalization banner (brief-439 / R8). fullPhase previously
   // returned no banner at all; the unified generator now serves all finalize
   // surfaces. Real audit/draft outcomes feed the step row; operator-supplied
-  // step_statuses still win.
-  const bannerText = await assembleFinalizeBannerText(
+  // step_statuses still win. fullPhase emits banner_text only — the HTML
+  // widget (brief-447 / D-249) is populated on the commit surface (below).
+  const { text: bannerText } = await assembleFinalizeBanner(
     projectSlug,
     sessionNumber,
     handoffVersion,
@@ -1562,7 +1600,7 @@ async function fullPhase(
     ...commitResult,
     banner_text: bannerText,                    // brief-439 / R8: unified generator output
     banner_spec_version: BANNER_SPEC_VERSION,   // brief-439 / R8: banner contract version this server emits
-    finalization_banner_html: null,             // brief-439 / R8: HTML widget deprecated — always null
+    finalization_banner_html: null,             // brief-447 / D-249: HTML widget restored on the commit surface; fullPhase emits banner_text only
     diagnostics: diagnostics.list(),
   };
 }
@@ -1835,13 +1873,11 @@ export function registerFinalize(server: McpServer): void {
           ms: Date.now() - phaseStart,
         });
 
-        // brief-439 / R8: finalization banner via the unified generator —
-        // the single code path shared with prism_bootstrap. The HTML widget
-        // (D-46) is deprecated: finalization_banner_html is always null
-        // (kept for backward compatibility with Rule 11 Step 6 consumers,
-        // whose null path falls back to the minimal text confirmation) and
-        // banner_text carries the banner. Contract: docs/banner-spec.md.
-        const bannerText = await assembleFinalizeBannerText(
+        // brief-439 / R8 + brief-447 / D-249: finalization banner via the
+        // unified generator (the single code path shared with prism_bootstrap)
+        // PLUS the restored HTML widget. assembleFinalizeBanner returns both the
+        // text banner and a structured htmlInput built from the same data.
+        const { text: bannerText, htmlInput } = await assembleFinalizeBanner(
           project_slug,
           session_number,
           handoff_version ?? 1,
@@ -1850,6 +1886,23 @@ export function registerFinalize(server: McpServer): void {
           result.all_succeeded,
           banner_data,
         );
+
+        // brief-447 / D-249: populate finalization_banner_html from the same
+        // finalize data. Wrapped so an HTML render failure (or a null htmlInput
+        // from the text fallback path) leaves the field null — banner_text is
+        // the genuine fallback, and the outer try/catch nulls the field on any
+        // hard error.
+        let finalization_banner_html: string | null = null;
+        if (htmlInput) {
+          try {
+            finalization_banner_html = renderFinalizationBannerHtml(htmlInput);
+          } catch (htmlErr) {
+            logger.warn("finalization HTML widget render failed — leaving null (banner_text fallback)", {
+              project_slug,
+              error: htmlErr instanceof Error ? htmlErr.message : String(htmlErr),
+            });
+          }
+        }
 
         // Surface diagnostics for partial commits and synthesis outcomes
         if (!result.all_succeeded) {
@@ -1872,7 +1925,7 @@ export function registerFinalize(server: McpServer): void {
             ...result,
             banner_text: bannerText,                    // brief-439 / R8: unified generator output
             banner_spec_version: BANNER_SPEC_VERSION,   // brief-439 / R8: banner contract version this server emits
-            finalization_banner_html: null,             // brief-439 / R8: HTML widget deprecated — always null
+            finalization_banner_html,                   // brief-447 / D-249: restored HTML widget (null on render failure — banner_text is the fallback)
             diagnostics: diagnostics.list(),
           }) }],
         };
