@@ -56,6 +56,7 @@ import {
   generatePendingDocUpdates,
 } from "../src/ai/synthesize.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { RECOMMENDATION_MODELS } from "../src/models.js";
 
 const mockFetchFile = vi.mocked(fetchFile);
 const mockPushFile = vi.mocked(pushFile);
@@ -337,7 +338,9 @@ ${stepLines}
     const handoffWrite = writes.find(w => w.path === "handoff.md")!;
     expect(handoffWrite.content).toContain("<!-- prism:recommended_session_settings -->");
     expect(handoffWrite.content).toContain("- Category: reasoning_heavy");
-    expect(handoffWrite.content).toContain("- Model: Opus 4.8");
+    expect(handoffWrite.content).toContain(
+      `- Model: ${RECOMMENDATION_MODELS.reasoning_heavy.display}`,
+    );
     expect(handoffWrite.content).toContain("- Thinking: Adaptive on");
   });
 
@@ -360,7 +363,9 @@ ${stepLines}
     ]));
     const handoffWrite = writes.find(w => w.path === "handoff.md")!;
     expect(handoffWrite.content).toContain("- Category: mixed");
-    expect(handoffWrite.content).toContain("- Model: Opus 4.8");
+    expect(handoffWrite.content).toContain(
+      `- Model: ${RECOMMENDATION_MODELS.mixed.display}`,
+    );
     expect(handoffWrite.content).toContain("- Thinking: Adaptive off");
   });
 

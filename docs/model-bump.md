@@ -1,0 +1,135 @@
+# Model Bump SOP — the canonical fleet migration procedure (D-254)
+
+> **Established S162** (brief-450), when the fleet moved to Claude Fable 5
+> (`claude-fable-5`). This document is the checklist for the NEXT bump. The
+> guiding invariant: **inside this repo, a model migration is one edit block
+> in `src/models.ts`** — everything else either derives from the registry or
+> lives on a surface outside this repo, enumerated below.
+
+## 1. The single switch — `src/models.ts`
+
+Every server-side model default is a named export of `src/models.ts`:
+
+| Constant | What it pins | Consumed by |
+|---|---|---|
+| `RECOMMENDATION_MODELS` | Operator-facing picker recommendation per session category (`code` + `display` + canonical API `id`) | `src/utils/session-classifier.ts` — derives the `RecommendedModel` union, `MODEL_BY_CATEGORY`, and the banner display strings; nothing re-pins a model literal |
+| `SYNTHESIS_MODEL_ID` | Default model the server calls for synthesis (intelligence-brief + pending-doc-updates) | `src/config.ts:95` → `SYNTHESIS_MODEL` |
+| `CC_DISPATCH_MODEL_ID` | Default model for Claude Code dispatches (`cc_dispatch`) | `src/config.ts:449` → `CC_DISPATCH_MODEL` |
+
+To bump inside this repo: edit those constants, run `npm run build && npm test`,
+and confirm the pin audit is clean:
+
+```sh
+grep -rnE '"claude-[a-z]+-[0-9]' src --include='*.ts' | grep -v __tests__ | grep -v models.ts
+# → must print nothing
+```
+
+**Detection automation** (Phase 2 / D-235): `scripts/check-model-freshness.mjs`
+runs on a schedule (`.github/workflows/model-freshness.yml`), diffs the
+Anthropic Models API against the registry, and opens a bump PR — detection is
+automatic, adoption is always human-merged. Two coupling contracts when
+editing the registry:
+
+1. Keep the literal shapes regex-parseable by `extractPins()` (entry shape
+   `{ code: "...", display: "...", id: "..." }`; `NAME = "..."` for the id
+   pins).
+2. A new model **family** (as `fable` was in S162) must be added to
+   `KNOWN_FAMILIES` in the script, or every scheduled run files an
+   "unrecognized family" issue.
+
+## 2. Precedence — env beats registry, registry is the fallback
+
+The rule, precisely: **for every server-call surface, a Railway env var that
+is set and non-blank wins; the registry constant applies only when the env
+var is unset (or blank/whitespace, for the per-call-site model vars).**
+
+| Surface | Env override (Railway, chat-side owned) | Fallback chain |
+|---|---|---|
+| Synthesis global default | `SYNTHESIS_MODEL` | → `SYNTHESIS_MODEL_ID` (`src/config.ts:95`) |
+| Synthesis per call-site (`brief` / `draft` / `pdu`) — model | `SYNTHESIS_{BRIEF\|DRAFT\|PDU}_MODEL` | → `SYNTHESIS_MODEL` → `SYNTHESIS_MODEL_ID` (`src/ai/client.ts:82`) |
+| Synthesis per call-site — transport | `SYNTHESIS_{BRIEF\|DRAFT\|PDU}_TRANSPORT` | → `messages_api` (`src/ai/client.ts:72`) |
+| Claude Code dispatch | `CC_DISPATCH_MODEL` | → `CC_DISPATCH_MODEL_ID` (`src/config.ts:449`) |
+
+Env is **owned chat-side** (operator + claude.ai session via the Railway
+tools). This repo's code and dispatched Claude Code instances never read
+Railway state to mutate it and never write it.
+
+## 3. Unset-env routing behavior — what `resolveCallSiteRouting` actually does
+
+`resolveCallSiteRouting(callSite)` (`src/ai/client.ts:63-84`) resolves both
+knobs per call-site. The unset-env behavior, confirmed against source:
+
+- **Transport when `SYNTHESIS_*_TRANSPORT` is unset → `messages_api`.**
+  The transport initializes to `"messages_api"` (`src/ai/client.ts:72`) and
+  flips to `cc_subprocess` only on the exact value `"cc_subprocess"`
+  (`:73-74`). Any other non-empty value logs a warning and stays
+  `messages_api` (`:75-80`).
+- **Model when `SYNTHESIS_*_MODEL` is unset or blank → `SYNTHESIS_MODEL`.**
+  `const model = modelEnv && modelEnv.trim().length > 0 ? modelEnv.trim() :
+  SYNTHESIS_MODEL` (`:82`), where `SYNTHESIS_MODEL` is itself
+  `process.env.SYNTHESIS_MODEL ?? SYNTHESIS_MODEL_ID` (`src/config.ts:95`).
+  `modelOverridden` is false (`:83`), so the `messages_api` path passes
+  `modelOverride: undefined` (`:173`) and `callMessagesApi` lands on
+  `modelOverride ?? SYNTHESIS_MODEL` (`:212`).
+- **cc_subprocess failure fallback ignores the env model.** When a call-site
+  routes to `cc_subprocess` and the subprocess fails, the retry goes through
+  `messages_api` with `modelOverride: undefined` (`:154`) — i.e. the registry
+  default — and tags the result `messages_api_fallback` (`:158`). The env
+  override is deliberately dropped on the retry because the override is what
+  failed.
+
+So the test suite's suggestion is confirmed: **fully unset env for a
+call-site = `messages_api` transport + `SYNTHESIS_MODEL` (registry default
+unless the global `SYNTHESIS_MODEL` env is set).**
+
+### Is clearing env overrides ever safe?
+
+Clearing a call-site's env vars is **not a "reset to default" no-op** — it
+changes both knobs at once:
+
+- **Transport** flips from the OAuth `cc_subprocess` surface
+  (`CLAUDE_CODE_OAUTH_TOKEN`, Max-plan billing, Agent SDK subprocess) to the
+  direct Messages API (`ANTHROPIC_API_KEY`, per-token billing).
+- **Capability**: `[1m]`-suffixed long-context model ids are valid **only**
+  on the `cc_subprocess` surface — the Agent SDK forwards `--model`
+  uninterpreted (`src/ai/cc-subprocess.ts`), whereas the Messages API rejects
+  the suffix. A call-site holding a long-context pin loses the 1M window the
+  moment its env is cleared.
+
+Therefore: clearing a call-site's env overrides is safe **only when the
+intended end-state for that call-site is `messages_api` + the registry
+default**. In particular, `SYNTHESIS_PDU_MODEL` is deliberately **held** on
+its Sonnet 4.6 long-context pin (with its `cc_subprocess` transport) until a
+Fable 5 long-context window probe passes — do not clear or "tidy" it during
+a bump.
+
+## 4. The canonical fleet bump — all surfaces, in order
+
+A fleet migration touches five surfaces. Registry + env cover the server;
+the rest live outside this repo.
+
+| # | Surface | Owner / mechanism | Action |
+|---|---|---|---|
+| a | **This repo's registry** | PR to `src/models.ts` (the single switch, §1) | Edit the constants; keep `KNOWN_FAMILIES` + `extractPins()` contracts (§1); build/test/pin-audit; merge. Railway auto-deploys on merge. |
+| b | **Railway env overrides** | Chat-side (operator + claude.ai session) | Flip `SYNTHESIS_BRIEF_MODEL`, `SYNTHESIS_DRAFT_MODEL`, `CC_DISPATCH_MODEL` to the new id. S162 state: all three → `claude-fable-5`; `SYNTHESIS_PDU_MODEL` held (§3). Gate: INS-244 / INS-245 (§5). |
+| c | **Trigger daemon runtime config** | chezmoi-managed `~/.config/trigger/trigger.config.yaml` (INS-277) | Update the daemon's model setting in the chezmoi source, apply, then run the daemon's `rebuild-if-code` / kickstart path so running state picks it up. |
+| d | **Operator local Claude Code setting** | Operator's machine | Update the local CC model preference (e.g. `claude config` / settings) so interactive local sessions match the fleet. |
+| e | **Living-document references** | INS-307 per-line manifest — **only** | Do **not** mass-edit model mentions across PRISM living docs. The INS-307 manifest tracks model references per line; stale prose references are updated through normal doc maintenance, not a bump sweep. |
+
+## 5. Gates for adopting a new model (server-call surfaces)
+
+`SYNTHESIS_MODEL_ID` / `CC_DISPATCH_MODEL_ID` bumps are gated by
+**INS-244 / INS-245** — OAuth-surface availability + cost — and stay
+human-reviewed even when the freshness automation opens the PR:
+
+- **Availability probe:** confirm the new model id (and its alias) return
+  completions on the Max OAuth CC surface before flipping any
+  `cc_subprocess`-routed call-site or the dispatch default. For Fable 5 this
+  passed S162 (operator probe: both `claude-fable-5` and the `fable` alias).
+- **Long-context probe (per call-site):** a call-site relying on a `[1m]`
+  window (currently `pdu`) needs its own probe on the new model's
+  long-context variant before its held env is touched.
+- **Cost:** review the new model's pricing against synthesis + dispatch
+  volume before adoption.
+
+<!-- EOF: model-bump.md -->

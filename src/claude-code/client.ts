@@ -43,7 +43,9 @@ export interface DispatchOptions {
   allowedTools?: string[];
   /** Maximum agent turns before the SDK stops. */
   maxTurns?: number;
-  /** Model alias or full ID (e.g. "opus", "claude-opus-4-6"). */
+  /** Model alias (e.g. "opus") or full API model id. Defaults to
+   *  CC_DISPATCH_MODEL (env override → CC_DISPATCH_MODEL_ID registry default
+   *  in src/models.ts). */
   model?: string;
   /** Hard deadline in milliseconds. On expiry the underlying query is aborted. */
   timeoutMs?: number;

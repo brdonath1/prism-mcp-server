@@ -57,9 +57,9 @@
  * the spawned `claude` CLI (verified in
  * node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs at the single
  * `l.push("--model",V)` site, byte ~222151). The SDK does not parse, strip,
- * or sanitize the `[1m]` suffix, so passing
- * `model: "claude-sonnet-4-6[1m]"` to `synthesizeViaCcSubprocess()` works
- * end-to-end without any env-var pinning.
+ * or sanitize the `[1m]` suffix, so passing a `[1m]`-suffixed Sonnet model id
+ * (the held SYNTHESIS_PDU_MODEL routing) to `synthesizeViaCcSubprocess()`
+ * works end-to-end without any env-var pinning.
  *
  * Thinking override:
  *

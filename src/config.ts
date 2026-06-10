@@ -4,7 +4,7 @@
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { SYNTHESIS_MODEL_ID } from "./models.js";
+import { CC_DISPATCH_MODEL_ID, SYNTHESIS_MODEL_ID } from "./models.js";
 
 // Load .env in local development (no-op if vars already set, e.g. Railway)
 try {
@@ -443,8 +443,10 @@ export const CLAUDE_CODE_OAUTH_TOKEN = process.env.CLAUDE_CODE_OAUTH_TOKEN ?? ""
  */
 export const CC_DISPATCH_ENABLED = !!CLAUDE_CODE_OAUTH_TOKEN;
 
-/** Default model for Claude Code dispatch. "opus" resolves to the latest Opus. */
-export const CC_DISPATCH_MODEL = process.env.CC_DISPATCH_MODEL ?? "opus";
+/** Default model for Claude Code dispatch. Default centralized in
+ *  src/models.ts (CC_DISPATCH_MODEL_ID) so a model change touches one place;
+ *  override per-deployment via the CC_DISPATCH_MODEL env var. */
+export const CC_DISPATCH_MODEL = process.env.CC_DISPATCH_MODEL ?? CC_DISPATCH_MODEL_ID;
 
 /** Max turns for Claude Code dispatch (default). Can be overridden per-call. */
 export const CC_DISPATCH_MAX_TURNS = parseInt(

@@ -412,7 +412,10 @@ describe("parsePersistedRecommendation", () => {
     const result = parsePersistedRecommendation(block);
     expect(result).not.toBeNull();
     expect(result?.category).toBe("reasoning_heavy");
-    expect(result?.model).toBe("opus-4-8");
+    // Fixture deliberately carries a stale display ("Opus 4.8", written by a
+    // pre-bump session): `model` derives from category via the CURRENT
+    // registry, while `display` is reconstructed from the persisted text.
+    expect(result?.model).toBe(RECOMMENDATION_MODELS.reasoning_heavy.code);
     expect(result?.thinking).toBe("adaptive-on");
     expect(result?.display).toBe("Opus 4.8 · Adaptive on");
     expect(result?.rationale).toBe("Queue includes design / multi-doc investigation");
@@ -442,7 +445,7 @@ describe("parsePersistedRecommendation", () => {
 <!-- /prism:recommended_session_settings -->`;
     const result = parsePersistedRecommendation(block);
     expect(result?.category).toBe("mixed");
-    expect(result?.model).toBe("opus-4-8");
+    expect(result?.model).toBe(RECOMMENDATION_MODELS.mixed.code);
     expect(result?.thinking).toBe("adaptive-off");
   });
 

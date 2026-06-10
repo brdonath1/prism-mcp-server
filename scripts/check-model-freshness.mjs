@@ -19,7 +19,7 @@ import { resolve, dirname } from "node:path";
 // ─── Pure functions (exported for testing) ───────────────────────────
 
 /** Families the script knows how to track. */
-export const KNOWN_FAMILIES = ["opus", "sonnet", "haiku"];
+export const KNOWN_FAMILIES = ["fable", "opus", "sonnet", "haiku"];
 
 /**
  * Parse a model identifier into { family, version: [major, minor] }.
@@ -117,8 +117,14 @@ export function isPinStale(pinVersion, newestVersion) {
 /**
  * Regex-extract current pins from the text of src/models.ts.
  *
+ * Recommendation entries may carry an optional canonical API `id` field
+ * (D-254); when present it is extracted so the bump logic can keep it in
+ * sync with code/display. CC_DISPATCH_MODEL_ID (D-254) is extracted
+ * alongside SYNTHESIS_MODEL_ID so an automated bump can never half-update
+ * the registry's single edit block.
+ *
  * @param {string} fileContent
- * @returns {{ recommendations: Array<{category: string, code: string, display: string}>, synthesisId: string | null }}
+ * @returns {{ recommendations: Array<{category: string, code: string, display: string, id?: string}>, synthesisId: string | null, ccDispatchId: string | null }}
  */
 export function extractPins(fileContent) {
   const recommendations = [];
@@ -128,18 +134,23 @@ export function extractPins(fileContent) {
   if (recBlock) {
     const entries = [
       ...recBlock[1].matchAll(
-        /(\w+):\s*\{\s*code:\s*"([^"]+)",\s*display:\s*"([^"]+)"\s*\}/g,
+        /(\w+):\s*\{\s*code:\s*"([^"]+)",\s*display:\s*"([^"]+)"(?:,\s*id:\s*"([^"]+)")?\s*,?\s*\}/g,
       ),
     ];
-    for (const [, category, code, display] of entries) {
-      recommendations.push({ category, code, display });
+    for (const [, category, code, display, id] of entries) {
+      const rec = { category, code, display };
+      if (id) rec.id = id;
+      recommendations.push(rec);
     }
   }
 
   const synthMatch = fileContent.match(/SYNTHESIS_MODEL_ID\s*=\s*"([^"]+)"/);
   const synthesisId = synthMatch ? synthMatch[1] : null;
 
-  return { recommendations, synthesisId };
+  const ccMatch = fileContent.match(/CC_DISPATCH_MODEL_ID\s*=\s*"([^"]+)"/);
+  const ccDispatchId = ccMatch ? ccMatch[1] : null;
+
+  return { recommendations, synthesisId, ccDispatchId };
 }
 
 // ─── I/O helpers (not tested) ────────────────────────────────────────
@@ -239,6 +250,7 @@ async function main() {
   const allPinCodes = [
     ...pins.recommendations.map((r) => r.code),
     ...(pins.synthesisId ? [pins.synthesisId] : []),
+    ...(pins.ccDispatchId ? [pins.ccDispatchId] : []),
   ];
 
   // 2. Validate every pin resolves to a known family
@@ -301,6 +313,7 @@ async function main() {
         family: parsed.family,
         currentCode: rec.code,
         currentDisplay: rec.display,
+        currentId: rec.id,
         currentVersion: parsed.version,
         newVersion: newest._parsed.version,
       });
@@ -308,29 +321,35 @@ async function main() {
     }
   }
 
-  // 6. Detect stale synthesis pin (evaluated separately)
-  let synthBump = null;
-  if (pins.synthesisId) {
-    const parsed = parseModelIdentifier(pins.synthesisId);
+  // 6. Detect stale full-id pins (synthesis + cc-dispatch), evaluated
+  //    separately from the recommendation pins
+  const idPinBumps = [];
+  for (const [name, currentId] of [
+    ["SYNTHESIS_MODEL_ID", pins.synthesisId],
+    ["CC_DISPATCH_MODEL_ID", pins.ccDispatchId],
+  ]) {
+    if (!currentId) continue;
+    const parsed = parseModelIdentifier(currentId);
     const newest = newestByFamily[parsed.family];
     if (newest && isPinStale(parsed.version, newest._parsed.version)) {
-      synthBump = {
+      idPinBumps.push({
+        name,
         family: parsed.family,
-        currentId: pins.synthesisId,
+        currentId,
         currentVersion: parsed.version,
         newVersion: newest._parsed.version,
-      };
+      });
     }
   }
 
-  if (recBumps.length === 0 && !synthBump) {
+  if (recBumps.length === 0 && idPinBumps.length === 0) {
     console.log("All model pins are up to date.");
     setGitHubOutput("has_bumps", "false");
     return;
   }
 
   // 7. Idempotency — skip if an open PR already targets these exact bumps
-  const allBumps = [...recBumps, ...(synthBump ? [synthBump] : [])];
+  const allBumps = [...recBumps, ...idPinBumps];
   const openPRsJson = ghExec(
     "gh pr list --label model-bump --state open --json body --limit 100",
   );
@@ -367,13 +386,19 @@ async function main() {
       `display: "${bump.currentDisplay}"`,
       `display: "${newDisplay}"`,
     );
+    if (bump.currentId) {
+      updated = updated.replaceAll(
+        `id: "${bump.currentId}"`,
+        `id: "${buildSynthId(bump.family, bump.newVersion)}"`,
+      );
+    }
   }
 
-  if (synthBump) {
-    const newSynthId = buildSynthId(synthBump.family, synthBump.newVersion);
+  for (const bump of idPinBumps) {
+    const newId = buildSynthId(bump.family, bump.newVersion);
     updated = updated.replace(
-      `SYNTHESIS_MODEL_ID = "${synthBump.currentId}"`,
-      `SYNTHESIS_MODEL_ID = "${newSynthId}"`,
+      `${bump.name} = "${bump.currentId}"`,
+      `${bump.name} = "${newId}"`,
     );
   }
 
@@ -397,17 +422,19 @@ async function main() {
     bodyLines.push("");
   }
 
-  if (synthBump) {
-    const newSynthId = buildSynthId(synthBump.family, synthBump.newVersion);
+  if (idPinBumps.length > 0) {
     bodyLines.push(
-      "### \u26a0\ufe0f Synthesis fallback default \u2014 human review required (INS-244 / INS-245)\n",
+      "### \u26a0\ufe0f Server-call defaults \u2014 human review required (INS-244 / INS-245)\n",
     );
-    bodyLines.push(
-      `- **${synthBump.family}**: \`${synthBump.currentId}\` \u2192 \`${newSynthId}\``,
-    );
+    for (const bump of idPinBumps) {
+      const newId = buildSynthId(bump.family, bump.newVersion);
+      bodyLines.push(
+        `- **${bump.name}** (${bump.family}): \`${bump.currentId}\` \u2192 \`${newId}\``,
+      );
+    }
     bodyLines.push("");
     bodyLines.push(
-      "> **Scope:** This bumps `SYNTHESIS_MODEL_ID` in `src/models.ts` \u2014 the `messages_api` fallback default (API-key path, used only when the OAuth `cc_subprocess` transport fails).",
+      "> **Scope:** This bumps the full-id defaults in `src/models.ts` \u2014 `SYNTHESIS_MODEL_ID` (the `messages_api` fallback default; API-key path, used only when the OAuth `cc_subprocess` transport fails) and/or `CC_DISPATCH_MODEL_ID` (the Claude Code dispatch default).",
     );
     bodyLines.push(">");
     bodyLines.push(

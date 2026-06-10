@@ -66,6 +66,17 @@ describe("parseModelIdentifier", () => {
     });
   });
 
+  it("parses the fable family (S162 top tier, major-only naming)", () => {
+    expect(parseModelIdentifier("fable-5")).toEqual({
+      family: "fable",
+      version: [5, 0],
+    });
+    expect(parseModelIdentifier("claude-fable-5")).toEqual({
+      family: "fable",
+      version: [5, 0],
+    });
+  });
+
   it("returns null for unrecognized family", () => {
     expect(parseModelIdentifier("gpt-4")).toBeNull();
     expect(parseModelIdentifier("claude-turbo-3")).toBeNull();
@@ -289,5 +300,44 @@ export const SYNTHESIS_MODEL_ID = "claude-opus-4-7";
   it("returns null synthesisId when not present", () => {
     const { synthesisId } = extractPins("const x = 1;");
     expect(synthesisId).toBeNull();
+  });
+
+  // D-254 registry shape — entries carry the canonical API id and the
+  // cc-dispatch default is pinned alongside the synthesis default.
+  const d254SampleFile = `
+export const RECOMMENDATION_MODELS = {
+  reasoning_heavy: { code: "fable-5", display: "Fable 5", id: "claude-fable-5" },
+  mixed: { code: "fable-5", display: "Fable 5", id: "claude-fable-5" },
+  executional: { code: "sonnet-4-6", display: "Sonnet 4.6", id: "claude-sonnet-4-6" },
+} as const;
+
+export const SYNTHESIS_MODEL_ID = "claude-fable-5";
+
+export const CC_DISPATCH_MODEL_ID = "claude-fable-5";
+`;
+
+  it("extracts pins from the D-254 registry shape (id fields + cc-dispatch pin)", () => {
+    const { recommendations, synthesisId, ccDispatchId } =
+      extractPins(d254SampleFile);
+    expect(recommendations).toHaveLength(3);
+    expect(recommendations[0]).toEqual({
+      category: "reasoning_heavy",
+      code: "fable-5",
+      display: "Fable 5",
+      id: "claude-fable-5",
+    });
+    expect(recommendations[2]).toEqual({
+      category: "executional",
+      code: "sonnet-4-6",
+      display: "Sonnet 4.6",
+      id: "claude-sonnet-4-6",
+    });
+    expect(synthesisId).toBe("claude-fable-5");
+    expect(ccDispatchId).toBe("claude-fable-5");
+  });
+
+  it("returns null ccDispatchId for the legacy registry shape", () => {
+    const { ccDispatchId } = extractPins(sampleFile);
+    expect(ccDispatchId).toBeNull();
   });
 });
