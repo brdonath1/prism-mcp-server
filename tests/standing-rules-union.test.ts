@@ -89,4 +89,25 @@ describe("unionStandingRules", () => {
     // A second union over the same content is unaffected.
     expect(unionStandingRules(registry, null).rules).toHaveLength(1);
   });
+
+  // brief-451 / INS-310: the union is the one place that knows which content
+  // is which, so it pins the source-aware qualification — registry sections
+  // ALL count (INS-308 ground truth), insights.md sections qualify only via
+  // the `— STANDING RULE` title suffix.
+  it("applies registry qualification to standing-rules.md and title-suffix qualification to insights.md (brief-451)", () => {
+    const registry = doc(
+      "### INS-50: Unmarked registry entry\n\n**Standing procedure:** Always applies.\n",
+    );
+    const insights = doc(
+      "### INS-51: Mentions a standing rule mid-title only\n- Description: body also says STANDING RULE.\n",
+      rule("INS-52", "Suffix-qualified insights rule", "B"),
+    );
+    const union = unionStandingRules(registry, insights);
+
+    expect(union.rules.map(r => r.id)).toEqual(["INS-50", "INS-52"]);
+    expect(union.rules[0].tier).toBe("A"); // untagged registry entry defaults to Tier A
+    expect(union.fromStandingRulesFile).toBe(1);
+    expect(union.fromInsights).toBe(1); // INS-51 does not qualify
+    expect(union.conflicts).toEqual([]);
+  });
 });

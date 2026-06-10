@@ -17,7 +17,10 @@
  * Per INS-30, both consumers (`prism_bootstrap` and `prism_load_rules`) MUST
  * call this one function rather than each merging on their own —
  * mirror-pattern divergence creates silent drift bugs. The underlying parser
- * (`extractStandingRules`) is format-driven and untouched by R2-B.
+ * (`extractStandingRules`) is format-driven and untouched by R2-B; brief-451
+ * made its QUALIFICATION source-aware, and this union is the single place
+ * that knows which content is which — registry sections all count as rules,
+ * insights.md sections qualify only via the `— STANDING RULE` title suffix.
  */
 import { extractStandingRules, type StandingRule } from "./standing-rules.js";
 
@@ -52,8 +55,8 @@ export function unionStandingRules(
   standingRulesContent: string | null,
   insightsContent: string | null,
 ): StandingRulesUnion {
-  const fromRegistry = extractStandingRules(standingRulesContent);
-  const fromInsights = extractStandingRules(insightsContent);
+  const fromRegistry = extractStandingRules(standingRulesContent, "registry");
+  const fromInsights = extractStandingRules(insightsContent, "insights");
 
   const registryIds = new Set(fromRegistry.map(r => r.id));
   const conflictIds = new Set<string>();
