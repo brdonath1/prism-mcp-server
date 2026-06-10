@@ -12,6 +12,7 @@ vi.mock("../src/github/client.js", () => ({
 }));
 
 import { fetchFile, fetchFiles, pushFile, fileExists } from "../src/github/client.js";
+import { DEFAULT_CONTEXT_WINDOW_TOKENS } from "../src/config.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 const mockFetchFile = vi.mocked(fetchFile);
@@ -131,27 +132,33 @@ describe("T-1: bootstrap response size budget", () => {
       parsed.context_estimate.platform_overhead_tokens +
       parsed.context_estimate.tool_schema_tokens
     );
-    // context_window_tokens is exposed and equals the 500K default — the
-    // documented window of every current chat-surface model (brief-433 / R7-a)
+    // context_window_tokens is exposed and equals the configured default.
+    // D-253: import the constant rather than pinning a literal — production
+    // sets DEFAULT_CONTEXT_WINDOW_TOKENS=200000 via Railway env, which must not
+    // desync CI (the literal 500000 would fail under that override).
     expect(typeof parsed.context_estimate.context_window_tokens).toBe("number");
-    expect(parsed.context_estimate.context_window_tokens).toBe(500000);
+    expect(parsed.context_estimate.context_window_tokens).toBe(DEFAULT_CONTEXT_WINDOW_TOKENS);
     // total_boot_percent is derived from context_window_tokens
     expect(parsed.context_estimate.total_boot_percent).toBe(
       Math.round((parsed.context_estimate.total_boot_tokens / parsed.context_estimate.context_window_tokens) * 1000) / 10
     );
   });
 
-  it("estimate numerator covers the complete response payload (brief-433)", async () => {
+  it("estimate numerator covers the complete response payload (brief-433, D-253)", async () => {
     const result = await bootstrapHandler({ project_slug: "prism", opening_message: "Begin next session" });
     const parsed = JSON.parse(result.content[0].text);
-    // Reconstruct the exact payload the numerator was measured from: the full
-    // assembled response minus context_estimate itself, which is attached
-    // after measurement (it is the last key, so key order is preserved by
-    // the parse → delete → stringify round trip). Any field added to the
-    // response without flowing into the estimate breaks this equality —
-    // guarding against regression to a hand-picked field subset.
+    // Reconstruct the exact payload the numerator was measured from. D-253
+    // restructured the tail: `measured` is the assembled response BEFORE the
+    // three post-measurement attachments — context_estimate, response_bytes,
+    // then diagnostics (diagnostics LAST so it captures any oversize entry).
+    // Those three are the final keys in insertion order, so deleting them from
+    // the parsed object leaves the measured payload byte-for-byte. Any field
+    // added BEFORE measurement without flowing into the estimate breaks this
+    // equality — guarding against regression to a hand-picked field subset.
     const measured = { ...parsed };
     delete measured.context_estimate;
+    delete measured.response_bytes;
+    delete measured.diagnostics;
     expect(parsed.context_estimate.bootstrap_tokens).toBe(
       Math.round(JSON.stringify(measured).length / 3.5)
     );
@@ -212,12 +219,14 @@ describe("T-1: bootstrap response size budget", () => {
     expect(fatTokens).toBeGreaterThan(baselineTokens);
   });
 
-  it("standing_rules delivers every Tier A + Tier B rule (R7-b — D-47-era cap reversed)", async () => {
-    // Fixture insights.md carries exactly one Tier A rule (INS-6); the R7-b
-    // contract is all-A+B delivery, so exactly that one arrives.
+  it("standing_rules delivers Tier A bodies only (D-253 — Tier B+C indexed, not delivered)", async () => {
+    // Fixture insights.md carries exactly one Tier A rule (INS-6). The D-253
+    // contract is Tier-A-only delivery, so exactly that one arrives; with no
+    // Tier C rules present the index is empty.
     const result = await bootstrapHandler({ project_slug: "prism", opening_message: "Begin next session" });
     const parsed = JSON.parse(result.content[0].text);
     expect(parsed.standing_rules.map((r: { id: string }) => r.id)).toEqual(["INS-6"]);
+    expect(parsed.standing_rules_index).toEqual([]);
     expect(parsed.standing_rules_tier_c_index).toEqual([]);
   });
 

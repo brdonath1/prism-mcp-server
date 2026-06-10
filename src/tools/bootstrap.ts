@@ -99,7 +99,14 @@ export const INTEL_SLO_BRIEF_AGE_TARGET_SESSIONS = 2;
 
 /** R-intel-SLO: inputs to the boot-payload SLO computation. */
 export interface IntelSloInputs {
-  /** The intelligence-brief content as DELIVERED in the response (null when absent). */
+  /**
+   * The FULL synthesized intelligence-brief content (null when absent).
+   * D-253: this is the pre-compaction SOURCE, not the compacted boot delivery.
+   * The SLO measures synthesis completeness — whether all 6 spec sections were
+   * produced — which the delivery-layer compaction (Change 3) must not reduce.
+   * The dropped-section guard at delivery time is the BRIEF_COMPACT_FALLBACK
+   * diagnostic, not this metric.
+   */
   intelligenceBrief: string | null;
   /** Brief age in sessions (sessionCount − last-synthesized session), null when unparseable/absent. */
   briefAgeSessions: number | null;
@@ -191,6 +198,97 @@ export function computeIntelSlo(inputs: IntelSloInputs): IntelSlo {
       total: 3,
     },
   };
+}
+
+/**
+ * D-253 / INS-249: the three intelligence-brief spec sections the boot-time
+ * compactor consumes, referenced by POSITION in INTELLIGENCE_BRIEF_SPEC_SECTIONS
+ * (the single source of truth) rather than by string literal. Exported so the
+ * coupling test can assert they remain a subset of the spec — the guard that
+ * keeps compaction from silently drifting if the spec is renamed/reordered.
+ */
+export const BRIEF_COMPACT_SECTIONS = {
+  /** Section summarized to its first 3 sentences. */
+  projectState: INTELLIGENCE_BRIEF_SPEC_SECTIONS[0], // "## Project State"
+  /** First section passed through in full. */
+  riskFlags: INTELLIGENCE_BRIEF_SPEC_SECTIONS[4],    // "## Risk Flags"
+  /** Second section passed through in full. */
+  qualityAudit: INTELLIGENCE_BRIEF_SPEC_SECTIONS[5], // "## Quality Audit"
+} as const;
+
+/**
+ * Extract a single H2 section from a markdown brief: from the line whose
+ * trimmed text equals `header` up to (but excluding) the next H2 header, the
+ * document's `<!-- EOF` marker, or end-of-input — whichever comes first. The
+ * returned text includes the header line and is trimmed. Returns null when the
+ * header is absent — the signal {@link compactIntelligenceBrief} uses to fall
+ * back to full passthrough.
+ */
+function extractBriefSection(full: string, header: string): string | null {
+  const lines = full.split("\n");
+  const start = lines.findIndex(line => line.trim() === header);
+  if (start === -1) return null;
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    if (trimmed.startsWith("## ") || trimmed.startsWith("<!-- EOF")) {
+      end = i;
+      break;
+    }
+  }
+  return lines.slice(start, end).join("\n").trim();
+}
+
+/**
+ * Compact an intelligence brief for boot delivery (D-253 — restores the D-47
+ * three-section digest with the INS-249 header-coupling defect FIXED).
+ *
+ * Output contract (INS-249): a one-line `**Project State (compact):**` digest
+ * carrying the first 3 sentences of the Project State section, then the FULL
+ * Risk Flags section, then the FULL Quality Audit section.
+ *
+ * The fix for the silent-drop defect the R7-b reversal documented: section
+ * names come from {@link BRIEF_COMPACT_SECTIONS} (positions in the spec export,
+ * no string literals), and if ANY consumed section is absent from the input the
+ * function delivers the FULL brief unchanged and records a
+ * BRIEF_COMPACT_FALLBACK diagnostic naming the missing section — so a
+ * renamed/dropped header surfaces loudly instead of silently shrinking the
+ * brief. Returns the brief string to deliver (compacted, or full on fallback).
+ */
+export function compactIntelligenceBrief(full: string, diagnostics: DiagnosticsCollector): string {
+  const projectState = extractBriefSection(full, BRIEF_COMPACT_SECTIONS.projectState);
+  const riskFlags = extractBriefSection(full, BRIEF_COMPACT_SECTIONS.riskFlags);
+  const qualityAudit = extractBriefSection(full, BRIEF_COMPACT_SECTIONS.qualityAudit);
+
+  if (projectState === null || riskFlags === null || qualityAudit === null) {
+    const missingSection =
+      projectState === null
+        ? BRIEF_COMPACT_SECTIONS.projectState
+        : riskFlags === null
+          ? BRIEF_COMPACT_SECTIONS.riskFlags
+          : BRIEF_COMPACT_SECTIONS.qualityAudit;
+    diagnostics.warn(
+      "BRIEF_COMPACT_FALLBACK",
+      `Intelligence brief is missing the "${missingSection}" section — delivering the full brief instead of compacting (INS-249 silent-drop guard, D-253)`,
+      { missing_section: missingSection },
+    );
+    return full;
+  }
+
+  // First 3 sentences of the Project State body (header line stripped).
+  const projectStateBody = projectState.split("\n").slice(1).join("\n").trim();
+  const projectStateDigest = projectStateBody
+    .split(/(?<=[.!?])\s+/)
+    .map(s => s.trim())
+    .filter(s => s.length > 0)
+    .slice(0, 3)
+    .join(" ");
+
+  return [
+    `**Project State (compact):** ${projectStateDigest}`,
+    riskFlags,
+    qualityAudit,
+  ].join("\n\n");
 }
 
 /**
@@ -847,6 +945,11 @@ export function registerBootstrap(server: McpServer): void {
         //    pending-doc-updates added per D-156 §3.5; standing-rules.md added
         //    per R2-B / D-240 Phase B).
         let intelligenceBrief: string | null = null;
+        // D-253: the FULL synthesized brief, kept alongside the compacted
+        // delivery. Staleness parsing and the INTEL_SLO completeness metric
+        // both read this — the "Last synthesized:" header and the sections
+        // compaction drops live only here. null when the brief is absent.
+        let briefFullContent: string | null = null;
         let insightsContent: string | null = null;
 
         const [briefOutcome, insightsOutcome, pendingUpdatesOutcome, standingRulesFileOutcome] =
@@ -940,24 +1043,35 @@ export function registerBootstrap(server: McpServer): void {
           const briefFile = briefOutcome.value;
           filesFetched++;
 
-          // R7-b (D-240 Phase B): deliver the FULL intelligence brief — a
-          // deliberate reversal of the D-47 three-section compaction under
-          // the 500K-context rationale. The old compactor matched section
-          // headers literally (INS-249), so only 3 of the 6 spec sections
-          // ever reached Claude and a renamed header silently dropped a
-          // section. Full passthrough has no header-name coupling. Do NOT
-          // re-introduce compaction here as a token optimization — see D-240.
-          intelligenceBrief = briefFile.content;
+          // D-253: compact the intelligence brief for delivery — a partial,
+          // evidence-driven reversal of the R7-b full passthrough. R7-b's
+          // "500K-context" rationale broke in production: prism boots hit
+          // 234–246KB, exceeding the Claude.ai inline tool-result cap, so the
+          // ENTIRE response was offloaded to a sandbox file and zero bytes
+          // reached the session. Compaction returns to the D-47 three-section
+          // digest (Project State summary + full Risk Flags + full Quality
+          // Audit). The INS-249 silent-drop defect that motivated R7-b is
+          // FIXED, not reintroduced: section names are spec-coupled (no string
+          // literals) and a missing section falls back to FULL passthrough
+          // with a BRIEF_COMPACT_FALLBACK diagnostic — superseding the
+          // brief-443 "Do NOT re-introduce compaction" note. The full brief is
+          // retained in briefFullContent for staleness + INTEL_SLO.
+          briefFullContent = briefFile.content;
+          intelligenceBrief = compactIntelligenceBrief(briefFile.content, diagnostics);
           bytesDelivered += intelligenceBrief.length;
-          logger.info("intelligence brief loaded (full delivery, R7-b)", {
-            size: briefFile.content.length,
+          logger.info("intelligence brief compacted for delivery (D-253)", {
+            fullSize: briefFile.content.length,
+            deliveredSize: intelligenceBrief.length,
           });
         }
 
-        // S30: Brief staleness detection — parse session number from intelligence brief header
+        // S30: Brief staleness detection — parse the session number from the
+        // FULL brief header. D-253: the "Last synthesized:" line lives in the
+        // preamble compaction drops, so staleness reads briefFullContent, not
+        // the compacted delivery.
         let briefAgeResult: number | null = null;
-        if (intelligenceBrief) {
-          const briefSessionMatch = intelligenceBrief.match(/Last synthesized:\s*S(\d+)/);
+        if (briefFullContent) {
+          const briefSessionMatch = briefFullContent.match(/Last synthesized:\s*S(\d+)/);
           if (briefSessionMatch) {
             const briefSession = parseInt(briefSessionMatch[1], 10);
             const briefAge = sessionCount - briefSession;
@@ -992,21 +1106,34 @@ export function registerBootstrap(server: McpServer): void {
 
         const allStandingRules = rulesUnion.rules;
 
-        // R7-b (D-240 Phase B): deliver ALL Tier A + Tier B rule bodies at
-        // boot — a deliberate reversal of the D-156 topic-gated Tier B
-        // selection under the 500K-context rationale (pre-R7-b, Tier B only
-        // loaded when the opening message matched the rule's topics, so a
-        // boot without an opening message delivered Tier A alone). Tier C
-        // bodies stay excluded; a Tier-C INDEX (IDs + titles, no bodies)
-        // ships in `standing_rules_tier_c_index` so the session knows what
-        // prism_load_rules can pull on demand.
+        // D-253 (partial reversal of R7-b / D-240 Phase B): deliver ONLY
+        // Tier A rule bodies at boot. The R7-b "500K-context" rationale for
+        // shipping all of Tier B broke in production — prism boots reached
+        // 234–246KB, exceeding the Claude.ai inline tool-result cap, so the
+        // ENTIRE response was offloaded to a sandbox file and zero bytes
+        // reached the session. Tier B bodies are now lazy-loaded by topic via
+        // prism_load_rules (D-156 §3.5 restored). Tier B + Tier C ship as an
+        // INDEX (IDs + titles + tier + topics, no bodies) in
+        // `standing_rules_index` so the session knows what prism_load_rules
+        // can pull on demand.
         const standingRules = selectStandingRulesForBoot(allStandingRules);
 
-        // D-156: Tier accounting for diagnostics + log (R7-b: topic-match
-        // accounting removed with the gate; Tier C is now indexed, not silent)
+        // D-156 / D-253: Tier accounting for diagnostics + log. Tier B and
+        // Tier C are both indexed (bodies excluded); only Tier A bodies ship.
         const tierA = allStandingRules.filter(r => r.tier === "A");
         const tierB = allStandingRules.filter(r => r.tier === "B");
         const tierC = allStandingRules.filter(r => r.tier === "C");
+        // D-253: boot index = Tier B ∪ Tier C entries (Tier B first, then
+        // Tier C; both in source/union order). Each entry carries id + title +
+        // tier + topics so the session can see what prism_load_rules can fetch
+        // and by which topic.
+        const standingRulesIndex = [
+          ...tierB.map(r => ({ id: r.id, title: r.title, tier: r.tier, topics: r.topics })),
+          ...tierC.map(r => ({ id: r.id, title: r.title, tier: r.tier, topics: r.topics })),
+        ];
+        // DEPRECATED (D-253, one-release alias): superseded by
+        // `standing_rules_index`. Kept C-only ({id,title}) and unchanged for
+        // template back-compat — remove once templates read the new field.
         const standingRulesTierCIndex = tierC.map(r => ({ id: r.id, title: r.title }));
 
         if (allStandingRules.length > 0) {
@@ -1014,7 +1141,7 @@ export function registerBootstrap(server: McpServer): void {
             total: allStandingRules.length,
             delivered: standingRules.length,
             tier_a: tierA.length,
-            tier_b_loaded: tierB.length,
+            tier_b_indexed: tierB.length,
             tier_c_indexed: tierC.length,
             from_standing_rules_file: rulesUnion.fromStandingRulesFile,
             from_insights: rulesUnion.fromInsights,
@@ -1022,12 +1149,12 @@ export function registerBootstrap(server: McpServer): void {
             ids: standingRules.map(r => r.id),
           });
 
-          // D-156: Diagnostics field surfacing tier accounting (only when rules exist).
-          diagnostics.info("STANDING_RULES_TIERED", "Standing rules delivered by tier (Tier A+B bodies, Tier C indexed — R7-b)", {
+          // D-156 / D-253: Diagnostics field surfacing tier accounting (only when rules exist).
+          diagnostics.info("STANDING_RULES_TIERED", "Standing rules delivered by tier (Tier A bodies; Tier B+C indexed — D-253)", {
             total: allStandingRules.length,
             delivered: standingRules.length,
             tier_a: tierA.length,
-            tier_b_loaded: tierB.length,
+            tier_b_indexed: tierB.length,
             tier_c_indexed: tierC.length,
             from_standing_rules_file: rulesUnion.fromStandingRulesFile,
             from_insights: rulesUnion.fromInsights,
@@ -1040,7 +1167,7 @@ export function registerBootstrap(server: McpServer): void {
         // gate on it (the BRIEF_STALE warning above remains the operator
         //-facing staleness signal; this block is the measurable SLO record).
         const intelSlo = computeIntelSlo({
-          intelligenceBrief,
+          intelligenceBrief: briefFullContent, // D-253: measure synthesis completeness on the FULL brief, not the compacted delivery
           briefAgeSessions: briefAgeResult,
           handoffPresent: true, // bootstrap throws before this point when handoff.md is missing
           decisionsPresent,
@@ -1175,7 +1302,8 @@ export function registerBootstrap(server: McpServer): void {
           open_questions: openQuestions,
           prefetched_documents: prefetchedDocuments,
           standing_rules: standingRules,
-          standing_rules_tier_c_index: standingRulesTierCIndex, // R7-b (D-240 Phase B): Tier-C IDs + titles, bodies via prism_load_rules
+          standing_rules_index: standingRulesIndex, // D-253: Tier B ∪ Tier C entries ({id,title,tier,topics}) — bodies via prism_load_rules
+          standing_rules_tier_c_index: standingRulesTierCIndex, // DEPRECATED (D-253 one-release alias): C-only {id,title}; superseded by standing_rules_index
           intelligence_brief: intelligenceBrief,
           brief_age_sessions: briefAgeResult,
           behavioral_rules: behavioralRules,
@@ -1193,23 +1321,47 @@ export function registerBootstrap(server: McpServer): void {
           recommended_session_settings: recommendedSessionSettings,                             // brief-405 / D-191 — advisory model + thinking suggestion
           pdu_applied_at_boot: pduAppliedAtBoot,                                                 // brief-422 Piece 2 — stale-PDU safety net summary (null when nothing was applied)
           warnings,
-          diagnostics: diagnostics.list(),
         };
 
-        // ME-5: Context budget estimation (brief-433 / D-240 Phase B R7-a).
-        // The numerator is measured from the COMPLETE assembled response —
-        // the exact payload returned to the caller — not a hand-picked field
-        // subset (the brief-431 audit found the old subset omitted ~13
-        // response fields, undercounting the real boot payload). The chars/3.5
-        // token proxy is unchanged; only the completeness of its input is.
-        // context_estimate itself is attached after measurement — its ~0.2KB
-        // self-contribution is negligible against the proxy's own error bars.
-        const responseJson = JSON.stringify(result);
-        const bootstrapTokens = Math.round(responseJson.length / 3.5);
+        // ME-5 / D-253: Context budget estimation + in-response oversize
+        // tripwire. Measurement MUST precede diagnostics materialization. The
+        // brief-433 numerator is measured from the assembled response (not a
+        // hand-picked field subset — the brief-431 audit found the old subset
+        // omitted ~13 fields). The D-253 fix: pre-D-253 `diagnostics:
+        // diagnostics.list()` was baked into `result` BEFORE the oversize
+        // check ran, so the BOOTSTRAP_OVERSIZE diagnostic could only ever
+        // reach Railway logs, never any payload. Now `result` is assembled
+        // WITHOUT diagnostics and WITHOUT context_estimate, measured once,
+        // checked for oversize, and only THEN do those fields attach —
+        // diagnostics LAST so it captures any oversize entry.
+        //
+        // `measured` undercounts the final payload by exactly the three fields
+        // attached after it (context_estimate ~0.2KB, response_bytes ~0.03KB,
+        // diagnostics — small in practice). The chars/3.5 proxy's own error
+        // bars and the 80/100KB thresholds both dwarf that gap, so the
+        // undercount is acceptable for both the estimate and the tripwire.
+        const measured = JSON.stringify(result);
+        const bootstrapTokens = Math.round(measured.length / 3.5);
+        const responseBytes = new TextEncoder().encode(measured).length;
+
+        // D-253: oversize tripwire — unchanged thresholds, log lines, and
+        // BOOTSTRAP_OVERSIZE code, now evaluated BEFORE diagnostics.list() is
+        // materialized below so the entry actually ships in-response.
+        if (responseBytes > 100_000) {
+          logger.error("bootstrap response exceeds 100KB", { project_slug: resolvedSlug, responseBytes });
+          diagnostics.error("BOOTSTRAP_OVERSIZE", `Response is ${(responseBytes / 1024).toFixed(1)}KB — exceeds 100KB`, { responseBytes });
+        } else if (responseBytes > 80_000) {
+          logger.warn("bootstrap response exceeds 80KB", { project_slug: resolvedSlug, responseBytes });
+          diagnostics.warn("BOOTSTRAP_OVERSIZE", `Response is ${(responseBytes / 1024).toFixed(1)}KB — exceeds 80KB warning threshold`, { responseBytes });
+        }
+
         const platformOverheadTokens = 5000;
         const toolSchemaTokens = 2500;
         const totalBootTokens = bootstrapTokens + platformOverheadTokens + toolSchemaTokens;
         const totalBootPercent = Math.round((totalBootTokens / DEFAULT_CONTEXT_WINDOW_TOKENS) * 1000) / 10;
+
+        // Post-measurement attachments — context_estimate, then response_bytes
+        // (new, D-253), then diagnostics LAST (now includes any oversize entry).
         result.context_estimate = {
           bootstrap_tokens: bootstrapTokens,
           platform_overhead_tokens: platformOverheadTokens,
@@ -1218,14 +1370,17 @@ export function registerBootstrap(server: McpServer): void {
           total_boot_percent: totalBootPercent,
           context_window_tokens: DEFAULT_CONTEXT_WINDOW_TOKENS,
         };
+        result.response_bytes = responseBytes; // D-253: measured response size (undercounts the 3 fields attached after measurement)
+        result.diagnostics = diagnostics.list();
 
         // QW-5: component_sizes removed from response (logged only)
         const componentSizes = {
           handoff: handoff.size,
           decisions_index: coreResults[1].status === "fulfilled" && coreResults[1].value ? (coreResults[1].value as { content: string }).content.length : 0,
           behavioral_rules: coreResults[2].status === "fulfilled" && coreResults[2].value ? (coreResults[2].value as { size: number }).size : 0,
-          intelligence_brief: intelligenceBrief?.length ?? 0, // R7-b: full brief (compaction reversed)
+          intelligence_brief: intelligenceBrief?.length ?? 0, // D-253: compacted brief (3-section, spec-coupled)
           standing_rules: JSON.stringify(standingRules).length,
+          standing_rules_index: JSON.stringify(standingRulesIndex).length,
           standing_rules_tier_c_index: JSON.stringify(standingRulesTierCIndex).length,
           banner_text: bannerText.length,
           prefetched_docs: prefetchedDocuments.reduce((sum, d) => sum + d.size_bytes, 0),
@@ -1235,13 +1390,15 @@ export function registerBootstrap(server: McpServer): void {
           project_slug: resolvedSlug,
           filesFetched,
           bytesDelivered,
+          responseBytes, // D-253: central payload-diet metric
           rulesDelivered: !!behavioralRules,
           rulesCached: templateCache.get(MCP_TEMPLATE_PATH) !== null,
           bannerTextBytes: bannerText.length,
           bannerSpecVersion: BANNER_SPEC_VERSION,
           standingRulesCount: standingRules.length,
+          standingRulesIndexCount: standingRulesIndex.length,
           standingRulesTierCIndexCount: standingRulesTierCIndex.length,
-          intelligenceBriefDelivered: !!intelligenceBrief, // R7-b: full delivery, compaction reversed
+          intelligenceBriefDelivered: !!intelligenceBrief, // D-253: compacted at boot (spec-coupled, fallback-guarded)
           intelSlo: {
             completeness: intelSlo.boot_completeness_percent,
             briefAge: intelSlo.brief_age_sessions,
@@ -1253,16 +1410,10 @@ export function registerBootstrap(server: McpServer): void {
           ms: Date.now() - start,
         });
 
-        // QW-2: Compact JSON (no pretty-printing)
+        // QW-2: Compact JSON (no pretty-printing). Single serialization of the
+        // full payload (the earlier `measured` excluded the post-measurement
+        // attachments by design; see above).
         const responseText = JSON.stringify(result);
-        const responseBytes = new TextEncoder().encode(responseText).length;
-        if (responseBytes > 100_000) {
-          logger.error("bootstrap response exceeds 100KB", { project_slug: resolvedSlug, responseBytes });
-          diagnostics.error("BOOTSTRAP_OVERSIZE", `Response is ${(responseBytes / 1024).toFixed(1)}KB \u2014 exceeds 100KB`, { responseBytes });
-        } else if (responseBytes > 80_000) {
-          logger.warn("bootstrap response exceeds 80KB", { project_slug: resolvedSlug, responseBytes });
-          diagnostics.warn("BOOTSTRAP_OVERSIZE", `Response is ${(responseBytes / 1024).toFixed(1)}KB \u2014 exceeds 80KB warning threshold`, { responseBytes });
-        }
 
         return {
           content: [{ type: "text" as const, text: responseText }],

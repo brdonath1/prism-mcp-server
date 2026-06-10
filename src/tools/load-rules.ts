@@ -2,13 +2,12 @@
  * prism_load_rules tool — Mid-session lazy-load of Tier B / Tier C standing rules
  * by explicit topic (D-156 §3.5, Phase 2 PR 4).
  *
- * Why this exists: bootstrap delivers Tier A + Tier B bodies plus a Tier-C
- * index (R7-b / D-240 Phase B — pre-R7-b, Tier B was topic-gated on the
- * opening message). Tier C bodies are reference-only at boot, so when a
- * session needs one (e.g. a deep procedure listed in the Tier-C index), this
- * tool fetches it on demand without re-running a full bootstrap. Tier B
- * requests remain supported for re-delivery even though boot now includes
- * all of Tier B.
+ * Why this exists: bootstrap delivers Tier A bodies plus a Tier B+C index
+ * (D-253 — partial reversal of R7-b; Tier B bodies are no longer shipped at
+ * boot, which overflowed the Claude.ai inline tool-result cap). Tier B and
+ * Tier C bodies are reference-only at boot, so when a session needs one (e.g.
+ * a rule listed in the boot index), this tool fetches it on demand by topic
+ * without re-running a full bootstrap.
  *
  * R2-B (D-240 Phase B): rules resolve from a UNION of the standing-rule
  * registry (`.prism/standing-rules.md`) and the legacy location

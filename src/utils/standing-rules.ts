@@ -119,19 +119,24 @@ export function topicMatch(openingMessage: string | undefined, ruleTopics: strin
 /**
  * Select which standing rules to deliver at bootstrap based on tier.
  *
- * Selection rules (R7-b / D-240 Phase B — deliberate reversal of the D-156
- * topic-gated Tier B selection under the 500K-context rationale; do NOT
- * re-introduce topic gating as a token optimization):
- * - Tier A: always include (behavioral judgment rules effective across every session)
- * - Tier B: always include (pre-R7-b these loaded only when the opening
- *   message's keyword profile matched the rule's topics via {@link topicMatch})
+ * Selection rules (D-253 — partial, evidence-driven reversal of R7-b /
+ * D-240 Phase B; restores the D-156 §3.5 lazy-load contract for Tier B):
+ * - Tier A: always include (behavioral judgment rules effective across every
+ *   session)
+ * - Tier B: bodies NOT included at boot — lazy-loaded on demand via
+ *   `prism_load_rules` by topic. The R7-b "500K-context" rationale for
+ *   shipping all of Tier B broke in production: prism boots exceeded the
+ *   Claude.ai inline tool-result cap, so the ENTIRE response (banner,
+ *   behavioral rules, everything) was offloaded to a sandbox file and zero
+ *   bytes reached the session (D-253). Tier B now joins the boot INDEX
+ *   alongside Tier C.
  * - Tier C: bodies never included at bootstrap (reference-only; available via
- *   prism_load_rules) — bootstrap ships a Tier-C INDEX (IDs + titles) instead
+ *   prism_load_rules) — bootstrap ships an INDEX (IDs + titles) instead
  *
  * Returns a new array — does not mutate the input. Order is preserved from the input.
  */
 export function selectStandingRulesForBoot(rules: StandingRule[]): StandingRule[] {
-  return rules.filter(rule => rule.tier === "A" || rule.tier === "B");
+  return rules.filter(rule => rule.tier === "A");
 }
 
 /**

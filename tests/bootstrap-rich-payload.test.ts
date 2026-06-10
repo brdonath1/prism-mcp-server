@@ -1,19 +1,25 @@
 /**
- * Tests for brief-443 — R7-b + R-intel-SLO (D-240 Phase B):
+ * Tests for the boot payload contract (brief-443 R7-b, as amended by
+ * brief-449 / D-253):
  *
- * R7-b richer boot payload — a DELIBERATE reversal of the D-47 /
- * D-193-Piece-4 token-economy slimming under the 500K-context rationale:
- *   1. `intelligence_brief` delivers the FULL intelligence-brief.md (all 6
- *      spec sections), not the old 3-section compaction (INS-249).
- *   2. `recent_decisions` cap raised 5 → 15.
- *   3. `guardrails` cap raised 10 → 20.
- *   4. QW-4 prefetch hard cap of 2 removed.
- *   5. Standing rules: ALL Tier A + Tier B bodies at boot (topic gate
- *      removed) plus a Tier-C index (IDs + titles, no bodies), sourced from
- *      the R2-B union read (standing-rules.md ∪ insights.md).
+ *   1. `intelligence_brief` delivers a COMPACT brief (D-253 §Change 3) — a
+ *      Project State digest + full Risk Flags + full Quality Audit, via a
+ *      spec-coupled, fallback-guarded compactor (the INS-249 silent-drop
+ *      defect is FIXED, not reintroduced). Reverses R7-b full passthrough.
+ *   2. `recent_decisions` cap raised 5 → 15. (R7-b, unchanged.)
+ *   3. `guardrails` cap raised 10 → 20. (R7-b, unchanged.)
+ *   4. QW-4 prefetch hard cap of 2 removed. (R7-b, unchanged.)
+ *   5. Standing rules: Tier A bodies ONLY at boot (D-253 §Change 1 — Tier B
+ *      bodies lazy-load via prism_load_rules), plus a Tier B+C index
+ *      (`standing_rules_index`, {id,title,tier,topics}) and the deprecated
+ *      C-only `standing_rules_tier_c_index` alias, sourced from the R2-B
+ *      union read (standing-rules.md ∪ insights.md).
  *
- * R-intel-SLO — an always-on info diagnostic (`INTEL_SLO`) carrying boot
- * completeness %, brief age vs target, and continuity coverage. Log-only.
+ * Also covers: D-253 §Change 2 in-response oversize tripwire (`response_bytes`
+ * + BOOTSTRAP_OVERSIZE), the compactor's spec coupling, and R-intel-SLO — an
+ * always-on info diagnostic (`INTEL_SLO`) carrying boot completeness %, brief
+ * age vs target, and continuity coverage (log-only; measured on the full
+ * pre-compaction brief).
  *
  * Harness: per-test re-import pattern from
  * bootstrap-standing-rules-union.test.ts (mock the GitHub client, capture
@@ -152,6 +158,20 @@ const REGISTRY_B_AND_C = `# Standing Rules — prism
 <!-- EOF: standing-rules.md -->
 `;
 
+/**
+ * D-253 §Change 2: a standing-rules registry large enough to push the boot
+ * response past the 100KB hard cap. 60 Tier A rules × ~2KB procedure bodies →
+ * ~120KB of `standing_rules` alone, well over the BOOTSTRAP_OVERSIZE threshold.
+ * Tier A so the bodies actually ship (only Tier A is delivered post-D-253).
+ */
+const OVERSIZE_RULES =
+  "# Standing Rules — prism\n\n## Active\n\n" +
+  Array.from({ length: 60 }, (_, i) => {
+    const body = "X".repeat(2000);
+    return `### INS-${900 + i}: Oversize rule ${i} — STANDING RULE [TIER:A]\n- Category: operations — **STANDING RULE**\n- **Standing procedure:** ${body}`;
+  }).join("\n\n") +
+  "\n\n## Formalized\n\n<!-- EOF: standing-rules.md -->\n";
+
 const PREFETCHABLE: Record<string, string> = {
   "architecture.md": "# Architecture\n\n## Stack\nNode.\n\n<!-- EOF: architecture.md -->",
   "known-issues.md": "# Known Issues\n\n## Active\nNone.\n\n<!-- EOF: known-issues.md -->",
@@ -255,10 +275,10 @@ beforeEach(() => {
   process.env.TRIGGER_AUTO_ENROLL = "false";
 });
 
-// ── R7-b §1: full intelligence brief (D-47 compaction reversed) ─────────────
+// ── D-253 §Change 3: compacted intelligence brief (R7-b full passthrough reversed) ─
 
-describe("R7-b: intelligence_brief delivers the FULL brief (D-47 reversed)", () => {
-  it("delivers all 6 spec sections, byte-identical to the source document", async () => {
+describe("D-253: intelligence_brief delivers the COMPACT brief (Project State digest + full Risk Flags + full Quality Audit)", () => {
+  it("emits the compact Project State digest plus the full Risk Flags and Quality Audit sections", async () => {
     const handler = await setupBootstrap({
       brief: FULL_BRIEF,
       insights: INSIGHTS_WITH_TIER_A,
@@ -266,32 +286,41 @@ describe("R7-b: intelligence_brief delivers the FULL brief (D-47 reversed)", () 
     });
     const parsed = await boot(handler);
 
-    const { INTELLIGENCE_BRIEF_SPEC_SECTIONS } = await import(
-      "../src/utils/intelligence-brief-spec.js"
+    // Compact digest marker + the Project State sentence it summarizes.
+    expect(parsed.intelligence_brief).toContain("**Project State (compact):**");
+    expect(parsed.intelligence_brief).toContain(
+      "The project is mid-flight on D-240 Phase B with strong momentum.",
     );
-    expect(INTELLIGENCE_BRIEF_SPEC_SECTIONS).toHaveLength(6);
-    for (const section of INTELLIGENCE_BRIEF_SPEC_SECTIONS) {
-      expect(parsed.intelligence_brief).toContain(section);
-    }
-    // Full passthrough — not a reassembled subset.
-    expect(parsed.intelligence_brief).toBe(FULL_BRIEF);
+    // The two full-passthrough sections survive intact (header + body).
+    expect(parsed.intelligence_brief).toContain("## Risk Flags");
+    expect(parsed.intelligence_brief).toContain(
+      "- INS-249: the old compactor matched headers literally.",
+    );
+    expect(parsed.intelligence_brief).toContain("## Quality Audit");
+    expect(parsed.intelligence_brief).toContain(
+      "Docs current; task-queue slightly behind session-log.",
+    );
   });
 
-  it("includes the 3 sections the D-47 compactor dropped (INS-249)", async () => {
+  it("drops the three middle sections (and their bodies) that compaction does not carry", async () => {
     const handler = await setupBootstrap({ brief: FULL_BRIEF, insights: null, standingRules: null });
     const parsed = await boot(handler);
 
-    expect(parsed.intelligence_brief).toContain("## Standing Rules & Workflows");
-    expect(parsed.intelligence_brief).toContain("## Active Operational Knowledge");
-    expect(parsed.intelligence_brief).toContain("## Recent Trajectory");
+    expect(parsed.intelligence_brief).not.toContain("## Standing Rules & Workflows");
+    expect(parsed.intelligence_brief).not.toContain("## Active Operational Knowledge");
+    expect(parsed.intelligence_brief).not.toContain("## Recent Trajectory");
+    expect(parsed.intelligence_brief).not.toContain(
+      "mirror-pattern divergence creates silent drift bugs",
+    );
+    expect(parsed.intelligence_brief).not.toContain("Operator prefers structured JSON logs");
   });
 
-  it("carries no compaction artifacts", async () => {
+  it("carries the compaction marker and is shorter than the full brief", async () => {
     const handler = await setupBootstrap({ brief: FULL_BRIEF, insights: null, standingRules: null });
     const parsed = await boot(handler);
 
-    expect(parsed.intelligence_brief).not.toContain("(compact)");
-    expect(parsed.intelligence_brief.length).toBe(FULL_BRIEF.length);
+    expect(parsed.intelligence_brief).toContain("(compact)");
+    expect(parsed.intelligence_brief.length).toBeLessThan(FULL_BRIEF.length);
   });
 
   it("intelligence_brief is null when the document is absent (unchanged contract)", async () => {
@@ -300,11 +329,33 @@ describe("R7-b: intelligence_brief delivers the FULL brief (D-47 reversed)", () 
     expect(parsed.intelligence_brief).toBeNull();
   });
 
-  it("brief_age_sessions still parses from the full brief (S30 staleness path)", async () => {
+  it("brief_age_sessions still parses from the full brief preamble (staleness reads pre-compaction content)", async () => {
     const handler = await setupBootstrap({ brief: FULL_BRIEF, insights: null, standingRules: null });
     const parsed = await boot(handler);
-    // Session Count 28, Last synthesized S27 → age 1
+    // Session Count 28, Last synthesized S27 → age 1. The "Last synthesized:"
+    // header lives in the preamble compaction drops, so a correct age proves
+    // staleness reads the full content, not the compacted delivery.
     expect(parsed.brief_age_sessions).toBe(1);
+  });
+
+  it("falls back to FULL passthrough + BRIEF_COMPACT_FALLBACK when a consumed section is missing (INS-249 silent-drop guard)", async () => {
+    // Rename the Risk Flags header so the compactor cannot find it. The fix for
+    // the INS-249 defect: rather than silently shrinking the brief, deliver it
+    // in full and flag the gap by name.
+    const missingRiskFlags = FULL_BRIEF.replace("## Risk Flags", "## Risks");
+    const handler = await setupBootstrap({ brief: missingRiskFlags, insights: null, standingRules: null });
+    const parsed = await boot(handler);
+
+    // Full passthrough — byte-identical to the (modified) source, no compaction.
+    expect(parsed.intelligence_brief).toBe(missingRiskFlags);
+    expect(parsed.intelligence_brief).not.toContain("(compact)");
+
+    const fallback = (parsed.diagnostics as Diagnostic[]).find(
+      d => d.code === "BRIEF_COMPACT_FALLBACK",
+    );
+    expect(fallback).toBeDefined();
+    expect(fallback!.level).toBe("warn");
+    expect(fallback!.context).toMatchObject({ missing_section: "## Risk Flags" });
   });
 });
 
@@ -388,10 +439,10 @@ describe("R7-b: QW-4 prefetch hard cap of 2 removed", () => {
   });
 });
 
-// ── R7-b §5: Tier A + Tier B bodies + Tier-C index ──────────────────────────
+// ── D-253 §Change 1: Tier A bodies only, Tier B+C indexed ───────────────────
 
-describe("R7-b: standing-rules delivery — all Tier A + Tier B, Tier-C index", () => {
-  it("delivers Tier B bodies with NO topic match in the opening message (gate reversed)", async () => {
+describe("D-253: standing-rules delivery — Tier A bodies only, Tier B+C indexed", () => {
+  it("delivers ONLY Tier A bodies even with a plain opener (Tier B no longer shipped — D-156 §3.5 restored)", async () => {
     const handler = await setupBootstrap({
       brief: FULL_BRIEF,
       insights: INSIGHTS_WITH_TIER_A,
@@ -400,11 +451,11 @@ describe("R7-b: standing-rules delivery — all Tier A + Tier B, Tier-C index", 
     const parsed = await boot(handler, "hello there, plain opener with no topical keywords");
 
     const ids = (parsed.standing_rules as Array<{ id: string }>).map(r => r.id);
-    // Registry rules first (file order), then insights-only rules — union order.
-    expect(ids).toEqual(["INS-201", "INS-202", "INS-100"]);
+    // INS-100 is the lone Tier A rule (from insights.md, union read).
+    expect(ids).toEqual(["INS-100"]);
   });
 
-  it("delivers Tier A + B on a boot with no opening message at all", async () => {
+  it("delivers Tier A only on a boot with no opening message at all", async () => {
     const handler = await setupBootstrap({
       brief: FULL_BRIEF,
       insights: INSIGHTS_WITH_TIER_A,
@@ -413,12 +464,12 @@ describe("R7-b: standing-rules delivery — all Tier A + Tier B, Tier-C index", 
     const parsed = await boot(handler);
 
     const ids = (parsed.standing_rules as Array<{ id: string }>).map(r => r.id);
-    expect(ids).toContain("INS-100"); // Tier A from insights.md (union read)
-    expect(ids).toContain("INS-201"); // Tier B from standing-rules.md
-    expect(ids).toContain("INS-202"); // Tier B without topics
+    expect(ids).toEqual(["INS-100"]);   // Tier A from insights.md (union read)
+    expect(ids).not.toContain("INS-201"); // Tier B no longer in the bodies
+    expect(ids).not.toContain("INS-202");
   });
 
-  it("delivered Tier A/B rules carry their procedure bodies", async () => {
+  it("delivered Tier A rules carry their procedure bodies", async () => {
     const handler = await setupBootstrap({
       brief: FULL_BRIEF,
       insights: INSIGHTS_WITH_TIER_A,
@@ -432,10 +483,9 @@ describe("R7-b: standing-rules delivery — all Tier A + Tier B, Tier-C index", 
     // extractStandingRules takes everything after "**Standing procedure:**"
     // to the end of the ### section — contains, not equals, by design.
     expect(byId.get("INS-100")?.procedure).toContain("Re-read after push.");
-    expect(byId.get("INS-201")?.procedure).toContain("Reload the plist.");
   });
 
-  it("excludes Tier C bodies from standing_rules and ships the Tier-C index instead", async () => {
+  it("standing_rules_index lists Tier B then Tier C entries with id+title+tier+topics (no bodies)", async () => {
     const handler = await setupBootstrap({
       brief: FULL_BRIEF,
       insights: INSIGHTS_WITH_TIER_A,
@@ -443,23 +493,37 @@ describe("R7-b: standing-rules delivery — all Tier A + Tier B, Tier-C index", 
     });
     const parsed = await boot(handler);
 
-    const ids = (parsed.standing_rules as Array<{ id: string }>).map(r => r.id);
-    expect(ids).not.toContain("INS-203");
-    expect(ids).not.toContain("INS-204");
+    // Tier B first (source order), then Tier C — union order from the registry.
+    expect(parsed.standing_rules_index).toEqual([
+      { id: "INS-201", title: "launchd recovery", tier: "B", topics: ["launchd"] },
+      { id: "INS-202", title: "untopiced B rule", tier: "B", topics: [] },
+      { id: "INS-203", title: "deep audit walkthrough", tier: "C", topics: ["audit"] },
+      { id: "INS-204", title: "cost reconciliation", tier: "C", topics: ["cost"] },
+    ]);
+    // The index carries NO rule bodies (B or C).
+    const raw = JSON.stringify(parsed);
+    expect(raw).not.toContain("Reload the plist.");
+    expect(raw).not.toContain("Long reference body that must NOT ship at boot");
+  });
+
+  it("standing_rules_tier_c_index is unchanged: C-only {id,title} back-compat alias", async () => {
+    const handler = await setupBootstrap({
+      brief: FULL_BRIEF,
+      insights: INSIGHTS_WITH_TIER_A,
+      standingRules: REGISTRY_B_AND_C,
+    });
+    const parsed = await boot(handler);
 
     expect(parsed.standing_rules_tier_c_index).toEqual([
       { id: "INS-203", title: "deep audit walkthrough" },
       { id: "INS-204", title: "cost reconciliation" },
     ]);
-    // Index entries are IDs + titles ONLY — no bodies.
+    // Alias entries are IDs + titles ONLY — no bodies, no tier/topics.
     for (const entry of parsed.standing_rules_tier_c_index) {
       expect(entry).not.toHaveProperty("procedure");
       expect(entry).not.toHaveProperty("tier");
       expect(entry).not.toHaveProperty("topics");
     }
-    // And the Tier-C body text appears nowhere in the response.
-    const raw = JSON.stringify(parsed);
-    expect(raw).not.toContain("Long reference body that must NOT ship at boot");
   });
 
   it("tier_c index is empty (not absent) when no Tier C rules exist", async () => {
@@ -472,7 +536,7 @@ describe("R7-b: standing-rules delivery — all Tier A + Tier B, Tier-C index", 
     expect(parsed.standing_rules_tier_c_index).toEqual([]);
   });
 
-  it("STANDING_RULES_TIERED diagnostic reports the R7-b accounting", async () => {
+  it("STANDING_RULES_TIERED diagnostic reports the D-253 accounting (tier_b_indexed, Tier B+C indexed)", async () => {
     const handler = await setupBootstrap({
       brief: FULL_BRIEF,
       insights: INSIGHTS_WITH_TIER_A,
@@ -482,15 +546,18 @@ describe("R7-b: standing-rules delivery — all Tier A + Tier B, Tier-C index", 
 
     const tiered = (parsed.diagnostics as Diagnostic[]).find(d => d.code === "STANDING_RULES_TIERED");
     expect(tiered).toBeDefined();
+    expect(tiered!.message).toContain("Tier A bodies; Tier B+C indexed");
     expect(tiered!.context).toMatchObject({
       total: 5,
-      delivered: 3,
+      delivered: 1,       // A-only
       tier_a: 1,
-      tier_b_loaded: 2,
+      tier_b_indexed: 2,  // renamed from tier_b_loaded
       tier_c_indexed: 2,
       from_standing_rules_file: 4,
       from_insights: 1,
     });
+    // The deprecated context key is gone.
+    expect(tiered!.context).not.toHaveProperty("tier_b_loaded");
   });
 });
 
@@ -566,9 +633,12 @@ describe("R-intel-SLO: INTEL_SLO diagnostic block", () => {
       brief_age_within_target: false,
     });
     // No gating: the response is a normal success and the pre-existing
-    // BRIEF_STALE warning fires on its own channel.
+    // BRIEF_STALE warning fires on its own channel. D-253: the brief is still
+    // delivered, now compacted — staleness reads the full preamble independent
+    // of compaction, so age is still 4 above.
     expect(diags.find(d => d.code === "BRIEF_STALE")).toBeDefined();
-    expect(parsed.intelligence_brief).toBe(staleBrief);
+    expect(parsed.intelligence_brief).toContain("(compact)");
+    expect(parsed.intelligence_brief.length).toBeLessThan(staleBrief.length);
   });
 
   it("counts partially-delivered briefs section by section", async () => {
@@ -729,5 +799,69 @@ describe("INTELLIGENCE_BRIEF_SPEC_SECTIONS single source of truth", () => {
     for (const section of INTELLIGENCE_BRIEF_SPEC_SECTIONS) {
       expect(FINALIZATION_SYNTHESIS_PROMPT).toContain(section);
     }
+  });
+});
+
+// ── D-253 §Change 2: in-response oversize tripwire + response_bytes ──────────
+
+describe("D-253: oversize tripwire ships in-response", () => {
+  it("an oversized payload exposes response_bytes > 100KB AND a BOOTSTRAP_OVERSIZE diagnostic in the response", async () => {
+    const handler = await setupBootstrap({
+      brief: FULL_BRIEF,
+      insights: null,
+      standingRules: OVERSIZE_RULES,
+    });
+    const parsed = await boot(handler);
+
+    expect(typeof parsed.response_bytes).toBe("number");
+    expect(parsed.response_bytes).toBeGreaterThan(100_000);
+
+    // Pre-D-253 this diagnostic was added to the collector AFTER
+    // diagnostics.list() was already baked into the response, so it could
+    // never appear in any payload — only in Railway logs.
+    const oversize = (parsed.diagnostics as Diagnostic[]).find(
+      d => d.code === "BOOTSTRAP_OVERSIZE",
+    );
+    expect(oversize).toBeDefined();
+    expect(oversize!.level).toBe("error");
+    expect((oversize!.context as { responseBytes: number }).responseBytes).toBeGreaterThan(100_000);
+  });
+
+  it("a normal payload exposes response_bytes and emits NO BOOTSTRAP_OVERSIZE", async () => {
+    const handler = await setupBootstrap({
+      brief: FULL_BRIEF,
+      insights: INSIGHTS_WITH_TIER_A,
+      standingRules: REGISTRY_B_AND_C,
+    });
+    const parsed = await boot(handler);
+
+    expect(typeof parsed.response_bytes).toBe("number");
+    expect(parsed.response_bytes).toBeLessThan(80_000);
+    expect(
+      (parsed.diagnostics as Diagnostic[]).find(d => d.code === "BOOTSTRAP_OVERSIZE"),
+    ).toBeUndefined();
+  });
+});
+
+// ── D-253 §Change 3: compactor section names are spec-coupled ────────────────
+
+describe("D-253: compactIntelligenceBrief section names are spec-coupled", () => {
+  it("every section the compactor consumes is a member of INTELLIGENCE_BRIEF_SPEC_SECTIONS", async () => {
+    const { BRIEF_COMPACT_SECTIONS } = await import("../src/tools/bootstrap.js");
+    const { INTELLIGENCE_BRIEF_SPEC_SECTIONS } = await import(
+      "../src/utils/intelligence-brief-spec.js"
+    );
+
+    // Subset assertion: no compactor section is a string literal divorced from
+    // the spec (the INS-249 coupling guard).
+    for (const name of Object.values(BRIEF_COMPACT_SECTIONS)) {
+      expect(INTELLIGENCE_BRIEF_SPEC_SECTIONS).toContain(name);
+    }
+    // Extra guard against a silent spec reorder: pin the exact section names
+    // the compactor relies on. Test-side literals are fine — the production
+    // compactor itself uses none.
+    expect(BRIEF_COMPACT_SECTIONS.projectState).toBe("## Project State");
+    expect(BRIEF_COMPACT_SECTIONS.riskFlags).toBe("## Risk Flags");
+    expect(BRIEF_COMPACT_SECTIONS.qualityAudit).toBe("## Quality Audit");
   });
 });
