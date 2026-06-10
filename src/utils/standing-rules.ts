@@ -20,15 +20,61 @@ export interface StandingRule {
 }
 
 /**
- * Extract standing rules from insights content, keeping only the procedure portion.
+ * Which rule document a parse is reading — determines qualification (brief-451).
+ *
+ * - `"registry"` (.prism/standing-rules.md): the file IS the rule registry, so
+ *   every `### INS-N:` section counts as a rule (INS-308 ground truth);
+ *   untagged sections default to Tier A.
+ * - `"insights"` (insights.md): a section qualifies ONLY when its title line
+ *   ends with `— STANDING RULE`, optionally followed by the trailing tier tag.
+ *   Mentions of the phrase elsewhere in the title or body do NOT qualify —
+ *   prism INS-308/INS-310 are the live self-referential counterexamples that
+ *   made the old whole-section substring test miscount (INS-310).
+ */
+export type StandingRuleSource = "registry" | "insights";
+
+/**
+ * Trailing tier tag, end-anchored to the title line (brief-451 / INS-310): the
+ * title must END with `[TIER:X]`, optionally preceded by `— STANDING RULE`.
+ * Mid-title `[TIER:*]` occurrences (e.g. the backticked literal in prism
+ * INS-179's title) never match — neither for tier extraction nor cleanup.
+ */
+const TRAILING_TIER_TAG = /(?:—\s*STANDING\s+RULE\s*)?\[TIER:([A-Z])\]\s*$/i;
+
+/**
+ * insights.md qualification suffix (brief-451): title line ends with
+ * `— STANDING RULE`, optionally followed by the trailing tier tag.
+ */
+const INSIGHTS_RULE_SUFFIX = /—\s*STANDING\s+RULE\s*(?:\[TIER:[A-Z]\]\s*)?$/i;
+
+/**
+ * Visible-title cleanup: strip ONLY the trailing decoration run — one or more
+ * `— STANDING RULE` markers (doubled-marker tolerance) plus an optional
+ * `[TIER:X]` — anchored at end of title. Mid-title occurrences are preserved
+ * verbatim (brief-451: the old unanchored strip mangled self-referential
+ * titles like prism INS-179).
+ */
+const TRAILING_TITLE_DECORATIONS = /(?:\s*—\s*STANDING\s+RULE)*(?:\s*\[TIER:[A-Z]\])?\s*$/i;
+
+/**
+ * Extract standing rules from a rule-source document, keeping only the
+ * procedure portion.
  * ME-3 (D-48): Excludes ARCHIVED RULE, DORMANT RULE, ARCHIVED STANDING RULE,
  * and DORMANT STANDING RULE entries from the active set.
+ *
+ * brief-451: qualification is source-aware (see {@link StandingRuleSource}).
+ * Defaults to `"insights"` — the function's historical contract — so existing
+ * single-argument callers keep the stricter insights semantics; the union
+ * layer passes `"registry"` for standing-rules.md.
  */
-export function extractStandingRules(insightsContent: string | null): StandingRule[] {
-  if (!insightsContent) return [];
+export function extractStandingRules(
+  content: string | null,
+  source: StandingRuleSource = "insights",
+): StandingRule[] {
+  if (!content) return [];
 
   const rules: StandingRule[] = [];
-  const sections = insightsContent.split(/(?=^### )/m);
+  const sections = content.split(/(?=^### )/m);
 
   for (const section of sections) {
     // D-48: Skip archived or dormant entries
@@ -36,55 +82,60 @@ export function extractStandingRules(insightsContent: string | null): StandingRu
       continue;
     }
 
-    if (/standing\s+rule/i.test(section)) {
-      const headerMatch = section.match(/^### (INS-\d+):?\s*(.+)/);
-      if (headerMatch) {
-        // D-47: Extract procedure-only — find "Standing procedure:" and take everything after
-        let procedure = '';
-        const procStart = section.search(/\*\*Standing procedure:\*\*/i);
-        if (procStart !== -1) {
-          procedure = section.slice(procStart)
-            .replace(/^\*\*Standing procedure:\*\*\s*/i, '')
-            .trim();
-        }
+    const headerMatch = section.match(/^### (INS-\d+):?\s*(.+)/);
+    if (!headerMatch) continue;
+    const titleLine = headerMatch[2];
 
-        // D-156: Parse tier tag from header (defaults to "A" when absent)
-        let tier: "A" | "B" | "C" = "A";
-        const tierMatch = headerMatch[2].match(/\[TIER:([A-Z])\]/i);
-        if (tierMatch) {
-          const letter = tierMatch[1].toUpperCase();
-          if (letter === "A" || letter === "B" || letter === "C") {
-            tier = letter;
-          } else {
-            logger.warn("standing rule has unknown tier letter; defaulting to A", { id: headerMatch[1], tierLetter: letter });
-          }
-        }
+    // brief-451 qualification: registry sections all count (INS-308 ground
+    // truth); insights sections qualify only via the title-line suffix form.
+    if (source === "insights" && !INSIGHTS_RULE_SUFFIX.test(titleLine)) {
+      continue;
+    }
 
-        // D-156: Strip both — STANDING RULE and [TIER:X] from the visible title
-        const title = headerMatch[2]
-          .replace(/\s*\[TIER:[A-Z]\]\s*/i, '')
-          .replace(/\s*—\s*STANDING RULE\s*/gi, '')
-          .trim();
+    // D-47: Extract procedure-only — find "Standing procedure:" and take everything after
+    let procedure = '';
+    const procStart = section.search(/\*\*Standing procedure:\*\*/i);
+    if (procStart !== -1) {
+      procedure = section.slice(procStart)
+        .replace(/^\*\*Standing procedure:\*\*\s*/i, '')
+        .trim();
+    }
 
-        // D-156: Parse topics from <!-- topics: foo, bar --> comment in section body
-        let topics: string[] = [];
-        const topicsMatch = section.match(/<!--\s*topics:\s*([^-]+?)\s*-->/i);
-        if (topicsMatch) {
-          topics = topicsMatch[1]
-            .split(',')
-            .map(t => t.trim())
-            .filter(t => t.length > 0);
-        }
-
-        rules.push({
-          id: headerMatch[1],
-          title,
-          procedure,
-          tier,
-          topics,
-        });
+    // D-156: Parse tier tag from header (defaults to "A" when absent).
+    // brief-451: only a TRAILING tag counts; unknown letters in a trailing
+    // tag keep the warn-and-default-A behavior.
+    let tier: "A" | "B" | "C" = "A";
+    const tierMatch = titleLine.match(TRAILING_TIER_TAG);
+    if (tierMatch) {
+      const letter = tierMatch[1].toUpperCase();
+      if (letter === "A" || letter === "B" || letter === "C") {
+        tier = letter;
+      } else {
+        logger.warn("standing rule has unknown tier letter; defaulting to A", { id: headerMatch[1], tierLetter: letter });
       }
     }
+
+    // D-156 / brief-451: strip only the trailing — STANDING RULE / [TIER:X]
+    // decorations from the visible title
+    const title = titleLine.replace(TRAILING_TITLE_DECORATIONS, '').trim();
+
+    // D-156: Parse topics from <!-- topics: foo, bar --> comment in section body
+    let topics: string[] = [];
+    const topicsMatch = section.match(/<!--\s*topics:\s*([^-]+?)\s*-->/i);
+    if (topicsMatch) {
+      topics = topicsMatch[1]
+        .split(',')
+        .map(t => t.trim())
+        .filter(t => t.length > 0);
+    }
+
+    rules.push({
+      id: headerMatch[1],
+      title,
+      procedure,
+      tier,
+      topics,
+    });
   }
 
   return rules;
