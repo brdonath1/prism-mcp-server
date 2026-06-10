@@ -39,35 +39,38 @@ describe("topicMatch", () => {
   });
 });
 
-describe("selectStandingRulesForBoot (R7-b / D-240 Phase B: Tier A + ALL Tier B, no topic gate)", () => {
+describe("selectStandingRulesForBoot (D-253: Tier A bodies only; Tier B+C indexed, not delivered)", () => {
   it("includes all Tier A rules unconditionally", () => {
     const rules = [tierA("INS-1"), tierA("INS-2")];
     expect(selectStandingRulesForBoot(rules)).toHaveLength(2);
   });
 
-  it("includes Tier B rules even when no opening-message topics would have matched (gate reversed by R7-b)", () => {
-    // Pre-R7-b these only loaded on a topic match against the opening
-    // message; D-240 Phase B delivers ALL Tier B at boot.
-    const rules = [tierA("INS-1"), tierB("INS-2", ["cc_dispatch"]), tierB("INS-3", ["trigger"])];
+  it("keeps the selected Tier A rules in input order", () => {
+    const rules = [tierA("INS-3"), tierA("INS-1"), tierA("INS-2")];
+    expect(selectStandingRulesForBoot(rules).map(r => r.id)).toEqual(["INS-3", "INS-1", "INS-2"]);
+  });
+
+  it("excludes Tier B rules regardless of topics (bodies lazy-loaded via prism_load_rules — D-156 §3.5 restored)", () => {
+    // R7-b shipped ALL Tier B at boot; D-253 reverses that — Tier B bodies are
+    // no longer delivered, whether they carry topics or not.
+    const rules = [tierA("INS-1"), tierB("INS-2", ["cc_dispatch"]), tierB("INS-3", ["trigger"]), tierB("INS-4", [])];
     const out = selectStandingRulesForBoot(rules);
-    expect(out.map(r => r.id)).toEqual(["INS-1", "INS-2", "INS-3"]);
+    expect(out.map(r => r.id)).toEqual(["INS-1"]);
   });
 
-  it("includes Tier B rules that have no topics at all", () => {
-    const rules = [tierB("INS-2", [])];
-    expect(selectStandingRulesForBoot(rules).map(r => r.id)).toEqual(["INS-2"]);
-  });
-
-  it("never includes Tier C rule bodies (reference-only; index ships separately)", () => {
+  it("excludes Tier C rule bodies (reference-only; index ships separately)", () => {
     const rules = [tierA("INS-1"), tierC("INS-2", ["cc_dispatch"])];
     const out = selectStandingRulesForBoot(rules);
     expect(out.map(r => r.id)).toEqual(["INS-1"]);
   });
 
-  it("preserves input order", () => {
-    const rules = [tierB("INS-3", ["cc_dispatch"]), tierA("INS-1"), tierB("INS-2", ["cc_dispatch"])];
-    const out = selectStandingRulesForBoot(rules);
-    expect(out.map(r => r.id)).toEqual(["INS-3", "INS-1", "INS-2"]);
+  it("returns empty for empty input", () => {
+    expect(selectStandingRulesForBoot([])).toEqual([]);
+  });
+
+  it("returns empty when only Tier B and Tier C rules exist (no Tier A)", () => {
+    const rules = [tierB("INS-1", ["trigger"]), tierC("INS-2", ["audit"])];
+    expect(selectStandingRulesForBoot(rules)).toEqual([]);
   });
 
   it("does not mutate the input array", () => {
