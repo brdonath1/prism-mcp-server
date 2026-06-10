@@ -36,11 +36,16 @@ export interface ArchiveConfig {
   activeSection?: string;
   /**
    * Position of most-recent entries within the doc.
-   * "top" — newest appears FIRST (e.g., session-log.md is reverse-chronological).
-   * "bottom" — newest appears LAST (e.g., insights.md is chronological).
+   * "top" — newest appears FIRST.
+   * "bottom" — newest appears LAST (e.g., insights.md Active section appends at bottom).
+   * "auto" — detect per document from the parsed entry numbers in document order:
+   *   ascending (first < last) → "bottom"; descending (first > last) → "top".
+   *   Session-log layout is NOT uniform across projects — the prism repo's
+   *   session-log.md is chronological (newest LAST); hardcoding "top" there
+   *   archived the newest entries (S165 incident, INS-316).
    * Default: "bottom".
    */
-  mostRecentAt?: "top" | "bottom";
+  mostRecentAt?: "top" | "bottom" | "auto";
 }
 
 export interface ParsedEntry {
@@ -62,6 +67,19 @@ interface EntryBounds {
 }
 
 const EOF_SENTINEL_PATTERN = /^<!--\s*EOF:.*-->$/;
+
+/**
+ * Resolve an "auto" orientation from parsed entries in document order.
+ * Ascending entry numbers (first < last) mean newest-last → "bottom";
+ * descending (first > last) mean newest-first → "top". A single entry or
+ * equal endpoints resolve to "bottom" — moot in practice, since the
+ * entries.length <= retentionCount early-return keeps small files untouched.
+ */
+function detectMostRecentAt(entries: EntryBounds[]): "top" | "bottom" {
+  const first = entries[0];
+  const last = entries[entries.length - 1];
+  return first.number > last.number ? "top" : "bottom";
+}
 
 function stripExecutionFlags(flags: string): string {
   return flags.replace(/[gy]/g, "");
@@ -250,7 +268,9 @@ export function splitForArchive(
     };
   }
 
-  const mostRecentAt = config.mostRecentAt ?? "bottom";
+  const configured = config.mostRecentAt ?? "bottom";
+  const mostRecentAt =
+    configured === "auto" ? detectMostRecentAt(entries) : configured;
   const eligible =
     mostRecentAt === "top"
       ? nonProtected.slice(config.retentionCount)

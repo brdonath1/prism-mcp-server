@@ -73,6 +73,7 @@ const KNOWN_PRISM_PATHS: string[] = [
   "intelligence-brief.md",
   // Support files
   "boot-test.md",
+  "standing-rules.md",
   // Archive files
   "session-log-archive.md",
   "known-issues-archive.md",
