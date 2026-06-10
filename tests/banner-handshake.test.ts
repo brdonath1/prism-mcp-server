@@ -550,6 +550,14 @@ describe("renderBootMastheadSvg (brief-447 / D-249)", () => {
     expect(svg).toContain('viewBox="0 0 680 232"');
     expect(svg).not.toContain('viewBox="0 0 680 256"');
   });
+
+  it("renders the boot pill in green — the session-start designation (brief-452 / D-256) — with no teal left", () => {
+    const svg = renderBootMastheadSvg(MASTHEAD_INPUT);
+    expect(svg).toContain(
+      '<g class="c-green"><rect x="556" y="60" width="60" height="22" rx="11"/><text x="586" y="75" class="ts" text-anchor="middle">boot</text></g>',
+    );
+    expect(svg).not.toContain("c-teal");
+  });
 });
 
 describe("renderFinalizationBannerHtml (brief-447 / D-249)", () => {
@@ -611,24 +619,56 @@ describe("renderFinalizationBannerHtml (brief-447 / D-249)", () => {
     expect(html).toContain("203 decisions");
     expect(html).not.toContain("203 decisions (+");
   });
+
+  it("renders the red session-end designation (brief-452 / D-256): danger pill + top accent strip, ok glyphs stay green", () => {
+    const html = renderFinalizationBannerHtml({
+      templateVersion: "2.19.1",
+      sessionNumber: 164,
+      timestamp: "06-10-26 10:00:00",
+      handoffFromVersion: 171,
+      handoffToVersion: 172,
+      handoffStatus: "pushed",
+      decisionCount: 210,
+      decisionDelta: 1,
+      docCount: 10,
+      docTotal: 10,
+      statusRow: [
+        { label: "docs updated", status: "ok" },
+        { label: "verified", status: "ok" },
+      ],
+      deliverables: ["Banner Spec 4.1 — session-state colors"],
+      next: null,
+    });
+    // The "finalized" pill carries the danger (red) palette.
+    expect(html).toContain(
+      '<span style="font-size:12px;font-weight:500;color:var(--color-text-danger);background:var(--color-background-danger);padding:4px 12px;border-radius:var(--border-radius-md);">finalized</span>',
+    );
+    // Card div clips via overflow:hidden; its first child is the 3px danger strip.
+    expect(html).toContain(
+      '<div style="background:var(--color-background-secondary);border:0.5px solid var(--color-border-tertiary);border-radius:var(--border-radius-lg);overflow:hidden;">\n' +
+        '<div style="height:3px;background:var(--color-text-danger);"></div>',
+    );
+    // ok phase glyphs keep success-green — red there would read as failure.
+    expect(html).toContain('color:var(--color-text-success);font-weight:500;">✓</span>');
+  });
 });
 
-describe("banner spec version (brief-447 / D-249)", () => {
-  it("BANNER_SPEC_VERSION is bumped to 4.0", () => {
-    expect(BANNER_SPEC_VERSION).toBe("4.0");
+describe("banner spec version (brief-452 / D-256)", () => {
+  it("BANNER_SPEC_VERSION is bumped to 4.1", () => {
+    expect(BANNER_SPEC_VERSION).toBe("4.1");
   });
 
-  it("parseTemplateBannerSpecVersion: a 3.x template declaration drifts from the 4.0 server spec", () => {
+  it("parseTemplateBannerSpecVersion: a 3.x template declaration drifts from the 4.1 server spec", () => {
     // A template still declaring spec 3.x parses to "3.0" and mismatches the
-    // server's current 4.0 — exactly the BANNER_DRIFT condition (expected and
-    // transient until the Stage-2 framework templates declare 4.0). A 4.0
-    // declaration matches and does not drift.
+    // server's current 4.1 — exactly the BANNER_DRIFT condition (expected and
+    // transient until the companion framework brief-602 templates declare
+    // 4.1). A 4.1 declaration matches and does not drift.
     expect(parseTemplateBannerSpecVersion("> **Banner-Spec-Version:** 3.0")).toBe("3.0");
     expect(parseTemplateBannerSpecVersion("> **Banner-Spec-Version:** 3.0")).not.toBe(
       BANNER_SPEC_VERSION,
     );
     expect(
       parseTemplateBannerSpecVersion(`> **Banner-Spec-Version:** ${BANNER_SPEC_VERSION}`),
-    ).toBe("4.0");
+    ).toBe("4.1");
   });
 });

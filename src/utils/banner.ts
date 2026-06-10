@@ -43,10 +43,13 @@ export interface BannerStatusEntry {
  * warn diagnostic — visibility only, never blocking. Spec 2.0 was the original
  * HTML banner contract (D-35/D-46); 3.0 was the unified text contract (R8);
  * 4.0 (D-249) restores the graphical banners — boot SVG masthead +
- * finalization HTML widget — atop the unified text generator. Contracts:
- * `_templates/banner-spec.md` and `_templates/finalization-banner-spec.md`.
+ * finalization HTML widget — atop the unified text generator. 4.1 (D-256) —
+ * session-state color designation: green boot pill, red finalized pill + 3px
+ * top accent strip; structure, grammar, and data contracts unchanged.
+ * Contracts: `_templates/banner-spec.md` and
+ * `_templates/finalization-banner-spec.md`.
  */
-export const BANNER_SPEC_VERSION = "4.0";
+export const BANNER_SPEC_VERSION = "4.1";
 
 /** Status glyphs shared by every banner surface. */
 const STATUS_ICONS: Record<BannerStatusEntry["status"], string> = {
@@ -305,7 +308,7 @@ export function renderBootMastheadSvg(data: UnifiedBannerInput): string {
     `<g class="c-purple"><rect x="65" y="64" width="14" height="14" rx="2" transform="rotate(45 72 71)"/></g>`,
     `<g class="c-purple"><text x="92" y="80" class="th" font-size="24">PRISM</text></g>`,
     `<text x="182" y="80" class="ts" font-size="13">v${esc(data.templateVersion)}</text>`,
-    `<g class="c-teal"><rect x="556" y="60" width="60" height="22" rx="11"/><text x="586" y="75" class="ts" text-anchor="middle">boot</text></g>`,
+    `<g class="c-green"><rect x="556" y="60" width="60" height="22" rx="11"/><text x="586" y="75" class="ts" text-anchor="middle">boot</text></g>`,
     `<line x1="64" y1="98" x2="616" y2="98" stroke="var(--color-border-tertiary)" stroke-width="0.5"/>`,
     `<text x="64" y="124" class="th" font-size="16">Session ${data.sessionNumber}</text>`,
     `<text x="176" y="124" class="ts" font-size="13">${esc(data.timestamp)} CST</text>`,
@@ -397,7 +400,10 @@ const PHASE_COLOR_VAR: Record<BannerStatusEntry["status"], string> = {
  * Render the rich finalization HTML widget (D-249), rendered via
  * `visualize:show_widget` at session end. Static layout/classes/styles are
  * byte-identical to the approved `_templates/finalization-banner-spec.md`
- * target; only the annotated data interpolates. The variable-length
+ * target; only the annotated data interpolates. The "finalized" pill and the
+ * card's 3px top accent strip carry the red session-end designation (D-256,
+ * spec 4.1) via the danger CSS variables; phase-step glyphs keep their status
+ * colors — green ✓ still means phase success. The variable-length
  * Deliverables list wraps natively — one `▸` row per deliverable (the last row
  * drops its bottom margin to match the target). The self-contained `.brand`/
  * `.mark` `<style>` block is intentionally hardcoded purple + dark `@media`
@@ -425,14 +431,16 @@ export function renderFinalizationBannerHtml(data: FinalizationBannerHtmlInput):
   const lines: string[] = [
     `<h2 class="sr-only" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">${esc(srOnly)}</h2>`,
     `<style>.brand{color:#534AB7}.mark{background:#534AB7}@media(prefers-color-scheme:dark){.brand{color:#b3aef0}.mark{background:#b3aef0}}</style>`,
-    `<div style="background:var(--color-background-secondary);border:0.5px solid var(--color-border-tertiary);border-radius:var(--border-radius-lg);padding:1.1rem 1.25rem;">`,
+    `<div style="background:var(--color-background-secondary);border:0.5px solid var(--color-border-tertiary);border-radius:var(--border-radius-lg);overflow:hidden;">`,
+    `<div style="height:3px;background:var(--color-text-danger);"></div>`,
+    `<div style="padding:1.1rem 1.25rem;">`,
     `  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">`,
     `    <div style="display:flex;align-items:center;gap:10px;">`,
     `      <span class="mark" style="display:inline-block;width:13px;height:13px;border-radius:2px;transform:rotate(45deg);"></span>`,
     `      <span class="brand" style="font-size:22px;font-weight:500;letter-spacing:0.5px;">PRISM</span>`,
     `      <span style="font-size:13px;color:var(--color-text-secondary);">v${esc(data.templateVersion)}</span>`,
     `    </div>`,
-    `    <span style="font-size:12px;font-weight:500;color:var(--color-text-success);background:var(--color-background-success);padding:4px 12px;border-radius:var(--border-radius-md);">finalized</span>`,
+    `    <span style="font-size:12px;font-weight:500;color:var(--color-text-danger);background:var(--color-background-danger);padding:4px 12px;border-radius:var(--border-radius-md);">finalized</span>`,
     `  </div>`,
     `  <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:12px;">`,
     `    <span style="font-size:16px;font-weight:500;color:var(--color-text-primary);">Session ${data.sessionNumber} finalized</span>`,
@@ -476,6 +484,7 @@ export function renderFinalizationBannerHtml(data: FinalizationBannerHtmlInput):
     );
   }
 
+  lines.push(`</div>`);
   lines.push(`</div>`);
   return lines.join("\n");
 }
