@@ -154,4 +154,21 @@ describe("guardPushPath", () => {
     expect(result.path).toBe(".prism/_scratch/notes.md");
     expect(result.redirected).toBe(true);
   });
+
+  it("redirects root-level standing-rules.md when .prism/ version exists (brief-453 / INS-312)", async () => {
+    mockFileExists.mockResolvedValueOnce(true); // .prism/standing-rules.md exists
+
+    const result = await guardPushPath("test-project", "standing-rules.md");
+    expect(result.path).toBe(".prism/standing-rules.md");
+    expect(result.redirected).toBe(true);
+    expect(mockFileExists).toHaveBeenCalledWith("test-project", ".prism/standing-rules.md");
+  });
+
+  it("allows root-level standing-rules.md when no .prism/ version exists (unmigrated)", async () => {
+    mockFileExists.mockResolvedValueOnce(false);
+
+    const result = await guardPushPath("test-project", "standing-rules.md");
+    expect(result.path).toBe("standing-rules.md");
+    expect(result.redirected).toBe(false);
+  });
 });

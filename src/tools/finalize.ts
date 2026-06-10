@@ -64,7 +64,9 @@ const SESSION_LOG_ARCHIVE_CONFIG: ArchiveConfig = {
     "# Session Log Archive — PRISM Framework\n\n" +
     "> Archived sessions moved here during finalization when session-log.md exceeds 15KB.\n" +
     "> Archives are NEVER read by synthesis.\n",
-  mostRecentAt: "top",
+  // Session-log layout varies per project (prism's is chronological, newest
+  // LAST) — a hardcoded "top" archived the newest entries (S165, INS-316).
+  mostRecentAt: "auto",
 };
 
 const INSIGHTS_ARCHIVE_CONFIG: ArchiveConfig = {

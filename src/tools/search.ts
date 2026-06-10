@@ -191,9 +191,9 @@ export function registerSearch(server: McpServer): void {
       logger.info("prism_search", { project_slug, query, max_results: limit });
 
       // brief-444 R-deadlines — tool-level wall-clock deadline. The search
-      // fan-out fetches all 10 living docs plus up to 7 decision domain
-      // files; a hung GitHub call previously held the connection until the
-      // MCP client gave up. Mirrors prism_push (S40 C4).
+      // fan-out fetches all 10 living docs, the standing-rules registry, plus
+      // up to 7 decision domain files; a hung GitHub call previously held the
+      // connection until the MCP client gave up. Mirrors prism_push (S40 C4).
       let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
       const deadlinePromise = new Promise<typeof SEARCH_DEADLINE_SENTINEL>((resolve) => {
         deadlineTimer = setTimeout(() => resolve(SEARCH_DEADLINE_SENTINEL), SEARCH_WALL_CLOCK_DEADLINE_MS);
@@ -204,9 +204,13 @@ export function registerSearch(server: McpServer): void {
         // Step 1: Discover all searchable files (D-67: use resolver for backward compat)
         const domainFiles = await discoverDecisionDomainFiles(project_slug);
 
-        // Step 2: Fetch all living docs via resolver + domain files directly
+        // Step 2: Fetch all living docs + standing-rules registry via resolver,
+        // domain files directly. standing-rules.md (.prism/-first, root fallback)
+        // joins the corpus so rule bodies are searchable (brief-453 / INS-312);
+        // archives stay excluded. Absence is graceful — same try/catch-null
+        // pattern as the living-doc fetches.
         const fetchResults = await Promise.allSettled([
-          ...LIVING_DOCUMENT_NAMES.map(async (docName) => {
+          ...[...LIVING_DOCUMENT_NAMES, "standing-rules.md"].map(async (docName) => {
             try {
               const resolved = await resolveDocPath(project_slug, docName);
               return { path: docName, content: resolved.content, size: resolved.content.length };

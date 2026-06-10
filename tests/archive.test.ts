@@ -361,3 +361,139 @@ ${filler}
     expect(result.archiveContent).toBeNull();
   });
 });
+
+// brief-453 / INS-316 — "auto" orientation detection. The S165 incident:
+// SESSION_LOG_ARCHIVE_CONFIG hardcoded mostRecentAt: "top" (keep FIRST 20)
+// against the prism repo's CHRONOLOGICAL session-log (newest LAST), which
+// archived the newest entries. "auto" resolves the orientation per document
+// from the parsed entry numbers.
+describe('splitForArchive — mostRecentAt: "auto" (brief-453 / INS-316)', () => {
+  /** Chronological session log — newest LAST (the prism repo's actual layout). */
+  function chronologicalSessionLog(count: number, bodyChars = 40): string {
+    const lines = ["# Session Log — prism", ""];
+    for (let n = 1; n <= count; n++) {
+      lines.push(`### Session ${n} (2026-05-${String(((n - 1) % 28) + 1).padStart(2, "0")})`);
+      lines.push("x".repeat(bodyChars));
+      lines.push("");
+    }
+    lines.push("<!-- EOF: session-log.md -->");
+    return lines.join("\n");
+  }
+
+  /** Reverse-chronological session log — newest FIRST. */
+  function reverseChronoSessionLog(count: number, bodyChars = 40): string {
+    const lines = ["# Session Log — Test", ""];
+    for (let n = count; n >= 1; n--) {
+      lines.push(`### Session ${n} (2026-05-${String(((n - 1) % 28) + 1).padStart(2, "0")})`);
+      lines.push("x".repeat(bodyChars));
+      lines.push("");
+    }
+    lines.push("<!-- EOF: session-log.md -->");
+    return lines.join("\n");
+  }
+
+  it('INS-316 incident replay: "auto" on a chronological session-log archives the OLDEST entries and keeps the NEWEST retentionCount', () => {
+    // Mirrors the prism incident shape: over threshold, more than
+    // retentionCount (production value: 20) ascending `### Session N` entries.
+    const input = chronologicalSessionLog(25);
+    const result = splitForArchive(input, null, {
+      ...SESSION_LOG_CONFIG,
+      thresholdBytes: 100,
+      retentionCount: 20,
+      mostRecentAt: "auto",
+    });
+
+    // Under the pre-fix "top" config this fixture lost Sessions 21-25 (the
+    // newest) to the archive. "auto" must archive Sessions 1-5 instead.
+    expect(result.archivedCount).toBe(5);
+    for (let n = 1; n <= 5; n++) {
+      expect(result.archiveContent).toContain(`### Session ${n} (`);
+      expect(result.liveContent).not.toContain(`### Session ${n} (`);
+    }
+    for (let n = 6; n <= 25; n++) {
+      expect(result.liveContent).toContain(`### Session ${n} (`);
+    }
+    expect(result.liveContent).toContain("<!-- EOF: session-log.md -->");
+
+    // Round-trip: no entry lost.
+    const liveEntries = parseEntries(result.liveContent, SESSION_LOG_CONFIG.entryMarker);
+    const archiveEntries = parseEntries(result.archiveContent!, SESSION_LOG_CONFIG.entryMarker);
+    const allNumbers = [
+      ...liveEntries.map(e => e.number),
+      ...archiveEntries.map(e => e.number),
+    ].sort((a, b) => a - b);
+    expect(allNumbers).toEqual(Array.from({ length: 25 }, (_, i) => i + 1));
+  });
+
+  it('"auto" on a reverse-chronological session-log keeps the FIRST retentionCount (newest)', () => {
+    const input = reverseChronoSessionLog(5);
+    const result = splitForArchive(input, null, {
+      ...SESSION_LOG_CONFIG,
+      thresholdBytes: 50,
+      retentionCount: 2,
+      mostRecentAt: "auto",
+    });
+
+    expect(result.archivedCount).toBe(3);
+    expect(result.liveContent).toContain("### Session 5 (");
+    expect(result.liveContent).toContain("### Session 4 (");
+    for (const n of [3, 2, 1]) {
+      expect(result.archiveContent).toContain(`### Session ${n} (`);
+      expect(result.liveContent).not.toContain(`### Session ${n} (`);
+    }
+  });
+
+  it('regression: explicit "top" still keeps the FIRST retentionCount', () => {
+    const input = reverseChronoSessionLog(5);
+    const result = splitForArchive(input, null, {
+      ...SESSION_LOG_CONFIG,
+      thresholdBytes: 50,
+      retentionCount: 2,
+      mostRecentAt: "top",
+    });
+
+    expect(result.archivedCount).toBe(3);
+    expect(result.liveContent).toContain("### Session 5 (");
+    expect(result.liveContent).toContain("### Session 4 (");
+    expect(result.liveContent).not.toContain("### Session 3 (");
+    expect(result.archiveContent).toContain("### Session 1 (");
+  });
+
+  it('regression: explicit "bottom" still keeps the LAST retentionCount', () => {
+    const input = chronologicalSessionLog(5);
+    const result = splitForArchive(input, null, {
+      ...SESSION_LOG_CONFIG,
+      thresholdBytes: 50,
+      retentionCount: 2,
+      mostRecentAt: "bottom",
+    });
+
+    expect(result.archivedCount).toBe(3);
+    expect(result.liveContent).toContain("### Session 5 (");
+    expect(result.liveContent).toContain("### Session 4 (");
+    expect(result.liveContent).not.toContain("### Session 1 (");
+    expect(result.archiveContent).toContain("### Session 1 (");
+  });
+
+  it('"auto" with equal endpoint numbers resolves to "bottom" (keeps the last occurrence)', () => {
+    const input = `# Log
+
+### Session 7 (first occurrence)
+${"x".repeat(60)}
+
+### Session 7 (second occurrence)
+${"x".repeat(60)}
+`;
+    const result = splitForArchive(input, null, {
+      ...SESSION_LOG_CONFIG,
+      thresholdBytes: 50,
+      retentionCount: 1,
+      mostRecentAt: "auto",
+    });
+
+    expect(result.archivedCount).toBe(1);
+    expect(result.archiveContent).toContain("first occurrence");
+    expect(result.liveContent).toContain("second occurrence");
+    expect(result.liveContent).not.toContain("first occurrence");
+  });
+});
