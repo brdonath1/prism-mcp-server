@@ -12,6 +12,7 @@ process.env.GITHUB_PAT = process.env.GITHUB_PAT || "test-dummy-pat";
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { RECOMMENDATION_MODELS } from "../src/models.js";
 
 vi.mock("../src/github/client.js", () => ({
   fetchFile: vi.fn(),
@@ -204,7 +205,9 @@ describe("brief-411: bootstrap reads persisted recommendation", () => {
     const parsed = JSON.parse(result.content[0].text);
 
     expect(parsed.recommended_session_settings.category).toBe("reasoning_heavy");
-    expect(parsed.recommended_session_settings.model).toBe("opus-4-8");
+    expect(parsed.recommended_session_settings.model).toBe(
+      RECOMMENDATION_MODELS.reasoning_heavy.code,
+    );
     expect(parsed.recommended_session_settings.thinking).toBe("adaptive-on");
   });
 

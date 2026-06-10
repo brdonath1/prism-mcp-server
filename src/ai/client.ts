@@ -84,21 +84,21 @@ export function resolveCallSiteRouting(callSite: SynthesisCallSite): {
 }
 
 /**
- * Call Opus for synthesis. Returns structured outcome with success/error info.
+ * Call the synthesis model. Returns structured outcome with success/error info.
  *
- * @param thinking When true, sends `thinking: { type: "adaptive" }` so Opus 4.7
- *   dynamically allocates its thinking-token budget per request. Opus 4.7
- *   accepts ONLY the adaptive variant — the legacy fixed-budget thinking shape
- *   returns HTTP 400. The text-extraction filter below ignores any `thinking`
- *   content blocks emitted alongside `text`, so callers see only the final
- *   text output.
+ * @param thinking When true, sends `thinking: { type: "adaptive" }` so the
+ *   model dynamically allocates its thinking-token budget per request.
+ *   Current top-tier models (Fable 5, Opus 4.7+) accept ONLY the adaptive
+ *   variant — the legacy fixed-budget thinking shape returns HTTP 400. The
+ *   text-extraction filter below ignores any `thinking` content blocks
+ *   emitted alongside `text`, so callers see only the final text output.
  *
  * @param callSite Optional per-call-site routing identifier (brief-417
  *   Phase 3c-A). When provided, the function reads
  *   `SYNTHESIS_${CALLSITE_UPPER}_TRANSPORT` and
  *   `SYNTHESIS_${CALLSITE_UPPER}_MODEL` to optionally route through the
- *   Claude Code subprocess (OAuth + Sonnet 4.6 path) instead of the direct
- *   Messages API. On cc_subprocess failure, falls back automatically to
+ *   Claude Code subprocess (OAuth path, env-selected model) instead of the
+ *   direct Messages API. On cc_subprocess failure, falls back automatically to
  *   messages_api with the default model and logs `SYNTHESIS_TRANSPORT_FALLBACK`.
  *   When not provided, behavior is unchanged (legacy callers).
  *
@@ -227,10 +227,10 @@ async function callMessagesApi(params: MessagesApiCallParams): Promise<Synthesis
       messages: [{ role: "user", content: userContent }],
     };
     if (thinking) {
-      // Opus 4.7 supports ONLY the adaptive variant; the legacy fixed-budget
-      // thinking shape returns HTTP 400. Cast through unknown because the
-      // installed SDK's ThinkingConfig union does not yet include the
-      // "adaptive" variant.
+      // Current top-tier models (Fable 5, Opus 4.7+) support ONLY the
+      // adaptive variant; the legacy fixed-budget thinking shape returns
+      // HTTP 400. Cast through unknown because the installed SDK's
+      // ThinkingConfig union does not yet include the "adaptive" variant.
       (requestBody as unknown as { thinking: { type: "adaptive" } }).thinking = { type: "adaptive" };
     }
 
