@@ -1,17 +1,37 @@
 name: CI
 
-# WHITELIST PATTERN (D-76 / PF-v2 D-131)
+# WHITELIST PATTERN (D-76 / PF-v2 D-131) + ALWAYS-REPORT GATE (SRV-38 / brief-455)
 # ─────────────────────────────────────────────────────────────────────
 # PRISM-managed repos generate high commit volume from state management
 # (handoff updates, decisions, session logs, boot tests, intelligence
 # briefs). A paths-ignore (blacklist) approach requires manually adding
 # every new non-code directory and fails silently when you miss one.
+# This whitelist approach is self-maintaining: new non-code directories
+# are excluded by default.
 #
-# This paths (whitelist) approach is self-maintaining: CI only triggers
-# when files that affect the build actually change. New non-code
-# directories are excluded by default. No manual upkeep required.
+# The SAME whitelist is applied in two layers — keep them IN SYNC:
+#   1. push (main): native `paths:` filter below.
+#   2. pull_request: NO native paths filter. Branch protection requires
+#      the contexts `build-and-test (18)` / `build-and-test (20)` on
+#      every PR; a paths-filtered workflow that never fires leaves them
+#      "Expected" forever and the PR is permanently unmergeable
+#      (SRV-38 — docs-only PRs were born dead). The workflow therefore
+#      fires on EVERY PR, and the `gate` step applies the whitelist
+#      inside the job: build-affecting change → full CI with true
+#      results; nothing build-affecting → heavy steps are skipped and
+#      the contexts report success ("nothing to validate" — also a
+#      true result).
 #
-# DO NOT revert to paths-ignore. See: prism-framework/_templates/reference/ci-best-practices.md
+# No-masking invariant: these context names are produced by exactly ONE
+# workflow (this file; the push trigger is main-only so it never runs
+# on PR head SHAs). A failing real run can never be shadowed by a green
+# no-op because no second producer exists. The gate fails OPEN — if it
+# cannot determine the changed files, full CI runs.
+#
+# DO NOT revert to paths-ignore, and DO NOT "fix" SRV-38 with a
+# companion no-op workflow emitting the same context names — on mixed
+# code+docs PRs both workflows fire and the green no-op can mask a red
+# real run. See: prism-framework/_templates/reference/ci-best-practices.md
 # ─────────────────────────────────────────────────────────────────────
 
 on:
@@ -20,6 +40,7 @@ on:
     paths:
       - 'src/**'
       - 'tests/**'
+      - 'scripts/**'
       - 'package.json'
       - 'package-lock.json'
       - 'tsconfig.json'
@@ -30,17 +51,13 @@ on:
       - '.github/workflows/ci.yml'
   pull_request:
     branches: [main]
-    paths:
-      - 'src/**'
-      - 'tests/**'
-      - 'package.json'
-      - 'package-lock.json'
-      - 'tsconfig.json'
-      - 'biome.jsonc'
-      - 'vitest.config.ts'
-      - 'Dockerfile'
-      - 'railway.json'
-      - '.github/workflows/ci.yml'
+    # Intentionally NO paths filter (SRV-38): the required contexts must
+    # report on every PR. PR path gating happens in the `gate` step —
+    # keep its case-pattern whitelist in sync with the push paths above.
+
+permissions:
+  contents: read
+  pull-requests: read
 
 jobs:
   build-and-test:
@@ -50,33 +67,85 @@ jobs:
         node-version: [18, 20]
 
     steps:
+      - name: Gate — did any build-affecting file change?
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Push events reach this workflow only via the paths whitelist,
+          # so a build-affecting file definitely changed.
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "push event — full CI"
+            exit 0
+          fi
+          # Fail OPEN: if the PR file list cannot be fetched, run full CI.
+          if ! files=$(gh api --paginate "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" --jq '.[].filename'); then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "could not list PR files — failing open to full CI"
+            exit 0
+          fi
+          # The API lists at most 3000 files; at the cap the list may be
+          # truncated, so fail open.
+          if [ "$(printf '%s\n' "$files" | wc -l)" -ge 3000 ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo ">=3000 changed files — listing may be truncated; failing open to full CI"
+            exit 0
+          fi
+          # Whitelist — keep in sync with the push `paths:` list above.
+          run=false
+          while IFS= read -r f; do
+            case "$f" in
+              src/*|tests/*|scripts/*|package.json|package-lock.json|tsconfig.json|biome.jsonc|vitest.config.ts|Dockerfile|railway.json|.github/workflows/ci.yml)
+                run=true
+                echo "build-affecting: $f"
+                ;;
+            esac
+          done <<< "$files"
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          if [ "$run" = "false" ]; then
+            echo "no build-affecting files in this PR — heavy steps skipped; contexts report success by design (SRV-38)"
+          fi
+
       - uses: actions/checkout@v4
+        if: steps.gate.outputs.run == 'true'
 
       - name: Setup Node.js ${{ matrix.node-version }}
+        if: steps.gate.outputs.run == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
 
       - name: Install dependencies
+        if: steps.gate.outputs.run == 'true'
         run: npm ci
 
       - name: Lint
+        if: steps.gate.outputs.run == 'true'
         run: npm run lint
 
       - name: Type check
+        if: steps.gate.outputs.run == 'true'
         run: npm run typecheck
 
       - name: Security audit
+        if: steps.gate.outputs.run == 'true'
         run: npm audit --audit-level=high
         continue-on-error: true
 
       - name: Build
+        if: steps.gate.outputs.run == 'true'
         run: npm run build
 
       - name: Test
+        if: steps.gate.outputs.run == 'true'
         run: npm test
         env:
           GITHUB_PAT: test-pat-not-real
           GITHUB_OWNER: test-owner
           FRAMEWORK_REPO: prism-framework
+
+      - name: Pass-through (no build-affecting changes)
+        if: steps.gate.outputs.run != 'true'
+        run: echo "No build-affecting files changed — required contexts report success by design (SRV-38, brief-455)."
