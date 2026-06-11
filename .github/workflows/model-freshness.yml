@@ -20,17 +20,23 @@ jobs:
         with:
           node-version: 20
 
+      # MODEL_BUMP_PAT (fine-grained PAT, this repo, contents + pull-requests
+      # read/write) makes the bump PR fire pull_request workflows — PRs created
+      # with the default GITHUB_TOKEN never trigger CI, leaving each weekly
+      # bump PR unmergeable until a human pushes a commit (SRV-56, brief-455).
+      # Until the operator provisions the secret, this falls back to
+      # GITHUB_TOKEN (status quo).
       - name: Check model freshness
         id: freshness
         run: node scripts/check-model-freshness.mjs
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.MODEL_BUMP_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Create bump PR
         if: steps.freshness.outputs.has_bumps == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.MODEL_BUMP_PAT || secrets.GITHUB_TOKEN }}
         run: |
           BRANCH="chore/model-freshness-$(date +%Y%m%d)"
 
