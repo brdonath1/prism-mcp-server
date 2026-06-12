@@ -318,3 +318,18 @@ export function splitForArchive(
     archivedCount: eligible.length,
   };
 }
+
+/**
+ * Detect a session-log's orientation from its `### Session N` entry numbers
+ * (brief-456 / SRV-19). Reuses the same ascending/descending heuristic as
+ * splitForArchive's "auto" mode ({@link detectMostRecentAt}) so the finalize
+ * draft bridge inserts new entries at the correct end — session-log layout is
+ * NOT uniform across projects, and guessing wrong is the INS-316 bug class.
+ * "bottom" = newest last (chronological). Zero/single-entry logs resolve to
+ * "bottom", matching the appender's safe default.
+ */
+export function detectSessionLogOrientation(content: string): "top" | "bottom" {
+  const entries = parseEntriesWithBounds(content, /^### Session (\d+)/m);
+  if (entries.length === 0) return "bottom";
+  return detectMostRecentAt(entries);
+}

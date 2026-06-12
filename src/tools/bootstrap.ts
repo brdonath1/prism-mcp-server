@@ -350,8 +350,11 @@ async function pushBootTest(
   const content = `# Boot Test \u2014 Session ${sessionNumber}\nTimestamp: ${timestamp} CST\nProject: ${slug}\nHandoff: v${handoffVersion}\nMode: MCP\n\n<!-- EOF: boot-test.md -->\n`;
   try {
     const bootTestPath = await resolveDocPushPath(slug, "boot-test.md");
-    await pushFile(slug, bootTestPath, content, `prism: S${sessionNumber} boot test`);
-    return { success: true };
+    const result = await pushFile(slug, bootTestPath, content, `prism: S${sessionNumber} boot test`);
+    // pushFile reports HTTP failures (403 scope loss, 422, 409-after-retry)
+    // as a result shape, not a throw — the write-path verification must
+    // propagate that result instead of reporting verified (SRV-16).
+    return { success: result.success, error: result.error };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return { success: false, error: msg };
@@ -894,19 +897,50 @@ export function registerBootstrap(server: McpServer): void {
           );
         }
 
-        // brief-419 / Phase 3c-A: surface CS-3 synthesis observation events
+        // brief-419 / Phase 3c-A: surface synthesis observation events
         // detected in the configured lookback window. Each kind contributes
-        // its own warning line (max 3 added) so the operator sees fallback,
-        // byte-count, and preamble events independently. Pointers reference
-        // INS-242 (the log-code definitions). The structured diagnostic
-        // carries per-kind counts plus a capped slice of the raw events for
-        // downstream observers — full payload stays server-side.
+        // its own warning line (max 4 added) so the operator sees failure,
+        // fallback, byte-count, and preamble events independently. Pointers
+        // reference INS-242 (the log-code definitions). The structured
+        // diagnostic carries per-kind counts plus a capped slice of the raw
+        // events for downstream observers — full payload stays server-side.
         if (observation?.has_events) {
+          // brief-456 (SRV-51): a failed background synthesis was previously
+          // invisible at the next boot — the gate matched only the three
+          // warn-level quality codes. SYNTHESIS_FAILED is emitted warn-level
+          // by src/ai/synthesize.ts at every failure exit.
+          if (observation.synthesis_failed_count > 0) {
+            const suffix =
+              observation.synthesis_failed_count > 1
+                ? ` (× ${observation.synthesis_failed_count})`
+                : "";
+            warnings.push(
+              `Background synthesis FAILED last finalize${suffix} — intelligence-brief / pending-doc-updates may be one session stale; check Railway logs for SYNTHESIS_FAILED (see INS-242).`,
+            );
+          }
           if (observation.fallback_count > 0) {
             const suffix =
               observation.fallback_count > 1 ? ` (× ${observation.fallback_count})` : "";
+            // brief-456 (SRV-32): SYNTHESIS_TRANSPORT_FALLBACK fires for all
+            // three call sites (draft/brief/pdu) — render the actual call-site
+            // label(s) from the event attributes instead of a hardcoded CS-3.
+            const CALL_SITE_LABELS: Record<string, string> = {
+              draft: "CS-1 (draft)",
+              brief: "CS-2 (brief)",
+              pdu: "CS-3 (pdu)",
+            };
+            const callSiteCounts = new Map<string, number>();
+            for (const ev of observation.events) {
+              if (ev.kind !== "SYNTHESIS_TRANSPORT_FALLBACK") continue;
+              const label =
+                CALL_SITE_LABELS[ev.attributes.callSite ?? ""] ?? "call-site unlabeled";
+              callSiteCounts.set(label, (callSiteCounts.get(label) ?? 0) + 1);
+            }
+            const callSiteParts = [...callSiteCounts.entries()]
+              .map(([label, n]) => (n > 1 && callSiteCounts.size > 1 ? `${label} × ${n}` : label))
+              .join(", ");
             warnings.push(
-              `Synthesis transport fallback detected last finalize${suffix} — CS-3 routed via messages_api fallback (see INS-242).`,
+              `Synthesis transport fallback detected last finalize${suffix} — ${callSiteParts} routed via messages_api fallback (see INS-242).`,
             );
           }
           if (observation.byte_warning_count > 0) {
@@ -931,6 +965,7 @@ export function registerBootstrap(server: McpServer): void {
             "SYNTHESIS_OBSERVATION_DETECTED",
             `Phase 3c-A observation events detected for ${resolvedSlug}`,
             {
+              synthesis_failed_count: observation.synthesis_failed_count,
               fallback_count: observation.fallback_count,
               byte_warning_count: observation.byte_warning_count,
               preamble_warning_count: observation.preamble_warning_count,

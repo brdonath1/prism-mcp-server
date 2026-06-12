@@ -5,8 +5,8 @@
  * Pure function — no I/O, no throws. Caller hands in a list of Railway log
  * entries (already filtered server-side by environment + a coarse `@level:warn`
  * filter), the booting project's slug, the current clock, and a lookback
- * window. This function returns the subset that match one of the three Phase
- * 3c-A observation codes for the given project, plus per-kind counts.
+ * window. This function returns the subset that match one of the Phase 3c-A /
+ * brief-456 observation codes for the given project, plus per-kind counts.
  *
  * Defensive contract: any malformed log entry, missing attribute, unknown
  * kind, or unparseable timestamp resolves to "skip this entry" — never
@@ -18,6 +18,7 @@
 import type { RailwayLog, RailwayLogAttribute } from "../railway/types.js";
 
 export type ObservationEventKind =
+  | "SYNTHESIS_FAILED"
   | "SYNTHESIS_TRANSPORT_FALLBACK"
   | "CS3_QUALITY_BYTE_COUNT_WARNING"
   | "CS3_QUALITY_PREAMBLE_WARNING";
@@ -32,6 +33,9 @@ export interface ObservationCheckResult {
   has_events: boolean;
   /** Grouped by kind, most-recent first within each kind. */
   events: ObservationEvent[];
+  /** brief-456 (SRV-51): failed background synthesis runs (warn-level
+   *  SYNTHESIS_FAILED emissions from src/ai/synthesize.ts). */
+  synthesis_failed_count: number;
   fallback_count: number;
   byte_warning_count: number;
   preamble_warning_count: number;
@@ -40,12 +44,14 @@ export interface ObservationCheckResult {
 const EMPTY_RESULT: ObservationCheckResult = {
   has_events: false,
   events: [],
+  synthesis_failed_count: 0,
   fallback_count: 0,
   byte_warning_count: 0,
   preamble_warning_count: 0,
 };
 
 const KIND_TOKENS: Record<ObservationEventKind, string> = {
+  SYNTHESIS_FAILED: "SYNTHESIS_FAILED",
   SYNTHESIS_TRANSPORT_FALLBACK: "SYNTHESIS_TRANSPORT_FALLBACK",
   CS3_QUALITY_BYTE_COUNT_WARNING: "CS3_QUALITY_BYTE_COUNT_WARNING",
   CS3_QUALITY_PREAMBLE_WARNING: "CS3_QUALITY_PREAMBLE_WARNING",
@@ -105,7 +111,7 @@ function identifyKind(
 /**
  * Inspect a list of Railway log entries (already filtered by environment +
  * substring/regex by the caller) and extract the subset matching one of the
- * three Phase 3c-A observation codes for the given project slug, within the
+ * observation codes for the given project slug, within the
  * lookback window.
  *
  * Boundary: comparison is strict `<` — a log entry whose `now - timestamp`
@@ -128,6 +134,7 @@ export function checkSynthesisObservationEvents(
   if (Number.isNaN(nowMs)) return cloneEmpty();
 
   const buckets: Record<ObservationEventKind, ObservationEvent[]> = {
+    SYNTHESIS_FAILED: [],
     SYNTHESIS_TRANSPORT_FALLBACK: [],
     CS3_QUALITY_BYTE_COUNT_WARNING: [],
     CS3_QUALITY_PREAMBLE_WARNING: [],
@@ -158,27 +165,34 @@ export function checkSynthesisObservationEvents(
   const sortDesc = (a: ObservationEvent, b: ObservationEvent): number =>
     Date.parse(b.timestamp) - Date.parse(a.timestamp);
 
+  buckets.SYNTHESIS_FAILED.sort(sortDesc);
   buckets.SYNTHESIS_TRANSPORT_FALLBACK.sort(sortDesc);
   buckets.CS3_QUALITY_BYTE_COUNT_WARNING.sort(sortDesc);
   buckets.CS3_QUALITY_PREAMBLE_WARNING.sort(sortDesc);
 
   const events: ObservationEvent[] = [
+    ...buckets.SYNTHESIS_FAILED,
     ...buckets.SYNTHESIS_TRANSPORT_FALLBACK,
     ...buckets.CS3_QUALITY_BYTE_COUNT_WARNING,
     ...buckets.CS3_QUALITY_PREAMBLE_WARNING,
   ];
 
+  const synthesis_failed_count = buckets.SYNTHESIS_FAILED.length;
   const fallback_count = buckets.SYNTHESIS_TRANSPORT_FALLBACK.length;
   const byte_warning_count = buckets.CS3_QUALITY_BYTE_COUNT_WARNING.length;
   const preamble_warning_count = buckets.CS3_QUALITY_PREAMBLE_WARNING.length;
 
-  if (fallback_count + byte_warning_count + preamble_warning_count === 0) {
+  if (
+    synthesis_failed_count + fallback_count + byte_warning_count + preamble_warning_count ===
+    0
+  ) {
     return cloneEmpty();
   }
 
   return {
     has_events: true,
     events,
+    synthesis_failed_count,
     fallback_count,
     byte_warning_count,
     preamble_warning_count,
@@ -189,6 +203,7 @@ function cloneEmpty(): ObservationCheckResult {
   return {
     has_events: EMPTY_RESULT.has_events,
     events: [],
+    synthesis_failed_count: EMPTY_RESULT.synthesis_failed_count,
     fallback_count: EMPTY_RESULT.fallback_count,
     byte_warning_count: EMPTY_RESULT.byte_warning_count,
     preamble_warning_count: EMPTY_RESULT.preamble_warning_count,

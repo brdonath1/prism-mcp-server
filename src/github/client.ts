@@ -269,8 +269,14 @@ export async function pushFile(
   let sha: string | undefined;
   try {
     sha = await fetchSha(repo, path);
-  } catch {
-    // File doesn't exist yet — that's fine, we'll create it
+  } catch (error) {
+    // Only a genuine 404 ("Not found") means the file doesn't exist yet —
+    // that's the create-mode signal. Operational errors (transient 401/403,
+    // timeout) must surface as the real cause; swallowing them turns an
+    // existing-file update into a sha-less PUT that fails as a misleading
+    // 422 "validation failed" (SRV-75).
+    const msg = error instanceof Error ? error.message : String(error);
+    if (!msg.includes("Not found")) throw error;
   }
 
   const base64Content = Buffer.from(content, "utf-8").toString("base64");
@@ -297,8 +303,12 @@ export async function pushFile(
     try {
       const freshSha = await fetchSha(repo, path);
       body.sha = freshSha;
-    } catch {
-      // File may have been deleted between attempts
+    } catch (error) {
+      // Same discrimination as the initial fetch (SRV-75): only "Not found"
+      // means the file was deleted between attempts (retry as create);
+      // operational errors must surface instead of forcing create-mode.
+      const msg = error instanceof Error ? error.message : String(error);
+      if (!msg.includes("Not found")) throw error;
       delete body.sha;
     }
     res = await fetchWithRetry(url, {

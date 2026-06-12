@@ -430,3 +430,92 @@ describe("brief-419: bootstrap synthesis observation surfacing", () => {
     expect(envLogsSpy).not.toHaveBeenCalled();
   });
 });
+
+describe("brief-456 (SRV-51/SRV-32): synthesis-failure surfacing + call-site labels", () => {
+  it("surfaces an operator-visible warning when a SYNTHESIS_FAILED event is in the window", async () => {
+    const ts = new Date(Date.now() - 60_000).toISOString();
+    const { handler } = await setupBootstrap({
+      kind: "returns",
+      logs: [
+        {
+          message:
+            "SYNTHESIS_FAILED — background synthesis did not produce a pushed intelligence_brief",
+          timestamp: ts,
+          severity: "warn",
+          attributes: [PROJECT_TAG, { key: "synthesis_kind", value: "intelligence_brief" }],
+        },
+      ],
+    });
+    const result = await handler({ project_slug: "prism" });
+    const parsed = JSON.parse(result.content[0].text);
+
+    const failureWarning = (parsed.warnings as string[]).find((w) =>
+      w.includes("SYNTHESIS_FAILED"),
+    );
+    expect(failureWarning).toBeDefined();
+    expect(failureWarning).toMatch(/background synthesis failed/i);
+
+    const diag = (
+      parsed.diagnostics as Array<{ code: string; context?: Record<string, unknown> }>
+    ).find((d) => d.code === "SYNTHESIS_OBSERVATION_DETECTED");
+    expect(diag).toBeDefined();
+    expect(diag?.context?.synthesis_failed_count).toBe(1);
+  });
+
+  it("fallback warning renders the actual call-site label (CS-2 for a brief fallback, not CS-3)", async () => {
+    const ts = new Date(Date.now() - 60_000).toISOString();
+    const { handler } = await setupBootstrap({
+      kind: "returns",
+      logs: [
+        {
+          message:
+            "SYNTHESIS_TRANSPORT_FALLBACK — cc_subprocess failed, retrying via messages_api",
+          timestamp: ts,
+          severity: "warn",
+          attributes: [PROJECT_TAG, { key: "callSite", value: "brief" }],
+        },
+      ],
+    });
+    const result = await handler({ project_slug: "prism" });
+    const parsed = JSON.parse(result.content[0].text);
+
+    const fallbackWarning = (parsed.warnings as string[]).find((w) =>
+      w.includes("Synthesis transport fallback"),
+    );
+    expect(fallbackWarning).toBeDefined();
+    expect(fallbackWarning).toContain("CS-2");
+    expect(fallbackWarning).not.toContain("CS-3");
+    expect(fallbackWarning).toContain("INS-242");
+  });
+
+  it("multiple call sites render grouped labels (CS-2 and CS-3 both named)", async () => {
+    const baseTs = Date.now() - 60_000;
+    const { handler } = await setupBootstrap({
+      kind: "returns",
+      logs: [
+        {
+          message: "SYNTHESIS_TRANSPORT_FALLBACK first",
+          timestamp: new Date(baseTs).toISOString(),
+          severity: "warn",
+          attributes: [PROJECT_TAG, { key: "callSite", value: "brief" }],
+        },
+        {
+          message: "SYNTHESIS_TRANSPORT_FALLBACK second",
+          timestamp: new Date(baseTs + 1_000).toISOString(),
+          severity: "warn",
+          attributes: [PROJECT_TAG, { key: "callSite", value: "pdu" }],
+        },
+      ],
+    });
+    const result = await handler({ project_slug: "prism" });
+    const parsed = JSON.parse(result.content[0].text);
+
+    const fallbackWarning = (parsed.warnings as string[]).find((w) =>
+      w.includes("Synthesis transport fallback"),
+    );
+    expect(fallbackWarning).toBeDefined();
+    expect(fallbackWarning).toContain("(× 2)");
+    expect(fallbackWarning).toContain("CS-2");
+    expect(fallbackWarning).toContain("CS-3");
+  });
+});

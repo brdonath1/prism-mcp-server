@@ -178,14 +178,18 @@ describe("parseProposals", () => {
     expect(glossaryProposals[0].content).toMatch(/^\|\s*safeMutation\s*\|/);
   });
 
-  it("ignores insights re-tier subsections (only `### Proposed:` / `### Add term:` are picked up)", () => {
+  it("surfaces insights housekeeping subsections as operator-review skips (brief-456 / SRV-10)", () => {
     const proposals = parseProposals(STRUCTURED_PDU);
     const insightsProposals = proposals.filter(p => p.targetFile === "insights.md");
-    // The brief's parser only recognizes `### Proposed:` and `### Add term:`.
-    // Insights housekeeping forms (`### Re-tier:`, `### Consolidate:`,
-    // `### Mark dormant:`) are operator decisions that do not have a
-    // mechanical apply path — they are left for human review.
-    expect(insightsProposals).toHaveLength(0);
+    // Housekeeping forms (`### Re-tier:`, `### Consolidate:`,
+    // `### Mark dormant:`) are operator decisions with no mechanical apply
+    // path — but they must be VISIBLE (skipped + archived with provenance),
+    // not silently invisible: pre-456 they vanished entirely, so a
+    // housekeeping-only batch accreted forever (SRV-10).
+    expect(insightsProposals).toHaveLength(1);
+    expect(insightsProposals[0].operation).toBeNull();
+    expect(insightsProposals[0].title).toMatch(/^Re-tier: INS-99/);
+    expect(insightsProposals[0].unparsedReason).toMatch(/operator review/i);
   });
 
   it("ignores `## No Updates Needed` and other non-target ## headings", () => {
@@ -365,13 +369,16 @@ describe("applyPendingDocUpdates — pipeline", () => {
     expect(archiveContent).toContain("- Add safeMutation primitive section → architecture.md");
     expect(archiveContent).toContain("- Update Synthesis Routing diagram → architecture.md");
     expect(archiveContent).toContain("- safeMutation → glossary.md");
-    // No rejections in this batch — the section is omitted, not rendered empty.
-    expect(archiveContent).not.toContain("### Rejected / Skipped");
+    // brief-456 (SRV-10): the fixture's Re-tier housekeeping form is now
+    // visible — archived as rejected/skipped with its operator-review reason
+    // (pre-456 it was invisible and left no provenance at all).
+    expect(archiveContent).toContain("### Rejected / Skipped");
+    expect(archiveContent).toContain("Re-tier: INS-99");
     expect(archiveContent).toContain(`<!-- EOF: ${PDU_ARCHIVE_DOC} -->`);
 
     // The cleared PDU records the consumed outcome + provenance pointer.
     const pduPush = mockPushFile.mock.calls.find(c => c[1] === ".prism/pending-doc-updates.md");
-    expect(pduPush?.[2]).toContain("3 applied, 0 rejected/skipped");
+    expect(pduPush?.[2]).toContain("3 applied, 1 rejected/skipped");
     expect(pduPush?.[2]).toContain(`Provenance: ${PDU_ARCHIVE_DOC}`);
   });
 
