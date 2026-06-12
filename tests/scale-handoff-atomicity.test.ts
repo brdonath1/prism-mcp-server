@@ -251,3 +251,204 @@ describe("S47 P2.2 — HEAD-unchanged branch falls back to sequential pushFile",
     expect(extractCall).toBeDefined();
   });
 });
+
+// ───────────────────────────────────────────────────────────────────────────
+// brief-460 / W3-S4 (M-016) — scale_handoff data-safety.
+// SRV-25/43: the sequential fallback pushes destinations FIRST and never
+// pushes the reduced handoff after a destination failure; fallback is
+// refused outright when the HEAD position cannot be verified.
+// SRV-09: extracted decisions' fullText (the rationale prose) is written to
+// a pushed destination — scaling redistributes context, it must not delete it.
+// ───────────────────────────────────────────────────────────────────────────
+
+describe("brief-460 / SRV-25+43 — fallback failure-ordering (handoff never shrinks on destination failure)", () => {
+  it("aborts the fallback BEFORE the handoff push when a destination push fails", async () => {
+    mockGetHeadSha.mockResolvedValueOnce("head-same");
+    mockCreateAtomicCommit.mockResolvedValueOnce({
+      success: false,
+      sha: "",
+      files_committed: 0,
+      error: "Not found: updateRef test-project",
+    });
+    mockGetHeadSha.mockResolvedValueOnce("head-same"); // HEAD stable → fallback allowed
+    // Every destination push fails; the handoff push must never be attempted.
+    mockPushFile.mockResolvedValue({ success: false, size: 0, sha: "", error: "422 dest write failed" });
+
+    const result = await runScaleFull();
+    const payload = JSON.parse(result.content[0].text);
+
+    // The reduced handoff was never pushed.
+    const handoffPush = mockPushFile.mock.calls.find((c) => c[1] === ".prism/handoff.md");
+    expect(handoffPush).toBeUndefined();
+    // At least one destination push was attempted (destinations-first order).
+    expect(mockPushFile.mock.calls.length).toBeGreaterThanOrEqual(1);
+
+    // Truthful response: handoff reported as NOT pushed, abort warning named.
+    const handoffResult = payload.push_results.find(
+      (r: { path: string }) => r.path === ".prism/handoff.md",
+    );
+    expect(handoffResult).toBeDefined();
+    expect(handoffResult.success).toBe(false);
+    expect(payload.warnings.join(" ")).toContain("handoff was NOT reduced");
+    const migrationDiags = (payload.diagnostics ?? []).filter(
+      (d: { code: string }) => d.code === "MIGRATION_FAILED",
+    );
+    expect(migrationDiags.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("pushes the reduced handoff LAST when every destination landed (fallback happy path preserved)", async () => {
+    mockGetHeadSha.mockResolvedValueOnce("head-same");
+    mockCreateAtomicCommit.mockResolvedValueOnce({
+      success: false,
+      sha: "",
+      files_committed: 0,
+      error: "Not found: updateRef test-project",
+    });
+    mockGetHeadSha.mockResolvedValueOnce("head-same");
+    mockPushFile.mockResolvedValue({ success: true, size: 100, sha: "seq-sha" });
+
+    const result = await runScaleFull();
+    const payload = JSON.parse(result.content[0].text);
+
+    expect(result.isError).toBeUndefined();
+    const calls = mockPushFile.mock.calls.map((c) => c[1]);
+    expect(calls[calls.length - 1]).toBe(".prism/handoff.md");
+    for (const r of payload.push_results) {
+      expect(r.success).toBe(true);
+    }
+  });
+
+  it("SRV-43: refuses the fallback entirely when headShaBefore is unavailable (nothing pushed)", async () => {
+    // getHeadSha unavailable both before and after.
+    mockGetHeadSha.mockResolvedValue(undefined);
+    mockCreateAtomicCommit.mockResolvedValueOnce({
+      success: false,
+      sha: "",
+      files_committed: 0,
+      error: "createTree failed",
+    });
+
+    const result = await runScaleFull();
+    const payload = JSON.parse(result.content[0].text);
+
+    // No sequential push of ANY file — the fallback was refused.
+    expect(mockPushFile).not.toHaveBeenCalled();
+    for (const r of payload.push_results) {
+      expect(r.success).toBe(false);
+    }
+    expect(payload.warnings.join(" ")).toContain("HEAD position could not be verified");
+  });
+
+  it("SRV-43: refuses the fallback when the post-failure HEAD re-check is unavailable", async () => {
+    mockGetHeadSha.mockResolvedValueOnce("head-before");
+    mockCreateAtomicCommit.mockResolvedValueOnce({
+      success: false,
+      sha: "",
+      files_committed: 0,
+      error: "createTree failed",
+    });
+    mockGetHeadSha.mockResolvedValueOnce(undefined); // re-check fails
+
+    const result = await runScaleFull();
+    const payload = JSON.parse(result.content[0].text);
+
+    expect(mockPushFile).not.toHaveBeenCalled();
+    expect(payload.warnings.join(" ")).toContain("HEAD position could not be verified");
+  });
+});
+
+describe("brief-460 / SRV-09 — scaled decisions' fullText lands in a pushed destination", () => {
+  const RICH_HANDOFF = `## Meta
+- Handoff Version: 7
+- Session Count: 40
+- Template Version: 2.0.0
+- Status: active
+
+## Critical Context
+1. One critical item
+
+## Active Decisions
+${Array.from({ length: 9 }, (_, i) => {
+  const n = i + 1;
+  return `### D-${n}: Decision number ${n}
+- Domain: architecture
+- Status: SETTLED
+- Session: ${n}
+- Rationale: Because of carefully reasoned tradeoff ${n} alpha-bravo.`;
+}).join("\n\n")}
+
+## Where We Are
+Working on scale safety.
+
+<!-- EOF: handoff.md -->`;
+
+  it("full scale with >8 inline decisions writes the Rationale prose into decisions/_INDEX.md in the same atomic commit", async () => {
+    mockFetchFile.mockImplementation(async (_repo: string, path: string) => {
+      if (path.includes("session-log")) {
+        return { content: "# Session Log\n\n<!-- EOF: session-log.md -->", sha: "s1", size: 50 };
+      }
+      if (path.includes("_INDEX")) {
+        return {
+          content:
+            "# Decision Index\n\n| ID | Title | Domain | Status | Session |\n|----|-------|--------|--------|---------|\n| D-900 | Pre-existing | ops | SETTLED | 2 |\n\n<!-- EOF: _INDEX.md -->\n",
+          sha: "d1",
+          size: 160,
+        };
+      }
+      if (path.includes("handoff")) {
+        return { content: RICH_HANDOFF, sha: "h1", size: RICH_HANDOFF.length };
+      }
+      throw new Error(`Not found: fetchFile test-project/${path}`);
+    });
+    mockGetHeadSha.mockResolvedValue("head-before");
+    mockCreateAtomicCommit.mockResolvedValue({
+      success: true,
+      sha: "atomic-sha",
+      files_committed: 3,
+    });
+
+    const server = new McpServer(
+      { name: "test-server", version: "1.0.0" },
+      { capabilities: { tools: {} } },
+    );
+    registerScaleHandoff(server);
+    const tool = (server as any)._registeredTools["prism_scale_handoff"];
+    const result = await tool.handler(
+      { project_slug: "test-project", action: "full" },
+      {
+        signal: new AbortController().signal,
+        _meta: undefined,
+        requestId: "r",
+        sendNotification: vi.fn().mockResolvedValue(undefined),
+        sendRequest: vi.fn().mockResolvedValue(undefined),
+      },
+    );
+    expect(result.isError).toBeUndefined();
+
+    const atomicFiles = mockCreateAtomicCommit.mock.calls[0][1] as Array<{
+      path: string;
+      content: string;
+    }>;
+    const index = atomicFiles.find((f) => f.path.includes("_INDEX"));
+    expect(index).toBeDefined();
+
+    // Registry rows are present…
+    expect(index!.content).toContain("| D-1 | Decision number 1 | architecture | SETTLED | 1 |");
+    // …AND the full rationale prose survives in the same pushed destination
+    // (pre-460, fullText had no consumer — the rationale was deleted).
+    expect(index!.content).toContain("## Decision Details (scaled from handoff)");
+    expect(index!.content).toContain("Because of carefully reasoned tradeoff 1 alpha-bravo.");
+    expect(index!.content).toContain("Because of carefully reasoned tradeoff 9 alpha-bravo.");
+
+    // The reduced handoff no longer carries the rationale (it moved, not copied).
+    const handoff = atomicFiles.find((f) => f.path === ".prism/handoff.md");
+    expect(handoff).toBeDefined();
+    expect(handoff!.content).not.toContain("Because of carefully reasoned tradeoff 1 alpha-bravo.");
+
+    // Re-merge idempotency: rows are inserted ABOVE the details section, so
+    // a second scale cannot split the registry table.
+    const detailsIdx = index!.content.indexOf("## Decision Details (scaled from handoff)");
+    const lastRowIdx = index!.content.lastIndexOf("| D-9 |");
+    expect(lastRowIdx).toBeLessThan(detailsIdx);
+  });
+});

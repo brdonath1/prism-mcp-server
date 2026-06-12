@@ -455,3 +455,81 @@ describe("prism_push skip_validation", () => {
     expect(mockPushFile).not.toHaveBeenCalled();
   });
 });
+
+// ───────────────────────────────────────────────────────────────────────────
+// brief-460 / SRV-78 — prism_push is a full-document channel (intentionally
+// unsanitized) driven by unattended cc workers; pre-existing ZWS header
+// contamination is DETECTED and surfaced, never silently re-committed
+// invisible. The bytes themselves are written exactly as supplied (repair
+// is M-041).
+// ───────────────────────────────────────────────────────────────────────────
+describe("brief-460 / SRV-78 — prism_push ZWS contamination detection", () => {
+  const ZWS = "​";
+
+  it("a pushed file carrying ZWS-neutralized headers raises ZWS_CONTAMINATION_DETECTED naming file and header", async () => {
+    mockCreateAtomicCommit.mockResolvedValue({
+      success: true,
+      sha: "atomic-sha",
+      files_committed: 1,
+    });
+
+    const contaminated = `# Task Queue
+
+## Active
+
+###${ZWS} S171 block (mangled upstream)
+- carried over
+
+<!-- EOF: task-queue.md -->`;
+
+    const result = await callPushTool({
+      project_slug: "test-project",
+      files: [
+        {
+          path: "task-queue.md",
+          content: contaminated,
+          message: "prism: artifact task-queue.md",
+        },
+      ],
+    });
+
+    const data = parseResult(result);
+    expect(data.all_succeeded).toBe(true);
+    const diag = (data.diagnostics ?? []).find(
+      (d: { code: string }) => d.code === "ZWS_CONTAMINATION_DETECTED",
+    );
+    expect(diag).toBeDefined();
+    expect(diag.context.path).toBe("task-queue.md");
+    expect(diag.message).toContain("S171 block");
+
+    // The committed bytes are exactly as supplied — detect, never mutate.
+    const committed = mockCreateAtomicCommit.mock.calls[0][1] as Array<{
+      path: string;
+      content: string;
+    }>;
+    expect(committed[0].content).toContain(`###${ZWS} S171 block`);
+  });
+
+  it("clean content raises no ZWS diagnostic", async () => {
+    mockCreateAtomicCommit.mockResolvedValue({
+      success: true,
+      sha: "atomic-sha",
+      files_committed: 1,
+    });
+
+    const result = await callPushTool({
+      project_slug: "test-project",
+      files: [
+        {
+          path: "task-queue.md",
+          content: "# Task Queue\n\n### Real Header\n- ok\n\n<!-- EOF: task-queue.md -->",
+          message: "prism: artifact task-queue.md",
+        },
+      ],
+    });
+
+    const data = parseResult(result);
+    const codes = (data.diagnostics ?? []).map((d: { code: string }) => d.code);
+    expect(codes).not.toContain("ZWS_CONTAMINATION_DETECTED");
+  });
+});

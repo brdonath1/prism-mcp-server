@@ -23,6 +23,7 @@ import {
 } from "../config.js";
 import { guardPushPath } from "../utils/doc-guard.js";
 import { DiagnosticsCollector } from "../utils/diagnostics.js";
+import { detectZwsHeaders } from "../utils/sanitize-content.js";
 
 /** Sentinel used to signal that the tool-level deadline fired (S40 C4). */
 const PUSH_DEADLINE_SENTINEL = Symbol("push.deadline");
@@ -124,6 +125,28 @@ export function registerPush(server: McpServer): void {
               },
             ],
           };
+        }
+
+        // 1b. brief-460 / SRV-78: ZWS contamination detection. prism_push is
+        // a full-document channel — intentionally unsanitized (the files ARE
+        // the document structure) and frequently driven by unattended cc
+        // workers, where nobody eyeballs the bytes. Headers neutralized by a
+        // pre-brief-460 sanitizer write carry an invisible U+200B signature
+        // that no read path strips; detect and surface it instead of
+        // silently re-committing the damage (repair is M-041).
+        for (const file of files) {
+          const contaminated = detectZwsHeaders(file.content);
+          if (contaminated.length > 0) {
+            diagnostics.warn(
+              "ZWS_CONTAMINATION_DETECTED",
+              `${file.path} contains ${contaminated.length} ZWS-neutralized header(s) — invisible corruption from a pre-brief-460 sanitizer write (repair: M-041). First: "${contaminated[0].header}" (line ${contaminated[0].line}).`,
+              {
+                path: file.path,
+                lines: contaminated.slice(0, 20).map((c) => ({ line: c.line, header: c.header })),
+                total: contaminated.length,
+              },
+            );
+          }
         }
 
         // 2. Guard all paths against root-level duplication (D-67 addendum)

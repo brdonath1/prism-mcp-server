@@ -15,7 +15,7 @@ import { resolveDocPath, resolveDocPushPath } from "../utils/doc-resolver.js";
 import { guardPushPath } from "../utils/doc-guard.js";
 import { DiagnosticsCollector } from "../utils/diagnostics.js";
 import { safeMutation } from "../utils/safe-mutation.js";
-import { sanitizeContentField } from "../utils/sanitize-content.js";
+import { sanitizeContent } from "../utils/sanitize-content.js";
 import { parseTitleDecorations } from "../utils/standing-rules.js";
 
 /** Legal shape for a single topic keyword — matches what prism_load_rules'
@@ -164,20 +164,38 @@ export function registerLogInsight(server: McpServer): void {
         // anywhere → no tag → the rule parses at the documented Tier A
         // default (INS-328).
         //
-        // KI-26 (brief-444 R5-c): neutralize embedded markdown headers in the
-        // user-supplied fields before they are written. Matches the write-time
-        // U+200B sanitization already live in prism_log_decision and
-        // prism_patch — without it, a description containing a line that
-        // starts with `## ` would parse as a real section header on the next
-        // read, breaking the section tree silently (validateIntegrity only
-        // flags duplicate headers, not novel ones). The commit message below
-        // keeps the RAW title — Git plain text is a non-markdown channel and
-        // ZWS injection there would only hurt readability.
+        // KI-26 (brief-444 R5-c, redesigned brief-460 / SRV-77): neutralize
+        // embedded markdown headers in the user-supplied fields before they
+        // are written. Every sanitized field is embedded MID-LINE in a
+        // server-built template (`### ${id}: ${title}`, `- Description:
+        // ${description}`, `- **Standing procedure:** ${procedure}`), so
+        // anchor "newline-only" skips the un-injectable first line, and
+        // targetLevel 3 (the `### INS-N:` entry level) lets `\n#### detail`
+        // sub-structure survive while `\n###`/`\n##`/`\n#` lines — which
+        // would terminate the entry or its parent section — are still
+        // neutralized. Mutations are reported as a visible diagnostic, never
+        // silent. The commit message below keeps the RAW title — Git plain
+        // text is a non-markdown channel and ZWS injection there would only
+        // hurt readability.
+        const sanitizeField = (field: string, value: string): string => {
+          const outcome = sanitizeContent(value, {
+            anchor: "newline-only",
+            targetLevel: 3,
+          });
+          if (outcome.neutralized.length > 0) {
+            diagnostics.warn(
+              "CONTENT_SANITIZED",
+              `${outcome.neutralized.length} embedded header line(s) in "${field}" were ZWS-neutralized (they would have broken the ### ${id} entry structure): ${outcome.neutralized.map((n) => `"${n.header}"`).join(", ")}`,
+              { field, lines: outcome.neutralized.map((n) => ({ line: n.line, header: n.header })) },
+            );
+          }
+          return outcome.text;
+        };
         const titleDecor = parseTitleDecorations(title);
         const effectiveTier = standing_rule ? (tier ?? titleDecor.tier) : undefined;
-        const safeTitle = sanitizeContentField(standing_rule ? titleDecor.cleanTitle : title);
-        const safeDescription = sanitizeContentField(description);
-        const safeProcedure = procedure ? sanitizeContentField(procedure) : undefined;
+        const safeTitle = sanitizeField("title", standing_rule ? titleDecor.cleanTitle : title);
+        const safeDescription = sanitizeField("description", description);
+        const safeProcedure = procedure ? sanitizeField("procedure", procedure) : undefined;
 
         const standingTag = standing_rule
           ? ` — STANDING RULE${effectiveTier ? ` [TIER:${effectiveTier}]` : ""}`

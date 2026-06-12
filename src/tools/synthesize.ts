@@ -2,17 +2,28 @@
  * prism_synthesize tool — On-demand intelligence brief + pending-doc-updates
  * generation.
  *
- * D-156 §3.6 / D-155 / Phase 2 PR 4 §5: PR 3 wired the parallel dispatch into
- * `prism_finalize`'s commit-action handler so a finalize automatically refreshes
- * BOTH `intelligence-brief.md` AND `pending-doc-updates.md`. This tool now
- * mirrors that wiring — `mode: "generate"` invokes both synthesis functions in
- * parallel via `Promise.allSettled`, and `mode: "status"` reports on both
- * artifacts. The previous behavior (brief-only) caused divergence: a manual
- * refresh produced only half of what an auto-finalize did.
+ * D-156 §3.6 / D-155 / Phase 2 PR 4 §5: `mode: "generate"` refreshes BOTH
+ * `intelligence-brief.md` AND `pending-doc-updates.md`; `mode: "status"`
+ * reports on both artifacts.
  *
- * Cost note: `mode: "generate"` now fires TWO Opus calls (~2x API cost vs
- * pre-PR-4 behavior). Operators calling this tool manually for refresh should
- * be aware. See D-156 §3.6 for design rationale.
+ * brief-460 Task C / INS-331: `mode: "generate"` is FIRE-AND-FORGET. The
+ * pre-460 handler awaited both synthesis legs in-request; measured live
+ * (S172), synthesis runs far past the MCP client transport ceiling (brief at
+ * 107s, PDU ~8 min), so the client connection dropped ("MCP server
+ * connection lost") while the handler survived and completed — the operator
+ * paid for the work and never saw the response. Now the handler dispatches
+ * both legs in the background — exactly the INS-178 ¶8 pattern the
+ * finalize-commit synthesis leg uses (finalize.ts) — and returns an
+ * accepted/started payload immediately. Completion is observed via
+ * `mode: "status"` (or the next bootstrap). Background failures land in
+ * structured logs, same as the finalize leg.
+ *
+ * The deeper `prism_finalize action=full` orchestration redesign (deadline
+ * cancellation, etc.) is M-010 / W3-S5 — out of scope here.
+ *
+ * Cost note: `mode: "generate"` fires TWO Opus calls (~2x API cost vs
+ * pre-PR-4 behavior). Operators calling this tool manually for refresh
+ * should be aware. See D-156 §3.6 for design rationale.
  */
 
 import { z } from "zod";
@@ -22,13 +33,9 @@ import { resolveDocPath } from "../utils/doc-resolver.js";
 import {
   generateIntelligenceBrief,
   generatePendingDocUpdates,
-  type SynthesisOutcome,
 } from "../ai/synthesize.js";
 import { logger } from "../utils/logger.js";
 import { DiagnosticsCollector } from "../utils/diagnostics.js";
-
-/** Synthesis kinds — used in diagnostics context to disambiguate outcomes. */
-type SynthesisKind = "intelligence_brief" | "pending_doc_updates";
 
 /**
  * Shape of a single artifact's status field. Both `intelligence_brief` and
@@ -61,61 +68,13 @@ async function loadArtifactStatus(
   }
 }
 
-/**
- * Classify a synthesis failure into a diagnostic code.
- * Mirrors the previous single-await branch's logic — timeouts get
- * SYNTHESIS_TIMEOUT, everything else gets SYNTHESIS_RETRY.
- */
-function emitFailureDiagnostic(
-  diagnostics: DiagnosticsCollector,
-  kind: SynthesisKind,
-  errorMessage: string,
-): void {
-  const lower = errorMessage.toLowerCase();
-  const isTimeout =
-    lower.includes("timeout") ||
-    lower.includes("timed out") ||
-    lower.includes("etimedout");
-  if (isTimeout) {
-    diagnostics.error(
-      "SYNTHESIS_TIMEOUT",
-      `Synthesis (${kind}) timed out: ${errorMessage}`,
-      { error: errorMessage, synthesis_kind: kind },
-    );
-  } else {
-    diagnostics.error(
-      "SYNTHESIS_RETRY",
-      `Synthesis (${kind}) failed: ${errorMessage}`,
-      { error: errorMessage, synthesis_kind: kind },
-    );
-  }
-}
-
-/**
- * Convert a `Promise.allSettled` element into a `SynthesisOutcome`-shaped
- * value. Rejected promises (uncaught throws) become a synthetic failure
- * outcome so the caller can surface the error consistently. Defensive:
- * `undefined`/`null` values from a broken upstream contract become
- * `{ success: false, error: ... }` instead of crashing the tool.
- */
-function settledToOutcome(
-  settled: PromiseSettledResult<SynthesisOutcome | undefined>,
-): SynthesisOutcome {
-  if (settled.status === "fulfilled") {
-    if (settled.value && typeof settled.value === "object") return settled.value;
-    return { success: false, error: "synthesis function returned no outcome" };
-  }
-  const reason = settled.reason instanceof Error ? settled.reason.message : String(settled.reason);
-  return { success: false, error: reason };
-}
-
 export function registerSynthesize(server: McpServer) {
   server.tool(
     "prism_synthesize",
-    "Generate or check AI-synthesized artifacts. Modes: generate (refresh BOTH intelligence-brief.md AND pending-doc-updates.md in parallel — D-156 §3.6), status (check existence of both).",
+    "Generate or check AI-synthesized artifacts. Modes: generate (kick off background refresh of BOTH intelligence-brief.md AND pending-doc-updates.md and return immediately — INS-331; check completion via mode=status), status (existence + Last-synthesized of both).",
     {
       project_slug: z.string().describe("Project repo name"),
-      mode: z.enum(["generate", "status"]).describe("'generate' to create/refresh, 'status' to check"),
+      mode: z.enum(["generate", "status"]).describe("'generate' to start a background refresh (returns immediately), 'status' to check artifacts"),
       session_number: z.number().optional().describe("Session number (required for generate)"),
     },
     async ({ project_slug, mode, session_number }) => {
@@ -169,31 +128,56 @@ export function registerSynthesize(server: McpServer) {
           };
         }
 
-        // PR 4 §5.1: parallel dispatch — slower of the two does not block the
-        // other. Both outcomes are surfaced to the caller (partial success is a
-        // valid response).
-        const [briefSettled, pendingSettled] = await Promise.allSettled([
+        // brief-460 Task C / INS-331: dispatch both synthesis legs in the
+        // background and return immediately — the INS-178 ¶8 fire-and-forget
+        // pattern from finalize.ts. Awaiting here held the request open for
+        // the full synthesis duration and outlived the MCP client transport.
+        const synthStart = Date.now();
+        const synthesisLabels = ["intelligence_brief", "pending_updates"] as const;
+        void Promise.allSettled([
           generateIntelligenceBrief(project_slug, session_number),
           generatePendingDocUpdates(project_slug, session_number),
-        ]);
+        ])
+          .then((results) => {
+            results.forEach((r, idx) => {
+              const label = synthesisLabels[idx];
+              if (r.status === "fulfilled") {
+                logger.info("background synthesis complete", {
+                  projectSlug: project_slug,
+                  sessionNumber: session_number,
+                  synthesis_kind: label,
+                  success: r.value?.success ?? false,
+                  trigger: "prism_synthesize",
+                  durationMs: Date.now() - synthStart,
+                });
+              } else {
+                logger.error("background synthesis failed", {
+                  projectSlug: project_slug,
+                  sessionNumber: session_number,
+                  synthesis_kind: label,
+                  err: r.reason instanceof Error ? r.reason.message : String(r.reason),
+                  trigger: "prism_synthesize",
+                  durationMs: Date.now() - synthStart,
+                });
+              }
+            });
+          })
+          .catch((err) => {
+            // Defensive — Promise.allSettled itself never rejects, so this
+            // catches synchronous throws from the .then callback.
+            logger.error("background synthesis dispatch failed", {
+              projectSlug: project_slug,
+              sessionNumber: session_number,
+              err: err instanceof Error ? err.message : String(err),
+              trigger: "prism_synthesize",
+              durationMs: Date.now() - synthStart,
+            });
+          });
 
-        const briefOutcome = settledToOutcome(briefSettled);
-        const pendingOutcome = settledToOutcome(pendingSettled);
-
-        if (!briefOutcome.success && briefOutcome.error) {
-          emitFailureDiagnostic(diagnostics, "intelligence_brief", briefOutcome.error);
-        }
-        if (!pendingOutcome.success && pendingOutcome.error) {
-          emitFailureDiagnostic(diagnostics, "pending_doc_updates", pendingOutcome.error);
-        }
-
-        const bothFailed = !briefOutcome.success && !pendingOutcome.success;
-
-        logger.info("prism_synthesize complete", {
+        logger.info("prism_synthesize dispatched background synthesis", {
           project_slug,
           mode,
-          brief_success: briefOutcome.success,
-          pending_success: pendingOutcome.success,
+          session_number,
           ms: Date.now() - start,
         });
 
@@ -201,15 +185,15 @@ export function registerSynthesize(server: McpServer) {
           content: [{
             type: "text" as const,
             text: JSON.stringify({
-              intelligence_brief: briefOutcome,
-              pending_doc_updates: pendingOutcome,
+              status: "started",
+              synthesis_outcome: "background",
+              intelligence_brief: { status: "started" },
+              pending_doc_updates: { status: "started" },
+              status_hint:
+                "Synthesis running in background (brief ~1-2 min, pending-doc-updates up to ~8 min). Check completion via prism_synthesize mode=status — compare 'Last synthesized' against this session.",
               diagnostics: diagnostics.list(),
             }),
           }],
-          // PR 4 §5.3: total failure (neither artifact refreshed) sets isError.
-          // Partial success (one of two succeeded) returns 200 — caller asked
-          // for two refreshes, one happened, that's worth reporting non-error.
-          ...(bothFailed ? { isError: true as const } : {}),
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

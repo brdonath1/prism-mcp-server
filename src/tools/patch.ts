@@ -11,7 +11,11 @@ import { resolveDocPath } from "../utils/doc-resolver.js";
 import { DOC_ROOT, PATCH_WALL_CLOCK_DEADLINE_MS } from "../config.js";
 import { DiagnosticsCollector } from "../utils/diagnostics.js";
 import { safeMutation } from "../utils/safe-mutation.js";
-import { sanitizeContentField } from "../utils/sanitize-content.js";
+import {
+  sanitizeContent,
+  detectZwsHeaders,
+  type NeutralizedLine,
+} from "../utils/sanitize-content.js";
 
 interface PatchOpResult {
   operation: string;
@@ -108,11 +112,30 @@ export function registerPatch(server: McpServer): void {
           diagnostics.warn("PATCH_REDIRECTED", `Path redirected: "${file}" → "${resolvedPath}"`, { original: file, resolved: resolvedPath });
         }
 
+        // brief-460 / SRV-78: incoming patch content that ALREADY carries the
+        // ZWS-neutralized-header signature was corrupted upstream (usually
+        // copied out of a document the pre-redesign sanitizer damaged).
+        // Surface it — writing it back would silently re-commit the damage.
+        for (const patch of patches) {
+          const contaminated = detectZwsHeaders(patch.content);
+          if (contaminated.length > 0) {
+            diagnostics.warn(
+              "ZWS_CONTAMINATION_DETECTED",
+              `Patch content for "${patch.section}" contains ${contaminated.length} ZWS-neutralized header(s) — corruption from a pre-brief-460 sanitizer write (repair: M-041); this patch writes the bytes as supplied. First: "${contaminated[0].header}" (line ${contaminated[0].line}).`,
+              {
+                section: patch.section,
+                lines: contaminated.map((c) => ({ line: c.line, header: c.header })),
+              },
+            );
+          }
+        }
+
         // 2. safeMutation handles fetch + atomic commit + 409 retry. The patch
         //    operations move INSIDE computeMutation so on retry they re-run
         //    against the latest content (closes the stale-content-on-retry
         //    vulnerability identified in the audit).
         let lastIntegrityIssues: IntegrityIssue[] = [];
+        const sanitizedLines = new Map<string, NeutralizedLine[]>();
 
         const safeMutationResult = await safeMutation({
           repo: project_slug,
@@ -128,15 +151,24 @@ export function registerPatch(server: McpServer): void {
             let content = fileResult.content;
 
             const results: PatchOpResult[] = [];
-            for (const patch of patches) {
+            for (const [patchIdx, patch] of patches.entries()) {
               try {
-                // KI-26: neutralize embedded markdown headers in user-supplied
-                // patch content before they are written. Without this, a patch
-                // with `content: "## Injected"` against a body section would
-                // splice a real `## Injected` header into the document on the
-                // next parse, breaking the section tree silently.
-                const safeContent = sanitizeContentField(patch.content);
-                content = applyPatch(content, patch.section, patch.operation, safeContent);
+                // KI-26 (redesigned brief-460 / SRV-03): neutralize embedded
+                // headers that could escape the target section's boundary.
+                // parseSections bounds a section at the next same-or-higher
+                // header, so only levels <= the target's level are hazards —
+                // `## Injected` against a `##` section is still neutralized,
+                // while the `###`+ subsections the replace contract requires
+                // callers to resend survive byte-identical. Fenced content is
+                // never touched (SRV-29). Mutations are reported via the
+                // PATCH_CONTENT_SANITIZED diagnostic below (SRV-53).
+                const levelMatch = patch.section.trim().match(/^(#{1,6})\s/);
+                const targetLevel = levelMatch ? levelMatch[1].length : 6;
+                const sanitized = sanitizeContent(patch.content, { targetLevel });
+                if (sanitized.neutralized.length > 0) {
+                  sanitizedLines.set(`${patchIdx}:${patch.section}`, sanitized.neutralized);
+                }
+                content = applyPatch(content, patch.section, patch.operation, sanitized.text);
                 results.push({ operation: patch.operation, section: patch.section, success: true });
               } catch (err) {
                 const msg = err instanceof Error ? err.message : String(err);
@@ -188,6 +220,22 @@ export function registerPatch(server: McpServer): void {
             ],
             isError: true,
           };
+        }
+
+        // brief-460 / SRV-53: sanitization is no longer silent. Name every
+        // neutralized line so the caller can re-issue the patch correctly
+        // (e.g. against a deeper target section) instead of discovering the
+        // damage sessions later.
+        for (const [key, neutralized] of sanitizedLines) {
+          const section = key.slice(key.indexOf(":") + 1);
+          diagnostics.warn(
+            "PATCH_CONTENT_SANITIZED",
+            `${neutralized.length} header line(s) in content for "${section}" were ZWS-neutralized (level <= target section level — they would have escaped the section boundary): ${neutralized.map((n) => `"${n.header}"`).join(", ")}`,
+            {
+              section,
+              lines: neutralized.map((n) => ({ line: n.line, header: n.header })),
+            },
+          );
         }
 
         const patches_applied: PatchOpResult[] = patches.map(p => ({

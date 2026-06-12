@@ -141,7 +141,7 @@ beforeEach(() => {
 });
 
 describe("SRV-18 — handoff backup push failure is visible, backup_created is empty", () => {
-  it("backup pushFile {success:false} → backup_created '' + warning in the commit response", async () => {
+  it("backup commit failure → backup_created '' + warning in the commit response (brief-460: backup rides a safeMutation commit, not pushFile)", async () => {
     mockFetchFile.mockImplementation(async (_repo: string, path: string) => {
       if (path.endsWith("handoff.md")) {
         return { content: EXISTING_HANDOFF, sha: "h-sha", size: 300 };
@@ -152,12 +152,20 @@ describe("SRV-18 — handoff backup push failure is visible, backup_created is e
     mockListCommits.mockResolvedValue([]);
     mockFileExists.mockResolvedValue(false);
     mockGetHeadSha.mockResolvedValue("head-sha");
-    mockCreateAtomicCommit.mockResolvedValue({ success: true, sha: "atomic_sha", files_committed: 1 } as never);
-    mockFetchFiles.mockResolvedValue({ files: new Map(), failed: [], incomplete: false });
-    mockPushFile.mockImplementation(async (_repo: string, path: string) => {
-      if (path.includes("handoff-history/")) return PUSH_FAILURE as never;
-      return PUSH_SUCCESS as never;
+    // brief-460 / S170 post-mortem: the backup write rides a safeMutation
+    // atomic commit (shared with the prune). Fail exactly that commit; the
+    // main finalize commit succeeds.
+    mockCreateAtomicCommit.mockImplementation(async (_repo, files) => {
+      const carriesBackup = (files as Array<{ path: string }>).some((f) =>
+        f.path.includes("handoff-history/"),
+      );
+      if (carriesBackup) {
+        return { success: false, sha: "", files_committed: 0, error: "GitHub API forbidden — check PAT scopes." } as never;
+      }
+      return { success: true, sha: "atomic_sha", files_committed: 1 } as never;
     });
+    mockFetchFiles.mockResolvedValue({ files: new Map(), failed: [], incomplete: false });
+    mockPushFile.mockResolvedValue(PUSH_SUCCESS as never);
 
     const result = await callTool(registerFinalize, "prism_finalize", {
       project_slug: "test-project",

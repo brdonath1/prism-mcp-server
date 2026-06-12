@@ -18,8 +18,9 @@
  */
 
 import { pushFile } from "../github/client.js";
-import { applyPatch } from "./markdown-sections.js";
+import { applyPatch, validateIntegrity } from "./markdown-sections.js";
 import { resolveDocPath, resolveDocPushPath } from "./doc-resolver.js";
+import { sanitizeContent } from "./sanitize-content.js";
 import { logger } from "./logger.js";
 
 /** Files this utility knows how to apply proposals against. */
@@ -49,6 +50,11 @@ export interface ApplyPduResult {
   skipped: Array<{ title: string; reason: string }>;
   /** Proposals where the apply attempt errored (network, write failure, etc). */
   errors: Array<{ title: string; error: string }>;
+  /** Proposals whose AI-synthesized body was mutated by the KI-26 sanitizer
+   *  before applying (brief-460 / SRV-46). This is the unattended channel —
+   *  no operator watches the apply — so every mutation is surfaced here and
+   *  in the finalize response (`pdu_sanitized`), never silent. */
+  sanitized: Array<{ title: string; lines: Array<{ line: number; header: string }> }>;
   /** True iff the PDU file was overwritten with the cleared template. */
   cleared: boolean;
   /** True iff the consumed batch was archived to pending-doc-updates-archive.md
@@ -424,6 +430,7 @@ export async function applyPendingDocUpdates(
     applied: [],
     skipped: [],
     errors: [],
+    sanitized: [],
     cleared: false,
     archived: false,
   };
@@ -498,14 +505,38 @@ export async function applyPendingDocUpdates(
     const successfulInThisFile: string[] = [];
     for (const p of fileProposals) {
       try {
+        // brief-460 / SRV-46: this is the UNATTENDED write channel —
+        // p.content is Opus-synthesized text applied during finalize with
+        // nobody watching. Run it through the same level/fence-aware KI-26
+        // sanitizer prism_patch uses: headers that could escape the target
+        // section's boundary (level <= the section's level) are neutralized,
+        // deeper sub-structure and fenced content survive. Glossary rows are
+        // sanitized at full depth — a table row legitimately contains no
+        // headers at any level. Mutations land in result.sanitized.
+        const recordSanitized = (lines: Array<{ line: number; header: string }>) => {
+          if (lines.length === 0) return;
+          result.sanitized.push({ title: p.title, lines });
+          logger.warn("apply-pdu: synthesized content sanitized (KI-26)", {
+            projectSlug,
+            targetFile,
+            title: p.title,
+            neutralized: lines.map((l) => l.header),
+          });
+        };
         if (p.operation === "glossary_row") {
-          workingContent = insertGlossaryRow(workingContent, p.content!);
+          const outcome = sanitizeContent(p.content!);
+          recordSanitized(outcome.neutralized);
+          workingContent = insertGlossaryRow(workingContent, outcome.text);
         } else {
+          const levelMatch = p.section!.trim().match(/^(#{1,6})\s/);
+          const targetLevel = levelMatch ? levelMatch[1].length : 6;
+          const outcome = sanitizeContent(p.content!, { targetLevel });
+          recordSanitized(outcome.neutralized);
           workingContent = applyPatch(
             workingContent,
             p.section!,
             p.operation as "append" | "replace" | "prepend",
-            p.content!,
+            outcome.text,
           );
         }
         successfulInThisFile.push(p.title);
@@ -523,6 +554,31 @@ export async function applyPendingDocUpdates(
     // there's nothing to write.
     if (successfulInThisFile.length === 0) continue;
     if (workingContent === resolved.content) continue;
+
+    // brief-460 / SRV-46: integrity gate before the push — the sibling
+    // section-level writer (patch.ts) refuses to write a document that fails
+    // validateIntegrity; the unattended channel gets the same protection.
+    // Failures route to result.errors, so the batch stays un-consumed (PDU
+    // file left in place) for an operator-visible re-run.
+    const integrity = validateIntegrity(workingContent);
+    if (!integrity.valid) {
+      const issueSummary = integrity.issues
+        .filter((i) => i.type === "duplicate_header")
+        .map((i) => i.details)
+        .join("; ");
+      logger.warn("apply-pdu: post-apply integrity check failed — not pushing", {
+        projectSlug,
+        targetFile,
+        issues: issueSummary,
+      });
+      for (const title of successfulInThisFile) {
+        result.errors.push({
+          title,
+          error: `post-apply integrity check failed for ${targetFile}: ${issueSummary}`,
+        });
+      }
+      continue;
+    }
 
     try {
       const pushPath = await resolveDocPushPath(projectSlug, targetFile);

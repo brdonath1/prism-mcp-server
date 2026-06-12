@@ -107,7 +107,11 @@ beforeEach(() => {
 });
 
 describe("brief-444 — prism_log_insight U+200B sanitization (KI-26)", () => {
-  it("neutralizes embedded headers in title and description before writing", async () => {
+  it("brief-460 / SRV-77: title's FIRST line stays raw (embedded mid-line — cannot parse as a header); embedded newline headers in the description are neutralized", async () => {
+    // Pre-460 pin expected `### INS-500: ##${ZWS} Evil Title` — a false
+    // positive: the title lands mid-line in the server-built template, where
+    // line-start header injection is impossible, so the ZWS only corrupted
+    // the stored text.
     const handler = captureHandler();
     const result = await handler({
       project_slug: "test-project",
@@ -121,12 +125,38 @@ describe("brief-444 — prism_log_insight U+200B sanitization (KI-26)", () => {
     expect(result.isError).not.toBe(true);
     const content = committedContent();
 
-    // Title header is neutralized inside the entry heading…
-    expect(content).toContain(`### INS-500: ##${ZWS} Evil Title`);
-    // …and the description's embedded header carries the ZWS.
+    // Title rides mid-line UNmangled — and is not a line-start header.
+    expect(content).toContain("### INS-500: ## Evil Title");
+    expect(content).not.toMatch(/^## Evil Title$/m);
+    // The description's embedded newline header still carries the ZWS.
     expect(content).toContain(`intro\n##${ZWS} Injected\nbody`);
     // The raw injected header must not survive at line start.
     expect(content).not.toMatch(/\n## Injected/);
+
+    // The mutation is visible, never silent (brief-460).
+    const data = JSON.parse(result.content[0].text);
+    const sanitizedDiag = (data.diagnostics ?? []).find(
+      (d: { code: string }) => d.code === "CONTENT_SANITIZED",
+    );
+    expect(sanitizedDiag).toBeDefined();
+    expect(sanitizedDiag.message).toContain("description");
+  });
+
+  it("brief-460 / SRV-77: embedded `\\n#### detail` sub-structure SURVIVES (deeper than the ### entry level)", async () => {
+    const handler = captureHandler();
+    const result = await handler({
+      project_slug: "test-project",
+      id: "INS-504",
+      title: "Detail-rich insight",
+      category: "pattern",
+      description: "summary\n#### detail block\nfine print",
+      session: 99,
+    });
+
+    expect(result.isError).not.toBe(true);
+    const content = committedContent();
+    expect(content).toContain("summary\n#### detail block\nfine print");
+    expect(content.includes(ZWS)).toBe(false);
   });
 
   it("keeps the RAW title in the commit message (non-markdown channel)", async () => {
