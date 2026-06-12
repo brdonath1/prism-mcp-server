@@ -237,6 +237,89 @@ describe("prism_load_rules — registration + matching pipeline", () => {
   });
 });
 
+// ── brief-459 / SRV-12: by-ID retrieval path ────────────────────────────────
+//
+// Indexed B/C rules with empty (or hyphen-destroyed) topics were unreachable:
+// the topic matcher returns false for empty arrays and no other path existed.
+// `rule_id` is the recovery route the boot index promises.
+
+describe("brief-459 / SRV-12: rule_id by-ID retrieval", () => {
+  it("retrieves a Tier B rule whose topics array is EMPTY (the unreachable class)", async () => {
+    mockDocs({ insights: INSIGHTS_FIXTURE });
+
+    const handler = getHandler();
+    const result = await handler({ project_slug: "prism", rule_id: "INS-12" });
+    const payload = JSON.parse(result.content[0].text);
+
+    expect(result.isError).toBeUndefined();
+    expect(payload.rule_id).toBe("INS-12");
+    expect(payload.matched_rules.map((r: any) => r.id)).toEqual(["INS-12"]);
+    expect(payload.matched_rules[0].tier).toBe("B");
+  });
+
+  it("retrieves a Tier C rule by ID without include_tier_c (explicit ask wins)", async () => {
+    mockDocs({ insights: INSIGHTS_FIXTURE });
+
+    const handler = getHandler();
+    const result = await handler({ project_slug: "prism", rule_id: "INS-20" });
+    const payload = JSON.parse(result.content[0].text);
+
+    expect(payload.matched_rules.map((r: any) => r.id)).toEqual(["INS-20"]);
+    expect(payload.matched_rules[0].tier).toBe("C");
+  });
+
+  it("refuses a Tier A rule_id with a RULE_ID_TIER_A diagnostic (boot-loaded already)", async () => {
+    mockDocs({ insights: INSIGHTS_FIXTURE });
+
+    const handler = getHandler();
+    const result = await handler({ project_slug: "prism", rule_id: "INS-1" });
+    const payload = JSON.parse(result.content[0].text);
+
+    expect(result.isError).toBeUndefined();
+    expect(payload.matched_rules).toEqual([]);
+    const codes = payload.diagnostics.map((d: any) => d.code);
+    expect(codes).toContain("RULE_ID_TIER_A");
+  });
+
+  it("unknown rule_id returns empty with a RULE_ID_NOT_FOUND diagnostic", async () => {
+    mockDocs({ insights: INSIGHTS_FIXTURE });
+
+    const handler = getHandler();
+    const result = await handler({ project_slug: "prism", rule_id: "INS-999" });
+    const payload = JSON.parse(result.content[0].text);
+
+    expect(result.isError).toBeUndefined();
+    expect(payload.matched_rules).toEqual([]);
+    const codes = payload.diagnostics.map((d: any) => d.code);
+    expect(codes).toContain("RULE_ID_NOT_FOUND");
+  });
+
+  it("rule_id takes precedence when both topic and rule_id are supplied", async () => {
+    mockDocs({ insights: INSIGHTS_FIXTURE });
+
+    const handler = getHandler();
+    const result = await handler({
+      project_slug: "prism",
+      topic: "synthesis",
+      rule_id: "INS-12",
+    });
+    const payload = JSON.parse(result.content[0].text);
+
+    expect(payload.matched_rules.map((r: any) => r.id)).toEqual(["INS-12"]);
+  });
+
+  it("rejects a call providing NEITHER topic nor rule_id", async () => {
+    mockDocs({ insights: INSIGHTS_FIXTURE });
+
+    const handler = getHandler();
+    const result = await handler({ project_slug: "prism" });
+
+    expect(result.isError).toBe(true);
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.error).toMatch(/topic|rule_id/);
+  });
+});
+
 describe("prism_load_rules — R2-B standing-rules.md union read (D-240 Phase B)", () => {
   // (a) Only insights.md has rules — pre-migration projects must behave
   // exactly as before the registry existed.

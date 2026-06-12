@@ -497,3 +497,201 @@ ${"x".repeat(60)}
     expect(result.liveContent).not.toContain("first occurrence");
   });
 });
+
+// ── brief-459 / SRV-06: EOF sentinel preserved through archival ─────────────
+//
+// The append path used to strip only trailing WHITESPACE off the existing
+// archive, so an EOF sentinel survived and new entries landed AFTER it; the
+// fresh path emitted no sentinel at all. Both corrupt the archive's
+// end-of-content contract ("corruption queued to fire" — s167 audit).
+
+describe("brief-459 / SRV-06: archive EOF sentinel", () => {
+  const sentinel = "<!-- EOF: session-log-archive.md -->";
+  const config: ArchiveConfig = {
+    thresholdBytes: 100,
+    retentionCount: 1,
+    entryMarker: /^### Session (\d+)/m,
+    archiveHeader: "# Session Log Archive — PRISM Framework\n",
+    mostRecentAt: "auto",
+    archiveFileName: "session-log-archive.md",
+  };
+  // Chronological (newest LAST), comfortably over the 100-byte threshold.
+  const live = [
+    "# Session Log",
+    "",
+    "### Session 1",
+    "oldest entry " + "x".repeat(40),
+    "",
+    "### Session 2",
+    "middle entry " + "x".repeat(40),
+    "",
+    "### Session 3",
+    "newest entry " + "x".repeat(40),
+    "",
+    "<!-- EOF: session-log.md -->",
+  ].join("\n");
+
+  it("appends new entries BEFORE an existing trailing EOF sentinel", () => {
+    const existing = `# Session Log Archive — PRISM Framework\n\n### Session 0\nprevious archive entry\n\n${sentinel}\n`;
+    const result = splitForArchive(live, existing, config);
+    expect(result.archivedCount).toBe(2);
+    const archive = result.archiveContent!;
+    expect(archive.trimEnd().endsWith(sentinel)).toBe(true);
+    expect(archive.match(/<!--\s*EOF:/g)).toHaveLength(1);
+    // Newly archived sessions appear BEFORE the sentinel.
+    expect(archive.indexOf("### Session 2")).toBeGreaterThan(-1);
+    expect(archive.indexOf("### Session 2")).toBeLessThan(archive.indexOf(sentinel));
+  });
+
+  it("fresh archives end with a single EOF sentinel naming the archive file", () => {
+    const result = splitForArchive(live, null, config);
+    const archive = result.archiveContent!;
+    expect(archive.trimEnd().endsWith(sentinel)).toBe(true);
+    expect(archive.match(/<!--\s*EOF:/g)).toHaveLength(1);
+  });
+
+  it("normalizes an archive corrupted by the old append-after-sentinel bug to ONE trailing sentinel", () => {
+    // The production-corrupted shape: sentinel mid-file, entries after it.
+    const corrupted = `# Session Log Archive — PRISM Framework\n\n### Session 0\nentry\n\n${sentinel}\n\n### Session 00\nentry appended after sentinel by the old bug\n`;
+    const result = splitForArchive(live, corrupted, config);
+    const archive = result.archiveContent!;
+    expect(archive.match(/<!--\s*EOF:/g)).toHaveLength(1);
+    expect(archive.trimEnd().endsWith(sentinel)).toBe(true);
+    // No content lost in the repair.
+    expect(archive).toContain("entry appended after sentinel by the old bug");
+  });
+
+  it("without archiveFileName, an existing trailing sentinel is preserved (not duplicated)", () => {
+    const existing = `# Session Log Archive — PRISM Framework\n\n### Session 0\nentry\n\n${sentinel}\n`;
+    const { archiveFileName: _omitted, ...legacyConfig } = config;
+    const result = splitForArchive(live, existing, legacyConfig as ArchiveConfig);
+    const archive = result.archiveContent!;
+    expect(archive.match(/<!--\s*EOF:/g)).toHaveLength(1);
+    expect(archive.trimEnd().endsWith(sentinel)).toBe(true);
+  });
+});
+
+// ── brief-459 / SRV-30: threshold measured in UTF-8 bytes, not code units ───
+
+describe("brief-459 / SRV-30: byte-accurate threshold", () => {
+  it("archives an em-dash-heavy doc whose UTF-16 length is under threshold but UTF-8 bytes are over", () => {
+    // '—' (U+2014) is 1 UTF-16 code unit but 3 UTF-8 bytes.
+    const dashBody = "—".repeat(150); // 150 units / 450 bytes per session
+    const lines: string[] = ["# Log", ""];
+    for (let s = 1; s <= 5; s++) {
+      lines.push(`### Session ${s}`);
+      lines.push(dashBody);
+      lines.push("");
+    }
+    const input = lines.join("\n");
+    const config: ArchiveConfig = {
+      thresholdBytes: 1_500,
+      retentionCount: 2,
+      entryMarker: /^### Session (\d+)/m,
+      archiveHeader: "# Archive\n",
+      mostRecentAt: "auto",
+    };
+    // Sanity: the fixture sits exactly in the defect window.
+    expect(input.length).toBeLessThanOrEqual(config.thresholdBytes);
+    expect(new TextEncoder().encode(input).length).toBeGreaterThan(config.thresholdBytes);
+
+    const result = splitForArchive(input, null, config);
+    expect(result.archivedCount).toBe(3);
+    expect(result.liveContent).toContain("### Session 5");
+    expect(result.liveContent).not.toContain("### Session 1\n");
+  });
+});
+
+// ── brief-459 / SRV-79: size-aware retention (minRetentionCount) ────────────
+//
+// The flagship-project failure: retention floor (20 entries ≈ 18.8KB) exceeds
+// the 15KB threshold, so the live log is PERMANENTLY over threshold and every
+// finalize runs a 1-entry archive cycle. With minRetentionCount set, retention
+// shrinks below retentionCount until the live doc fits, never below the floor.
+
+describe("brief-459 / SRV-79: size-aware retention", () => {
+  function chronoLog(sessions: number, charsPerSession: number): string {
+    const lines: string[] = ["# Session Log", ""];
+    for (let s = 1; s <= sessions; s++) {
+      lines.push(`### Session ${s}`);
+      lines.push("y".repeat(charsPerSession));
+      lines.push("");
+    }
+    lines.push("<!-- EOF: session-log.md -->");
+    return lines.join("\n");
+  }
+  function reverseLog(sessions: number, charsPerSession: number): string {
+    const lines: string[] = ["# Session Log", ""];
+    for (let s = sessions; s >= 1; s--) {
+      lines.push(`### Session ${s}`);
+      lines.push("y".repeat(charsPerSession));
+      lines.push("");
+    }
+    lines.push("<!-- EOF: session-log.md -->");
+    return lines.join("\n");
+  }
+  const sizeAwareConfig: ArchiveConfig = {
+    thresholdBytes: 2_500,
+    retentionCount: 20,
+    minRetentionCount: 5,
+    entryMarker: /^### Session (\d+)/m,
+    archiveHeader: "# Session Log Archive\n",
+    mostRecentAt: "auto",
+    archiveFileName: "session-log-archive.md",
+  };
+
+  it("archives BELOW retentionCount until the live doc fits the threshold (the entries==retention trap)", () => {
+    const input = chronoLog(20, 180); // ~20 entries ≈ 3.9KB, threshold 2.5KB, retention 20
+    const result = splitForArchive(input, null, sizeAwareConfig);
+    expect(result.archivedCount).toBeGreaterThan(0);
+    expect(new TextEncoder().encode(result.liveContent).length).toBeLessThanOrEqual(2_500);
+    // NEWEST entries retained, floor respected.
+    expect(result.liveContent).toContain("### Session 20");
+    expect(result.liveContent).not.toContain("### Session 1\n");
+    const kept = result.liveContent.match(/^### Session \d+$/gm) ?? [];
+    expect(kept.length).toBeGreaterThanOrEqual(5);
+  });
+
+  it("never archives below minRetentionCount even when still over threshold", () => {
+    const input = chronoLog(20, 180);
+    const result = splitForArchive(input, null, { ...sizeAwareConfig, thresholdBytes: 100 });
+    const kept = result.liveContent.match(/^### Session \d+$/gm) ?? [];
+    expect(kept.length).toBe(5);
+    // The five newest.
+    for (const s of [16, 17, 18, 19, 20]) {
+      expect(result.liveContent).toContain(`### Session ${s}`);
+    }
+    expect(result.archiveContent).toContain("### Session 15");
+  });
+
+  it("reverse-chronological fixture retains the NEWEST entries (verification f)", () => {
+    const input = reverseLog(20, 180);
+    const result = splitForArchive(input, null, { ...sizeAwareConfig, thresholdBytes: 100 });
+    const kept = result.liveContent.match(/^### Session \d+$/gm) ?? [];
+    expect(kept.length).toBe(5);
+    for (const s of [16, 17, 18, 19, 20]) {
+      expect(result.liveContent).toContain(`### Session ${s}`);
+    }
+    expect(result.liveContent).not.toContain("### Session 1\n");
+    expect(result.archiveContent).toContain("### Session 15");
+  });
+
+  it("without minRetentionCount, entries <= retentionCount still skips (legacy behavior pinned)", () => {
+    const { minRetentionCount: _omitted, ...legacy } = sizeAwareConfig;
+    const input = chronoLog(20, 180);
+    const result = splitForArchive(input, null, legacy as ArchiveConfig);
+    expect(result.archivedCount).toBe(0);
+    expect(result.skipReason).toBe("fewer entries than retention count");
+  });
+
+  it("single trailing EOF sentinel after a size-aware archival (verification h)", () => {
+    const input = chronoLog(20, 180);
+    const result = splitForArchive(input, null, sizeAwareConfig);
+    const archive = result.archiveContent!;
+    expect(archive.match(/<!--\s*EOF:/g)).toHaveLength(1);
+    expect(archive.trimEnd().endsWith("<!-- EOF: session-log-archive.md -->")).toBe(true);
+    // The live doc keeps its own sentinel, exactly once, at the end.
+    expect(result.liveContent.match(/<!--\s*EOF:/g)).toHaveLength(1);
+    expect(result.liveContent.trimEnd().endsWith("<!-- EOF: session-log.md -->")).toBe(true);
+  });
+});

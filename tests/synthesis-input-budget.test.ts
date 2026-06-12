@@ -596,3 +596,49 @@ describe("generatePendingDocUpdates — input bound integration", () => {
     expect(outcome.input_budget?.trimmed).toBe(true);
   });
 });
+
+// ── brief-459 / SRV-04: orientation-aware retention for session-log.md ──────
+//
+// The INS-316 inversion class lived on here: retention direction for
+// session-log.md was hardcoded to HEAD (newest-first assumption) citing a
+// config value brief-453 had already deleted. prism's real session-log is
+// chronological (newest LAST) — a trim kept Sessions 1..N-head and silently
+// dropped the NEWEST narrative from synthesis input.
+
+describe("brief-459 / SRV-04: chronological session-log retention", () => {
+  /** Chronological session log — newest session LAST (prism's real layout). */
+  function makeChronologicalSessionLog(sessions: number, charsPerSession: number): string {
+    const parts: string[] = ["# Session Log — Test Project", ""];
+    for (let s = 1; s <= sessions; s++) {
+      parts.push(`### Session ${s}`);
+      parts.push(filler(charsPerSession));
+      parts.push("");
+    }
+    parts.push("<!-- EOF: session-log.md -->");
+    return parts.join("\n");
+  }
+
+  it("a trimmed CHRONOLOGICAL session-log retains the HIGHEST-numbered sessions", () => {
+    const docs = makeOversizedDocs();
+    docs.set("session-log.md", entry(makeChronologicalSessionLog(60, 2_000)));
+    const result = boundSynthesisInput(docs, builderFor);
+    expect(result.trimmed).toBe(true);
+
+    const sessionLog = result.docs.get("session-log.md")?.content ?? "";
+    expect(sessionLog).toContain("### Session 60");
+    expect(sessionLog).not.toContain("### Session 1\n");
+    expect(sessionLog).toContain("[synthesis input bound — brief-445/R3-dur]");
+    // The title line stays anchored on tail retention.
+    expect(sessionLog.startsWith("# Session Log — Test Project")).toBe(true);
+  });
+
+  it("a trimmed NEWEST-FIRST session-log still retains its leading (newest) sessions", () => {
+    // Mirror assertion so orientation detection provably keys off entry
+    // numbers, not the path name.
+    const docs = makeOversizedDocs(); // makeSessionLog is newest-first
+    const result = boundSynthesisInput(docs, builderFor);
+    const sessionLog = result.docs.get("session-log.md")?.content ?? "";
+    expect(sessionLog).toContain("### Session 60");
+    expect(sessionLog).not.toContain("### Session 1\n");
+  });
+});

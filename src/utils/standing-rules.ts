@@ -34,27 +34,100 @@ export interface StandingRule {
 export type StandingRuleSource = "registry" | "insights";
 
 /**
- * Trailing tier tag, end-anchored to the title line (brief-451 / INS-310): the
- * title must END with `[TIER:X]`, optionally preceded by `— STANDING RULE`.
- * Mid-title `[TIER:*]` occurrences (e.g. the backticked literal in prism
- * INS-179's title) never match — neither for tier extraction nor cleanup.
+ * STANDING-RULE HEADER GRAMMAR (brief-459 / SRV-01 — the single source of
+ * truth, consumed by this parser and emitted by prism_log_insight's composer):
+ *
+ *   header         = "### " INS-id ":" SP title [decoration-run]
+ *   decoration-run = 1*( SP? ( "— STANDING RULE" | "[TIER:" letter "]" ) )
+ *   canonical      = title " — STANDING RULE" [" [TIER:" tier "]"]
+ *
+ * - The decoration run is ORDER-INSENSITIVE and end-anchored: both
+ *   `— STANDING RULE [TIER:B]` (canonical) and `[TIER:B] — STANDING RULE`
+ *   (the order the writer minted for prism INS-316) parse identically.
+ *   Mid-title `[TIER:*]` occurrences (e.g. the backticked literal in prism
+ *   INS-179's title) never match — neither for tier extraction nor cleanup
+ *   (brief-451 / INS-310, preserved).
+ * - Tier: the LAST `[TIER:X]` tag in the run wins. An unknown letter warns
+ *   and defaults to A. NO tag in the run → Tier A — the documented
+ *   untagged-mint default (INS-328). A trailing `[TIER:…]`-like token the
+ *   run grammar cannot consume emits STANDING_RULE_TIER_TAG_UNPARSED and
+ *   defaults to A — never silently.
+ * - insights.md qualification: the decoration run must contain
+ *   `— STANDING RULE` (brief-451 title-suffix rule, order-relaxed).
+ * - Section bounds: a rule section ends at the next `### ` header, the first
+ *   H1/H2 heading (e.g. `## Formalized`), or a line-anchored `<!-- EOF:`
+ *   sentinel — the final rule never swallows trailing file content
+ *   (SRV-01b, the S171 boot repro).
  */
-const TRAILING_TIER_TAG = /(?:—\s*STANDING\s+RULE\s*)?\[TIER:([A-Z])\]\s*$/i;
+const TITLE_DECORATION_RUN = /(?:\s*(?:—\s*STANDING\s+RULE|\[TIER:[A-Z]\]))+\s*$/i;
+
+/** Tier tags inside a matched decoration run — the LAST one wins. */
+const TIER_TAG_IN_RUN = /\[TIER:([A-Z])\]/gi;
+
+/** A trailing `[TIER:…]`-like token the run grammar could not consume (e.g.
+ *  `[TIER:]`, `[TIER:BB]`) — evidence the author tried to tag a tier. */
+const MALFORMED_TRAILING_TIER_TAG = /\[TIER:[^\]]*\]\s*$/i;
+
+/** Section terminator (SRV-01b): first H1/H2 heading or line-anchored EOF
+ *  sentinel inside a `### `-split section. */
+const RULE_SECTION_TERMINATOR = /^(?:#{1,2}\s|<!--\s*EOF:)/m;
+
+/** Parsed trailing decorations of a standing-rule title line (brief-459). */
+export interface TitleDecorations {
+  /** Title with the trailing decoration run removed (mid-title text kept). */
+  cleanTitle: string;
+  /** Valid tier from the run's last `[TIER:X]` tag, or null when absent. */
+  tier: "A" | "B" | "C" | null;
+  /** Letter as found in the run's last tag (may be an unknown letter), or
+   *  null when the run carries no tag. */
+  rawTierLetter: string | null;
+  /** True when the run contains a `— STANDING RULE` marker. */
+  hasStandingRuleSuffix: boolean;
+  /** True when no tag was parsed from the run but the remaining title still
+   *  ENDS with a `[TIER:…]`-like token — a malformed tag attempt. */
+  unparsedTierTag: boolean;
+}
 
 /**
- * insights.md qualification suffix (brief-451): title line ends with
- * `— STANDING RULE`, optionally followed by the trailing tier tag.
+ * Parse the trailing decoration run off a standing-rule title line. This is
+ * THE grammar — `extractStandingRules` consumes it and `prism_log_insight`'s
+ * composer normalizes through it, so the writer can never mint a header the
+ * parser misreads (SRV-01: the INS-316 tag-then-suffix drift class).
  */
-const INSIGHTS_RULE_SUFFIX = /—\s*STANDING\s+RULE\s*(?:\[TIER:[A-Z]\]\s*)?$/i;
+export function parseTitleDecorations(titleLine: string): TitleDecorations {
+  const runMatch = titleLine.match(TITLE_DECORATION_RUN);
+  const run = runMatch ? runMatch[0] : "";
+  const cleanTitle = runMatch
+    ? titleLine.slice(0, runMatch.index).trim()
+    : titleLine.trim();
+
+  let rawTierLetter: string | null = null;
+  if (run) {
+    const tags = [...run.matchAll(TIER_TAG_IN_RUN)];
+    if (tags.length > 0) {
+      rawTierLetter = tags[tags.length - 1][1].toUpperCase();
+    }
+  }
+  const tier =
+    rawTierLetter === "A" || rawTierLetter === "B" || rawTierLetter === "C"
+      ? rawTierLetter
+      : null;
+
+  return {
+    cleanTitle,
+    tier,
+    rawTierLetter,
+    hasStandingRuleSuffix: /—\s*STANDING\s+RULE/i.test(run),
+    unparsedTierTag: rawTierLetter === null && MALFORMED_TRAILING_TIER_TAG.test(cleanTitle),
+  };
+}
 
 /**
- * Visible-title cleanup: strip ONLY the trailing decoration run — one or more
- * `— STANDING RULE` markers (doubled-marker tolerance) plus an optional
- * `[TIER:X]` — anchored at end of title. Mid-title occurrences are preserved
- * verbatim (brief-451: the old unanchored strip mangled self-referential
- * titles like prism INS-179).
+ * Ceiling on the SRV-13 body fallback when a qualifying rule lacks a
+ * `**Standing procedure:**` marker. Bounded so the fallback cannot regress
+ * the D-47 procedure-only payload diet; the cut is flagged with `…`.
  */
-const TRAILING_TITLE_DECORATIONS = /(?:\s*—\s*STANDING\s+RULE)*(?:\s*\[TIER:[A-Z]\])?\s*$/i;
+export const EMPTY_PROCEDURE_FALLBACK_MAX_CHARS = 1_000;
 
 /**
  * Extract standing rules from a rule-source document, keeping only the
@@ -74,9 +147,19 @@ export function extractStandingRules(
   if (!content) return [];
 
   const rules: StandingRule[] = [];
-  const sections = content.split(/(?=^### )/m);
+  const rawSections = content.split(/(?=^### )/m);
 
-  for (const section of sections) {
+  for (const rawSection of rawSections) {
+    // SRV-01b (brief-459): bound the section BEFORE any extraction — the
+    // final rule's section otherwise runs to end-of-file and swallows
+    // trailing content (`## Formalized`, the EOF sentinel) into its
+    // procedure. Mid-file sections are already bounded by the next `### `.
+    const terminator = rawSection.match(RULE_SECTION_TERMINATOR);
+    const section =
+      terminator && terminator.index !== undefined
+        ? rawSection.slice(0, terminator.index)
+        : rawSection;
+
     // D-48: Skip archived or dormant entries
     if (/archived\s+(standing\s+)?rule/i.test(section) || /dormant\s+(standing\s+)?rule/i.test(section)) {
       continue;
@@ -84,53 +167,88 @@ export function extractStandingRules(
 
     const headerMatch = section.match(/^### (INS-\d+):?\s*(.+)/);
     if (!headerMatch) continue;
+    const id = headerMatch[1];
     const titleLine = headerMatch[2];
 
-    // brief-451 qualification: registry sections all count (INS-308 ground
-    // truth); insights sections qualify only via the title-line suffix form.
-    if (source === "insights" && !INSIGHTS_RULE_SUFFIX.test(titleLine)) {
+    // brief-459 / SRV-01: ONE grammar — parse the trailing decoration run
+    // (order-insensitive) for qualification, tier, and title cleanup.
+    const decor = parseTitleDecorations(titleLine);
+
+    // brief-451 qualification (order-relaxed by brief-459): registry sections
+    // all count (INS-308 ground truth); insights sections qualify only when
+    // the trailing run carries the `— STANDING RULE` marker.
+    if (source === "insights" && !decor.hasStandingRuleSuffix) {
       continue;
     }
 
-    // D-47: Extract procedure-only — find "Standing procedure:" and take everything after
+    // D-156: tier defaults to "A" when the run carries no tag (the documented
+    // untagged-mint default — INS-328). Unknown letters keep the brief-451
+    // warn-and-default-A behavior; a malformed trailing tag is surfaced via
+    // STANDING_RULE_TIER_TAG_UNPARSED instead of silently defaulting.
+    let tier: "A" | "B" | "C" = "A";
+    if (decor.tier) {
+      tier = decor.tier;
+    } else if (decor.rawTierLetter !== null) {
+      logger.warn("standing rule has unknown tier letter; defaulting to A", { id, tierLetter: decor.rawTierLetter });
+    } else if (decor.unparsedTierTag) {
+      logger.warn(
+        "standing-rule title ends with a [TIER:…] token the grammar cannot parse; defaulting to A (STANDING_RULE_TIER_TAG_UNPARSED)",
+        { id, titleTail: decor.cleanTitle.slice(-40) },
+      );
+    }
+
+    const title = decor.cleanTitle;
+
+    // D-47: Extract procedure-only — find "Standing procedure:" and take
+    // everything after (within the bounded section).
     let procedure = '';
     const procStart = section.search(/\*\*Standing procedure:\*\*/i);
     if (procStart !== -1) {
       procedure = section.slice(procStart)
         .replace(/^\*\*Standing procedure:\*\*\s*/i, '')
         .trim();
-    }
-
-    // D-156: Parse tier tag from header (defaults to "A" when absent).
-    // brief-451: only a TRAILING tag counts; unknown letters in a trailing
-    // tag keep the warn-and-default-A behavior.
-    let tier: "A" | "B" | "C" = "A";
-    const tierMatch = titleLine.match(TRAILING_TIER_TAG);
-    if (tierMatch) {
-      const letter = tierMatch[1].toUpperCase();
-      if (letter === "A" || letter === "B" || letter === "C") {
-        tier = letter;
-      } else {
-        logger.warn("standing rule has unknown tier letter; defaulting to A", { id: headerMatch[1], tierLetter: letter });
+    } else {
+      // SRV-13 (brief-459): a qualifying rule without the marker used to ship
+      // procedure:'' silently — the rule looked active while delivering
+      // nothing (live: prism INS-304). Fall back to a bounded slice of the
+      // section body (minus the topics metadata comment) and flag the source
+      // for repair.
+      const bodyStart = section.indexOf("\n");
+      const body = (bodyStart === -1 ? "" : section.slice(bodyStart + 1))
+        .replace(/^<!--\s*topics:.*?-->[^\S\n]*$/gim, "")
+        .trim();
+      if (body.length > 0) {
+        procedure =
+          body.length > EMPTY_PROCEDURE_FALLBACK_MAX_CHARS
+            ? body.slice(0, EMPTY_PROCEDURE_FALLBACK_MAX_CHARS) + "…"
+            : body;
       }
+      logger.warn(
+        "standing rule lacks a **Standing procedure:** marker — delivering bounded body fallback (STANDING_RULE_EMPTY_PROCEDURE)",
+        { id, fallbackChars: procedure.length },
+      );
     }
 
-    // D-156 / brief-451: strip only the trailing — STANDING RULE / [TIER:X]
-    // decorations from the visible title
-    const title = titleLine.replace(TRAILING_TITLE_DECORATIONS, '').trim();
-
-    // D-156: Parse topics from <!-- topics: foo, bar --> comment in section body
+    // D-156: Parse topics from <!-- topics: foo, bar --> comment in the
+    // section body. brief-459 / SRV-11: lazy-match to the closing marker so
+    // hyphenated topics (live: prism INS-297's `trigger-lock`) parse whole.
     let topics: string[] = [];
-    const topicsMatch = section.match(/<!--\s*topics:\s*([^-]+?)\s*-->/i);
+    const topicsMatch = section.match(/<!--\s*topics:\s*(.*?)\s*-->/i);
     if (topicsMatch) {
       topics = topicsMatch[1]
         .split(',')
         .map(t => t.trim())
         .filter(t => t.length > 0);
+      if (topics.length === 0) {
+        logger.warn(
+          "standing-rule topics comment present but yields zero topics (STANDING_RULE_TOPICS_EMPTY)",
+          { id },
+        );
+      }
     }
 
     rules.push({
-      id: headerMatch[1],
+      id,
       title,
       procedure,
       tier,

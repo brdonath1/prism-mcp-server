@@ -1318,3 +1318,151 @@ Testing.
     expect(backupCall).toBeDefined();
   });
 });
+
+// ── brief-459 / SRV-05 + SRV-31: numeric version handling for handoff backups ──
+//
+// Both prune and the drift-baseline pick sorted handoff-history with plain
+// localeCompare — lexicographic, so v100+ sorts BELOW v9x (production proof:
+// the prune deleted the PREVIOUS session's backup while pinning 6-week-old
+// v97-v99 snapshots, and drift measured against a stale baseline for ~70
+// sessions). The backup-exists check used substring matching — v17 matched
+// handoff_v174.
+
+describe("brief-459 / SRV-05: numeric version sort across digit-width boundaries", () => {
+  it("prune keeps the numerically newest 3 (v12,v11,v10) and deletes v9,v8", async () => {
+    mockFetchFile.mockResolvedValue({
+      content: HANDOFF_CONTENT,
+      sha: "sha",
+      size: 100,
+    });
+    mockListDirectory.mockResolvedValue([
+      { name: "handoff_v8_2026-03-28.md", path: "handoff-history/handoff_v8_2026-03-28.md", size: 100, sha: "e", type: "file" as const },
+      { name: "handoff_v12_2026-04-03.md", path: "handoff-history/handoff_v12_2026-04-03.md", size: 100, sha: "a", type: "file" as const },
+      { name: "handoff_v9_2026-03-29.md", path: "handoff-history/handoff_v9_2026-03-29.md", size: 100, sha: "d", type: "file" as const },
+      { name: "handoff_v10_2026-04-01.md", path: "handoff-history/handoff_v10_2026-04-01.md", size: 100, sha: "c", type: "file" as const },
+      { name: "handoff_v11_2026-04-02.md", path: "handoff-history/handoff_v11_2026-04-02.md", size: 100, sha: "b", type: "file" as const },
+    ]);
+    mockPushFile.mockResolvedValue({ success: true, size: 100, sha: "new" });
+    const pruneCalls: Array<{ deletes?: string[] }> = [];
+    mockCreateAtomicCommit.mockImplementation(async (_repo, _files, _message, deletes) => {
+      pruneCalls.push({ deletes: deletes ?? [] });
+      return { success: true, sha: "atomic_sha", files_committed: 1 };
+    });
+
+    await callFinalizeTool({
+      project_slug: "test-project",
+      action: "commit",
+      session_number: 26,
+      handoff_version: 13,
+      files: [
+        { path: "handoff.md", content: "# Handoff\n<!-- EOF: handoff.md -->" },
+      ],
+    });
+
+    const pruneCommit = pruneCalls.find((c) => (c.deletes ?? []).length > 0);
+    expect(pruneCommit).toBeDefined();
+    expect(pruneCommit!.deletes).toEqual(
+      expect.arrayContaining([
+        "handoff-history/handoff_v9_2026-03-29.md",
+        "handoff-history/handoff_v8_2026-03-28.md",
+      ]),
+    );
+    expect(pruneCommit!.deletes).toHaveLength(2);
+    expect(pruneCommit!.deletes).not.toContain("handoff-history/handoff_v10_2026-04-01.md");
+    expect(pruneCommit!.deletes).not.toContain("handoff-history/handoff_v11_2026-04-02.md");
+    expect(pruneCommit!.deletes).not.toContain("handoff-history/handoff_v12_2026-04-03.md");
+  });
+
+  it("drift baseline picks the numerically newest backup (v10, not v9)", async () => {
+    const docMap = buildDocMap();
+    const previousHandoff = `## Meta\n- Handoff Version: 10\n\n## Critical Context\n1. PRISM MCP Server is the core infrastructure\n\n<!-- EOF: handoff.md -->`;
+    mockFetchFile.mockImplementation(async (_repo: string, path: string) => {
+      if (path.includes("handoff_v")) {
+        return { content: previousHandoff, sha: "old_sha", size: 200 };
+      }
+      const docName = path.startsWith(".prism/") ? path.slice(".prism/".length) : path;
+      const entry = docMap.get(docName);
+      if (entry) {
+        return { content: entry.content, sha: entry.sha, size: entry.size };
+      }
+      throw new Error(`Not found: ${path}`);
+    });
+    mockListDirectory.mockResolvedValue([
+      { name: "handoff_v9_2026-03-29.md", path: "handoff-history/handoff_v9_2026-03-29.md", size: 100, sha: "d", type: "file" as const },
+      { name: "handoff_v10_2026-04-01.md", path: "handoff-history/handoff_v10_2026-04-01.md", size: 100, sha: "c", type: "file" as const },
+    ]);
+    mockListCommits.mockResolvedValue([]);
+
+    await callFinalizeTool({
+      project_slug: "test-project",
+      action: "audit",
+      session_number: 26,
+    });
+
+    const fetchedHistoryPaths = mockFetchFile.mock.calls
+      .map((c) => String(c[1]))
+      .filter((p) => p.includes("handoff_v"));
+    expect(fetchedHistoryPaths.length).toBeGreaterThan(0);
+    expect(fetchedHistoryPaths.every((p) => p.includes("handoff_v10"))).toBe(true);
+  });
+});
+
+describe("brief-459 / SRV-31: backup-exists check is version-anchored", () => {
+  it("handoff_v304 does NOT count as a backup for version 30", async () => {
+    const docMap = buildDocMap(); // HANDOFF_CONTENT → Handoff Version: 30
+    const previousHandoff = `## Meta\n- Handoff Version: 304\n\n## Critical Context\n1. PRISM MCP Server is the core infrastructure\n\n<!-- EOF: handoff.md -->`;
+    mockFetchFile.mockImplementation(async (_repo: string, path: string) => {
+      if (path.includes("handoff_v")) {
+        return { content: previousHandoff, sha: "old_sha", size: 200 };
+      }
+      const docName = path.startsWith(".prism/") ? path.slice(".prism/".length) : path;
+      const entry = docMap.get(docName);
+      if (entry) {
+        return { content: entry.content, sha: entry.sha, size: entry.size };
+      }
+      throw new Error(`Not found: ${path}`);
+    });
+    mockListDirectory.mockResolvedValue([
+      { name: "handoff_v304_2026-06-11.md", path: "handoff-history/handoff_v304_2026-06-11.md", size: 100, sha: "x", type: "file" as const },
+    ]);
+    mockListCommits.mockResolvedValue([]);
+
+    const result = await callFinalizeTool({
+      project_slug: "test-project",
+      action: "audit",
+      session_number: 26,
+    });
+
+    const data = parseResult(result);
+    expect(data.audit.handoff_backup_exists).toBe(false);
+  });
+
+  it("an exact handoff_v30_ backup still counts for version 30", async () => {
+    const docMap = buildDocMap();
+    const previousHandoff = `## Meta\n- Handoff Version: 30\n\n## Critical Context\n1. PRISM MCP Server is the core infrastructure\n\n<!-- EOF: handoff.md -->`;
+    mockFetchFile.mockImplementation(async (_repo: string, path: string) => {
+      if (path.includes("handoff_v")) {
+        return { content: previousHandoff, sha: "old_sha", size: 200 };
+      }
+      const docName = path.startsWith(".prism/") ? path.slice(".prism/".length) : path;
+      const entry = docMap.get(docName);
+      if (entry) {
+        return { content: entry.content, sha: entry.sha, size: entry.size };
+      }
+      throw new Error(`Not found: ${path}`);
+    });
+    mockListDirectory.mockResolvedValue([
+      { name: "handoff_v30_2026-06-10.md", path: "handoff-history/handoff_v30_2026-06-10.md", size: 100, sha: "y", type: "file" as const },
+    ]);
+    mockListCommits.mockResolvedValue([]);
+
+    const result = await callFinalizeTool({
+      project_slug: "test-project",
+      action: "audit",
+      session_number: 26,
+    });
+
+    const data = parseResult(result);
+    expect(data.audit.handoff_backup_exists).toBe(true);
+  });
+});

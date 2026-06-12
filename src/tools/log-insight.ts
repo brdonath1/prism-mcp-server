@@ -16,6 +16,12 @@ import { guardPushPath } from "../utils/doc-guard.js";
 import { DiagnosticsCollector } from "../utils/diagnostics.js";
 import { safeMutation } from "../utils/safe-mutation.js";
 import { sanitizeContentField } from "../utils/sanitize-content.js";
+import { parseTitleDecorations } from "../utils/standing-rules.js";
+
+/** Legal shape for a single topic keyword — matches what prism_load_rules'
+ *  comma-split topic parser can round-trip (hyphens/underscores legal,
+ *  commas and markup are not). */
+const TOPIC_SHAPE = /^[A-Za-z0-9_-]+$/;
 
 /**
  * Parse existing insight IDs from an insights.md content string.
@@ -34,7 +40,9 @@ export function parseExistingInsightIds(content: string): Map<string, string> {
   let match: RegExpExecArray | null;
   while ((match = headerPattern.exec(content)) !== null) {
     const id = match[1];
-    const rawTitle = match[2].replace(/\s*—\s*STANDING RULE\s*$/, "").trim();
+    // brief-459: strip the full trailing decoration run (suffix + tier tag,
+    // either order) through the shared grammar so dedup messages stay clean.
+    const rawTitle = parseTitleDecorations(match[2]).cleanTitle;
     if (!ids.has(id)) {
       ids.set(id, rawTitle);
     }
@@ -73,11 +81,13 @@ export function registerLogInsight(server: McpServer): void {
       session: z.number().describe("Session number where insight was discovered"),
       standing_rule: z.boolean().optional().describe("Whether this is a STANDING RULE (auto-loaded at bootstrap via D-44 Track 1)"),
       procedure: z.string().optional().describe("Standing procedure steps (required if standing_rule is true). Use numbered steps."),
+      tier: z.enum(["A", "B", "C"]).optional().describe("Standing-rule tier (D-156): A=always-load, B=topic-load, C=reference-only. Only valid with standing_rule: true. Composes the canonical trailing `[TIER:X]` tag; omitted (and no tag embedded in the title) → the rule parses at the documented Tier A default (brief-459)."),
+      topics: z.array(z.string().regex(/^[A-Za-z0-9_-]+$/, "Topics must match [A-Za-z0-9_-]+")).optional().describe("Topic keywords for Tier B/C lazy-load matching via prism_load_rules (written as a `<!-- topics: ... -->` comment). Only valid with standing_rule: true."),
     },
-    async ({ project_slug, id, title, category, description, session, standing_rule, procedure }) => {
+    async ({ project_slug, id, title, category, description, session, standing_rule, procedure, tier, topics }) => {
       const start = Date.now();
       const diagnostics = new DiagnosticsCollector();
-      logger.info("prism_log_insight", { project_slug, id, standing_rule });
+      logger.info("prism_log_insight", { project_slug, id, standing_rule, tier, topics });
 
       try {
         // Validate: standing rules must have procedures
@@ -86,6 +96,29 @@ export function registerLogInsight(server: McpServer): void {
             content: [{ type: "text" as const, text: JSON.stringify({ error: "standing_rule entries require a procedure field" }) }],
             isError: true,
           };
+        }
+
+        // brief-459 / SRV-01: tier + topics shape the standing-rule grammar —
+        // they have no meaning on plain insights and are rejected explicitly
+        // rather than silently dropped.
+        if (!standing_rule && (tier !== undefined || topics !== undefined)) {
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify({ error: "tier and topics are only valid when standing_rule is true" }) }],
+            isError: true,
+          };
+        }
+
+        // Defense-in-depth mirror of the zod topic regex — a comma or markup
+        // inside a topic would corrupt the comma-split `<!-- topics: ... -->`
+        // round-trip silently.
+        if (topics) {
+          const badTopic = topics.find((t) => !TOPIC_SHAPE.test(t));
+          if (badTopic !== undefined) {
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify({ error: `invalid topic "${badTopic}" — topics must match [A-Za-z0-9_-]+` }) }],
+              isError: true,
+            };
+          }
         }
 
         // 1. Resolve both rule-source paths in parallel. R2-B: INS-N is ONE
@@ -120,6 +153,17 @@ export function registerLogInsight(server: McpServer): void {
 
         // 3. Build the entry (does not depend on existing file content).
         //
+        // brief-459 / SRV-01: compose the header through the SAME grammar the
+        // parser consumes (parseTitleDecorations). The old composer appended
+        // " — STANDING RULE" after whatever the operator supplied, so a title
+        // ending in `[TIER:B]` minted the one ordering the brief-451 parser
+        // could not read (the INS-316 drift). Now: any decoration run already
+        // on the title is parsed off, the explicit `tier` parameter wins over
+        // a title-embedded tag, and the canonical
+        // `### ID: Title — STANDING RULE [TIER:X]` form is emitted. No tier
+        // anywhere → no tag → the rule parses at the documented Tier A
+        // default (INS-328).
+        //
         // KI-26 (brief-444 R5-c): neutralize embedded markdown headers in the
         // user-supplied fields before they are written. Matches the write-time
         // U+200B sanitization already live in prism_log_decision and
@@ -129,11 +173,15 @@ export function registerLogInsight(server: McpServer): void {
         // flags duplicate headers, not novel ones). The commit message below
         // keeps the RAW title — Git plain text is a non-markdown channel and
         // ZWS injection there would only hurt readability.
-        const safeTitle = sanitizeContentField(title);
+        const titleDecor = parseTitleDecorations(title);
+        const effectiveTier = standing_rule ? (tier ?? titleDecor.tier) : undefined;
+        const safeTitle = sanitizeContentField(standing_rule ? titleDecor.cleanTitle : title);
         const safeDescription = sanitizeContentField(description);
         const safeProcedure = procedure ? sanitizeContentField(procedure) : undefined;
 
-        const standingTag = standing_rule ? " — STANDING RULE" : "";
+        const standingTag = standing_rule
+          ? ` — STANDING RULE${effectiveTier ? ` [TIER:${effectiveTier}]` : ""}`
+          : "";
         const categoryTag = standing_rule ? `${category} — **STANDING RULE**` : category;
 
         const entryLines = [
@@ -142,6 +190,12 @@ export function registerLogInsight(server: McpServer): void {
           `- Discovered: Session ${session}`,
           `- Description: ${safeDescription}`,
         ];
+        // Topics ride a metadata comment BEFORE the procedure marker — the
+        // procedure extractor takes everything after the marker, so a comment
+        // placed below it would be swallowed into the procedure text.
+        if (standing_rule && topics && topics.length > 0) {
+          entryLines.push(`<!-- topics: ${topics.join(", ")} -->`);
+        }
         if (standing_rule && safeProcedure) {
           entryLines.push(`- **Standing procedure:** ${safeProcedure}`);
         }

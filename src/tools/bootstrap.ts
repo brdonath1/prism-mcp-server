@@ -1194,6 +1194,19 @@ export function registerBootstrap(server: McpServer): void {
             from_standing_rules_file: rulesUnion.fromStandingRulesFile,
             from_insights: rulesUnion.fromInsights,
           });
+
+          // brief-459 / SRV-12: indexed B/C rules with empty topics can never
+          // match a prism_load_rules topic query — name them AT BOOT so the
+          // session knows the by-ID recovery path exists, instead of learning
+          // only after a failed topic lookup.
+          const emptyTopicIndexed = standingRulesIndex.filter(e => e.topics.length === 0);
+          if (emptyTopicIndexed.length > 0) {
+            diagnostics.info(
+              "STANDING_RULES_EMPTY_TOPICS_INDEXED",
+              `${emptyTopicIndexed.length} indexed Tier B/C rule(s) have no topics and cannot match a topic query — retrieve by ID via prism_load_rules rule_id: ${emptyTopicIndexed.map(e => e.id).join(", ")}`,
+              { ids: emptyTopicIndexed.map(e => e.id) },
+            );
+          }
         }
 
         // R-intel-SLO (D-240 Phase B): intelligence SLO instrumentation.

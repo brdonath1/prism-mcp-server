@@ -26,7 +26,6 @@ import { resolveDocPath } from "../utils/doc-resolver.js";
 import { logger } from "../utils/logger.js";
 import { DiagnosticsCollector } from "../utils/diagnostics.js";
 import {
-  matchesExplicitTopic,
   normalizeTopic,
   selectStandingRulesByTopic,
   type StandingRule,
@@ -38,11 +37,18 @@ import { unionStandingRules } from "../utils/standing-rules-union.js";
  *
  * `topic` is normalized (trimmed + lowercased) before matching, so callers may
  * pass `"Synthesis"`, `" synthesis "`, `"SYNTHESIS"`, etc.
+ *
+ * brief-459 / SRV-12: `rule_id` is the by-ID retrieval path for indexed
+ * Tier B/C rules whose topics arrays are empty or unpopulated — those rules
+ * appear in the boot index but can never match a topic query. At least one of
+ * `topic` / `rule_id` is required; `rule_id` takes precedence when both are
+ * supplied.
  */
 const inputSchema = {
   project_slug: z.string().min(1).describe("Project repo name (e.g. 'prism', 'prism-mcp-server')"),
-  topic: z.string().min(1).describe("Single topic keyword to match against rule topics arrays (e.g. 'synthesis', 'cc_dispatch'). Case-insensitive exact match."),
-  include_tier_c: z.boolean().optional().describe("When true, also include Tier C rules whose topics match. Defaults to false (Tier B only)."),
+  topic: z.string().min(1).optional().describe("Single topic keyword to match against rule topics arrays (e.g. 'synthesis', 'cc_dispatch'). Case-insensitive exact match. Required unless rule_id is provided."),
+  rule_id: z.string().regex(/^INS-\d{1,4}$/, "rule_id must match INS-N format (e.g. 'INS-297')").optional().describe("Exact INS-N lookup for a single Tier B/C rule (brief-459 / SRV-12) — the recovery path for indexed rules with empty topics. Takes precedence over topic. Tier A rules are boot-loaded and not served by ID."),
+  include_tier_c: z.boolean().optional().describe("When true, also include Tier C rules whose topics match. Defaults to false (Tier B only). By-ID lookups (rule_id) serve Tier C regardless — an explicit ID is an explicit ask."),
 };
 
 /**
@@ -51,20 +57,36 @@ const inputSchema = {
 export function registerLoadRules(server: McpServer): void {
   server.tool(
     "prism_load_rules",
-    "Mid-session lazy-load of Tier B / Tier C standing rules from a project's rule sources (.prism/standing-rules.md unioned with insights.md), filtered by an explicit topic keyword (D-156 §3.5). Tier A is always excluded — those rules are auto-loaded at bootstrap.",
+    "Mid-session lazy-load of Tier B / Tier C standing rules from a project's rule sources (.prism/standing-rules.md unioned with insights.md), filtered by an explicit topic keyword (D-156 §3.5) or fetched by exact INS-N rule_id (brief-459 / SRV-12). Tier A is always excluded — those rules are auto-loaded at bootstrap.",
     inputSchema,
-    async ({ project_slug, topic, include_tier_c }) => {
+    async ({ project_slug, topic, rule_id, include_tier_c }) => {
       const start = Date.now();
       const diagnostics = new DiagnosticsCollector();
       const includeTierC = include_tier_c === true;
-      const normalizedTopic = normalizeTopic(topic);
+      const normalizedTopic = topic !== undefined ? normalizeTopic(topic) : "";
       const resolvedSlug = resolveProjectSlug(project_slug);
 
       logger.info("prism_load_rules", {
         project_slug: resolvedSlug,
         topic: normalizedTopic,
+        rule_id,
         include_tier_c: includeTierC,
       });
+
+      // brief-459 / SRV-12: at least one retrieval key is required. Checked
+      // in the handler (not only zod) so direct callers get the same error.
+      if (rule_id === undefined && normalizedTopic.length === 0) {
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              error: "Provide either topic (keyword match) or rule_id (exact INS-N lookup).",
+              project: resolvedSlug,
+            }),
+          }],
+          isError: true,
+        };
+      }
 
       try {
         // R2-B (D-240 Phase B): fetch BOTH rule sources in parallel via the
@@ -102,6 +124,7 @@ export function registerLoadRules(server: McpServer): void {
               text: JSON.stringify({
                 project: resolvedSlug,
                 topic: normalizedTopic,
+                rule_id: rule_id ?? null,
                 include_tier_c: includeTierC,
                 matched_rules: [] as StandingRule[],
                 counts: {
@@ -136,16 +159,43 @@ export function registerLoadRules(server: McpServer): void {
         const allRules = union.rules;
         const tierB = allRules.filter(r => r.tier === "B");
         const tierC = allRules.filter(r => r.tier === "C");
-        const tierBMatched = tierB.filter(r => matchesExplicitTopic(normalizedTopic, r.topics));
-        const tierCMatched = includeTierC
-          ? tierC.filter(r => matchesExplicitTopic(normalizedTopic, r.topics))
-          : [];
 
-        const matchedRules = selectStandingRulesByTopic(allRules, normalizedTopic, includeTierC);
+        // brief-459 / SRV-12: rule_id is the by-ID retrieval path — the only
+        // route to indexed B/C rules whose topics arrays are empty (or were
+        // destroyed by the SRV-11 hyphen defect in older parses). Takes
+        // precedence over topic. Tier A is boot-loaded and not re-served.
+        let matchedRules: StandingRule[];
+        if (rule_id !== undefined) {
+          const found = allRules.find(r => r.id === rule_id);
+          if (!found) {
+            diagnostics.warn(
+              "RULE_ID_NOT_FOUND",
+              `No standing rule with id ${rule_id} exists in either rule source for project "${resolvedSlug}".`,
+              { rule_id },
+            );
+            matchedRules = [];
+          } else if (found.tier === "A") {
+            diagnostics.info(
+              "RULE_ID_TIER_A",
+              `${rule_id} is Tier A — its body is already delivered at bootstrap; rule_id serves Tier B/C only.`,
+              { rule_id },
+            );
+            matchedRules = [];
+          } else {
+            matchedRules = [found];
+          }
+        } else {
+          matchedRules = selectStandingRulesByTopic(allRules, normalizedTopic, includeTierC);
+        }
 
-        // §3.3: when there are Tier B rules to consider but none match, surface
-        // the unpopulated-topics gap so operators see signal vs. silence.
-        if (tierB.length > 0 && tierBMatched.length === 0) {
+        const tierBMatched = matchedRules.filter(r => r.tier === "B");
+        const tierCMatched = matchedRules.filter(r => r.tier === "C");
+
+        // §3.3: when there are Tier B rules to consider but none match the
+        // requested topic, surface the unpopulated-topics gap so operators
+        // see signal vs. silence. Topic path only — a by-ID miss has its own
+        // diagnostic above.
+        if (rule_id === undefined && tierB.length > 0 && tierBMatched.length === 0) {
           const tierBWithEmptyTopics = tierB.filter(r => r.topics.length === 0).length;
           diagnostics.info(
             "STANDING_RULES_TOPICS_UNPOPULATED",
@@ -161,6 +211,7 @@ export function registerLoadRules(server: McpServer): void {
         logger.info("prism_load_rules complete", {
           project_slug: resolvedSlug,
           topic: normalizedTopic,
+          rule_id,
           include_tier_c: includeTierC,
           total: allRules.length,
           tier_b_total: tierB.length,
@@ -179,6 +230,7 @@ export function registerLoadRules(server: McpServer): void {
             text: JSON.stringify({
               project: resolvedSlug,
               topic: normalizedTopic,
+              rule_id: rule_id ?? null,
               include_tier_c: includeTierC,
               matched_rules: matchedRules,
               counts: {

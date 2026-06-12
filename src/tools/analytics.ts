@@ -147,6 +147,43 @@ export function parseSessionHeaders(
 }
 
 /**
+ * Resolve the most recent session that ran a fresh-eyes review (brief-459 /
+ * SRV-23). Collects ALL "fresh-eyes" / "fresh eyes" mentions, attributes each
+ * to its CONTAINING session via the nearest preceding session header (a
+ * session's content always follows its header, in both newest-first and
+ * chronological layouts), and returns the maximum session number — never a
+ * document-order scan, which inverted on newest-first logs and produced false
+ * overdue alarms. Mentions before any session header are unattributable and
+ * ignored. Returns 0 when no attributable mention exists.
+ *
+ * Accepts both header families parseSessionHeaders knows (PRISM
+ * `## / ### [CC ]Session N …` and PF2 `## S{N} — date`), without requiring a
+ * parseable date — date-less headers still attribute mentions correctly.
+ */
+export function resolveLastFreshEyesSession(content: string): number {
+  const prismHeader = /^#{2,3}\s+(?:cc\s+)?session\s+(\d+)/i;
+  const pf2Header = /^#{2,3}\s+s(\d+)\s*[—–-]/i;
+
+  let currentSession = 0;
+  let lastFreshEyesSession = 0;
+  for (const line of content.split("\n")) {
+    const header = line.match(prismHeader) ?? line.match(pf2Header);
+    if (header) {
+      currentSession = parseInt(header[1], 10);
+      // No continue — a mention on the header line itself counts for this
+      // session.
+    }
+    if (
+      currentSession > 0 &&
+      (line.includes("fresh-eyes") || line.includes("fresh eyes"))
+    ) {
+      lastFreshEyesSession = Math.max(lastFreshEyesSession, currentSession);
+    }
+  }
+  return lastFreshEyesSession;
+}
+
+/**
  * Compute session patterns — frequency and duration trends.
  *
  * Reads both `session-log.md` (current) and `session-log-archive.md` (rotated
@@ -623,24 +660,14 @@ async function freshEyesCheck(projectSlug?: string) {
 
       try {
         const resolved = await resolveDocPath(repo, "session-log.md");
-        const sessionLog = { content: resolved.content };
-        const content = sessionLog.content.toLowerCase();
-
-        // Find last mention of "fresh-eyes" or "fresh eyes"
-        const lines = content.split("\n");
-        for (let i = lines.length - 1; i >= 0; i--) {
-          if (lines[i].includes("fresh-eyes") || lines[i].includes("fresh eyes")) {
-            // Look backwards for session number
-            for (let j = i; j >= Math.max(0, i - 10); j--) {
-              const sessionMatch = lines[j].match(/session\s+(\d+)/i);
-              if (sessionMatch) {
-                lastFreshEyesSession = parseInt(sessionMatch[1], 10);
-                break;
-              }
-            }
-            break;
-          }
-        }
+        // brief-459 / SRV-23: resolve the most recent fresh-eyes review from
+        // ALL mentions by containing session, orientation-independent — the
+        // old bottom-up scan found the mention closest to file BOTTOM, which
+        // on newest-first logs is the FIRST review ever (false overdue
+        // alarms), and its 10-line lookback missed far-from-header mentions.
+        lastFreshEyesSession = resolveLastFreshEyesSession(
+          resolved.content.toLowerCase()
+        );
       } catch {
         // session-log might not exist
       }
