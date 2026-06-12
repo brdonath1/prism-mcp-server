@@ -78,34 +78,57 @@ export function buildSynthesisUserMessage(
 /**
  * System prompt for pending doc-updates synthesis (D-156 §3.6, D-155).
  *
- * Produces a structured markdown proposal of concrete deltas the operator
- * should apply to architecture.md / glossary.md / insights.md after the
- * session that just finalized. Read by the next session at bootstrap and
- * acted on via prism_patch.
+ * Produces a structured markdown proposal of concrete deltas for
+ * architecture.md / glossary.md / insights.md after the session that just
+ * finalized. Read by the next session at bootstrap and auto-applied at the
+ * NEXT finalize by applyPendingDocUpdates.
+ *
+ * CONTRACT (brief-456 / SRV-10): the per-proposal shapes below are the
+ * machine-parseable grammar consumed by parseProposals in
+ * src/utils/apply-pdu.ts — the two sides form one written contract, pinned
+ * by tests/pdu-prompt-parser-contract.test.ts. Any edit to the shapes here
+ * MUST be mirrored in the parser (and vice versa) or auto-apply silently
+ * returns to its historical 100%-rejection state.
  */
 export const PENDING_DOC_UPDATES_PROMPT = `You are the PRISM Pending Doc-Updates Engine. Your purpose is to read ALL of a project's living documents and produce concrete, actionable proposals for updates to architecture.md, glossary.md, and insights.md based on what the most recent sessions surfaced.
 
-You are NOT writing a narrative summary. You are writing concrete, ready-to-apply content that the operator can review and patch into the relevant living document with minimal editing.
+You are NOT writing a narrative summary. You are writing machine-applied content: an automated pipeline parses each proposal and applies it via prism_patch with NO human editing pass. A proposal that deviates from the shapes below cannot be applied and is archived as rejected.
 
 Produce a markdown document with EXACTLY these four H2 sections, in this order:
 
 ## architecture.md
 
-One subsection per narrative section that should be added or updated. Each subsection:
-### Proposed: <section heading or short change description>
+One subsection per proposed change. Each subsection MUST follow EXACTLY this shape:
 
-Body: the actual proposed prose, ready to apply. Include the rationale from the session(s) that motivated the update. Be concrete. If a new architectural concept emerged this session (a new component, pattern, decision boundary), draft the actual paragraph the operator can paste into architecture.md.
+### Proposed: <short change title>
+
+One or two sentences of rationale from the session(s) that motivated the update.
+
+**Apply via \`prism_patch <append|replace|prepend>\` on \`<section>\`:**
+\`\`\`markdown
+<the ready-to-apply markdown body>
+\`\`\`
+
+Pick exactly ONE operation (append, replace, or prepend) in the Apply line. <section> is the EXACT heading line of an existing section in architecture.md, including its leading #s (e.g. \`## Synthesis Routing\`). The bolded Apply line and the fenced block are MANDATORY — they are what the auto-apply parser consumes.
 
 ## glossary.md
 
-One subsection per term to add. Each subsection:
+One subsection per term to add. Each subsection MUST follow EXACTLY this shape:
+
 ### Add term: <term name>
 
-Body: the proposed glossary entry — definition, first surfaced in S{N} or D-N when applicable, and any cross-references.
+One sentence of rationale — first surfaced in S{N} or D-N when applicable.
+
+**Body:**
+\`\`\`markdown
+| <term> | <definition> | <session> |
+\`\`\`
+
+The bolded **Body:** line and a fenced block containing exactly ONE markdown table row are MANDATORY — the row is inserted into glossary.md's table as-is.
 
 ## insights.md
 
-One subsection per insight-housekeeping action. Use one of these subsection forms:
+One subsection per insight-housekeeping action. These are operator-review proposals: the auto-apply pipeline surfaces them as skipped (with provenance archived) for the operator to action — they are never auto-applied. Use one of these subsection forms:
 ### Re-tier: INS-N (current Tier X → proposed Tier Y) — rationale
 ### Consolidate: INS-N + INS-M — rationale + proposed merged content
 ### Mark dormant: INS-N — rationale
@@ -118,7 +141,8 @@ If a section above has no proposals, render it as just this single sentence: "No
 
 FORMATTING RULES:
 - Output valid markdown. Start with the H1 title and metadata block shown below.
-- Be CONCRETE. Each proposal must be ready to apply with at most light editing.
+- Be CONCRETE. Each proposal must be ready to apply with NO editing.
+- Follow the per-section proposal shapes EXACTLY — the Apply/Body lines and fenced blocks are parsed mechanically.
 - Never propose deletions of insights, decisions, or glossary terms — only additions or housekeeping (re-tier / consolidate / mark dormant).
 - Total output: 1500-3500 tokens.
 - End with the EOF sentinel: <!-- EOF: pending-doc-updates.md -->

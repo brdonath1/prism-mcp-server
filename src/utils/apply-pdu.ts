@@ -67,12 +67,17 @@ const FILE_GROUP_HEADER_RE = /^##\s+([A-Za-z0-9_./-]+\.md)\s*$/gm;
 const LAST_SYNTHESIZED_RE = /^>\s*Last synthesized:\s*S(\d+)/m;
 
 /**
- * Returns true when the PDU body has zero `### Proposed:` and zero
- * `### Add term:` subsections — i.e. the synthesis run produced no concrete
- * proposals to apply. Cleared / freshly-templated files fall in this bucket.
+ * Returns true when the PDU body has zero proposal subsections of any
+ * recognized form — i.e. the synthesis run produced nothing to consume.
+ * Cleared / freshly-templated files fall in this bucket.
+ *
+ * brief-456 (SRV-10): insights housekeeping forms (`### Re-tier:` /
+ * `### Consolidate:` / `### Mark dormant:`) count as proposals — a
+ * housekeeping-only batch must flow through consume/archive/clear instead
+ * of silently accreting forever.
  */
 export function isPduEmpty(content: string): boolean {
-  return !/^###\s+(?:Proposed:|Add term:)/m.test(content);
+  return !/^###\s+(?:Proposed:|Add term:|Re-tier:|Consolidate:|Mark dormant:)/m.test(content);
 }
 
 /** Extract the synthesized session number from `> Last synthesized: S<N>`. */
@@ -83,18 +88,46 @@ export function parseLastSynthesizedSession(content: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+/** Insights housekeeping markers (brief-456 / SRV-10): parser-VISIBLE but
+ *  never auto-applied — surfaced as skipped with an operator-review reason
+ *  and archived with provenance. */
+const HOUSEKEEPING_MARKERS = new Set(["Re-tier:", "Consolidate:", "Mark dormant:"]);
+
 /**
  * Parse a PDU file body into structured proposals.
  *
- * Strategy:
- *   1. Walk the file once collecting the byte offsets of `## <filename>.md`
- *      groups; treat `## No Updates Needed` as a sentinel ending the
- *      proposal region.
- *   2. For each group, slice out the body text and split it on
- *      `### Proposed:` / `### Add term:` to enumerate proposals.
- *   3. Within each proposal body, look for either an `**Apply via`
- *      instruction (architecture/insights) or `**Body:**` (glossary), then
- *      grab the following fenced code block as the content payload.
+ * ═══ THE PDU PROMPT↔PARSER CONTRACT (brief-456 / SRV-10) ═══
+ * This grammar is one half of a written contract with
+ * PENDING_DOC_UPDATES_PROMPT (src/ai/prompts.ts) — the prompt MUST elicit
+ * exactly these shapes, and tests/pdu-prompt-parser-contract.test.ts pins
+ * both sides. Editing either side alone silently returns auto-apply to its
+ * historical 100%-rejection state.
+ *
+ * Recognized proposal shapes, grouped under `## <filename>.md` H2 headers
+ * (`## No Updates Needed` / unknown files end or are excluded from the
+ * proposal region):
+ *
+ *   1. Section op (architecture.md / insights.md):
+ *        ### Proposed: <title>
+ *        **Apply via `prism_patch <append|replace|prepend>` on `<section>`:**
+ *        ```<lang?>
+ *        <payload>
+ *        ```
+ *      → { operation: append|replace|prepend, section, content: payload }
+ *
+ *   2. Glossary row (glossary.md):
+ *        ### Add term: <term>
+ *        **Body:**
+ *        ```<lang?>
+ *        | cell | cell | ... |
+ *        ```
+ *      → { operation: "glossary_row", content: the single table row }
+ *
+ *   3. Insights housekeeping (operator-review, never auto-applied):
+ *        ### Re-tier: ... | ### Consolidate: ... | ### Mark dormant: ...
+ *      → { operation: null, unparsedReason: operator-review } — visible in
+ *        `skipped` and archived with provenance (previously invisible,
+ *        which made housekeeping-only batches accrete forever).
  *
  * Proposals that lack an actionable instruction are returned with
  * `operation: null` and a populated `unparsedReason` so the caller can
@@ -116,10 +149,16 @@ export function parseProposals(content: string): PduProposal[] {
 
   for (const group of groups) {
     const groupBody = content.slice(group.start, group.end);
-    const proposalMarkers: Array<{ title: string; headingStart: number; bodyStart: number }> = [];
-    const lineRe = /^###\s+(Proposed:|Add term:)\s*(.+)$/gm;
+    const proposalMarkers: Array<{
+      marker: string;
+      title: string;
+      headingStart: number;
+      bodyStart: number;
+    }> = [];
+    const lineRe = /^###\s+(Proposed:|Add term:|Re-tier:|Consolidate:|Mark dormant:)\s*(.+)$/gm;
     for (const m of groupBody.matchAll(lineRe)) {
       proposalMarkers.push({
+        marker: m[1],
         title: m[2].trim(),
         headingStart: m.index!,
         bodyStart: m.index! + m[0].length,
@@ -131,7 +170,19 @@ export function parseProposals(content: string): PduProposal[] {
       const bodyEnd = proposalMarkers[i + 1]?.headingStart ?? groupBody.length;
       const body = groupBody.slice(marker.bodyStart, bodyEnd);
 
-      if (group.file === "glossary.md") {
+      if (HOUSEKEEPING_MARKERS.has(marker.marker)) {
+        // Contract shape 3: visible, operator-actioned, never auto-applied.
+        // Title keeps the marker prefix so the provenance archive records
+        // WHICH housekeeping action was proposed.
+        proposals.push({
+          targetFile: group.file,
+          title: `${marker.marker} ${marker.title}`,
+          operation: null,
+          section: null,
+          content: null,
+          unparsedReason: "insights housekeeping proposal — operator review required (not auto-applied)",
+        });
+      } else if (group.file === "glossary.md") {
         proposals.push(parseGlossaryProposal(group.file, marker.title, body));
       } else {
         proposals.push(parseSectionProposal(group.file, marker.title, body));
