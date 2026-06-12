@@ -546,3 +546,161 @@ Some prose without an apply instruction.
     expect(clearAttempt).toBeUndefined();
   });
 });
+
+// ───────────────────────────────────────────────────────────────────────────
+// brief-460 / W3-S4 (M-007, SRV-46) — the unattended auto-apply channel gets
+// the same level/fence-aware KI-26 sanitizer + validateIntegrity gate the
+// operator-driven prism_patch channel has. Mutations surface in
+// result.sanitized (→ pdu_sanitized in the finalize response), never silent.
+// ───────────────────────────────────────────────────────────────────────────
+describe("brief-460 / SRV-46 — unattended-channel sanitization + integrity gate", () => {
+  const ZWS = "​";
+
+  function setupFetchByPath(map: Record<string, string>): void {
+    mockResolveDocPath.mockImplementation(async (_slug, doc) => {
+      const content = map[doc];
+      if (content === undefined) {
+        throw new Error(`Not found: fetchFile test/${doc}`);
+      }
+      return { path: `.prism/${doc}`, content, sha: "sha-" + doc, legacy: false };
+    });
+  }
+
+  const ARCH_TARGET = `# Architecture — test
+
+## Mutation Primitives
+
+Existing content here.
+
+<!-- EOF: architecture.md -->
+`;
+
+  function pduWithBody(body: string): string {
+    return `# Pending Doc Updates — test
+
+> Last synthesized: S99 (04-26-26 12:00:00)
+
+## architecture.md
+
+### Proposed: Injection attempt
+Narrative.
+
+**Apply via \`prism_patch append\` on \`## Mutation Primitives\`:**
+\`\`\`
+${body}
+\`\`\`
+
+<!-- EOF: pending-doc-updates.md -->
+`;
+  }
+
+  it("KI-26 on the unattended channel: a '## Injected' line in an AI-synthesized body is neutralized — the stored doc gains no '## Injected' section", async () => {
+    setupFetchByPath({
+      "pending-doc-updates.md": pduWithBody("benign line\n## Injected\nmore prose"),
+      "architecture.md": ARCH_TARGET,
+    });
+
+    const result = await applyPendingDocUpdates("test", 101);
+
+    expect(result.errors).toEqual([]);
+    expect(result.applied).toContain("Injection attempt");
+
+    const archPush = mockPushFile.mock.calls.find((c) => c[1] === ".prism/architecture.md");
+    expect(archPush).toBeDefined();
+    const stored = archPush![2] as string;
+    expect(stored).toContain(`##${ZWS} Injected`);
+    expect(stored).not.toMatch(/^## Injected$/m);
+
+    // The mutation is reported, never silent (→ pdu_sanitized in finalize).
+    expect(result.sanitized).toHaveLength(1);
+    expect(result.sanitized[0].title).toBe("Injection attempt");
+    expect(result.sanitized[0].lines[0].header).toBe("## Injected");
+  });
+
+  it("level-aware on the unattended channel: '### Sub' against the '## Mutation Primitives' target survives byte-identical", async () => {
+    setupFetchByPath({
+      "pending-doc-updates.md": pduWithBody("### Sub Detail\n- fine-grained point"),
+      "architecture.md": ARCH_TARGET,
+    });
+
+    const result = await applyPendingDocUpdates("test", 101);
+
+    expect(result.errors).toEqual([]);
+    const archPush = mockPushFile.mock.calls.find((c) => c[1] === ".prism/architecture.md");
+    const stored = archPush![2] as string;
+    expect(stored).toMatch(/^### Sub Detail$/m);
+    expect(stored).not.toContain(ZWS);
+    expect(result.sanitized).toEqual([]);
+  });
+
+  it("integrity gate: an apply that would corrupt the doc (duplicate header) routes to errors, pushes nothing for that file, and leaves the batch un-consumed", async () => {
+    // Appending a deeper header that ALREADY exists in the target section
+    // creates a duplicate-header integrity failure that the sanitizer
+    // (correctly) does not neutralize.
+    const archWithSub = `# Architecture — test
+
+## Mutation Primitives
+
+### Existing Sub
+
+Existing content here.
+
+<!-- EOF: architecture.md -->
+`;
+    setupFetchByPath({
+      "pending-doc-updates.md": pduWithBody("### Existing Sub\nshadow copy"),
+      "architecture.md": archWithSub,
+    });
+
+    const result = await applyPendingDocUpdates("test", 101);
+
+    expect(result.applied).toEqual([]);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0].error).toContain("integrity");
+    // Nothing pushed: not the corrupted doc, not the archive, not the clear.
+    expect(mockPushFile).not.toHaveBeenCalled();
+    expect(result.cleared).toBe(false);
+    expect(result.archived).toBe(false);
+  });
+
+  it("glossary rows are sanitized at full depth — an embedded header inside the row payload cannot become a section", async () => {
+    const glossary = `# Glossary — test
+
+| Term | Definition |
+|------|------------|
+| old | row |
+
+<!-- EOF: glossary.md -->
+`;
+    const pdu = `# Pending Doc Updates — test
+
+> Last synthesized: S99 (04-26-26 12:00:00)
+
+## glossary.md
+
+### Add term: sneaky
+
+**Body:**
+\`\`\`
+| sneaky | definition |
+## Injected Via Glossary
+\`\`\`
+
+<!-- EOF: pending-doc-updates.md -->
+`;
+    setupFetchByPath({
+      "pending-doc-updates.md": pdu,
+      "glossary.md": glossary,
+    });
+
+    const result = await applyPendingDocUpdates("test", 101);
+
+    expect(result.errors).toEqual([]);
+    const glossaryPush = mockPushFile.mock.calls.find((c) => c[1] === ".prism/glossary.md");
+    expect(glossaryPush).toBeDefined();
+    const stored = glossaryPush![2] as string;
+    expect(stored).toContain(`##${ZWS} Injected Via Glossary`);
+    expect(stored).not.toMatch(/^## Injected Via Glossary$/m);
+    expect(result.sanitized).toHaveLength(1);
+  });
+});

@@ -394,7 +394,13 @@ describe("KI-26 — prism_patch sanitizes header-injected content before write",
     expect(written).toContain("- after");
   });
 
-  it("neutralizes injected headers in replace content", async () => {
+  it("brief-460 / SRV-03: a `###` subsection in replace content against a `##` target SURVIVES (level-aware — it cannot escape the section boundary)", async () => {
+    // Pre-460 this was pinned the other way (`###${ZWS} Sneaky Sub`): the
+    // fence-blind, level-blind sanitizer neutralized legitimate subsection
+    // structure that the replace contract REQUIRES callers to resend —
+    // silently and permanently corrupting living documents. parseSections
+    // bounds a `##` section at the next same-or-higher header, so a `###`
+    // line cannot escape it; it must survive byte-identical.
     mockFetchFile.mockResolvedValue({
       content: TASK_QUEUE,
       sha: "tq-sha",
@@ -422,8 +428,11 @@ describe("KI-26 — prism_patch sanitizes header-injected content before write",
     const data = parseResult(result);
     expect(data.success).toBe(true);
     const written = getCommittedContent();
-    expect(written).toContain(`###${ZWS} Sneaky Sub`);
-    expect(written).not.toMatch(/^### Sneaky Sub$/m);
+    expect(written).toMatch(/^### Sneaky Sub$/m);
+    expect(written).not.toContain(ZWS);
+    // No mutation happened → no sanitization diagnostic.
+    const codes = (data.diagnostics ?? []).map((d: { code: string }) => d.code);
+    expect(codes).not.toContain("PATCH_CONTENT_SANITIZED");
   });
 
   it("neutralizes injected headers in prepend content", async () => {
@@ -484,5 +493,212 @@ describe("KI-26 — prism_patch sanitizes header-injected content before write",
     const written = getCommittedContent();
     expect(written).toContain("- plain item");
     expect(written).not.toContain(ZWS);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// brief-460 / W3-S4 (M-007) — level- and fence-aware sanitizer contract.
+// SRV-03 (legitimate-subsection round-trip), SRV-29 (fence-aware),
+// SRV-53 (visible PATCH_CONTENT_SANITIZED diagnostic + real new-entry
+// headers), SRV-78 (incoming-contamination detection). KI-26 regression
+// pins live in the describe block above (## Injected vs ## target) and in
+// the same-level pin below.
+// ───────────────────────────────────────────────────────────────────────────
+describe("brief-460 / W3-S4 — level/fence-aware sanitizer through prism_patch", () => {
+  const ZWS = "​";
+
+  const HANDOFF_DOC = `# Handoff
+
+## Meta
+- Handoff Version: 9
+
+## Where We Are
+### Current Focus
+Old focus.
+### Next Steps
+Old steps.
+
+## Session History
+### Session 41
+Did things.
+
+<!-- EOF: handoff.md -->
+`;
+
+  function useDoc(doc: string, path = ".prism/handoff.md") {
+    mockResolveDocPath.mockResolvedValue({
+      path,
+      content: doc,
+      sha: "doc-sha",
+      legacy: false,
+    });
+    mockFetchFile.mockResolvedValue({ content: doc, sha: "doc-sha", size: doc.length });
+    mockGetHeadSha.mockResolvedValue("HEAD_STABLE");
+    mockCreateAtomicCommit.mockResolvedValue({
+      success: true,
+      sha: "atomic-1",
+      files_committed: 1,
+    });
+  }
+
+  function committedContent(path: string): string {
+    const calls = mockCreateAtomicCommit.mock.calls;
+    expect(calls.length).toBeGreaterThan(0);
+    const files = calls[calls.length - 1][1] as Array<{ path: string; content: string }>;
+    const f = files.find((x) => x.path === path);
+    if (!f) throw new Error(`${path} missing from atomic-commit payload`);
+    return f.content;
+  }
+
+  it("SRV-03 round-trip: replace of '## Where We Are' resends its '###' subsections — they survive byte-identical, parse as sections, and a follow-up patch can target them", async () => {
+    useDoc(HANDOFF_DOC);
+
+    const newBody = "### Current Focus\nNew focus prose.\n### Next Steps\n1. Ship W3-S4.";
+    const first = await callPatchTool({
+      project_slug: "test-project",
+      file: "handoff.md",
+      patches: [
+        { operation: "replace", section: "## Where We Are", content: newBody },
+      ],
+    });
+    expect(parseResult(first).success).toBe(true);
+
+    const stored = committedContent(".prism/handoff.md");
+    // Byte-identical survival of the legitimate subsection headers.
+    expect(stored).toMatch(/^### Current Focus$/m);
+    expect(stored).toMatch(/^### Next Steps$/m);
+    expect(stored).not.toContain(ZWS);
+
+    // parseSections still reports the subsections.
+    const { parseSections } = await import("../src/utils/markdown-sections.js");
+    const headers = parseSections(stored).map((s) => s.header);
+    expect(headers).toContain("### Current Focus");
+    expect(headers).toContain("### Next Steps");
+
+    // Follow-up applyPatch targeting the resent subsection succeeds.
+    vi.clearAllMocks();
+    useDoc(stored);
+    const followUp = await callPatchTool({
+      project_slug: "test-project",
+      file: "handoff.md",
+      patches: [
+        { operation: "append", section: "### Current Focus", content: "- follow-up line" },
+      ],
+    });
+    const followUpData = parseResult(followUp);
+    expect(followUp.isError).toBeUndefined();
+    expect(followUpData.success).toBe(true);
+  });
+
+  it("KI-26 same-level pin: '###' injected against a '###' target section is still neutralized (level <= target)", async () => {
+    useDoc(HANDOFF_DOC);
+
+    const result = await callPatchTool({
+      project_slug: "test-project",
+      file: "handoff.md",
+      patches: [
+        {
+          operation: "append",
+          section: "### Session 41",
+          content: "- detail\n### Session 999 forged\n## Escape Attempt",
+        },
+      ],
+    });
+    const data = parseResult(result);
+    expect(data.success).toBe(true);
+    const stored = committedContent(".prism/handoff.md");
+    expect(stored).toContain(`###${ZWS} Session 999 forged`);
+    expect(stored).toContain(`##${ZWS} Escape Attempt`);
+    expect(stored).not.toMatch(/^### Session 999 forged$/m);
+    expect(stored).not.toMatch(/^## Escape Attempt$/m);
+    // And the mutation is named in a visible diagnostic (SRV-53).
+    const sanitizedDiag = (data.diagnostics ?? []).find(
+      (d: { code: string }) => d.code === "PATCH_CONTENT_SANITIZED",
+    );
+    expect(sanitizedDiag).toBeDefined();
+    expect(sanitizedDiag.message).toContain("Session 999 forged");
+  });
+
+  it("SRV-29 fence-aware: header-shaped lines inside a balanced code fence are untouched", async () => {
+    useDoc(HANDOFF_DOC);
+
+    const fenced = "Run this:\n```bash\n# install\n## not a header to the parser\nnpm ci\n```\nDone.";
+    const result = await callPatchTool({
+      project_slug: "test-project",
+      file: "handoff.md",
+      patches: [
+        { operation: "append", section: "## Where We Are", content: fenced },
+      ],
+    });
+    const data = parseResult(result);
+    expect(data.success).toBe(true);
+    const stored = committedContent(".prism/handoff.md");
+    expect(stored).toContain("# install");
+    expect(stored).toContain("## not a header to the parser");
+    expect(stored).not.toContain(ZWS);
+    const codes = (data.diagnostics ?? []).map((d: { code: string }) => d.code);
+    expect(codes).not.toContain("PATCH_CONTENT_SANITIZED");
+  });
+
+  it("SRV-29 unbalanced-fence fallback: an unterminated fence falls back to fence-blind neutralization", async () => {
+    useDoc(HANDOFF_DOC);
+
+    const unbalanced = "```bash\n# comment line\n## header-shaped\nno closing fence";
+    const result = await callPatchTool({
+      project_slug: "test-project",
+      file: "handoff.md",
+      patches: [
+        { operation: "append", section: "## Where We Are", content: unbalanced },
+      ],
+    });
+    const data = parseResult(result);
+    expect(data.success).toBe(true);
+    const stored = committedContent(".prism/handoff.md");
+    expect(stored).toContain(`#${ZWS} comment line`);
+    expect(stored).toContain(`##${ZWS} header-shaped`);
+  });
+
+  it("SRV-53: appending a new '### Session N' entry to a '##' section lands as a REAL header the session parsers recognize", async () => {
+    useDoc(HANDOFF_DOC);
+
+    const result = await callPatchTool({
+      project_slug: "test-project",
+      file: "handoff.md",
+      patches: [
+        {
+          operation: "append",
+          section: "## Session History",
+          content: "### Session 42 (2026-06-12)\n- shipped the sanitizer redesign",
+        },
+      ],
+    });
+    const data = parseResult(result);
+    expect(data.success).toBe(true);
+    const stored = committedContent(".prism/handoff.md");
+    expect(stored).toMatch(/^### Session 42 \(2026-06-12\)$/m);
+    // The archive/analytics session-header shape recognizes the entry.
+    const sessionHeaders = stored.match(/^###?\s+Session\s+(\d+)/gm) ?? [];
+    expect(sessionHeaders.join("\n")).toContain("### Session 42");
+    expect(stored).not.toContain(ZWS);
+  });
+
+  it("SRV-78: incoming patch content already carrying the ZWS signature raises ZWS_CONTAMINATION_DETECTED (visible, non-mutating)", async () => {
+    useDoc(HANDOFF_DOC);
+
+    const contaminated = `- item\n###${ZWS} Previously Mangled Header\n- more`;
+    const result = await callPatchTool({
+      project_slug: "test-project",
+      file: "handoff.md",
+      patches: [
+        { operation: "append", section: "## Where We Are", content: contaminated },
+      ],
+    });
+    const data = parseResult(result);
+    expect(data.success).toBe(true);
+    const diag = (data.diagnostics ?? []).find(
+      (d: { code: string }) => d.code === "ZWS_CONTAMINATION_DETECTED",
+    );
+    expect(diag).toBeDefined();
+    expect(diag.message).toContain("Previously Mangled Header");
   });
 });

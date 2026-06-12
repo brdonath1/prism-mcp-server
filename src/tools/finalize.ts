@@ -153,6 +153,7 @@ import {
 import { DiagnosticsCollector } from "../utils/diagnostics.js";
 import { classifySession, injectPersistedRecommendation, type SessionRecommendation } from "../utils/session-classifier.js";
 import { applyPendingDocUpdates, type ApplyPduResult } from "../utils/apply-pdu.js";
+import { detectZwsHeaders } from "../utils/sanitize-content.js";
 import { findUnloggedIds } from "../utils/unlogged-ids.js";
 import { parseExistingDecisionIds } from "./log-decision.js";
 import { parseExistingInsightIds } from "./log-insight.js";
@@ -765,10 +766,18 @@ async function commitPhase(
   const warnings: string[] = [];
   const today = new Date().toISOString().split("T")[0];
 
-  // 1 & 2. Backup current handoff and prune old versions — run in parallel
-  const [backupOutcome, _pruneOutcome] = await Promise.allSettled([
-    // 1. Backup
-    (async () => {
+  // 1 & 2. Backup current handoff and prune old versions — ONE shared tree
+  // mutation (brief-460 / S170 post-mortem). The previous shape ran a
+  // pushFile backup commit and a safeMutation prune commit in PARALLEL;
+  // the two commits raced each other into MUTATION_CONFLICT retries
+  // (observed live S170, backup pair 12:34:34–36Z). A single commit cannot
+  // race itself, and safeMutation's 409-retry still covers external
+  // writers. The plan reads (handoff fetch, history listing) stay parallel
+  // and fail independently — backup-plan failure does not block pruning
+  // and vice versa; both remain non-fatal to the finalize.
+  const [backupPlan, prunePlan] = await Promise.all([
+    // 1. Plan the backup write.
+    (async (): Promise<{ path: string; content: string; version: number } | null> => {
       try {
         const currentHandoff = await resolveDocPath(projectSlug, "handoff.md");
         const currentVersion = parseHandoffVersion(currentHandoff.content) ?? handoffVersion - 1;
@@ -784,7 +793,7 @@ async function commitPhase(
             projectSlug,
             outgoingVersion: currentVersion,
           });
-          return "";
+          return null;
         }
 
         const historyBase = currentHandoff.legacy ? "handoff-history" : ".prism/handoff-history";
@@ -800,38 +809,20 @@ async function commitPhase(
           /<!-- EOF: handoff\.md -->\s*$/,
           `<!-- EOF: ${backupBasename} -->`,
         );
-
-        const backupPush = await pushFile(
-          projectSlug,
-          backupPath,
-          backupContent,
-          `prism: handoff-backup v${currentVersion}`
-        );
-        // pushFile reports HTTP failures as a result shape — backup_created
-        // must not name a path for a backup that was never written (SRV-18).
-        if (!backupPush.success) {
-          warnings.push(
-            `Failed to backup current handoff: ${backupPush.error ?? "push failed"}`,
-          );
-          return "";
-        }
-        return backupPath;
+        return { path: backupPath, content: backupContent, version: currentVersion };
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
         if (!msg.includes("Not found")) {
           warnings.push(`Failed to backup current handoff: ${msg}`);
         }
-        return "";
+        return null;
       }
     })(),
 
-    // 2. Prune handoff-history to keep only last 3 versions.
-    //    Migrated to safeMutation per S62 audit (Phase 1 Brief 1, Change 5):
-    //    a single atomic commit with `deletes` replaces the parallel
-    //    Contents-API DELETE loop that previously raced HEAD on every
-    //    successful delete. Failures are emitted as DELETE_FILE_FAILED
-    //    instead of being silently swallowed; pruning is still non-fatal.
-    (async () => {
+    // 2. Plan the prune deletes (keep only the 3 newest existing versions).
+    //    safeMutation with `deletes` per S62 audit (Phase 1 Brief 1,
+    //    Change 5); numeric-aware sort per SRV-05.
+    (async (): Promise<string[]> => {
       let historyEntries: Awaited<ReturnType<typeof listDirectory>>;
       try {
         historyEntries = await listDirectory(projectSlug, ".prism/handoff-history");
@@ -845,38 +836,59 @@ async function commitPhase(
           `Failed to list handoff-history for pruning: ${msg}`,
           { phase: "list" },
         );
-        return;
+        return [];
       }
 
       const handoffFiles = historyEntries
         .filter((e) => e.name.startsWith("handoff_v") && e.name.endsWith(".md"))
         .sort(compareHandoffBackupsNewestFirst);
 
-      if (handoffFiles.length <= 3) return;
-
-      const toDelete = handoffFiles.slice(3);
-      const pruneResult = await safeMutation({
-        repo: projectSlug,
-        commitMessage: `chore: prune ${toDelete.length} old handoff backup${toDelete.length === 1 ? "" : "s"}`,
-        readPaths: [],
-        diagnostics,
-        computeMutation: () => ({
-          writes: [],
-          deletes: toDelete.map((f) => f.path),
-        }),
-      });
-
-      if (!pruneResult.ok) {
-        diagnostics.warn(
-          "DELETE_FILE_FAILED",
-          `Failed to prune handoff-history: ${pruneResult.error}`,
-          { code: pruneResult.code, pathCount: toDelete.length },
-        );
-      }
+      if (handoffFiles.length <= 3) return [];
+      return handoffFiles.slice(3).map((f) => f.path);
     })(),
   ]);
 
-  const backupPath = backupOutcome.status === "fulfilled" ? backupOutcome.value : "";
+  let backupPath = "";
+  if (backupPlan !== null || prunePlan.length > 0) {
+    const pruneSuffix = prunePlan.length > 0
+      ? ` + prune ${prunePlan.length} old backup${prunePlan.length === 1 ? "" : "s"}`
+      : "";
+    const commitMessage = backupPlan !== null
+      ? `prism: handoff-backup v${backupPlan.version}${pruneSuffix}`
+      : `chore: prune ${prunePlan.length} old handoff backup${prunePlan.length === 1 ? "" : "s"}`;
+
+    const backupMutation = await safeMutation({
+      repo: projectSlug,
+      commitMessage,
+      readPaths: [],
+      diagnostics,
+      computeMutation: () => ({
+        writes: backupPlan !== null
+          ? [{ path: backupPlan.path, content: backupPlan.content }]
+          : [],
+        deletes: prunePlan,
+      }),
+    });
+
+    if (backupMutation.ok) {
+      // backup_created must not name a path for a backup that was never
+      // written (SRV-18) — only a committed mutation sets it.
+      backupPath = backupPlan?.path ?? "";
+    } else {
+      if (backupPlan !== null) {
+        warnings.push(
+          `Failed to backup current handoff: ${backupMutation.error ?? "commit failed"}`,
+        );
+      }
+      if (prunePlan.length > 0) {
+        diagnostics.warn(
+          "DELETE_FILE_FAILED",
+          `Failed to prune handoff-history: ${backupMutation.error}`,
+          { code: backupMutation.code, pathCount: prunePlan.length },
+        );
+      }
+    }
+  }
 
   // 2b. brief-411 / D-193 Piece 1 — persist the model+thinking recommendation
   //     into handoff.md as a structured markdown block. Bootstrap reads this
@@ -916,6 +928,11 @@ async function commitPhase(
             projectSlug,
             sessionNumber,
           });
+          diagnostics.warn(
+            "HANDOFF_SCHEMA_MISSING",
+            "Supplied handoff.md has a '## Meta' header but its body did not match the expected schema (Handoff Version / Session Count / Template Version / Status) — persisted session recommendation was NOT injected; next boot shows the previous recommendation.",
+            { section: "## Meta", consequence: "recommendation_not_injected" },
+          );
         }
       } catch (classifyErr) {
         logger.warn("persisted recommendation classifier failed", {
@@ -926,10 +943,34 @@ async function commitPhase(
       }
     } else {
       // Defensive contract per brief-411 A.1: do not invent a Meta section.
+      // brief-460 / S170 post-mortem: this was a logger-only (silent)
+      // failure discovered live when the phased commit ran with operator-
+      // built handoff content. The commit phase REQUIRES the handoff schema
+      // ('## Meta' + '## Where We Are', see tool description) — surface the
+      // gap as an operator-visible diagnostic, not just a Railway log line.
       logger.warn("persisted recommendation skipped — no ## Meta section in handoff", {
         projectSlug,
         sessionNumber,
       });
+      diagnostics.warn(
+        "HANDOFF_SCHEMA_MISSING",
+        "Supplied handoff.md content has no '## Meta' section (Handoff Version / Session Count / Template Version / Status). The commit phase requires the handoff schema: validation will reject the file, and the persisted session recommendation cannot be injected.",
+        { section: "## Meta", consequence: "recommendation_not_injected; validation_will_reject" },
+      );
+    }
+
+    // brief-460 / S170 post-mortem: '## Where We Are' is the other half of
+    // the phased-commit schema requirement — validation rejects when it is
+    // absent, and the finalization banner's resumption line silently
+    // degrades to a generic pointer when it is empty. Name it explicitly.
+    const whereWeAreBody = extractSection(handoffFile.content, "Where We Are")
+      ?? extractSection(handoffFile.content, "Current State");
+    if (whereWeAreBody === null || whereWeAreBody.trim() === "") {
+      diagnostics.warn(
+        "HANDOFF_SCHEMA_MISSING",
+        "Supplied handoff.md content has no non-empty '## Where We Are' section. The commit phase requires it: validation will reject the file, and the finalization banner cannot derive a resumption point.",
+        { section: "## Where We Are", consequence: "banner_resumption_degraded; validation_will_reject" },
+      );
     }
   }
 
@@ -1090,6 +1131,27 @@ async function commitPhase(
     });
   }
 
+  // 3c. brief-460 / SRV-78: ZWS contamination detection. Finalize is a
+  // full-document channel (intentionally unsanitized — the files ARE the
+  // document structure), and no read path strips U+200B, so headers
+  // neutralized by the pre-brief-460 sanitizer flow back in here forever.
+  // Detect the signature and surface it; repairing the bytes is M-041
+  // (operator-driven, prism repo) — this commit writes them as supplied.
+  for (const file of files) {
+    const contaminated = detectZwsHeaders(file.content);
+    if (contaminated.length > 0) {
+      diagnostics.warn(
+        "ZWS_CONTAMINATION_DETECTED",
+        `${file.path} contains ${contaminated.length} ZWS-neutralized header(s) — invisible corruption from a pre-brief-460 sanitizer write (repair: M-041). First: "${contaminated[0].header}" (line ${contaminated[0].line}).`,
+        {
+          path: file.path,
+          lines: contaminated.slice(0, 20).map((c) => ({ line: c.line, header: c.header })),
+          total: contaminated.length,
+        },
+      );
+    }
+  }
+
   // 4. Guard all paths against root-level duplication (D-67 addendum)
   const guardResults = await Promise.all(
     files.map(file => guardPushPath(projectSlug, file.path))
@@ -1207,7 +1269,7 @@ async function commitPhase(
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         logger.warn("PDU auto-apply threw — continuing", { projectSlug, err: msg });
-        pduResult = { applied: [], skipped: [], errors: [{ title: "(applyPendingDocUpdates)", error: msg }], cleared: false, archived: false };
+        pduResult = { applied: [], skipped: [], errors: [{ title: "(applyPendingDocUpdates)", error: msg }], sanitized: [], cleared: false, archived: false };
       }
     }
     try {
@@ -1307,6 +1369,9 @@ async function commitPhase(
     pdu_applied: pduResult?.applied ?? null,
     pdu_skipped: pduResult?.skipped ?? null,
     pdu_errors: pduResult?.errors ?? null,
+    // brief-460 / SRV-46: sanitizer mutations on the unattended auto-apply
+    // channel — visible here because nobody watches the apply itself.
+    pdu_sanitized: pduResult?.sanitized ?? null,
     pdu_cleared: pduResult?.cleared ?? null,
     pdu_archived: pduResult?.archived ?? null,   // brief-444: consumed-batch provenance archived
     architecture_updated: architectureResult?.updated ?? null,
@@ -1978,7 +2043,7 @@ async function fullPhase(
 export function registerFinalize(server: McpServer): void {
   server.tool(
     "prism_finalize",
-    "PRISM finalization. Actions: audit (document inventory + drift), draft (AI-generated files), commit (backup + push + validate), full (single call: audit + draft + commit).",
+    "PRISM finalization. Actions: audit (document inventory + drift), draft (AI-generated files), commit (backup + push + validate), full (single call: audit + draft + commit). Phased commit (action=commit with operator-built files): handoff.md content MUST carry the handoff schema — '## Meta' (Handoff Version / Session Count / Template Version / Status), '## Critical Context' (>=1 numbered item), and a non-empty '## Where We Are' — validation rejects it otherwise, and recommendation injection + banner resumption read the same sections (HANDOFF_SCHEMA_MISSING diagnostic names any gap).",
     {
       project_slug: z.string().describe("Project repo name"),
       action: z.enum(["audit", "draft", "commit", "full"]).describe("Finalization phase: 'audit' for document inventory, 'draft' for AI-generated file drafts, 'commit' to push final files, 'full' (single call: audit + draft + commit)"),

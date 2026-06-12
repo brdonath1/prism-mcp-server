@@ -598,15 +598,16 @@ describe("synthesize diagnostics integration", () => {
     expect(data.intelligence_brief.exists).toBe(true);
   });
 
-  it("surfaces SYNTHESIS_TIMEOUT when generation times out", async () => {
+  it("brief-460 / INS-331: generate returns a started payload with clean diagnostics — leg failures land in logs, not the (already-sent) response", async () => {
     const { registerSynthesize } = await import("../src/tools/synthesize.js");
 
+    // A failing leg can no longer surface in the response: the handler
+    // dispatches fire-and-forget (the pre-460 in-request await outlived the
+    // MCP client transport — INS-331) and reports started immediately.
     mockGenerateIntelligenceBrief.mockResolvedValue({
       success: false,
       error: "Synthesis API call timed out after 50000ms",
     });
-    // PR 4 §5.1: synthesize now fires both functions in parallel. Mock
-    // pending as success so this test stays focused on the brief failure path.
     mockGeneratePendingDocUpdates.mockResolvedValue({
       success: true,
       bytes_written: 1000,
@@ -619,39 +620,15 @@ describe("synthesize diagnostics integration", () => {
     });
 
     const data = parseResult(result);
-    expect(data.diagnostics).toBeDefined();
-    const timeoutDiag = data.diagnostics.find((d: Diagnostic) => d.code === "SYNTHESIS_TIMEOUT");
-    expect(timeoutDiag).toBeDefined();
-    expect(timeoutDiag.level).toBe("error");
-    expect(timeoutDiag.message).toContain("timed out");
+    expect(data.status).toBe("started");
+    expect(data.synthesis_outcome).toBe("background");
+    expect(data.diagnostics).toEqual([]);
+    expect(result.isError).toBeUndefined();
+    // Drain the background allSettled so nothing leaks across tests.
+    await new Promise((res) => setImmediate(res));
   });
 
-  it("surfaces SYNTHESIS_RETRY when generation fails for non-timeout reasons", async () => {
-    const { registerSynthesize } = await import("../src/tools/synthesize.js");
-
-    mockGenerateIntelligenceBrief.mockResolvedValue({
-      success: false,
-      error: "API rate limit exceeded",
-    });
-    mockGeneratePendingDocUpdates.mockResolvedValue({
-      success: true,
-      bytes_written: 1000,
-    });
-
-    const result = await callTool(registerSynthesize, "prism_synthesize", {
-      project_slug: "test-project",
-      mode: "generate",
-      session_number: 11,
-    });
-
-    const data = parseResult(result);
-    expect(data.diagnostics).toBeDefined();
-    const retryDiag = data.diagnostics.find((d: Diagnostic) => d.code === "SYNTHESIS_RETRY");
-    expect(retryDiag).toBeDefined();
-    expect(retryDiag.level).toBe("error");
-  });
-
-  it("returns clean diagnostics on successful generation", async () => {
+  it("returns clean diagnostics on successful generation dispatch", async () => {
     const { registerSynthesize } = await import("../src/tools/synthesize.js");
 
     mockGenerateIntelligenceBrief.mockResolvedValue({
@@ -676,8 +653,9 @@ describe("synthesize diagnostics integration", () => {
     const data = parseResult(result);
     expect(data.diagnostics).toBeDefined();
     expect(data.diagnostics).toEqual([]);
-    // PR 4 §5.1: response shape now wraps each artifact's outcome.
-    expect(data.intelligence_brief.success).toBe(true);
-    expect(data.pending_doc_updates.success).toBe(true);
+    // brief-460 / INS-331: generate acknowledges the background dispatch.
+    expect(data.intelligence_brief.status).toBe("started");
+    expect(data.pending_doc_updates.status).toBe("started");
+    await new Promise((res) => setImmediate(res));
   });
 });

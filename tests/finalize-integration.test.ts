@@ -412,7 +412,16 @@ Completed audit remediation.
     expect(data.handoff_version).toBe(31);
     expect(data.backup_created).toContain("handoff-history/handoff_v30");
     expect(data.confirmation).toContain("Session 26 finalized");
-    expect(mockPushFile).toHaveBeenCalled();
+    // brief-460 / S170 post-mortem: the backup rides a safeMutation atomic
+    // commit (shared with the prune), not a separate pushFile commit.
+    const backupCommit = mockCreateAtomicCommit.mock.calls.find((c) =>
+      (c[1] as Array<{ path: string }>).some((f) => f.path.includes("handoff-history/handoff_v30")),
+    );
+    expect(backupCommit).toBeDefined();
+    const backupPushCalls = mockPushFile.mock.calls.filter(
+      (c) => typeof c[1] === "string" && (c[1] as string).includes("handoff-history/"),
+    );
+    expect(backupPushCalls).toHaveLength(0);
   });
 
   it("rejects commit when validation fails — pushes nothing", async () => {
@@ -1222,14 +1231,20 @@ Testing.
       files: [{ path: "handoff.md", content: NEW_HANDOFF }],
     });
 
-    // The backup is pushed via pushFile (separate from the atomic commit)
-    expect(mockPushFile).toHaveBeenCalled();
-    const backupCall = mockPushFile.mock.calls.find(
-      (call) => (call[1] as string).includes("handoff-history/handoff_v"),
+    // brief-460 / S170 post-mortem: the backup rides a safeMutation atomic
+    // commit (shared with the prune) — never a separate pushFile commit.
+    const backupCommit = mockCreateAtomicCommit.mock.calls.find((call) =>
+      (call[1] as Array<{ path: string }>).some((f) =>
+        f.path.includes("handoff-history/handoff_v"),
+      ),
     );
-    expect(backupCall).toBeDefined();
+    expect(backupCommit).toBeDefined();
+    const backupWrite = (backupCommit![1] as Array<{ path: string; content: string }>).find(
+      (f) => f.path.includes("handoff-history/handoff_v"),
+    );
+    expect(backupWrite).toBeDefined();
 
-    const backupContent = backupCall![2] as string;
+    const backupContent = backupWrite!.content;
     // Must NOT contain the source file's EOF sentinel
     expect(backupContent).not.toContain("<!-- EOF: handoff.md -->");
     // Must contain EOF sentinel matching the versioned backup filename
@@ -1311,11 +1326,77 @@ Testing.
     // Auto-backup should have been created
     expect(data.backup_created).toContain("handoff-history/handoff_v30");
 
-    // pushFile should have been called for the backup
-    const backupCall = mockPushFile.mock.calls.find(
-      (call) => (call[1] as string).includes("handoff-history/handoff_v"),
+    // brief-460: the backup rides an atomic commit, not pushFile.
+    const backupCommit = mockCreateAtomicCommit.mock.calls.find((call) =>
+      (call[1] as Array<{ path: string }>).some((f) =>
+        f.path.includes("handoff-history/handoff_v"),
+      ),
     );
-    expect(backupCall).toBeDefined();
+    expect(backupCommit).toBeDefined();
+  });
+
+  it("brief-460 / S170 post-mortem: backup write and history prune share ONE atomic commit — the pair can no longer race itself into MUTATION_CONFLICT", async () => {
+    mockFetchFile.mockResolvedValue({
+      content: HANDOFF_CONTENT,
+      sha: "sha",
+      size: HANDOFF_CONTENT.length,
+    });
+    // 5 existing backups → 2 oldest must be pruned alongside the new write.
+    mockListDirectory.mockResolvedValue([
+      { name: "handoff_v29_2026-06-01.md", path: ".prism/handoff-history/handoff_v29_2026-06-01.md", type: "file" },
+      { name: "handoff_v28_2026-05-30.md", path: ".prism/handoff-history/handoff_v28_2026-05-30.md", type: "file" },
+      { name: "handoff_v27_2026-05-28.md", path: ".prism/handoff-history/handoff_v27_2026-05-28.md", type: "file" },
+      { name: "handoff_v26_2026-05-26.md", path: ".prism/handoff-history/handoff_v26_2026-05-26.md", type: "file" },
+      { name: "handoff_v25_2026-05-24.md", path: ".prism/handoff-history/handoff_v25_2026-05-24.md", type: "file" },
+    ] as never);
+    mockPushFile.mockResolvedValue({ success: true, size: 100, sha: "new" });
+
+    const atomicCalls: Array<{ files: Array<{ path: string }>; message: string; deletes: string[] }> = [];
+    mockCreateAtomicCommit.mockImplementation(async (_repo, files, message, deletes) => {
+      atomicCalls.push({
+        files: files as Array<{ path: string }>,
+        message: message as string,
+        deletes: (deletes as string[] | undefined) ?? [],
+      });
+      return { success: true, sha: "atomic_sha", files_committed: (files as unknown[]).length };
+    });
+
+    const result = await callFinalizeTool({
+      project_slug: "test-project",
+      action: "commit",
+      session_number: 26,
+      handoff_version: 31,
+      skip_synthesis: true,
+      files: [{ path: "handoff.md", content: NEW_HANDOFF }],
+    });
+
+    const data = parseResult(result);
+    expect(data.backup_created).toContain("handoff-history/handoff_v30");
+
+    // Exactly ONE commit carries BOTH the backup write AND the prune deletes.
+    const backupCommits = atomicCalls.filter(
+      (c) =>
+        c.files.some((f) => f.path.includes("handoff-history/handoff_v30")) ||
+        c.deletes.some((d) => d.includes("handoff-history/")),
+    );
+    expect(backupCommits).toHaveLength(1);
+    const combined = backupCommits[0];
+    expect(combined.files.some((f) => f.path.includes("handoff-history/handoff_v30"))).toBe(true);
+    expect(combined.deletes).toEqual(
+      expect.arrayContaining([
+        ".prism/handoff-history/handoff_v26_2026-05-26.md",
+        ".prism/handoff-history/handoff_v25_2026-05-24.md",
+      ]),
+    );
+    expect(combined.deletes).toHaveLength(2);
+    expect(combined.message).toContain("handoff-backup v30");
+    expect(combined.message).toContain("prune 2");
+
+    // And no pushFile-based backup commit exists at all.
+    const backupPushCalls = mockPushFile.mock.calls.filter(
+      (call) => typeof call[1] === "string" && (call[1] as string).includes("handoff-history/"),
+    );
+    expect(backupPushCalls).toHaveLength(0);
   });
 });
 
@@ -1464,5 +1545,193 @@ describe("brief-459 / SRV-31: backup-exists check is version-anchored", () => {
 
     const data = parseResult(result);
     expect(data.audit.handoff_backup_exists).toBe(true);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// brief-460 Task C.1 — phased-finalize schema requirement is explicit.
+// The S170/S171 post-mortem found the '## Meta' + '## Where We Are' schema
+// to be an undocumented hard requirement whose absence failed SILENTLY
+// (logger-only). The gap now surfaces as HANDOFF_SCHEMA_MISSING diagnostics.
+// brief-460 / SRV-78 — finalize detects pre-existing ZWS header
+// contamination in committed files (full-document channel: detect, never
+// mutate; repair is M-041).
+// ───────────────────────────────────────────────────────────────────────────
+
+describe("brief-460 — phased-commit handoff schema diagnostics (S170 post-mortem)", () => {
+  beforeEach(() => {
+    mockFetchFile.mockResolvedValue({
+      content: HANDOFF_CONTENT,
+      sha: "sha",
+      size: HANDOFF_CONTENT.length,
+    });
+    mockListDirectory.mockResolvedValue([]);
+    mockPushFile.mockResolvedValue({ success: true, size: 100, sha: "new" });
+    mockCreateAtomicCommit.mockResolvedValue({
+      success: true,
+      sha: "atomic_sha",
+      files_committed: 1,
+    });
+  });
+
+  it("commit with handoff content missing '## Meta' emits HANDOFF_SCHEMA_MISSING naming the section (and validation still rejects)", async () => {
+    const noMeta = `## Critical Context
+1. An item
+
+## Where We Are
+Mid-flight.
+
+<!-- EOF: handoff.md -->`;
+
+    const result = await callFinalizeTool({
+      project_slug: "test-project",
+      action: "commit",
+      session_number: 26,
+      handoff_version: 31,
+      skip_synthesis: true,
+      files: [{ path: "handoff.md", content: noMeta }],
+    });
+
+    const data = parseResult(result);
+    // The hard requirement still holds — validation rejects the commit…
+    expect(data.all_succeeded).toBe(false);
+    // …but the schema gap is now an explicit diagnostic, not a silent log.
+    const schemaDiags = (data.diagnostics ?? []).filter(
+      (d: { code: string }) => d.code === "HANDOFF_SCHEMA_MISSING",
+    );
+    expect(schemaDiags.length).toBeGreaterThanOrEqual(1);
+    const metaDiag = schemaDiags.find((d: { context?: { section?: string } }) => d.context?.section === "## Meta");
+    expect(metaDiag).toBeDefined();
+    expect(metaDiag.message).toContain("## Meta");
+  });
+
+  it("commit with handoff content missing a non-empty '## Where We Are' emits HANDOFF_SCHEMA_MISSING for that section", async () => {
+    const noWhere = `## Meta
+- Handoff Version: 31
+- Session Count: 26
+- Template Version: v2.9.0
+- Status: Active
+
+## Critical Context
+1. An item
+
+<!-- EOF: handoff.md -->`;
+
+    const result = await callFinalizeTool({
+      project_slug: "test-project",
+      action: "commit",
+      session_number: 26,
+      handoff_version: 31,
+      skip_synthesis: true,
+      files: [{ path: "handoff.md", content: noWhere }],
+    });
+
+    const data = parseResult(result);
+    expect(data.all_succeeded).toBe(false);
+    const whereDiag = (data.diagnostics ?? []).find(
+      (d: { code: string; context?: { section?: string } }) =>
+        d.code === "HANDOFF_SCHEMA_MISSING" && d.context?.section === "## Where We Are",
+    );
+    expect(whereDiag).toBeDefined();
+  });
+
+  it("schema-complete handoff content emits no HANDOFF_SCHEMA_MISSING diagnostic", async () => {
+    const complete = `## Meta
+- Handoff Version: 31
+- Session Count: 26
+- Template Version: v2.9.0
+- Status: Active
+
+## Critical Context
+1. An item
+
+## Where We Are
+All sections present.
+
+<!-- EOF: handoff.md -->`;
+
+    const result = await callFinalizeTool({
+      project_slug: "test-project",
+      action: "commit",
+      session_number: 26,
+      handoff_version: 31,
+      skip_synthesis: true,
+      files: [{ path: "handoff.md", content: complete }],
+    });
+
+    const data = parseResult(result);
+    expect(data.all_succeeded).toBe(true);
+    const codes = (data.diagnostics ?? []).map((d: { code: string }) => d.code);
+    expect(codes).not.toContain("HANDOFF_SCHEMA_MISSING");
+  });
+});
+
+describe("brief-460 / SRV-78 — finalize-time ZWS contamination detection", () => {
+  const ZWS = "​";
+
+  beforeEach(() => {
+    mockFetchFile.mockResolvedValue({
+      content: HANDOFF_CONTENT,
+      sha: "sha",
+      size: HANDOFF_CONTENT.length,
+    });
+    mockListDirectory.mockResolvedValue([]);
+    mockPushFile.mockResolvedValue({ success: true, size: 100, sha: "new" });
+    mockCreateAtomicCommit.mockResolvedValue({
+      success: true,
+      sha: "atomic_sha",
+      files_committed: 2,
+    });
+  });
+
+  it("a committed file carrying the ZWS-neutralized-header signature raises ZWS_CONTAMINATION_DETECTED naming file and line", async () => {
+    const validHandoff = `## Meta
+- Handoff Version: 31
+- Session Count: 26
+- Template Version: v2.9.0
+- Status: Active
+
+## Critical Context
+1. An item
+
+## Where We Are
+Clean handoff.
+
+<!-- EOF: handoff.md -->`;
+    const contaminatedLog = `# Session Log
+
+## Sessions
+
+###${ZWS} Session 99 (mangled by the old sanitizer)
+- entry body
+
+<!-- EOF: session-log.md -->`;
+
+    const result = await callFinalizeTool({
+      project_slug: "test-project",
+      action: "commit",
+      session_number: 26,
+      handoff_version: 31,
+      skip_synthesis: true,
+      files: [
+        { path: "handoff.md", content: validHandoff },
+        { path: "session-log.md", content: contaminatedLog },
+      ],
+    });
+
+    const data = parseResult(result);
+    expect(data.all_succeeded).toBe(true);
+    const zwsDiag = (data.diagnostics ?? []).find(
+      (d: { code: string }) => d.code === "ZWS_CONTAMINATION_DETECTED",
+    );
+    expect(zwsDiag).toBeDefined();
+    expect(zwsDiag.context.path).toContain("session-log.md");
+    expect(zwsDiag.message).toContain("Session 99");
+    // Detection never mutates: the committed bytes are exactly as supplied.
+    const committed = mockCreateAtomicCommit.mock.calls
+      .flatMap((c) => c[1] as Array<{ path: string; content: string }>)
+      .find((f) => f.path.includes("session-log.md"));
+    expect(committed).toBeDefined();
+    expect(committed!.content).toContain(`###${ZWS} Session 99`);
   });
 });

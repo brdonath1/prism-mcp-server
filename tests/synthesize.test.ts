@@ -68,8 +68,8 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-describe("prism_synthesize — generate mode (parallel dispatch)", () => {
-  it("invokes BOTH generateIntelligenceBrief AND generatePendingDocUpdates exactly once each", async () => {
+describe("prism_synthesize — generate mode (brief-460 / INS-331 fire-and-forget)", () => {
+  it("invokes BOTH generateIntelligenceBrief AND generatePendingDocUpdates exactly once each and responds with the started payload", async () => {
     mockGenerateBrief.mockResolvedValue({ success: true, bytes_written: 1000 });
     mockGeneratePending.mockResolvedValue({ success: true, bytes_written: 500 });
 
@@ -86,63 +86,50 @@ describe("prism_synthesize — generate mode (parallel dispatch)", () => {
     expect(mockGeneratePending).toHaveBeenCalledWith("prism", 70);
 
     const payload = JSON.parse(result.content[0].text);
-    expect(payload.intelligence_brief.success).toBe(true);
-    expect(payload.pending_doc_updates.success).toBe(true);
+    expect(payload.status).toBe("started");
+    expect(payload.synthesis_outcome).toBe("background");
+    expect(payload.intelligence_brief.status).toBe("started");
+    expect(payload.pending_doc_updates.status).toBe("started");
+    expect(payload.status_hint).toContain("mode=status");
     expect(result.isError).toBeUndefined();
   });
 
-  it("partial success — brief succeeds, pending fails — returns both outcomes, not isError", async () => {
-    mockGenerateBrief.mockResolvedValue({ success: true, bytes_written: 1000 });
-    mockGeneratePending.mockResolvedValue({ success: false, error: "model returned malformed JSON" });
+  it("INS-331 pin: generate RETURNS IMMEDIATELY — the response does not wait for either synthesis leg to settle", async () => {
+    // Both legs hang on a deferred we control — measured live (S172), the
+    // pre-460 handler held the request open for the full synthesis duration
+    // (brief 107s, PDU ~8 min) and the MCP client transport dropped. The
+    // handler must resolve while both legs are still pending.
+    let resolveBrief!: (v: { success: boolean; bytes_written: number }) => void;
+    let resolvePending!: (v: { success: boolean; bytes_written: number }) => void;
+    mockGenerateBrief.mockReturnValue(
+      new Promise((res) => { resolveBrief = res; }) as any,
+    );
+    mockGeneratePending.mockReturnValue(
+      new Promise((res) => { resolvePending = res; }) as any,
+    );
 
     const handler = getHandler();
     const result = await handler({
       project_slug: "prism",
       mode: "generate",
-      session_number: 70,
+      session_number: 72,
     });
 
+    // The handler has already returned while both legs are unresolved.
     const payload = JSON.parse(result.content[0].text);
-    expect(payload.intelligence_brief.success).toBe(true);
-    expect(payload.pending_doc_updates.success).toBe(false);
-    expect(payload.pending_doc_updates.error).toBe("model returned malformed JSON");
-    // Partial success is not isError — caller asked for two, one happened.
+    expect(payload.status).toBe("started");
+    expect(payload.synthesis_outcome).toBe("background");
     expect(result.isError).toBeUndefined();
+    expect(mockGenerateBrief).toHaveBeenCalledTimes(1);
+    expect(mockGeneratePending).toHaveBeenCalledTimes(1);
 
-    // Diagnostics emit a failure entry for the failed kind.
-    const codes = payload.diagnostics.map((d: any) => d.code);
-    expect(codes).toContain("SYNTHESIS_RETRY");
-    const retryDiag = payload.diagnostics.find((d: any) => d.code === "SYNTHESIS_RETRY");
-    expect(retryDiag.context.synthesis_kind).toBe("pending_doc_updates");
+    // Release the background legs so nothing leaks into other tests.
+    resolveBrief({ success: true, bytes_written: 1 });
+    resolvePending({ success: true, bytes_written: 1 });
+    await new Promise((res) => setImmediate(res));
   });
 
-  it("total failure — both fail — surfaces both errors and sets isError: true", async () => {
-    mockGenerateBrief.mockResolvedValue({ success: false, error: "request timed out after 60000ms" });
-    mockGeneratePending.mockResolvedValue({ success: false, error: "API returned 500" });
-
-    const handler = getHandler();
-    const result = await handler({
-      project_slug: "prism",
-      mode: "generate",
-      session_number: 70,
-    });
-
-    const payload = JSON.parse(result.content[0].text);
-    expect(payload.intelligence_brief.success).toBe(false);
-    expect(payload.pending_doc_updates.success).toBe(false);
-    expect(result.isError).toBe(true);
-
-    // Both diagnostics fire; the brief's was a timeout, the pending's was retry.
-    const codes = payload.diagnostics.map((d: any) => d.code);
-    expect(codes).toContain("SYNTHESIS_TIMEOUT");
-    expect(codes).toContain("SYNTHESIS_RETRY");
-    const timeoutDiag = payload.diagnostics.find((d: any) => d.code === "SYNTHESIS_TIMEOUT");
-    expect(timeoutDiag.context.synthesis_kind).toBe("intelligence_brief");
-    const retryDiag = payload.diagnostics.find((d: any) => d.code === "SYNTHESIS_RETRY");
-    expect(retryDiag.context.synthesis_kind).toBe("pending_doc_updates");
-  });
-
-  it("rejected promise from generatePendingDocUpdates is captured as a failure outcome", async () => {
+  it("a background leg failure does NOT affect the already-sent started response (failures land in logs, status is the observability path)", async () => {
     mockGenerateBrief.mockResolvedValue({ success: true, bytes_written: 1000 });
     mockGeneratePending.mockRejectedValue(new Error("network unreachable"));
 
@@ -154,9 +141,22 @@ describe("prism_synthesize — generate mode (parallel dispatch)", () => {
     });
 
     const payload = JSON.parse(result.content[0].text);
-    expect(payload.intelligence_brief.success).toBe(true);
-    expect(payload.pending_doc_updates.success).toBe(false);
-    expect(payload.pending_doc_updates.error).toContain("network unreachable");
+    expect(payload.status).toBe("started");
+    expect(result.isError).toBeUndefined();
+    // Let the rejected background promise settle inside the handler's
+    // allSettled wrapper (it must not become an unhandled rejection).
+    await new Promise((res) => setImmediate(res));
+  });
+
+  it("still validates session_number synchronously (missing → isError, nothing dispatched)", async () => {
+    const handler = getHandler();
+    const result = await handler({ project_slug: "prism", mode: "generate" });
+
+    expect(result.isError).toBe(true);
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.error).toContain("session_number");
+    expect(mockGenerateBrief).not.toHaveBeenCalled();
+    expect(mockGeneratePending).not.toHaveBeenCalled();
   });
 });
 

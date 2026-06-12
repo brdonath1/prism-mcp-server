@@ -400,3 +400,60 @@ describe("KI-26 — sanitize header-injected user fields before write", () => {
     expect(getDomainContent()).toContain(`- Reasoning: ${reasoning}`);
   });
 });
+
+// ───────────────────────────────────────────────────────────────────────────
+// brief-460 / W3-S4 (SRV-77) — mid-line-embedded fields use the
+// newline-only anchor with targetLevel 3: the first line is un-injectable
+// (it lands mid-line in the server template), `\n####` detail survives, and
+// every mutation is named in a CONTENT_SANITIZED diagnostic.
+// ───────────────────────────────────────────────────────────────────────────
+describe("brief-460 / SRV-77 — newline-only anchor + targetLevel 3 on log-decision fields", () => {
+  const ZWS = "​";
+
+  function getDomainContent(): string {
+    const calls = mockCreateAtomicCommit.mock.calls;
+    expect(calls.length).toBeGreaterThan(0);
+    const files = calls[calls.length - 1][1] as Array<{ path: string; content: string }>;
+    const dom = files.find((f) => f.path === ".prism/decisions/architecture.md");
+    if (!dom) throw new Error("Domain file missing from atomic-commit payload");
+    return dom.content;
+  }
+
+  it("reasoning's FIRST line stays raw (embedded after '- Reasoning: '), embedded `\\n####` detail survives, `\\n##` is still neutralized", async () => {
+    setupResolvers();
+    setupFetchFile(FRESH_INDEX, FRESH_DOMAIN);
+    mockGetHeadSha.mockResolvedValue("head");
+    mockCreateAtomicCommit.mockResolvedValue({
+      success: true,
+      sha: "ok",
+      files_committed: 2,
+    });
+
+    const { server, handlers } = createServerStub();
+    registerLogDecision(server as any);
+    const result = await handlers.prism_log_decision({
+      ...BASE_ARGS,
+      reasoning: "## first line lands mid-line\n#### deep detail kept\n## escape attempt",
+    });
+
+    expect(result.isError).toBeUndefined();
+    const dom = getDomainContent();
+    // First line rides mid-line raw — `- Reasoning: ## first line…` is not
+    // a header and must not be mangled (pre-460 false positive).
+    expect(dom).toContain("- Reasoning: ## first line lands mid-line");
+    // Deeper-than-entry-level structure survives.
+    expect(dom).toContain("\n#### deep detail kept");
+    // Levels that would break the `### D-N` entry are still neutralized.
+    expect(dom).toContain(`##${ZWS} escape attempt`);
+    expect(dom).not.toMatch(/^## escape attempt$/m);
+
+    // The mutation is visible (CONTENT_SANITIZED), never silent.
+    const data = JSON.parse((result as { content: Array<{ text: string }> }).content[0].text);
+    const diag = (data.diagnostics ?? []).find(
+      (d: { code: string }) => d.code === "CONTENT_SANITIZED",
+    );
+    expect(diag).toBeDefined();
+    expect(diag.message).toContain("reasoning");
+    expect(diag.message).toContain("escape attempt");
+  });
+});

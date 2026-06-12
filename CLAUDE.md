@@ -160,6 +160,7 @@ All .md files MUST end with `<!-- EOF: {filename} -->`.
 - Must contain `## Where We Are` section (non-empty)
 - Size warning if content would exceed 15KB
 - Must NOT reference "session chat" or "previous conversation" as artifact locations
+- **Phased finalize (`prism_finalize action=commit`) requires this same schema in the supplied `files[]` handoff content** — a hard requirement discovered live in S170/S171: validation rejects the commit without it, and the persisted session recommendation + finalization-banner resumption are derived from `## Meta` / `## Where We Are`. Gaps surface as `HANDOFF_SCHEMA_MISSING` diagnostics (brief-460 Task C).
 
 ### decisions/_INDEX.md:
 - Must contain a markdown table with columns: ID, Title, Domain, Status, Session

@@ -231,7 +231,46 @@ function buildDecisionSummaryTable(decisions: ParsedDecision[], showLast = 5): s
 }
 
 /**
+ * Header of the details section that preserves scaled-out decision rationale
+ * in decisions/_INDEX.md (brief-460 / SRV-09). Exported for tests.
+ */
+export const SCALED_DETAILS_HEADER = "## Decision Details (scaled from handoff)";
+
+/**
+ * Build the full-rationale blocks for decisions being merged. fullText is
+ * each entry verbatim as it stood in the handoff (header + body) — fidelity
+ * is the point: scaling REDISTRIBUTES context, it must not delete it.
+ */
+function buildDecisionDetailsBlocks(decisions: ParsedDecision[]): string {
+  return decisions.map((d) => d.fullText.trim()).join("\n\n");
+}
+
+/**
+ * Append decision-rationale blocks under the SCALED_DETAILS_HEADER section,
+ * creating the section (always BELOW the registry table) when absent.
+ */
+function appendDecisionDetails(content: string, blocks: string): string {
+  const eofSentinel = "<!-- EOF: _INDEX.md -->";
+  const payload = content.includes(SCALED_DETAILS_HEADER)
+    ? blocks
+    : `${SCALED_DETAILS_HEADER}\n\n` +
+      `> Full rationale preserved by prism_scale_handoff (SRV-09). The summary table above is the registry; these blocks carry the reasoning that was scaled out of handoff.md.\n\n` +
+      blocks;
+  if (content.includes(eofSentinel)) {
+    return content.replace(eofSentinel, payload + "\n\n" + eofSentinel);
+  }
+  return content.trimEnd() + "\n\n" + payload + "\n";
+}
+
+/**
  * Merge parsed decisions into an existing _INDEX.md, avoiding duplicate IDs.
+ *
+ * brief-460 / SRV-09: in addition to the one-line registry rows, each new
+ * decision's fullText (the rationale prose extracted out of the handoff) is
+ * appended under SCALED_DETAILS_HEADER — previously fullText had no consumer
+ * and scaling silently deleted the rationale from the live corpus. New table
+ * rows are inserted ABOVE the details section so the registry table never
+ * gets split by previously-merged detail blocks.
  */
 function mergeDecisionsIntoIndex(decisions: ParsedDecision[], existingContent: string): string {
   const existingIds = new Set<string>();
@@ -250,24 +289,38 @@ function mergeDecisionsIntoIndex(decisions: ParsedDecision[], existingContent: s
 
   const hasTable = existingContent.includes("|---");
   const eofSentinel = "<!-- EOF: _INDEX.md -->";
+  const detailsIdx = existingContent.indexOf(SCALED_DETAILS_HEADER);
 
+  let content: string;
   if (hasTable) {
-    if (existingContent.includes(eofSentinel)) {
-      return existingContent.replace(eofSentinel, newRows + "\n" + eofSentinel);
+    if (detailsIdx !== -1) {
+      content =
+        existingContent.slice(0, detailsIdx) + newRows + "\n\n" + existingContent.slice(detailsIdx);
+    } else if (existingContent.includes(eofSentinel)) {
+      content = existingContent.replace(eofSentinel, newRows + "\n" + eofSentinel);
+    } else {
+      content = existingContent.trimEnd() + "\n" + newRows + "\n";
     }
-    return existingContent.trimEnd() + "\n" + newRows + "\n";
+  } else {
+    // No existing table — create one
+    const tableHeader =
+      "| ID | Title | Domain | Status | Session |\n|----|-------|--------|--------|---------|";
+    if (detailsIdx !== -1) {
+      content =
+        existingContent.slice(0, detailsIdx) +
+        tableHeader + "\n" + newRows + "\n\n" +
+        existingContent.slice(detailsIdx);
+    } else if (existingContent.includes(eofSentinel)) {
+      content = existingContent.replace(
+        eofSentinel,
+        "\n" + tableHeader + "\n" + newRows + "\n\n" + eofSentinel,
+      );
+    } else {
+      content = existingContent.trimEnd() + "\n\n" + tableHeader + "\n" + newRows + "\n";
+    }
   }
 
-  // No existing table — create one
-  const tableHeader =
-    "| ID | Title | Domain | Status | Session |\n|----|-------|--------|--------|---------|";
-  if (existingContent.includes(eofSentinel)) {
-    return existingContent.replace(
-      eofSentinel,
-      "\n" + tableHeader + "\n" + newRows + "\n\n" + eofSentinel,
-    );
-  }
-  return existingContent.trimEnd() + "\n\n" + tableHeader + "\n" + newRows + "\n";
+  return appendDecisionDetails(content, buildDecisionDetailsBlocks(newDecisions));
 }
 
 // ── Session history helpers ─────────────────────────────────────────────────
@@ -874,7 +927,14 @@ async function executeScaling(
           const rows = decisions
             .map((d) => `| ${d.id} | ${d.title} | ${d.domain} | ${d.status} | ${d.session} |`)
             .join("\n");
-          destContent = `${tableHeader}\n${rows}\n\n${eofSentinel}\n`;
+          // brief-460 / SRV-09: the fresh index carries the full rationale
+          // blocks too — the rows alone would silently delete the reasoning
+          // scaled out of the handoff.
+          const details =
+            `${SCALED_DETAILS_HEADER}\n\n` +
+            `> Full rationale preserved by prism_scale_handoff (SRV-09). The summary table above is the registry; these blocks carry the reasoning that was scaled out of handoff.md.\n\n` +
+            buildDecisionDetailsBlocks(decisions);
+          destContent = `${tableHeader}\n${rows}\n\n${details}\n\n${eofSentinel}\n`;
         }
       } else if (destFileContent) {
         // brief-459 / SRV-22: dedupe session-history fragments against the
@@ -915,11 +975,28 @@ async function executeScaling(
  * with the push.ts-style HEAD-SHA guard and sequential fallback (A-6 / S47 P2.2).
  *
  * Returns a pushResults array in the same shape as the pre-S47 code so the
- * response contract downstream is unchanged. Adds a `partial_state` flag on
- * the last element when the HEAD-moved branch fires; callers surface this
- * as a warning.
+ * response contract downstream is unchanged. `partial_state` fires on the
+ * HEAD-moved branch; callers surface it as a warning.
+ *
+ * brief-460 / SRV-25 + SRV-43 — fallback data-safety ordering:
+ *
+ *  - The sequential fallback pushes DESTINATIONS FIRST and the reduced
+ *    handoff ONLY when every destination landed. The pre-460 loop pushed
+ *    the reduced handoff even after a destination push failed, leaving the
+ *    extracted content in neither the handoff nor the destination — the
+ *    exact partial-state data-loss hazard the atomic path was built to
+ *    prevent. An aborted fallback leaves the handoff at FULL size: nothing
+ *    is lost, the scale just hasn't happened.
+ *
+ *  - The fallback is REFUSED outright (`fallback_aborted: "head_unknown"`)
+ *    when the HEAD position cannot be verified — headShaBefore or
+ *    headShaAfter unavailable. The pre-460 code defaulted headChanged to
+ *    false in that case, running sequential pushes over a possibly-moved
+ *    HEAD and risking a clobber of concurrent writes.
+ *
+ * Exported for tests (brief-460).
  */
-async function atomicCommitScaled(
+export async function atomicCommitScaled(
   projectSlug: string,
   handoffPath: string,
   updatedHandoff: string,
@@ -929,6 +1006,7 @@ async function atomicCommitScaled(
   pushResults: Array<{ path: string; success: boolean }>;
   partial_state: boolean;
   atomic_error?: string;
+  fallback_aborted?: "destination_failure" | "head_unknown";
 }> {
   const allFiles = [
     ...destFiles,
@@ -950,13 +1028,26 @@ async function atomicCommitScaled(
   }
 
   // Atomic failed — mirror push.ts's HEAD-SHA guard + sequential fallback.
-  let headChanged = false;
-  if (headShaBefore) {
-    const headShaAfter = await getHeadSha(projectSlug);
-    if (headShaAfter) headChanged = headShaAfter !== headShaBefore;
+  const headShaAfter = headShaBefore ? await getHeadSha(projectSlug) : undefined;
+  if (!headShaBefore || !headShaAfter) {
+    logger.error(
+      "prism_scale_handoff atomic commit failed and HEAD position is unknown — refusing sequential fallback",
+      {
+        project_slug: projectSlug,
+        atomicError: atomicResult.error,
+        headShaBefore: headShaBefore ?? null,
+        headShaAfter: headShaAfter ?? null,
+      },
+    );
+    return {
+      pushResults: allFiles.map((f) => ({ path: f.path, success: false })),
+      partial_state: false,
+      atomic_error: atomicResult.error,
+      fallback_aborted: "head_unknown",
+    };
   }
 
-  if (headChanged) {
+  if (headShaAfter !== headShaBefore) {
     logger.error(
       "prism_scale_handoff atomic commit failed with HEAD changed — partial state",
       { project_slug: projectSlug, atomicError: atomicResult.error },
@@ -969,18 +1060,34 @@ async function atomicCommitScaled(
   }
 
   logger.warn(
-    "prism_scale_handoff atomic failed; falling back to sequential pushFile",
+    "prism_scale_handoff atomic failed; falling back to sequential pushFile (destinations first)",
     { project_slug: projectSlug, atomicError: atomicResult.error },
   );
   const pushResults: Array<{ path: string; success: boolean }> = [];
-  for (const file of allFiles) {
+  let destinationFailed = false;
+  for (const file of destFiles) {
     const fileName = file.path.split("/").pop() || file.path;
-    const msg = file.path === handoffPath
-      ? commitMessage
-      : `prism: extract ${fileName}`;
-    const result = await pushFile(projectSlug, file.path, file.content, msg);
+    const result = await pushFile(projectSlug, file.path, file.content, `prism: extract ${fileName}`);
     pushResults.push({ path: file.path, success: result.success });
+    if (!result.success) destinationFailed = true;
   }
+
+  if (destinationFailed) {
+    logger.error(
+      "prism_scale_handoff fallback aborted before handoff push — destination push failed; handoff NOT reduced",
+      { project_slug: projectSlug, atomicError: atomicResult.error },
+    );
+    pushResults.push({ path: handoffPath, success: false });
+    return {
+      pushResults,
+      partial_state: false,
+      atomic_error: atomicResult.error,
+      fallback_aborted: "destination_failure",
+    };
+  }
+
+  const handoffResult = await pushFile(projectSlug, handoffPath, updatedHandoff, commitMessage);
+  pushResults.push({ path: handoffPath, success: handoffResult.success });
   return { pushResults, partial_state: false, atomic_error: atomicResult.error };
 }
 
@@ -1072,7 +1179,7 @@ export function registerScaleHandoff(server: McpServer): void {
             file_count: destFiles.length + 1,
           });
 
-          const { pushResults, partial_state } = await atomicCommitScaled(
+          const { pushResults, partial_state, fallback_aborted } = await atomicCommitScaled(
             project_slug,
             handoffResolved.path,
             updatedHandoff,
@@ -1102,6 +1209,19 @@ export function registerScaleHandoff(server: McpServer): void {
               "Partial atomic commit — state may be inconsistent. HEAD moved mid-commit; inspect the repo before retrying.",
             );
             diagnostics.error("MIGRATION_FAILED", "Partial atomic commit — state may be inconsistent");
+          }
+          // brief-460 / SRV-25+43: aborted/refused fallbacks are truthful —
+          // the handoff was NOT reduced, so no scaled-out content was lost.
+          if (fallback_aborted === "destination_failure") {
+            warnings.push(
+              "Sequential fallback aborted before the handoff push — a destination push failed. The handoff was NOT reduced (no content lost); investigate the failed destination(s) and re-run scaling.",
+            );
+            diagnostics.error("MIGRATION_FAILED", "Fallback aborted before handoff push — destination failure; handoff not reduced");
+          } else if (fallback_aborted === "head_unknown") {
+            warnings.push(
+              "Sequential fallback refused — HEAD position could not be verified after the atomic-commit failure. Nothing was pushed; re-run scaling.",
+            );
+            diagnostics.error("MIGRATION_FAILED", "Fallback refused — HEAD position unknown; nothing pushed");
           }
           if (timed_out) {
             warnings.push(
@@ -1298,7 +1418,7 @@ export function registerScaleHandoff(server: McpServer): void {
           file_count: destFiles.length + 1,
         });
 
-        const { pushResults, partial_state } = await atomicCommitScaled(
+        const { pushResults, partial_state, fallback_aborted } = await atomicCommitScaled(
           project_slug,
           handoffResolved2.path,
           updatedHandoff,
@@ -1327,6 +1447,19 @@ export function registerScaleHandoff(server: McpServer): void {
             "Partial atomic commit — state may be inconsistent. HEAD moved mid-commit; inspect the repo before retrying.",
           );
           diagnostics.error("MIGRATION_FAILED", "Partial atomic commit — state may be inconsistent");
+        }
+        // brief-460 / SRV-25+43: aborted/refused fallbacks are truthful —
+        // the handoff was NOT reduced, so no scaled-out content was lost.
+        if (fallback_aborted === "destination_failure") {
+          warnings.push(
+            "Sequential fallback aborted before the handoff push — a destination push failed. The handoff was NOT reduced (no content lost); investigate the failed destination(s) and re-run scaling.",
+          );
+          diagnostics.error("MIGRATION_FAILED", "Fallback aborted before handoff push — destination failure; handoff not reduced");
+        } else if (fallback_aborted === "head_unknown") {
+          warnings.push(
+            "Sequential fallback refused — HEAD position could not be verified after the atomic-commit failure. Nothing was pushed; re-run scaling.",
+          );
+          diagnostics.error("MIGRATION_FAILED", "Fallback refused — HEAD position unknown; nothing pushed");
         }
         if (timed_out) {
           warnings.push(

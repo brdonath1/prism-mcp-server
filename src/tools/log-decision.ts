@@ -10,7 +10,7 @@ import { resolveDocPath, resolveDocPushPath } from "../utils/doc-resolver.js";
 import { guardPushPath } from "../utils/doc-guard.js";
 import { DiagnosticsCollector } from "../utils/diagnostics.js";
 import { safeMutation } from "../utils/safe-mutation.js";
-import { sanitizeContentField } from "../utils/sanitize-content.js";
+import { sanitizeContent } from "../utils/sanitize-content.js";
 
 /**
  * Parse existing decision IDs from a decisions/_INDEX.md content string.
@@ -125,16 +125,33 @@ export function registerLogDecision(server: McpServer): void {
           ? [indexResolvedPath, domainResolvedPath]
           : [indexResolvedPath];
 
-        // KI-26: neutralize embedded markdown headers in user-supplied fields
-        // before they are written into the index row or domain entry. Without
-        // this, a `reasoning` (or `title`/`assumptions`/`impact`) value that
-        // contains a line starting with `## ` would parse as a real section
-        // header on the next read, breaking the section tree silently —
-        // validateIntegrity() only flags duplicate headers, not novel ones.
-        const safeTitle = sanitizeContentField(title);
-        const safeReasoning = sanitizeContentField(reasoning);
-        const safeAssumptions = assumptions ? sanitizeContentField(assumptions) : undefined;
-        const safeImpact = impact ? sanitizeContentField(impact) : undefined;
+        // KI-26 (redesigned brief-460 / SRV-77): every sanitized field here is
+        // embedded MID-LINE in a server-built template (`| ${id} | ${title} |`,
+        // `### ${id}: ${title}`, `- Reasoning: ${reasoning}`), so the field's
+        // FIRST line can never start a header — only embedded `\n#...` lines
+        // can. anchor "newline-only" leaves the first line untouched, and
+        // targetLevel 3 (the `### D-N:` entry level) lets `\n#### detail`
+        // sub-structure survive while `\n###`/`\n##`/`\n#` lines — which would
+        // terminate the entry or its parent section — are still neutralized.
+        // Mutations are reported as a visible diagnostic, never silent.
+        const sanitizeField = (field: string, value: string): string => {
+          const outcome = sanitizeContent(value, {
+            anchor: "newline-only",
+            targetLevel: 3,
+          });
+          if (outcome.neutralized.length > 0) {
+            diagnostics.warn(
+              "CONTENT_SANITIZED",
+              `${outcome.neutralized.length} embedded header line(s) in "${field}" were ZWS-neutralized (they would have broken the ### ${id} entry structure): ${outcome.neutralized.map((n) => `"${n.header}"`).join(", ")}`,
+              { field, lines: outcome.neutralized.map((n) => ({ line: n.line, header: n.header })) },
+            );
+          }
+          return outcome.text;
+        };
+        const safeTitle = sanitizeField("title", title);
+        const safeReasoning = sanitizeField("reasoning", reasoning);
+        const safeAssumptions = assumptions ? sanitizeField("assumptions", assumptions) : undefined;
+        const safeImpact = impact ? sanitizeField("impact", impact) : undefined;
 
         // Commit message is a non-markdown channel (Git plain text), so it
         // uses the raw title — ZWS injection there is unnecessary and would
