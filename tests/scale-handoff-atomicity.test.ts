@@ -77,10 +77,19 @@ Currently working on feature X.
 <!-- EOF: handoff.md -->`;
 
 async function runScaleFull() {
-  mockFetchFile.mockResolvedValue({
-    content: HANDOFF,
-    sha: "sha0",
-    size: HANDOFF.length,
+  // Path-aware: destination resolution fetches session-log.md through
+  // resolveDocPath → fetchFile. A blanket HANDOFF response made the
+  // "existing session-log" the handoff itself, so the brief-459 / SRV-22
+  // dedupe (correctly) stripped every extracted session as a duplicate.
+  mockFetchFile.mockImplementation(async (_repo: string, path: string) => {
+    if (path.includes("session-log")) {
+      return {
+        content: "# Session Log\n\n<!-- EOF: session-log.md -->",
+        sha: "s1",
+        size: 50,
+      };
+    }
+    return { content: HANDOFF, sha: "sha0", size: HANDOFF.length };
   });
   mockFetchFiles.mockResolvedValue(
     new Map([

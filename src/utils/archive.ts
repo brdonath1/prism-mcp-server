@@ -22,10 +22,29 @@ export interface ArchiveResult {
 }
 
 export interface ArchiveConfig {
-  /** Size threshold in bytes. Archiving runs only when input exceeds this (strict >). */
+  /** Size threshold in bytes. Archiving runs only when input exceeds this
+   *  (strict >). Measured in UTF-8 BYTES via TextEncoder (brief-459 /
+   *  SRV-30) — `String.length` counts UTF-16 code units, which under-counts
+   *  em-dash-heavy PRISM docs by ~3× per dash. */
   thresholdBytes: number;
   /** How many most-recent entries to keep in the live doc. */
   retentionCount: number;
+  /**
+   * Size-aware retention floor (brief-459 / SRV-79). When set, retention may
+   * shrink BELOW retentionCount — oldest entries keep archiving until the
+   * live doc fits thresholdBytes — but never below this count. Unset keeps
+   * the legacy fixed-count behavior, under which a live doc whose retention
+   * floor exceeds the threshold is PERMANENTLY over threshold (the flagship
+   * project's 20-entry/18.8KB log vs the 15KB threshold).
+   */
+  minRetentionCount?: number;
+  /**
+   * Archive filename used to emit the trailing `<!-- EOF: {name} -->`
+   * sentinel (brief-459 / SRV-06). When unset, a sentinel already trailing
+   * the existing archive is preserved; fresh archives stay sentinel-less
+   * (legacy behavior).
+   */
+  archiveFileName?: string;
   /** Regex identifying entry start lines. MUST have a capturing group for the entry number. */
   entryMarker: RegExp;
   /** Entries whose title or body contains any of these strings are NEVER archived. */
@@ -68,17 +87,35 @@ interface EntryBounds {
 
 const EOF_SENTINEL_PATTERN = /^<!--\s*EOF:.*-->$/;
 
+const utf8Encoder = new TextEncoder();
+
+/** UTF-8 byte length — the unit ArchiveConfig.thresholdBytes is documented
+ *  in (brief-459 / SRV-30). Exported so callers logging archive sizes speak
+ *  the same unit. */
+export function utf8ByteLength(text: string): number {
+  return utf8Encoder.encode(text).length;
+}
+
+/**
+ * Resolve an orientation from entry numbers in document order (brief-459 /
+ * SRV-22: shared so scale's session-history condensation orients the same
+ * way archival does — per INS-30, mirror-pattern divergence creates silent
+ * drift bugs). Ascending (first < last) means newest-last → "bottom";
+ * descending means newest-first → "top". Zero/single entries or equal
+ * endpoints resolve to "bottom".
+ */
+export function detectMostRecentAtFromNumbers(numbers: number[]): "top" | "bottom" {
+  if (numbers.length < 2) return "bottom";
+  return numbers[0] > numbers[numbers.length - 1] ? "top" : "bottom";
+}
+
 /**
  * Resolve an "auto" orientation from parsed entries in document order.
- * Ascending entry numbers (first < last) mean newest-last → "bottom";
- * descending (first > last) mean newest-first → "top". A single entry or
- * equal endpoints resolve to "bottom" — moot in practice, since the
- * entries.length <= retentionCount early-return keeps small files untouched.
+ * A single entry or equal endpoints resolve to "bottom" — moot in practice,
+ * since the retention early-return keeps small files untouched.
  */
 function detectMostRecentAt(entries: EntryBounds[]): "top" | "bottom" {
-  const first = entries[0];
-  const last = entries[entries.length - 1];
-  return first.number > last.number ? "top" : "bottom";
+  return detectMostRecentAtFromNumbers(entries.map((e) => e.number));
 }
 
 function stripExecutionFlags(flags: string): string {
@@ -231,7 +268,8 @@ export function splitForArchive(
   existingArchive: string | null,
   config: ArchiveConfig,
 ): ArchiveResult {
-  if (input.length <= config.thresholdBytes) {
+  // SRV-30 (brief-459): the documented unit is bytes — measure bytes.
+  if (utf8ByteLength(input) <= config.thresholdBytes) {
     return {
       liveContent: input,
       archiveContent: null,
@@ -242,7 +280,13 @@ export function splitForArchive(
 
   const entries = parseEntriesWithBounds(input, config.entryMarker, config.activeSection);
 
-  if (entries.length <= config.retentionCount) {
+  // SRV-79 (brief-459): with a size-aware floor configured, retention may
+  // shrink below retentionCount, so the "too few entries" gates compare
+  // against the FLOOR — otherwise a live doc whose retention floor exceeds
+  // the threshold can never archive its way back under it.
+  const minRetention = config.minRetentionCount ?? config.retentionCount;
+
+  if (entries.length <= minRetention) {
     return {
       liveContent: input,
       archiveContent: null,
@@ -259,7 +303,7 @@ export function splitForArchive(
 
   const nonProtected = marked.filter(e => !e.isProtected);
 
-  if (nonProtected.length <= config.retentionCount) {
+  if (nonProtected.length <= minRetention) {
     return {
       liveContent: input,
       archiveContent: null,
@@ -271,10 +315,44 @@ export function splitForArchive(
   const configured = config.mostRecentAt ?? "bottom";
   const mostRecentAt =
     configured === "auto" ? detectMostRecentAt(entries) : configured;
-  const eligible =
-    mostRecentAt === "top"
-      ? nonProtected.slice(config.retentionCount)
-      : nonProtected.slice(0, nonProtected.length - config.retentionCount);
+
+  // Build (liveContent, eligible) for a given keep-count of most-recent
+  // non-protected entries. Protected entries always stay live.
+  const lines = input.split("\n");
+  const buildForKeepCount = (
+    keepCount: number,
+  ): { liveContent: string; eligible: typeof nonProtected } => {
+    const eligible =
+      mostRecentAt === "top"
+        ? nonProtected.slice(keepCount)
+        : nonProtected.slice(0, nonProtected.length - keepCount);
+    const removeSet = new Set<number>();
+    for (const e of eligible) {
+      for (let i = e.startLine; i < e.endLine; i++) {
+        removeSet.add(i);
+      }
+    }
+    const keptLines: string[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      if (!removeSet.has(i)) keptLines.push(lines[i]);
+    }
+    return { liveContent: keptLines.join("\n"), eligible };
+  };
+
+  let keepCount = Math.min(config.retentionCount, nonProtected.length);
+  let { liveContent, eligible } = buildForKeepCount(keepCount);
+
+  // SRV-79: size-aware shrink — keep archiving the oldest entries until the
+  // live doc fits the threshold, never dropping below the floor.
+  if (config.minRetentionCount !== undefined) {
+    while (
+      keepCount > minRetention &&
+      utf8ByteLength(liveContent) > config.thresholdBytes
+    ) {
+      keepCount--;
+      ({ liveContent, eligible } = buildForKeepCount(keepCount));
+    }
+  }
 
   if (eligible.length === 0) {
     return {
@@ -285,31 +363,37 @@ export function splitForArchive(
     };
   }
 
-  // Build liveContent by removing eligible entries' line ranges.
-  const lines = input.split("\n");
-  const removeSet = new Set<number>();
-  for (const e of eligible) {
-    for (let i = e.startLine; i < e.endLine; i++) {
-      removeSet.add(i);
-    }
-  }
-  const keptLines: string[] = [];
-  for (let i = 0; i < lines.length; i++) {
-    if (!removeSet.has(i)) keptLines.push(lines[i]);
-  }
-  const liveContent = keptLines.join("\n");
-
   // Build archiveContent.
   const archiveEntriesText =
     eligible.map(e => e.fullText.replace(/\s+$/, "")).join("\n\n") + "\n";
 
-  let archiveContent: string;
+  // SRV-06 (brief-459): the old append path stripped only trailing
+  // WHITESPACE, so an existing EOF sentinel survived and new entries landed
+  // AFTER it; fresh archives had no sentinel at all. Strip every full-line
+  // sentinel from the existing archive (also repairing archives the old bug
+  // already corrupted), then re-emit exactly one as the final line.
+  let preservedSentinel: string | null = null;
+  let base: string;
   if (existingArchive === null || existingArchive.trim() === "") {
-    const headerClean = config.archiveHeader.replace(/\s+$/, "");
-    archiveContent = headerClean + "\n\n" + archiveEntriesText;
+    base = config.archiveHeader.replace(/\s+$/, "");
   } else {
-    const trimmed = existingArchive.replace(/\s+$/, "");
-    archiveContent = trimmed + "\n\n" + archiveEntriesText;
+    const keptArchiveLines: string[] = [];
+    for (const line of existingArchive.split("\n")) {
+      if (EOF_SENTINEL_PATTERN.test(line.trim())) {
+        preservedSentinel = line.trim();
+        continue;
+      }
+      keptArchiveLines.push(line);
+    }
+    base = keptArchiveLines.join("\n").replace(/\s+$/, "");
+  }
+
+  let archiveContent = base + "\n\n" + archiveEntriesText;
+  const sentinel = config.archiveFileName
+    ? `<!-- EOF: ${config.archiveFileName} -->`
+    : preservedSentinel;
+  if (sentinel) {
+    archiveContent += `\n${sentinel}\n`;
   }
 
   return {

@@ -26,7 +26,7 @@ import {
   CC_SUBPROCESS_SYNTHESIS_TIMEOUT_MS,
   DOC_ROOT,
 } from "../config.js";
-import { detectSessionLogOrientation, splitForArchive, type ArchiveConfig } from "../utils/archive.js";
+import { detectSessionLogOrientation, splitForArchive, utf8ByteLength, type ArchiveConfig } from "../utils/archive.js";
 
 /** Sentinel used to signal that the finalize-commit deadline fired (S40 C4). */
 const FINALIZE_COMMIT_DEADLINE_SENTINEL = Symbol("finalize.commit.deadline");
@@ -59,6 +59,12 @@ export function resolveDraftDeadline(transport: string | undefined): number {
 const SESSION_LOG_ARCHIVE_CONFIG: ArchiveConfig = {
   thresholdBytes: 15_000,
   retentionCount: 20,
+  // brief-459 / SRV-79: 20 entries on the flagship project measure ~18.8KB —
+  // ABOVE the 15KB threshold — so fixed-count retention left the live log
+  // permanently over threshold, running a 1-entry archive cycle every
+  // finalize. The size-aware floor lets retention shrink until the live log
+  // actually fits, while always keeping the 5 newest sessions.
+  minRetentionCount: 5,
   entryMarker: /^### Session (\d+)/m,
   archiveHeader:
     "# Session Log Archive — PRISM Framework\n\n" +
@@ -83,6 +89,26 @@ const INSIGHTS_ARCHIVE_CONFIG: ArchiveConfig = {
     "## Archived\n",
   mostRecentAt: "bottom",
 };
+
+/**
+ * Numeric-aware newest-first comparator for `handoff_v{N}_{date}.md` backup
+ * names (brief-459 / SRV-05). Plain `localeCompare` is lexicographic — v100+
+ * sorted BELOW v9x, so the prune deleted the previous session's backup while
+ * pinning 6-week-old v97-v99 snapshots, and the drift baseline read a stale
+ * handoff for ~70 sessions. Ties (same version) fall back to name order.
+ */
+function compareHandoffBackupsNewestFirst(
+  a: { name: string },
+  b: { name: string },
+): number {
+  const versionOf = (name: string): number => {
+    const m = name.match(/^handoff_v(\d+)/);
+    return m ? parseInt(m[1], 10) : -1;
+  };
+  const delta = versionOf(b.name) - versionOf(a.name);
+  if (delta !== 0) return delta;
+  return b.name.localeCompare(a.name);
+}
 
 /** Default cap for the `## Recently Completed` section in task-queue.md (brief-422 Piece 4). */
 export const TASK_QUEUE_RECENTLY_COMPLETED_CAP = 15;
@@ -238,7 +264,7 @@ async function auditPhase(projectSlug: string, sessionNumber: number) {
     const historyEntries = await getHistoryEntries();
     const handoffFiles = historyEntries
       .filter((e) => e.name.startsWith("handoff_v") && e.name.endsWith(".md"))
-      .sort((a, b) => b.name.localeCompare(a.name));
+      .sort(compareHandoffBackupsNewestFirst);
 
     if (handoffFiles.length > 0) {
       const previousHandoff = await fetchFile(projectSlug, handoffFiles[0].path);
@@ -336,8 +362,11 @@ async function auditPhase(projectSlug: string, sessionNumber: number) {
 
   try {
     const historyEntries = await getHistoryEntries();
+    // brief-459 / SRV-31: anchored to the `handoff_v{N}_{date}.md` filename
+    // format — the old substring match let handoff_v174 count as a backup
+    // for version 17 (and v97-v99 for version 9).
     handoffBackupExists = historyEntries.some(
-      (e) => e.name.includes(`handoff_v${currentVersion}`)
+      (e) => e.name.startsWith(`handoff_v${currentVersion}_`)
     );
   } catch {
     // handoff-history directory may not exist
@@ -821,7 +850,7 @@ async function commitPhase(
 
       const handoffFiles = historyEntries
         .filter((e) => e.name.startsWith("handoff_v") && e.name.endsWith(".md"))
-        .sort((a, b) => b.name.localeCompare(a.name));
+        .sort(compareHandoffBackupsNewestFirst);
 
       if (handoffFiles.length <= 3) return;
 
@@ -981,7 +1010,13 @@ async function commitPhase(
         existingArchive = null; // First-time archive
       }
 
-      const result = splitForArchive(liveContent, existingArchive, config);
+      // brief-459 / SRV-06: inject the archive filename so splitForArchive
+      // emits/repairs the trailing EOF sentinel — single-sourced from this
+      // call's own archiveFileName argument.
+      const result = splitForArchive(liveContent, existingArchive, {
+        ...config,
+        archiveFileName,
+      });
 
       if (result.archiveContent !== null && result.archivedCount > 0) {
         if (liveIdx !== -1) {
@@ -1003,7 +1038,8 @@ async function commitPhase(
           live: liveFileName,
           archive: archiveFileName,
           archivedCount: result.archivedCount,
-          liveSizeBytes: result.liveContent.length,
+          // SRV-30: log the same unit the threshold is measured in.
+          liveSizeBytes: utf8ByteLength(result.liveContent),
         });
       } else if (result.skipReason) {
         logger.debug("archive skipped", {

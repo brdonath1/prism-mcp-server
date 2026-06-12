@@ -29,6 +29,7 @@ import {
   SYNTHESIS_INPUT_MAX_TOKENS,
   SYNTHESIS_INPUT_TARGET_TOKENS,
 } from "../config.js";
+import { detectSessionLogOrientation } from "../utils/archive.js";
 
 /** Doc entry shape shared with resolveDocFiles / the prompt builders. */
 export interface SynthesisDocEntry {
@@ -123,13 +124,23 @@ function keepRank(path: string): number {
  *    insights.md (INSIGHTS_ARCHIVE_CONFIG mostRecentAt: "bottom"),
  *    eliminated.md (entries appended), decisions/_INDEX.md + domain files
  *    (prism_log_decision inserts rows before the EOF sentinel).
- *  - HEAD retention (everything else → drop the tail): session-log.md is
- *    reverse-chronological (SESSION_LOG_ARCHIVE_CONFIG mostRecentAt: "top" —
- *    newest session FIRST), and the reference docs (handoff, architecture,
- *    glossary, task-queue, known-issues) lead with their summary/meta
- *    sections. Also the default for unknown docs.
+ *  - session-log.md: orientation is PER-PROJECT (brief-459 / SRV-04 — the
+ *    INS-316 inversion class). prism's real log is chronological (newest
+ *    LAST → tail retention); other projects write newest-first (→ head
+ *    retention). Detected from the `### Session N` endpoint numbers via the
+ *    same helper finalize's archiver uses (archive.ts "auto" heuristic) so
+ *    the two consumers can never diverge again. The old hardcoded HEAD
+ *    retention cited SESSION_LOG_ARCHIVE_CONFIG `mostRecentAt: "top"` — a
+ *    value brief-453 deleted — and silently dropped the NEWEST sessions
+ *    from synthesis input on chronological logs.
+ *  - HEAD retention (everything else → drop the tail): the reference docs
+ *    (handoff, architecture, glossary, task-queue, known-issues) lead with
+ *    their summary/meta sections. Also the default for unknown docs.
  */
-function retainsTail(path: string): boolean {
+function retainsTail(path: string, content: string): boolean {
+  if (path === "session-log.md") {
+    return detectSessionLogOrientation(content) === "bottom";
+  }
   return (
     path === "insights.md" ||
     path === "eliminated.md" ||
@@ -198,7 +209,7 @@ function retainWithinBudget(
   const keepChars = Math.max(0, Math.floor(keepTokens * SYNTHESIS_CHARS_PER_TOKEN));
   const preTokens = estimateSynthesisTokens(content);
 
-  if (retainsTail(path)) {
+  if (retainsTail(path, content)) {
     // Newest content at the bottom — drop the oldest (leading) content. Keep
     // the doc's title line when present so the retained tail stays anchored
     // to an identifiable document.
@@ -221,8 +232,9 @@ function retainWithinBudget(
     return `${titleLine}${notice}\n${tail}`;
   }
 
-  // Newest-first docs (session-log.md) and reference docs — keep the leading
-  // content, drop the tail ("drop … the tail of oversized docs").
+  // Newest-first session-logs (per detected orientation) and reference docs —
+  // keep the leading content, drop the tail ("drop … the tail of oversized
+  // docs").
   const notice = trimNotice(
     path,
     preTokens,

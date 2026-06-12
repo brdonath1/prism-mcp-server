@@ -25,6 +25,7 @@ import { logger } from "../utils/logger.js";
 import { extractSection } from "../utils/summarizer.js";
 import { resolveDocPath, resolveDocPushPath } from "../utils/doc-resolver.js";
 import { DiagnosticsCollector } from "../utils/diagnostics.js";
+import { detectMostRecentAtFromNumbers } from "../utils/archive.js";
 
 /** Maximum wall-clock time before returning a partial result (ms). */
 const SAFETY_TIMEOUT_MS = 50_000;
@@ -272,9 +273,18 @@ function mergeDecisionsIntoIndex(decisions: ParsedDecision[], existingContent: s
 // ── Session history helpers ─────────────────────────────────────────────────
 
 /**
- * Condense session history: keep last 3 as 1-line summaries, archive older entries.
+ * Condense session history: keep the 3 MOST RECENT sessions as 1-line
+ * summaries, archive older entries.
+ *
+ * brief-459 / SRV-22: "most recent" is resolved from the parsed session
+ * numbers (archive.ts's "auto" heuristic — newest-first vs chronological is
+ * per-project, the S165/INS-316 bug class), not from document order. The old
+ * `slice(-3)` kept the LAST three in document order, which on newest-first
+ * handoffs were the three OLDEST sessions.
+ *
+ * Exported for tests (brief-459).
  */
-function condenseSessionHistory(sectionBody: string): { lean: string; archive: string } {
+export function condenseSessionHistory(sectionBody: string): { lean: string; archive: string } {
   const sessionPattern = /^###?\s+Session\s+(\d+)/gm;
   const positions: { index: number; num: number }[] = [];
 
@@ -294,8 +304,9 @@ function condenseSessionHistory(sectionBody: string): { lean: string; archive: s
     sessions.push({ num: positions[i].num, text: sectionBody.slice(start, end).trim() });
   }
 
-  const toArchive = sessions.slice(0, -3);
-  const toKeep = sessions.slice(-3);
+  const orientation = detectMostRecentAtFromNumbers(sessions.map((s) => s.num));
+  const toArchive = orientation === "top" ? sessions.slice(3) : sessions.slice(0, -3);
+  const toKeep = orientation === "top" ? sessions.slice(0, 3) : sessions.slice(-3);
 
   const condensedLines = toKeep
     .map((s) => {
@@ -316,6 +327,46 @@ function condenseSessionHistory(sectionBody: string): { lean: string; archive: s
   const archive = toArchive.map((s) => s.text).join("\n\n");
 
   return { lean, archive };
+}
+
+/**
+ * Drop session blocks from an archive fragment whose session numbers already
+ * exist in the destination document (brief-459 / SRV-22): re-running a scale
+ * (or scaling a handoff whose Session History overlaps session-log.md) used
+ * to append duplicate `### Session N` entries to the log.
+ *
+ * Returns the fragment unchanged when nothing collides; returns "" when every
+ * block is a duplicate. Exported for tests (brief-459).
+ */
+export function stripDuplicateSessionEntries(
+  archiveText: string,
+  destinationContent: string,
+): string {
+  const headerPattern = /^###?\s+Session\s+(\d+)/gm;
+  const existingNums = new Set<number>();
+  let match;
+  while ((match = headerPattern.exec(destinationContent)) !== null) {
+    existingNums.add(parseInt(match[1], 10));
+  }
+  if (existingNums.size === 0) return archiveText;
+
+  const blockPattern = /^###?\s+Session\s+(\d+)/gm;
+  const positions: { index: number; num: number }[] = [];
+  while ((match = blockPattern.exec(archiveText)) !== null) {
+    positions.push({ index: match.index, num: parseInt(match[1], 10) });
+  }
+  if (positions.length === 0) return archiveText;
+
+  const keptBlocks: string[] = [];
+  for (let i = 0; i < positions.length; i++) {
+    const start = positions[i].index;
+    const end = i + 1 < positions.length ? positions[i + 1].index : archiveText.length;
+    if (!existingNums.has(positions[i].num)) {
+      keptBlocks.push(archiveText.slice(start, end).trim());
+    }
+  }
+  if (keptBlocks.length === positions.length) return archiveText;
+  return keptBlocks.join("\n\n");
 }
 
 // ── Condensation helpers ────────────────────────────────────────────────────
@@ -600,6 +651,10 @@ async function executeScaling(
   let updatedHandoff = handoffContent;
   const destinationContent = new Map<string, string[]>();
   const decisionMerges = new Map<string, ParsedDecision[]>();
+  // brief-459 / SRV-22: session-history fragments are deduped against the
+  // destination's existing session numbers at append time — track which
+  // parts are session archives.
+  const sessionArchiveParts = new Set<string>();
 
   // ── Stage 4: Compose redistributed content ──
   await sendProgress(extra, progressToken, 4, "Composing redistributed content...");
@@ -635,6 +690,7 @@ async function executeScaling(
           const parts = destinationContent.get(action.destination_file) ?? [];
           parts.push(archive);
           destinationContent.set(action.destination_file, parts);
+          sessionArchiveParts.add(archive);
         }
       }
       action.executed = true;
@@ -821,7 +877,19 @@ async function executeScaling(
           destContent = `${tableHeader}\n${rows}\n\n${eofSentinel}\n`;
         }
       } else if (destFileContent) {
-        const parts = destinationContent.get(destPath) || [];
+        // brief-459 / SRV-22: dedupe session-history fragments against the
+        // session numbers already recorded in the destination — re-scaled
+        // handoffs used to append duplicate `### Session N` entries.
+        const parts = (destinationContent.get(destPath) || [])
+          .map((p) =>
+            sessionArchiveParts.has(p)
+              ? stripDuplicateSessionEntries(p, destFileContent)
+              : p,
+          )
+          .filter((p) => p.trim().length > 0);
+        if (parts.length === 0) {
+          continue; // everything deduped away — destination unchanged
+        }
         const newContent = parts.join("\n\n");
         destContent = destFileContent;
         if (destContent.includes(eofSentinel)) {
