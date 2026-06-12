@@ -26,7 +26,7 @@ import {
   CC_SUBPROCESS_SYNTHESIS_TIMEOUT_MS,
   DOC_ROOT,
 } from "../config.js";
-import { splitForArchive, type ArchiveConfig } from "../utils/archive.js";
+import { detectSessionLogOrientation, splitForArchive, type ArchiveConfig } from "../utils/archive.js";
 
 /** Sentinel used to signal that the finalize-commit deadline fired (S40 C4). */
 const FINALIZE_COMMIT_DEADLINE_SENTINEL = Symbol("finalize.commit.deadline");
@@ -1518,6 +1518,205 @@ async function assembleFinalizeBanner(
  * Full phase — run audit + draft + commit atomically in a single tool call.
  * Enables Trigger-driven finalization without inter-call state management.
  */
+/**
+ * brief-456 (SRV-19): result of bridging the FINALIZATION_DRAFT_PROMPT's
+ * contract-shaped keys into real living-document mutations.
+ */
+export interface DraftBridgeResult {
+  /** Translated doc mutations, ready for the commit files[] set. */
+  files: Array<{ path: string; content: string }>;
+  /** Contract keys that produced at least one mutation. */
+  bridged: string[];
+  /** Contract keys (or parts of them) that could not be bridged, with reasons. */
+  skipped: Array<{ key: string; reason: string }>;
+}
+
+const HANDOFF_DRAFT_KEYS = [
+  "handoff_where_we_are",
+  "handoff_next_steps",
+  "handoff_session_history",
+] as const;
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Insert a drafted `### Session N` entry into session-log.md, orientation-
+ * aware (brief-456 / SRV-19): newest-first logs get the entry above the
+ * first existing entry; newest-last logs get it above the EOF sentinel.
+ * Orientation comes from archive.ts's shared heuristic — guessing wrong is
+ * the INS-316 bug class.
+ */
+function insertSessionLogEntry(sessionLog: string, entry: string): string {
+  const block = `${entry.trimEnd()}\n`;
+  if (detectSessionLogOrientation(sessionLog) === "top") {
+    const firstEntry = sessionLog.search(/^### Session \d+/m);
+    if (firstEntry !== -1) {
+      return `${sessionLog.slice(0, firstEntry)}${block}\n${sessionLog.slice(firstEntry)}`;
+    }
+  }
+  const eofMatch = sessionLog.match(/^<!--\s*EOF:.*-->\s*$/m);
+  if (eofMatch && eofMatch.index !== undefined) {
+    const head = sessionLog.slice(0, eofMatch.index).replace(/\s+$/, "");
+    const tail = sessionLog.slice(eofMatch.index);
+    return `${head}\n\n${block}\n${tail}`;
+  }
+  return `${sessionLog.trimEnd()}\n\n${block}`;
+}
+
+/** Flip the first open `- [ ]` line containing the task text to `- [x]`. */
+function markTaskCompleted(taskQueue: string, taskText: string): string | null {
+  const lines = taskQueue.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].includes(taskText) && /^\s*-\s*\[ \]/.test(lines[i])) {
+      lines[i] = lines[i].replace("- [ ]", "- [x]");
+      return lines.join("\n");
+    }
+  }
+  return null;
+}
+
+/**
+ * Append a `[Section] task text` item as `- [ ] task text` at the end of its
+ * `## Section` body. Returns null when the prefix is missing or the section
+ * does not exist — the caller surfaces it as skipped.
+ */
+function appendTaskToSection(taskQueue: string, prefixedTask: string): string | null {
+  const m = prefixedTask.match(/^\[([^\]]+)\]\s*(.+)$/);
+  if (!m) return null;
+  const sectionRe = new RegExp(`^##\\s+${escapeRegExp(m[1].trim())}\\s*$`, "m");
+  const sectionMatch = taskQueue.match(sectionRe);
+  if (!sectionMatch || sectionMatch.index === undefined) return null;
+  const bodyStart = sectionMatch.index + sectionMatch[0].length;
+  const tail = taskQueue.slice(bodyStart);
+  const boundary = tail.search(/^##\s+\S|^<!--\s*EOF:/m);
+  const insertAt = boundary === -1 ? taskQueue.length : bodyStart + boundary;
+  const head = taskQueue.slice(0, insertAt).replace(/\s+$/, "");
+  const rest = taskQueue.slice(insertAt);
+  return `${head}\n- [ ] ${m[2].trim()}\n\n${rest}`;
+}
+
+/**
+ * Translate the draft contract's section-shaped keys into real doc
+ * mutations (brief-456 / SRV-19). Pure — exported for direct unit testing.
+ *
+ * - `session_log_entry` → orientation-aware insertion into session-log.md.
+ * - `task_queue_completed` → `- [ ]` → `- [x]` on matching open task lines.
+ * - `task_queue_new` → `[Up Next]`/`[Parking Lot]`-prefixed items appended
+ *   to their target section.
+ * - `handoff_*` keys are deliberately NOT translated: the full action
+ *   requires operator-supplied handoff_content, which takes precedence
+ *   (same rule as the existing draft `handoff.md` key skip).
+ *
+ * Anything unbridgeable lands in `skipped` with a reason — visible, never
+ * silent (the caller turns these into DRAFT_KEY_SKIPPED diagnostics).
+ */
+export function bridgeDraftSections(
+  drafts: Record<string, unknown>,
+  current: { sessionLog?: string; taskQueue?: string },
+): DraftBridgeResult {
+  const result: DraftBridgeResult = { files: [], bridged: [], skipped: [] };
+
+  for (const key of HANDOFF_DRAFT_KEYS) {
+    if (key in drafts) {
+      result.skipped.push({
+        key,
+        reason: "operator-supplied handoff.md takes precedence (handoff_content)",
+      });
+    }
+  }
+
+  const entry = drafts.session_log_entry;
+  if (typeof entry === "string" && entry.trim().length > 0) {
+    if (typeof current.sessionLog !== "string") {
+      result.skipped.push({
+        key: "session_log_entry",
+        reason: "session-log.md could not be fetched — entry not bridged",
+      });
+    } else {
+      result.files.push({
+        path: "session-log.md",
+        content: insertSessionLogEntry(current.sessionLog, entry),
+      });
+      result.bridged.push("session_log_entry");
+    }
+  }
+
+  const completed = Array.isArray(drafts.task_queue_completed)
+    ? drafts.task_queue_completed.filter((t): t is string => typeof t === "string")
+    : [];
+  const newTasks = Array.isArray(drafts.task_queue_new)
+    ? drafts.task_queue_new.filter((t): t is string => typeof t === "string")
+    : [];
+
+  if (completed.length > 0 || newTasks.length > 0) {
+    if (typeof current.taskQueue !== "string") {
+      if (completed.length > 0) {
+        result.skipped.push({
+          key: "task_queue_completed",
+          reason: "task-queue.md could not be fetched — completions not bridged",
+        });
+      }
+      if (newTasks.length > 0) {
+        result.skipped.push({
+          key: "task_queue_new",
+          reason: "task-queue.md could not be fetched — new tasks not bridged",
+        });
+      }
+    } else {
+      let taskQueueContent = current.taskQueue;
+      let mutated = false;
+
+      const unmatched: string[] = [];
+      for (const task of completed) {
+        const flipped = markTaskCompleted(taskQueueContent, task);
+        if (flipped === null) {
+          unmatched.push(task);
+        } else {
+          taskQueueContent = flipped;
+          mutated = true;
+        }
+      }
+      if (unmatched.length > 0) {
+        result.skipped.push({
+          key: "task_queue_completed",
+          reason: `no matching open task line for: ${unmatched.join("; ")}`,
+        });
+      }
+      if (completed.length > unmatched.length) {
+        result.bridged.push("task_queue_completed");
+      }
+
+      const unplaced: string[] = [];
+      for (const task of newTasks) {
+        const placed = appendTaskToSection(taskQueueContent, task);
+        if (placed === null) {
+          unplaced.push(task);
+        } else {
+          taskQueueContent = placed;
+          mutated = true;
+        }
+      }
+      if (unplaced.length > 0) {
+        result.skipped.push({
+          key: "task_queue_new",
+          reason: `no matching task-queue section (or missing [Section] prefix) for: ${unplaced.join("; ")}`,
+        });
+      }
+      if (newTasks.length > unplaced.length) {
+        result.bridged.push("task_queue_new");
+      }
+
+      if (mutated) {
+        result.files.push({ path: "task-queue.md", content: taskQueueContent });
+      }
+    }
+  }
+
+  return result;
+}
+
 async function fullPhase(
   projectSlug: string,
   sessionNumber: number,
@@ -1526,6 +1725,8 @@ async function fullPhase(
   skipSynthesis: boolean,
   bannerData?: { deliverables?: Array<{text: string; status: "ok"|"warn"}>; decisions_note?: string; step_statuses?: { audit?: "ok"|"warn"|"critical"; draft?: "ok"|"warn"|"critical"; commit?: "ok"|"warn"|"critical"; verified?: "ok"|"warn"|"critical" } },
 ) {
+  const diagnostics = new DiagnosticsCollector();
+
   // Step 1 — Audit
   const auditResult = await auditPhase(projectSlug, sessionNumber);
   const auditStatus = auditResult.audit.living_documents.some(d => !d.exists) ? "warn" : "ok";
@@ -1552,9 +1753,23 @@ async function fullPhase(
     draftStatus = "warn";
     draftResult = null;
     logger.warn("fullPhase draft deadline exceeded", { projectSlug, deadlineMs: draftDeadlineMs });
+    // brief-456 (SRV-19 visibility): deadline overruns were log-only —
+    // surface them in the response diagnostics too.
+    diagnostics.warn(
+      "DRAFT_DEADLINE_EXCEEDED",
+      `fullPhase draft deadline exceeded (${draftDeadlineMs}ms) — committing without draft`,
+      { deadlineMs: draftDeadlineMs },
+    );
   } else {
     draftResult = raced;
     draftStatus = draftResult.success === false ? "warn" : "ok";
+    if (draftResult.success === false) {
+      diagnostics.warn(
+        "DRAFT_FAILED",
+        `draft generation failed: ${("error" in draftResult && draftResult.error) || "unknown error"}`,
+        {},
+      );
+    }
   }
 
   // Step 3 — Assemble files[]
@@ -1562,6 +1777,7 @@ async function fullPhase(
     { path: "handoff.md", content: handoffContent },
   ];
 
+  let draftBridge: DraftBridgeResult | null = null;
   if (draftResult?.success && "drafts" in draftResult && draftResult.drafts && typeof draftResult.drafts === "object") {
     const draftsObj = draftResult.drafts as Record<string, unknown>;
     for (const [key, value] of Object.entries(draftsObj)) {
@@ -1571,10 +1787,61 @@ async function fullPhase(
         files.push({ path: key, content: value });
       }
     }
+
+    // brief-456 (SRV-19): the FINALIZATION_DRAFT_PROMPT contract emits
+    // section-shaped keys (session_log_entry, task_queue_*) — none end in
+    // .md, so the pass-through above discarded the entire draft and full
+    // finalization committed ONLY handoff.md. Translate the contract keys
+    // into real doc mutations. Fetch only the docs the draft targets; a
+    // fetch failure skips that key with a visible diagnostic — it never
+    // aborts the finalize.
+    const wantsSessionLog =
+      typeof draftsObj.session_log_entry === "string" &&
+      draftsObj.session_log_entry.trim().length > 0;
+    const wantsTaskQueue =
+      (Array.isArray(draftsObj.task_queue_completed) && draftsObj.task_queue_completed.length > 0) ||
+      (Array.isArray(draftsObj.task_queue_new) && draftsObj.task_queue_new.length > 0);
+    const currentDocs: { sessionLog?: string; taskQueue?: string } = {};
+    if (wantsSessionLog) {
+      try {
+        currentDocs.sessionLog = (await resolveDocPath(projectSlug, "session-log.md")).content;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        diagnostics.warn(
+          "DRAFT_BRIDGE_FETCH_FAILED",
+          `session-log.md fetch failed — session_log_entry not bridged: ${msg}`,
+          { doc: "session-log.md" },
+        );
+      }
+    }
+    if (wantsTaskQueue) {
+      try {
+        currentDocs.taskQueue = (await resolveDocPath(projectSlug, "task-queue.md")).content;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        diagnostics.warn(
+          "DRAFT_BRIDGE_FETCH_FAILED",
+          `task-queue.md fetch failed — task-queue mutations not bridged: ${msg}`,
+          { doc: "task-queue.md" },
+        );
+      }
+    }
+    draftBridge = bridgeDraftSections(draftsObj, currentDocs);
+    for (const bridged of draftBridge.files) {
+      // A file-shaped draft key for the same doc wins — don't double-add.
+      if (!files.some((existing) => existing.path === bridged.path)) {
+        files.push(bridged);
+      }
+    }
+    for (const skip of draftBridge.skipped) {
+      diagnostics.info("DRAFT_KEY_SKIPPED", `draft key ${skip.key} not bridged: ${skip.reason}`, {
+        key: skip.key,
+        reason: skip.reason,
+      });
+    }
   }
 
   // Step 4 — Commit
-  const diagnostics = new DiagnosticsCollector();
   const commitResult = await commitPhase(
     projectSlug,
     sessionNumber,
@@ -1623,6 +1890,25 @@ async function fullPhase(
     }
   }
 
+  // brief-456 (SRV-19): a generated draft must never be silently discarded
+  // on downstream failure — when the commit did not fully succeed, return
+  // the raw drafts so the operator can apply them manually.
+  const draftRecovery =
+    !commitResult.all_succeeded &&
+    draftResult?.success &&
+    "drafts" in draftResult &&
+    draftResult.drafts &&
+    typeof draftResult.drafts === "object"
+      ? (draftResult.drafts as Record<string, unknown>)
+      : null;
+  if (draftRecovery) {
+    diagnostics.warn(
+      "DRAFT_NOT_COMMITTED",
+      "commit did not fully succeed — generated draft preserved in draft_recovery for manual application",
+      {},
+    );
+  }
+
   // Step 6 — Return combined result.
   // Note: commitResult already contains project, session_number, handoff_version etc.
   // action and phases are unique to fullPhase; diagnostics overrides the one inside commitResult.
@@ -1638,6 +1924,11 @@ async function fullPhase(
       commit: { all_succeeded: commitResult.all_succeeded, living_documents_updated: commitResult.living_documents_updated },
     },
     ...commitResult,
+    // brief-456 (SRV-19): bridge visibility + draft preservation.
+    draft_bridge: draftBridge
+      ? { bridged: draftBridge.bridged, skipped: draftBridge.skipped }
+      : null,
+    draft_recovery: draftRecovery,
     banner_text: bannerText,                    // brief-439 / R8: unified generator output
     banner_spec_version: BANNER_SPEC_VERSION,   // brief-439 / R8: banner contract version this server emits
     finalization_banner_html,                   // brief-447 / D-249: HTML widget now emitted on the full surface too (matching the commit surface; null on render failure — banner_text is the fallback)

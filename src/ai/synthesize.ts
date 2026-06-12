@@ -43,6 +43,56 @@ export interface SynthesisOutcome {
 }
 
 /**
+ * Server-stamp the `> Last synthesized: S{N} ({timestamp})` header
+ * (brief-456 / SRV-52). Three consumers hang off this one line — bootstrap
+ * staleness detection, prism_synthesize status, and apply-pdu's
+ * parseLastSynthesizedSession — and it previously existed only as a prompt
+ * instruction the model could omit or reformat. Same pattern as the EOF
+ * sentinel enforcement: the server already knows sessionNumber + timestamp,
+ * so it injects/replaces deterministically before push.
+ */
+export function enforceLastSynthesizedHeader(
+  content: string,
+  sessionNumber: number,
+  timestamp: string,
+): string {
+  const canonical = `> Last synthesized: S${sessionNumber} (${timestamp})`;
+  const headerRe = /^>\s*Last synthesized:.*$/m;
+  if (headerRe.test(content)) {
+    return content.replace(headerRe, () => canonical);
+  }
+  const lines = content.split("\n");
+  if (lines[0]?.startsWith("# ")) {
+    lines.splice(1, 0, "", canonical);
+    return lines.join("\n");
+  }
+  return `${canonical}\n\n${content}`;
+}
+
+/**
+ * Warn-level SYNTHESIS_FAILED observation emission (brief-456 / SRV-51).
+ * Finalize fires synthesis fire-and-forget, so a failure is invisible in the
+ * commit response — this log line is the boot-time surfacing channel.
+ * Warn level is deliberate: prism_bootstrap's observation gate runs a single
+ * Railway query filtered `@level:warn`; an error-level line would never be
+ * seen by it. checkSynthesisObservationEvents matches the leading code token
+ * and requires the projectSlug attribute.
+ */
+function emitSynthesisFailed(
+  projectSlug: string,
+  sessionNumber: number,
+  kind: "intelligence_brief" | "pending_updates",
+  error: string,
+): void {
+  logger.warn(`SYNTHESIS_FAILED — background synthesis did not produce a pushed ${kind}`, {
+    projectSlug,
+    sessionNumber,
+    synthesis_kind: kind,
+    error,
+  });
+}
+
+/**
  * Generate an intelligence brief for a project.
  * Loads all living documents, synthesizes via Opus 4.6, pushes result.
  */
@@ -149,6 +199,7 @@ export async function generateIntelligenceBrief(
     );
 
     if (!result.success) {
+      emitSynthesisFailed(projectSlug, sessionNumber, "intelligence_brief", result.error);
       recordSynthesisEvent({
         project: projectSlug,
         sessionNumber,
@@ -165,6 +216,29 @@ export async function generateIntelligenceBrief(
     //    (src/utils/intelligence-brief-spec.ts) — single source per INS-30.
     const missingSections = INTELLIGENCE_BRIEF_SPEC_SECTIONS.filter(s => !result.content.includes(s));
     if (missingSections.length > 0) {
+      // brief-456 (SRV-07): a max_tokens-truncated brief that is ALSO missing
+      // required sections must not overwrite the previous (good) brief —
+      // partial-tolerance only applies to structurally complete output.
+      if (result.stop_reason === "max_tokens") {
+        const truncError =
+          `synthesis truncated (stop_reason=max_tokens) with missing sections: ` +
+          `${missingSections.join(", ")} — refusing to overwrite intelligence-brief.md`;
+        logger.warn("Synthesis output truncated and incomplete — not pushing", {
+          projectSlug,
+          sessionNumber,
+          missingSections,
+        });
+        emitSynthesisFailed(projectSlug, sessionNumber, "intelligence_brief", truncError);
+        recordSynthesisEvent({
+          project: projectSlug,
+          sessionNumber,
+          timestamp: new Date().toISOString(),
+          success: false,
+          error: truncError,
+          duration_ms: Date.now() - start,
+        });
+        return { success: false, error: truncError, input_budget: inputBudget };
+      }
       logger.warn("Synthesis output missing sections", { missingSections });
       // Still push — partial brief is better than no brief
     }
@@ -174,6 +248,9 @@ export async function generateIntelligenceBrief(
     if (!content.endsWith("<!-- EOF: intelligence-brief.md -->")) {
       content += "\n\n<!-- EOF: intelligence-brief.md -->\n";
     }
+
+    // 5b. Server-stamp the staleness header (brief-456 / SRV-52).
+    content = enforceLastSynthesizedHeader(content, sessionNumber, timestamp);
 
     // 6. Push to project repo (D-67: resolve path)
     const briefPushPath = await resolveDocPushPath(projectSlug, "intelligence-brief.md");
@@ -195,6 +272,7 @@ export async function generateIntelligenceBrief(
         error: pushError,
         ms: Date.now() - start,
       });
+      emitSynthesisFailed(projectSlug, sessionNumber, "intelligence_brief", pushError);
       recordSynthesisEvent({
         project: projectSlug,
         sessionNumber,
@@ -221,6 +299,9 @@ export async function generateIntelligenceBrief(
       ms: Date.now() - start,
     });
 
+    // brief-456 (SRV-80): transport/model/output_bytes recorded for parity
+    // with the PDU (CS-3) success event — fallback rate and model provenance
+    // for the flagship artifact were previously untracked.
     recordSynthesisEvent({
       project: projectSlug,
       sessionNumber,
@@ -229,6 +310,9 @@ export async function generateIntelligenceBrief(
       input_tokens: outcome.input_tokens,
       output_tokens: outcome.output_tokens,
       duration_ms: Date.now() - start,
+      transport: result.transport,
+      model: result.model,
+      output_bytes: outcome.bytes_written,
     });
 
     return outcome;
@@ -241,6 +325,7 @@ export async function generateIntelligenceBrief(
       error: message,
       ms: duration,
     });
+    emitSynthesisFailed(projectSlug, sessionNumber, "intelligence_brief", message);
 
     recordSynthesisEvent({
       project: projectSlug,
@@ -366,6 +451,7 @@ export async function generatePendingDocUpdates(
     );
 
     if (!result.success) {
+      emitSynthesisFailed(projectSlug, sessionNumber, "pending_updates", result.error);
       recordSynthesisEvent({
         project: projectSlug,
         sessionNumber,
@@ -439,6 +525,10 @@ export async function generatePendingDocUpdates(
       content += "\n\n<!-- EOF: pending-doc-updates.md -->\n";
     }
 
+    // 5b. Server-stamp the staleness header (brief-456 / SRV-52) — apply-pdu's
+    // parseLastSynthesizedSession reads this line.
+    content = enforceLastSynthesizedHeader(content, sessionNumber, timestamp);
+
     // 6. Push
     const pushPath = await resolveDocPushPath(projectSlug, "pending-doc-updates.md");
     const pduPush = await pushFile(
@@ -457,6 +547,7 @@ export async function generatePendingDocUpdates(
         error: pushError,
         ms: Date.now() - start,
       });
+      emitSynthesisFailed(projectSlug, sessionNumber, "pending_updates", pushError);
       recordSynthesisEvent({
         project: projectSlug,
         sessionNumber,
@@ -513,6 +604,7 @@ export async function generatePendingDocUpdates(
       error: message,
       ms: duration,
     });
+    emitSynthesisFailed(projectSlug, sessionNumber, "pending_updates", message);
 
     recordSynthesisEvent({
       project: projectSlug,

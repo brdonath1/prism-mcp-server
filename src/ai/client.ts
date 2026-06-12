@@ -33,6 +33,11 @@ export interface SynthesisResult {
   /** brief-417: which transport produced this result. Optional because legacy
    *  callers (no callSite passed to synthesize) don't always need to know. */
   transport?: "messages_api" | "cc_subprocess" | "messages_api_fallback";
+  /** brief-456 (SRV-07): the Messages API stop_reason, propagated so callers
+   *  can refuse to push truncated output (`max_tokens`) over a good artifact.
+   *  Absent on the cc_subprocess transport (the Agent SDK has its own
+   *  zero-token/empty-text guards). */
+  stop_reason?: string | null;
 }
 
 export interface SynthesisError {
@@ -241,12 +246,55 @@ async function callMessagesApi(params: MessagesApiCallParams): Promise<Synthesis
       .map((block) => block.text)
       .join("\n");
 
+    // brief-456 (SRV-07): output guards — mirror the cc_subprocess path's
+    // empty-text / zero-token guards. An HTTP-200 refusal or an empty text
+    // body must never flow downstream as a successful synthesis; it would
+    // overwrite intelligence-brief.md / pending-doc-updates.md with nothing.
+    const stopReason = response.stop_reason;
+    if (stopReason === "refusal") {
+      logger.warn("Synthesis response refused (stop_reason=refusal) — treating as failure", {
+        model,
+        projectSlug,
+        ms: Date.now() - start,
+      });
+      return {
+        success: false,
+        error: "synthesis returned stop_reason=refusal",
+        error_code: "API_ERROR",
+      };
+    }
+    if (textContent.trim().length === 0) {
+      logger.warn("Synthesis returned empty text content — treating as failure", {
+        model,
+        projectSlug,
+        stop_reason: stopReason ?? "unknown",
+        ms: Date.now() - start,
+      });
+      return {
+        success: false,
+        error: `synthesis returned empty text content (stop_reason=${stopReason ?? "unknown"})`,
+        error_code: "API_ERROR",
+      };
+    }
+    if (stopReason === "max_tokens") {
+      // Truncation is visible here but only the caller knows whether the
+      // output is still usable (required sections present) — propagate via
+      // result.stop_reason and surface a structured warn for operators.
+      logger.warn("SYNTHESIS_OUTPUT_TRUNCATED — stop_reason=max_tokens, output may be incomplete", {
+        model,
+        projectSlug,
+        output_tokens: response.usage.output_tokens,
+        ms: Date.now() - start,
+      });
+    }
+
     const result = {
       success: true as const,
       content: textContent,
       input_tokens: response.usage.input_tokens,
       output_tokens: response.usage.output_tokens,
       model,
+      stop_reason: stopReason,
     };
 
     logger.info("Synthesis API call complete", {
