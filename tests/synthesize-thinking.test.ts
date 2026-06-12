@@ -164,7 +164,7 @@ describe("generateIntelligenceBrief (CS-2) — forwards thinking: true to synthe
 
     vi.doMock("../src/ai/client.js", () => ({ synthesize: synthesizeSpy }));
     vi.doMock("../src/github/client.js", () => ({
-      pushFile: vi.fn().mockResolvedValue({ commit_sha: "abc", path: ".prism/intelligence-brief.md", size: 1024 }),
+      pushFile: vi.fn().mockResolvedValue({ success: true, sha: "abc", size: 1024 }),
       fetchFiles: vi.fn(),
     }));
     vi.doMock("../src/utils/doc-resolver.js", () => ({
@@ -226,7 +226,7 @@ describe("generatePendingDocUpdates (CS-3) — forwards thinking: true to synthe
 
     vi.doMock("../src/ai/client.js", () => ({ synthesize: synthesizeSpy }));
     vi.doMock("../src/github/client.js", () => ({
-      pushFile: vi.fn().mockResolvedValue({ commit_sha: "abc", path: ".prism/pending-doc-updates.md", size: 1024 }),
+      pushFile: vi.fn().mockResolvedValue({ success: true, sha: "abc", size: 1024 }),
       fetchFiles: vi.fn(),
     }));
     vi.doMock("../src/utils/doc-resolver.js", () => ({

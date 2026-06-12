@@ -350,8 +350,11 @@ async function pushBootTest(
   const content = `# Boot Test \u2014 Session ${sessionNumber}\nTimestamp: ${timestamp} CST\nProject: ${slug}\nHandoff: v${handoffVersion}\nMode: MCP\n\n<!-- EOF: boot-test.md -->\n`;
   try {
     const bootTestPath = await resolveDocPushPath(slug, "boot-test.md");
-    await pushFile(slug, bootTestPath, content, `prism: S${sessionNumber} boot test`);
-    return { success: true };
+    const result = await pushFile(slug, bootTestPath, content, `prism: S${sessionNumber} boot test`);
+    // pushFile reports HTTP failures (403 scope loss, 422, 409-after-retry)
+    // as a result shape, not a throw — the write-path verification must
+    // propagate that result instead of reporting verified (SRV-16).
+    return { success: result.success, error: result.error };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return { success: false, error: msg };

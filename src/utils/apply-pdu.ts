@@ -475,12 +475,19 @@ export async function applyPendingDocUpdates(
 
     try {
       const pushPath = await resolveDocPushPath(projectSlug, targetFile);
-      await pushFile(
+      const applyPush = await pushFile(
         projectSlug,
         pushPath,
         workingContent,
         `prism: S${sessionNumber} apply pending-doc-updates → ${targetFile}`,
       );
+      // pushFile reports HTTP failures as a result shape, not a throw —
+      // route them through the same error path as thrown failures so a
+      // failed apply is never recorded as applied (SRV-02). Mirrors the
+      // archive-push check below.
+      if (!applyPush.success) {
+        throw new Error(applyPush.error ?? "apply push failed");
+      }
       result.applied.push(...successfulInThisFile);
       logger.info("apply-pdu: applied proposals", {
         projectSlug,
@@ -594,12 +601,17 @@ export async function applyPendingDocUpdates(
           rejected: result.skipped.length,
         });
         const pushPath = await resolveDocPushPath(projectSlug, "pending-doc-updates.md");
-        await pushFile(
+        const clearPush = await pushFile(
           projectSlug,
           pushPath,
           cleared,
           `prism: S${sessionNumber} clear pending-doc-updates after auto-apply`,
         );
+        // Result-shaped HTTP failure must not report cleared:true — the PDU
+        // is still on disk and the next run must see it (SRV-02).
+        if (!clearPush.success) {
+          throw new Error(clearPush.error ?? "clear push failed");
+        }
         result.cleared = true;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);

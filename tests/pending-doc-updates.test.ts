@@ -85,7 +85,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   // Default — generatePendingDocUpdates push path always resolves to .prism/pending-doc-updates.md
   mockResolveDocPushPath.mockResolvedValue(".prism/pending-doc-updates.md");
-  mockPushFile.mockResolvedValue({ commit_sha: "abc123", path: ".prism/pending-doc-updates.md", size: 1024 });
+  mockPushFile.mockResolvedValue({ success: true, sha: "abc123", size: 1024 } as never);
   mockResolveDocFiles.mockResolvedValue(new Map([
     ["handoff.md", { content: "## Meta\n- Handoff Version: 1\n", sha: "h1", size: 30 }],
     ["session-log.md", { content: "### Session 99\n", sha: "s1", size: 16 }],

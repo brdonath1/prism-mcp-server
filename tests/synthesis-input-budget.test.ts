@@ -208,8 +208,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockResolveDocPushPath.mockResolvedValue(".prism/intelligence-brief.md");
   mockPushFile.mockResolvedValue({
-    commit_sha: "abc123",
-    path: ".prism/intelligence-brief.md",
+    success: true,
+    sha: "abc123",
     size: 1024,
   } as never);
 });

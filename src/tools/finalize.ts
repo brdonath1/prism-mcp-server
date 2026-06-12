@@ -631,12 +631,21 @@ export async function updateArchitectureMetadata(
   // 5. Push.
   try {
     const pushPath = await resolveDocPushPath(projectSlug, "architecture.md");
-    await pushFile(
+    const pushResult = await pushFile(
       projectSlug,
       pushPath,
       newContent,
       `prism: S${sessionNumber} architecture.md preamble refresh`,
     );
+    // pushFile reports HTTP failures as a result shape — `updated: true` on
+    // a failed push would flow into the finalize response as a false
+    // architecture_updated journal entry (SRV-18 corroborated site).
+    if (!pushResult.success) {
+      return {
+        updated: false,
+        reason: `architecture.md push failed: ${pushResult.error ?? "unknown error"}`,
+      };
+    }
     return { updated: true, version };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -763,12 +772,20 @@ async function commitPhase(
           `<!-- EOF: ${backupBasename} -->`,
         );
 
-        await pushFile(
+        const backupPush = await pushFile(
           projectSlug,
           backupPath,
           backupContent,
           `prism: handoff-backup v${currentVersion}`
         );
+        // pushFile reports HTTP failures as a result shape — backup_created
+        // must not name a path for a backup that was never written (SRV-18).
+        if (!backupPush.success) {
+          warnings.push(
+            `Failed to backup current handoff: ${backupPush.error ?? "push failed"}`,
+          );
+          return "";
+        }
         return backupPath;
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
@@ -1259,6 +1276,10 @@ async function commitPhase(
     architecture_updated: architectureResult?.updated ?? null,
     architecture_update_reason: architectureResult?.reason ?? null,
     task_queue_pruned: taskQueuePruned,
+    // SRV-18: non-fatal commit-phase warnings (failed handoff backup, atomic
+    // commit failure detail) were previously collected and then discarded —
+    // surface them so the operator can see what didn't land.
+    warnings,
     confirmation: allSucceeded
       ? `Session ${sessionNumber} finalized. Handoff v${handoffVersion} pushed and verified. ${livingDocsUpdated}/${LIVING_DOCUMENTS.length} living documents updated.${synthesisOutcome === "background" ? " Intelligence brief synthesizing in background." : synthesisOutcome === "skipped" ? " Synthesis skipped." : ""}`
       : `Session ${sessionNumber} finalization partially failed. ${succeeded.length}/${files.length} files pushed.`,

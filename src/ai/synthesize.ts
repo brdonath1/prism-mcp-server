@@ -177,12 +177,34 @@ export async function generateIntelligenceBrief(
 
     // 6. Push to project repo (D-67: resolve path)
     const briefPushPath = await resolveDocPushPath(projectSlug, "intelligence-brief.md");
-    await pushFile(
+    const briefPush = await pushFile(
       projectSlug,
       briefPushPath,
       content,
       `prism: S${sessionNumber} intelligence brief (auto-synthesized)`
     );
+    // pushFile reports HTTP failures as a result shape — a failed push must
+    // never be recorded as a successful synthesis (SRV-15): the next
+    // bootstrap would serve the previous brief while logs/analytics assert a
+    // fresh one was produced.
+    if (!briefPush.success) {
+      const pushError = `intelligence-brief push failed: ${briefPush.error ?? "unknown error"}`;
+      logger.warn("Intelligence brief push failed — recording failed synthesis", {
+        projectSlug,
+        sessionNumber,
+        error: pushError,
+        ms: Date.now() - start,
+      });
+      recordSynthesisEvent({
+        project: projectSlug,
+        sessionNumber,
+        timestamp: new Date().toISOString(),
+        success: false,
+        error: pushError,
+        duration_ms: Date.now() - start,
+      });
+      return { success: false, error: pushError, input_budget: inputBudget };
+    }
 
     const outcome: SynthesisOutcome = {
       success: true,
@@ -419,12 +441,33 @@ export async function generatePendingDocUpdates(
 
     // 6. Push
     const pushPath = await resolveDocPushPath(projectSlug, "pending-doc-updates.md");
-    await pushFile(
+    const pduPush = await pushFile(
       projectSlug,
       pushPath,
       content,
       `prism: S${sessionNumber} pending doc updates (auto-synthesized)`,
     );
+    // Same contract as the intelligence-brief push (SRV-15): an HTTP-failed
+    // push is a failed synthesis, not a success with stale state on disk.
+    if (!pduPush.success) {
+      const pushError = `pending-doc-updates push failed: ${pduPush.error ?? "unknown error"}`;
+      logger.warn("Pending doc-updates push failed — recording failed synthesis", {
+        projectSlug,
+        sessionNumber,
+        error: pushError,
+        ms: Date.now() - start,
+      });
+      recordSynthesisEvent({
+        project: projectSlug,
+        sessionNumber,
+        timestamp: new Date().toISOString(),
+        success: false,
+        error: pushError,
+        duration_ms: Date.now() - start,
+        synthesis_kind: "pending_updates",
+      });
+      return { success: false, error: pushError, input_budget: inputBudget };
+    }
 
     const outcome: SynthesisOutcome = {
       success: true,
