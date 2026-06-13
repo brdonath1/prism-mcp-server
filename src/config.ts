@@ -166,27 +166,55 @@ export const SYNTHESIS_CHARS_PER_TOKEN = 3.5;
 
 /** Tool-level wall-clock deadline for prism_push (S40 C4). Hard backstop on
  *  top of the per-request GitHub fetch timeout. Configurable via env var so
- *  tests can inject a much smaller value without waiting 60s in CI. */
+ *  tests can inject a much smaller value without waiting in CI.
+ *
+ *  SRV-97 (brief-461): default lowered 60s -> MCP_SAFE_TIMEOUT (50s). At 60s
+ *  the value sat AT the ~60s MCP client ceiling, so the client could give up
+ *  (errored turn) before this deadline fired and the abandoned mutation could
+ *  land afterwards. Keeping it <= MCP_SAFE_TIMEOUT guarantees the structured
+ *  DEADLINE_EXCEEDED response reaches the client first (and safeMutation now
+ *  aborts the in-flight commit on expiry — SRV-42). */
 export const PUSH_WALL_CLOCK_DEADLINE_MS =
-  parseInt(process.env.PUSH_WALL_CLOCK_DEADLINE_MS ?? "60000", 10) || 60_000;
+  parseInt(process.env.PUSH_WALL_CLOCK_DEADLINE_MS ?? `${MCP_SAFE_TIMEOUT}`, 10) || MCP_SAFE_TIMEOUT;
 
 /** Tool-level wall-clock deadline for prism_finalize commit phase (S40 C4).
- *  Longer than prism_push because commit has extra work — backup handoff,
- *  prune history, validate, doc-guard, then the atomic commit. */
+ *
+ *  SRV-47/97 (brief-461): default lowered 90s -> MCP_SAFE_TIMEOUT (50s). 90s
+ *  deliberately exceeded the ~60s client ceiling, which was the documented
+ *  root of the errored-turn-retry-duplicates-archive class: the client saw an
+ *  errored turn, the server finished the commit afterwards, and the operator's
+ *  retry double-appended. With the deadline under the ceiling the client gets
+ *  a clean structured error; safeMutation aborts the in-flight commit (SRV-42)
+ *  and archival is idempotent across retries (SRV-47). */
 export const FINALIZE_COMMIT_DEADLINE_MS =
-  parseInt(process.env.FINALIZE_COMMIT_DEADLINE_MS ?? "90000", 10) || 90_000;
+  parseInt(process.env.FINALIZE_COMMIT_DEADLINE_MS ?? `${MCP_SAFE_TIMEOUT}`, 10) || MCP_SAFE_TIMEOUT;
 
 /** Per-call wall-clock budget (ms) for prism_patch (S63 Phase 1 Brief 3).
  *  Bounds the entire patch operation — fetch + N applyPatch + integrity
  *  validate + atomic commit (and any 409 retry the safeMutation primitive
- *  performs). Default 60s gives comfortable headroom over the per-request
- *  GitHub timeout (15s) for sequences that include retries, while staying
- *  below the MCP client's ~60s ceiling. Exceeding this deadline causes
- *  safeMutation to return `{ ok: false, code: "DEADLINE_EXCEEDED" }` and
- *  emit a DEADLINE_EXCEEDED diagnostic. Configurable via env var so tests
- *  can inject a much smaller value without waiting 60s in CI. */
+ *  performs). Exceeding this deadline causes safeMutation to return
+ *  `{ ok: false, code: "DEADLINE_EXCEEDED" }` and emit a DEADLINE_EXCEEDED
+ *  diagnostic. Configurable via env var so tests can inject a much smaller
+ *  value without waiting in CI.
+ *
+ *  SRV-97 (brief-461): default lowered 60s -> MCP_SAFE_TIMEOUT (50s). The old
+ *  comment claimed 60s stayed "below the MCP client's ~60s ceiling" — it did
+ *  not; 60s IS the ceiling. Bringing it to <= MCP_SAFE_TIMEOUT makes the claim
+ *  true and lets the structured deadline error reach the client first. */
 export const PATCH_WALL_CLOCK_DEADLINE_MS =
-  parseInt(process.env.PATCH_WALL_CLOCK_DEADLINE_MS ?? "60000", 10) || 60_000;
+  parseInt(process.env.PATCH_WALL_CLOCK_DEADLINE_MS ?? `${MCP_SAFE_TIMEOUT}`, 10) || MCP_SAFE_TIMEOUT;
+
+/** Tool-level wall-clock deadline for prism_scale_handoff (SRV-64 / brief-461).
+ *  prism_scale_handoff previously had ONLY cooperative between-stage checks
+ *  (SAFETY_TIMEOUT_MS) — stage-1 fetch and stage-6 commit were unbounded, so a
+ *  hung GitHub call held the MCP client connection until the transport gave up
+ *  with no structured error. This is the hard backstop that mirrors the
+ *  push.ts/patch.ts sentinel pattern: a Promise.race around the whole scale
+ *  operation. Default MCP_SAFE_TIMEOUT (50s) so the structured deadline error
+ *  reaches the client before the ~60s ceiling. Env-overridable so tests inject
+ *  a small value without waiting in CI. */
+export const SCALE_WALL_CLOCK_DEADLINE_MS =
+  parseInt(process.env.SCALE_WALL_CLOCK_DEADLINE_MS ?? `${MCP_SAFE_TIMEOUT}`, 10) || MCP_SAFE_TIMEOUT;
 
 /** Tool-level wall-clock deadlines for the four read-path tools (brief-444
  *  R-deadlines / D-240 Phase B / audit brief-431). prism_analytics,

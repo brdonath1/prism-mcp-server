@@ -30,6 +30,36 @@ describe("CIDR utilities", () => {
       expect(isIpInCidr("not-an-ip", "160.79.104.0/21")).toBe(false);
       expect(isIpInCidr("1.2.3.4", "bad-cidr")).toBe(false);
     });
+
+    // SRV-26 (brief-461 Task C): a prefix outside 0–32 must be REJECTED, not
+    // silently wrapped by JS's mod-32 shift (a `/33` typo otherwise widens the
+    // allowlist to a /1 — ~1 billion addresses). Out-of-range prefixes return
+    // false regardless of the IP.
+    it("rejects an out-of-range /33 prefix (does not widen the mask)", () => {
+      expect(isIpInCidr("1.2.3.4", "1.2.3.0/33")).toBe(false);
+      // Concrete widening proof: under the bug, /33 behaves like ~/1 and admits
+      // half of IPv4 — a low address must NOT match a high-address /33.
+      expect(isIpInCidr("10.0.0.1", "1.2.3.0/33")).toBe(false);
+    });
+
+    it("rejects a negative prefix", () => {
+      expect(isIpInCidr("1.2.3.4", "1.2.3.0/-1")).toBe(false);
+    });
+
+    it("rejects a prefix above 32 (e.g. /64)", () => {
+      expect(isIpInCidr("1.2.3.4", "1.2.3.0/64")).toBe(false);
+    });
+
+    it("rejects a non-numeric prefix", () => {
+      expect(isIpInCidr("1.2.3.4", "1.2.3.0/abc")).toBe(false);
+    });
+
+    it("rejects an IP with an out-of-range octet (>255)", () => {
+      // 999 overflows a byte; under the bug it bleeds into the next octet and
+      // can spuriously match. A malformed IP must never match — even /0.
+      expect(isIpInCidr("999.1.1.1", "0.0.0.0/0")).toBe(false);
+      expect(isIpInCidr("1.2.3.256", "1.2.4.0/24")).toBe(false);
+    });
   });
 
   describe("isIpInAnyCidr", () => {

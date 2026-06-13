@@ -363,9 +363,42 @@ export function splitForArchive(
     };
   }
 
+  // SRV-47 (brief-461): idempotent archival. An errored-turn finalize whose
+  // commit actually landed is retried with the operator's original
+  // (un-pruned) files[], so the same oldest entries are eligible again. The
+  // old append path blindly concatenated them onto the existing archive,
+  // duplicating entries already archived on the first run. Skip any eligible
+  // entry whose number is already present in the existing archive — the live
+  // doc still drops the full eligible set (they belong in the archive), but
+  // only the genuinely-new entries are appended.
+  let archivable = eligible;
+  if (existingArchive && existingArchive.trim() !== "") {
+    let existingNumbers: Set<number>;
+    try {
+      existingNumbers = new Set(
+        parseEntriesWithBounds(existingArchive, config.entryMarker).map((e) => e.number),
+      );
+    } catch {
+      // Malformed existing archive — fall back to the non-deduped behavior
+      // rather than dropping entries on the floor.
+      existingNumbers = new Set();
+    }
+    archivable = eligible.filter((e) => !existingNumbers.has(e.number));
+    if (archivable.length === 0) {
+      // Every eligible entry is already archived — re-appending would
+      // duplicate. Nothing new to write.
+      return {
+        liveContent: input,
+        archiveContent: null,
+        archivedCount: 0,
+        skipReason: "all eligible entries already archived (idempotent)",
+      };
+    }
+  }
+
   // Build archiveContent.
   const archiveEntriesText =
-    eligible.map(e => e.fullText.replace(/\s+$/, "")).join("\n\n") + "\n";
+    archivable.map(e => e.fullText.replace(/\s+$/, "")).join("\n\n") + "\n";
 
   // SRV-06 (brief-459): the old append path stripped only trailing
   // WHITESPACE, so an existing EOF sentinel survived and new entries landed
@@ -399,7 +432,7 @@ export function splitForArchive(
   return {
     liveContent,
     archiveContent,
-    archivedCount: eligible.length,
+    archivedCount: archivable.length,
   };
 }
 

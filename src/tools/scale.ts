@@ -26,9 +26,15 @@ import { extractSection } from "../utils/summarizer.js";
 import { resolveDocPath, resolveDocPushPath } from "../utils/doc-resolver.js";
 import { DiagnosticsCollector } from "../utils/diagnostics.js";
 import { detectMostRecentAtFromNumbers } from "../utils/archive.js";
+import { SCALE_WALL_CLOCK_DEADLINE_MS } from "../config.js";
 
 /** Maximum wall-clock time before returning a partial result (ms). */
 const SAFETY_TIMEOUT_MS = 50_000;
+
+/** Sentinel resolved by the prism_scale_handoff wall-clock deadline (SRV-64).
+ *  The cooperative SAFETY_TIMEOUT_MS checks only fire between stages; this is
+ *  the hard backstop that races the whole operation, mirroring push.ts. */
+const SCALE_DEADLINE_SENTINEL = Symbol("scale.deadline");
 
 /** Total number of stages in a full/execute scaling operation. */
 const TOTAL_STAGES = 6;
@@ -1122,7 +1128,16 @@ export function registerScaleHandoff(server: McpServer): void {
         hasProgressToken: progressToken !== undefined,
       });
 
-      try {
+      // SRV-64: hard wall-clock backstop around the entire scale operation.
+      // The cooperative SAFETY_TIMEOUT_MS checks only fire between stages; a
+      // hung GitHub call inside a stage had no deadline. Race the whole body.
+      let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+      const deadlinePromise = new Promise<typeof SCALE_DEADLINE_SENTINEL>((resolve) => {
+        deadlineTimer = setTimeout(() => resolve(SCALE_DEADLINE_SENTINEL), SCALE_WALL_CLOCK_DEADLINE_MS);
+      });
+
+      const scaleWork = async () => {
+       try {
         // ── action: "execute" — run a previously-generated plan ──
         if (action === "execute") {
           if (!plan) {
@@ -1524,6 +1539,43 @@ export function registerScaleHandoff(server: McpServer): void {
           }],
           isError: true,
         };
+       }
+      };
+
+      // SRV-64: race the scale work against the hard wall-clock deadline.
+      try {
+        const raced = await Promise.race([scaleWork(), deadlinePromise]);
+        if (raced === SCALE_DEADLINE_SENTINEL) {
+          const deadlineSec = Math.round(SCALE_WALL_CLOCK_DEADLINE_MS / 1000);
+          logger.error("prism_scale_handoff deadline exceeded", {
+            project_slug,
+            action,
+            deadlineMs: SCALE_WALL_CLOCK_DEADLINE_MS,
+            elapsed_ms: Date.now() - startTime,
+          });
+          diagnostics.warn(
+            "SCALE_DEADLINE_EXCEEDED",
+            `Scale deadline exceeded (${deadlineSec}s)`,
+            { deadlineMs: SCALE_WALL_CLOCK_DEADLINE_MS },
+          );
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({
+                project: project_slug,
+                action,
+                error: `prism_scale_handoff deadline exceeded (${deadlineSec}s)`,
+                partial_state_warning:
+                  "Scaling may have partially committed (the reduced handoff and/or destination docs) — verify the repo HEAD before retrying. The final atomic commit is all-or-nothing, but a pre-commit step may already have landed.",
+                diagnostics: diagnostics.list(),
+              }),
+            }],
+            isError: true,
+          };
+        }
+        return raced;
+      } finally {
+        if (deadlineTimer) clearTimeout(deadlineTimer);
       }
     },
   );

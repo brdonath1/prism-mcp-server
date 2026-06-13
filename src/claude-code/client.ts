@@ -30,7 +30,18 @@ import { execSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { CC_DISPATCH_EFFORT, CC_DISPATCH_MODEL, CLAUDE_CODE_OAUTH_TOKEN } from "../config.js";
+import { isSensitiveKey } from "../railway/client.js";
 import { logger } from "../utils/logger.js";
+
+/**
+ * Sensitive env vars the dispatched subprocess legitimately needs (SRV-37).
+ * Everything else matching {@link isSensitiveKey} is dropped. GITHUB_PAT is the
+ * "clone PAT" — git clone/push against the credential-baked origin URL relies
+ * on it (brief-461 scope decision: retain the clone PAT, drop the secrets the
+ * worker never touches). The OAuth token is set explicitly below, not via this
+ * allowlist.
+ */
+const SUBPROCESS_SANCTIONED_SECRETS = new Set<string>(["GITHUB_PAT"]);
 
 /** Options accepted by dispatchTask. Mirrors the subset of Agent SDK
  *  Options we care about, plus a timeout for transport safety. */
@@ -135,11 +146,22 @@ export function findClaudeExecutable(): {
 /**
  * Build the env passed to the spawned Claude Code subprocess.
  *
- * Scrubs ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN so the child does not
- * inherit them from the parent process. Sets CLAUDE_CODE_OAUTH_TOKEN as the
- * sanctioned auth source for the official Claude Code CLI.
+ * SRV-37: the subprocess runs with `bypassPermissions` and its output is
+ * persisted to GitHub + returned to the client, so it must NOT inherit server
+ * secrets it doesn't use. This is an ALLOWLIST, not a denylist: non-sensitive
+ * system / runtime / model vars pass through, but any var matching
+ * {@link isSensitiveKey} (KEY/SECRET/TOKEN/PASSWORD/AUTH/CREDENTIAL/PRIVATE/
+ * PAT/GITHUB_*) is DROPPED unless it is explicitly sanctioned
+ * ({@link SUBPROCESS_SANCTIONED_SECRETS} — the clone PAT). Dropping by
+ * sensitivity rather than a fixed name list means a future server secret
+ * (e.g. a new DB password) is excluded automatically. Concretely this removes
+ * MCP_AUTH_TOKEN and RAILWAY_API_TOKEN — credentials the subprocess never
+ * needs — while preserving cc_dispatch functionality (clone PAT + OAuth token
+ * + model/system vars retained). ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN stay
+ * explicitly scrubbed so CC's auth precedence ladder uses the OAuth token, not
+ * the API key (S56).
  *
- * Exported solely so the env-scrubbing behavior can be unit-tested without
+ * Exported solely so the allowlist behavior can be unit-tested without
  * spinning up the Agent SDK.
  */
 export function buildDispatchEnv(
@@ -149,9 +171,13 @@ export function buildDispatchEnv(
 ): Record<string, string> {
   const childEnv: Record<string, string> = {};
   for (const [key, value] of Object.entries(parentEnv)) {
-    if (key === "ANTHROPIC_API_KEY") continue;
-    if (key === "ANTHROPIC_AUTH_TOKEN") continue;
-    if (value !== undefined) childEnv[key] = value;
+    if (value === undefined) continue;
+    // Auth-precedence scrub (S56) — always drop, even though isSensitiveKey
+    // would also catch them.
+    if (key === "ANTHROPIC_API_KEY" || key === "ANTHROPIC_AUTH_TOKEN") continue;
+    // SRV-37 allowlist: drop sensitive vars unless explicitly sanctioned.
+    if (isSensitiveKey(key) && !SUBPROCESS_SANCTIONED_SECRETS.has(key)) continue;
+    childEnv[key] = value;
   }
   childEnv.CLAUDE_CODE_OAUTH_TOKEN = oauthToken;
   childEnv.CLAUDE_CODE_EFFORT = effort;

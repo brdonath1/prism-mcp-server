@@ -34,8 +34,19 @@ export async function resolveDocPath(
   try {
     const file = await fetchFile(projectSlug, newPath);
     return { path: newPath, content: file.content, sha: file.sha, legacy: false };
-  } catch {
-    // Fall back to legacy root path
+  } catch (error) {
+    // SRV-44: only a genuine 404 ("Not found") justifies the legacy root
+    // fallback. A transient 401/403/timeout/5xx on the `.prism/` path is an
+    // operational error — falling through to the root copy would either serve
+    // a stale legacy file or surface a misleading "decisions/_INDEX.md not
+    // found" for what was really an INS-311 auth blip. Rethrow operational
+    // errors; mirror the discrimination already done in pushFile (client.ts)
+    // and collectRegistryIdSets (finalize.ts).
+    const msg = error instanceof Error ? error.message : String(error);
+    if (!/Not found/i.test(msg)) {
+      throw error;
+    }
+    // Fall back to legacy root path (genuine .prism/ 404).
     const file = await fetchFile(projectSlug, docName);
     logger.info("doc-resolver: using legacy path", { projectSlug, docName });
     return { path: docName, content: file.content, sha: file.sha, legacy: true };

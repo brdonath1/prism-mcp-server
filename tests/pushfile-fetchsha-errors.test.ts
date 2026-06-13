@@ -39,19 +39,26 @@ afterEach(() => {
 
 describe("SRV-75 — pushFile fetchSha error handling", () => {
   it("initial fetchSha 401 → pushFile throws the real cause (not a misleading 422)", async () => {
+    // brief-461 SRV-35: a 401 is now retried (bounded) before surfacing, so
+    // the GET is attempted MAX_TRANSIENT_401_RETRIES+1 = 3 times. The SRV-75
+    // guarantee is unchanged: the persistent 401 surfaces the real cause and
+    // pushFile must NOT fall through to a sha-less create-mode PUT (which a
+    // server would answer with a misleading 422). The trailing 422 here is the
+    // bug-path PUT — it must never be reached.
     const stub = makeFetchStub([
-      { status: 401, body: "Bad credentials" }, // GET (fetchSha)
-      // If the swallow bug is present, a PUT follows; GitHub answers 422 for
-      // a missing-sha update of an existing file.
-      { status: 422, body: '{"message":"Invalid request. sha required"}' },
+      { status: 401, body: "Bad credentials" }, // GET (fetchSha) attempt 1
+      { status: 401, body: "Bad credentials" }, // GET retry 2
+      { status: 401, body: "Bad credentials" }, // GET retry 3 (final)
+      { status: 422, body: '{"message":"Invalid request. sha required"}' }, // bug-path PUT
     ]);
     vi.stubGlobal("fetch", stub);
 
     await expect(pushFile("test-project", ".prism/handoff.md", "content", "prism: test")).rejects.toThrow(
-      /PAT is invalid or expired/,
+      /401|transient|INS-311/i,
     );
-    expect(stub).toHaveBeenCalledTimes(1);
-  });
+    // 3 GET attempts; the create-mode PUT was never reached.
+    expect(stub).toHaveBeenCalledTimes(3);
+  }, 10_000);
 
   it("initial fetchSha 404 → create mode: PUT without sha, success", async () => {
     const stub = makeFetchStub([
@@ -69,19 +76,26 @@ describe("SRV-75 — pushFile fetchSha error handling", () => {
   });
 
   it("409-conflict re-fetch 401 → pushFile throws the real cause instead of blind create-mode retry", async () => {
+    // brief-461 SRV-35: the 409-conflict re-fetchSha 401 is also retried
+    // (bounded, 3 attempts) before surfacing. SRV-75 guarantee preserved: the
+    // re-fetch 401 surfaces the real cause; the bug-path create-mode PUT #2 is
+    // never reached.
     const stub = makeFetchStub([
       { status: 200, body: '{"sha":"old-sha"}' }, // GET (fetchSha)
       { status: 409, body: '{"message":"conflict"}' }, // PUT #1
-      { status: 401, body: "Bad credentials" }, // GET (re-fetchSha)
+      { status: 401, body: "Bad credentials" }, // GET (re-fetchSha) attempt 1
+      { status: 401, body: "Bad credentials" }, // re-fetchSha retry 2
+      { status: 401, body: "Bad credentials" }, // re-fetchSha retry 3 (final)
       { status: 422, body: '{"message":"Invalid request. sha required"}' }, // PUT #2 (bug path)
     ]);
     vi.stubGlobal("fetch", stub);
 
     await expect(pushFile("test-project", ".prism/handoff.md", "content", "prism: test")).rejects.toThrow(
-      /PAT is invalid or expired/,
+      /401|transient|INS-311/i,
     );
-    expect(stub).toHaveBeenCalledTimes(3);
-  });
+    // 1 GET + 1 PUT(409) + 3 re-fetch attempts = 5; the bug-path PUT #2 was never reached.
+    expect(stub).toHaveBeenCalledTimes(5);
+  }, 10_000);
 
   it("409-conflict re-fetch 404 (file deleted between attempts) → create-mode retry succeeds", async () => {
     const stub = makeFetchStub([

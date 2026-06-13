@@ -3,6 +3,7 @@ process.env.GITHUB_PAT = process.env.GITHUB_PAT || "test-dummy-pat";
 
 import { describe, it, expect } from "vitest";
 import { validateFilePath, validateProjectSlug } from "../src/validation/slug.js";
+import { isIpInCidr } from "../src/utils/cidr.js";
 
 describe("Path traversal prevention (C-1)", () => {
   it("rejects URL-encoded traversal: %2e%2e/etc/passwd", () => {
@@ -140,14 +141,25 @@ describe("Insight ID format validation (M-3)", () => {
   });
 });
 
-describe("CIDR IPv6 awareness (M-1)", () => {
-  it("isIpInCidr source handles IPv6 gracefully", () => {
-    const { readFileSync } = require("fs");
-    const source = readFileSync("src/utils/cidr.ts", "utf-8");
-    // IPv6 detection present
-    expect(source).toContain('":"');
-    // Returns false rather than crashing
-    expect(source).toContain("return false");
+// SRV-83 (brief-461 Task C): behavioral CIDR test, replacing the prior
+// source-string grep (the grep "passes" even if the runtime is broken — it
+// missed the SRV-26 prefix-widening bug). Exercises isIpInCidr directly.
+// NOTE: the auth-middleware source greps below (timing-safe / IP extraction)
+// are intentionally NOT converted here — behavioralizing the auth path means
+// exercising the OR/AND token-vs-IP composition, which is SRV-36, explicitly
+// OUT OF SCOPE for brief-461 (deferred to an operator-gated deploy).
+describe("CIDR IPv6 awareness (M-1) — behavioral (SRV-83)", () => {
+  it("returns false (not a crash) for a pure IPv6 client address against an IPv4 CIDR", () => {
+    expect(isIpInCidr("2001:db8::1", "160.79.104.0/21")).toBe(false);
+    expect(isIpInCidr("::1", "160.79.104.0/21")).toBe(false);
+  });
+
+  it("returns false for an IPv6 CIDR (unsupported) rather than throwing", () => {
+    expect(isIpInCidr("160.79.104.1", "::/0")).toBe(false);
+  });
+
+  it("still matches IPv6-mapped IPv4 against an IPv4 CIDR", () => {
+    expect(isIpInCidr("::ffff:160.79.104.1", "160.79.104.0/21")).toBe(true);
   });
 });
 

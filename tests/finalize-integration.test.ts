@@ -487,7 +487,11 @@ Completed audit remediation.
       session_number: 26,
       handoff_version: 31,
       files: [
-        { path: "handoff.md", content: "# Handoff\n<!-- EOF: handoff.md -->" },
+        // SRV-48 (brief-461): the backup/prune write is now gated on a clean
+        // validation, so the committed handoff must be valid — the old minimal
+        // "# Handoff" passed only because the prune used to run BEFORE
+        // validation (the very bug SRV-48 fixes).
+        { path: "handoff.md", content: HANDOFF_CONTENT },
       ],
     });
 
@@ -1436,7 +1440,11 @@ describe("brief-459 / SRV-05: numeric version sort across digit-width boundaries
       session_number: 26,
       handoff_version: 13,
       files: [
-        { path: "handoff.md", content: "# Handoff\n<!-- EOF: handoff.md -->" },
+        // SRV-48 (brief-461): the backup/prune write is now gated on a clean
+        // validation, so the committed handoff must be valid — the old minimal
+        // "# Handoff" passed only because the prune used to run BEFORE
+        // validation (the very bug SRV-48 fixes).
+        { path: "handoff.md", content: HANDOFF_CONTENT },
       ],
     });
 

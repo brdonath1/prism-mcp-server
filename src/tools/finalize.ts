@@ -134,7 +134,7 @@ import { resolveDocPath, resolveDocFiles, resolveDocPushPath } from "../utils/do
 import { guardPushPath } from "../utils/doc-guard.js";
 import { logger } from "../utils/logger.js";
 import { extractHeaders, extractSection, parseNumberedList } from "../utils/summarizer.js";
-import { parseHandoffVersion, parseTemplateVersion } from "../validation/handoff.js";
+import { parseHandoffVersion, parseSessionCount, parseTemplateVersion } from "../validation/handoff.js";
 import { validateFile } from "../validation/index.js";
 import { parseMarkdownTable } from "../utils/summarizer.js";
 import { generateIntelligenceBrief, generatePendingDocUpdates } from "../ai/synthesize.js";
@@ -762,6 +762,10 @@ async function commitPhase(
   files: Array<{ path: string; content: string }>,
   skipSynthesis: boolean = false,
   diagnostics: DiagnosticsCollector = new DiagnosticsCollector(),
+  // SRV-42 (brief-461): caller-owned cancellation. prism_finalize's commit
+  // Promise.race aborts this on deadline so the in-flight atomic commit is
+  // cancelled rather than abandoned (and left to land after the error turn).
+  signal?: AbortSignal,
 ) {
   const warnings: string[] = [];
   const today = new Date().toISOString().split("T")[0];
@@ -848,8 +852,15 @@ async function commitPhase(
     })(),
   ]);
 
+  // SRV-48 (brief-461): the backup + prune WRITE is deferred into this closure
+  // and only invoked AFTER validation passes. Previously it committed before
+  // validation, so a validation-failed finalize had already mutated the repo
+  // (the atomic-commit primitive had already run via safeMutation). Defining it
+  // here keeps backupPlan / prunePlan in closure scope; the call site is below
+  // the validation gate.
   let backupPath = "";
-  if (backupPlan !== null || prunePlan.length > 0) {
+  const writeBackupAndPrune = async (): Promise<void> => {
+    if (backupPlan === null && prunePlan.length === 0) return;
     const pruneSuffix = prunePlan.length > 0
       ? ` + prune ${prunePlan.length} old backup${prunePlan.length === 1 ? "" : "s"}`
       : "";
@@ -862,6 +873,7 @@ async function commitPhase(
       commitMessage,
       readPaths: [],
       diagnostics,
+      signal,
       computeMutation: () => ({
         writes: backupPlan !== null
           ? [{ path: backupPlan.path, content: backupPlan.content }]
@@ -888,7 +900,7 @@ async function commitPhase(
         );
       }
     }
-  }
+  };
 
   // 2b. brief-411 / D-193 Piece 1 — persist the model+thinking recommendation
   //     into handoff.md as a structured markdown block. Bootstrap reads this
@@ -974,31 +986,10 @@ async function commitPhase(
     }
   }
 
-  // 3. Validate all files
-  const validationResults = files.map((file) => {
-    const result = validateFile(file.path, file.content);
-    return { path: file.path, ...result };
-  });
-
-  const hasValidationErrors = validationResults.some((r) => r.errors.length > 0);
-  if (hasValidationErrors) {
-    return {
-      project: projectSlug,
-      session_number: sessionNumber,
-      handoff_version: handoffVersion,
-      backup_created: backupPath,
-      results: validationResults.map((r) => ({
-        path: r.path,
-        success: false,
-        size_bytes: 0,
-        verified: false,
-        validation_errors: r.errors,
-      })),
-      living_documents_updated: 0,
-      all_succeeded: false,
-      confirmation: `Session ${sessionNumber} finalization FAILED — validation errors detected.`,
-    };
-  }
+  // SRV-48 (brief-461): validation MOVED below the archive + task-queue prune
+  // mutations (see step 3, after ZWS detection) so it covers the FINAL files[]
+  // — including injected archive files and pruned content — instead of the
+  // pre-mutation form. No repo writes happen before that validation gate.
 
   // 3b. Archive lifecycle (S40 FINDING-14).
   // Apply size-triggered archiving to session-log.md and insights.md BEFORE the
@@ -1152,6 +1143,70 @@ async function commitPhase(
     }
   }
 
+  // 3d. Validate the FINAL files[] — AFTER all in-memory mutations
+  //     (recommendation injection, archive lifecycle, task-queue prune) so the
+  //     committed bytes, including injected archive files and pruned content,
+  //     are exactly what is validated (SRV-48). Crucially, NO repo write has
+  //     happened yet: a validation failure here returns with the repo
+  //     untouched (no backup, no prune, no atomic commit).
+  const validationResults = files.map((file) => {
+    const result = validateFile(file.path, file.content);
+    return { path: file.path, ...result };
+  });
+
+  // SRV-59: cross-check the committed handoff's Meta against the call params.
+  // A silent mismatch means the next boot reads a version/session that does
+  // not match what was finalized. Warning-level — never blocks the commit.
+  const committedHandoff = files.find(
+    (f) => f.path === "handoff.md" || f.path === `${DOC_ROOT}/handoff.md`,
+  );
+  if (committedHandoff) {
+    const metaVersion = parseHandoffVersion(committedHandoff.content);
+    const metaSession = parseSessionCount(committedHandoff.content);
+    if (metaVersion !== null && metaVersion !== handoffVersion) {
+      diagnostics.warn(
+        "HANDOFF_VERSION_MISMATCH",
+        `Committed handoff Meta 'Handoff Version: ${metaVersion}' does not match finalize handoff_version=${handoffVersion}; the next boot will read ${metaVersion}.`,
+        { metaVersion, paramVersion: handoffVersion },
+      );
+    }
+    if (metaSession !== null && metaSession !== sessionNumber) {
+      diagnostics.warn(
+        "HANDOFF_SESSION_MISMATCH",
+        `Committed handoff Meta 'Session Count: ${metaSession}' does not match finalize session_number=${sessionNumber}.`,
+        { metaSession, paramSession: sessionNumber },
+      );
+    }
+  }
+
+  const hasValidationErrors = validationResults.some((r) => r.errors.length > 0);
+  if (hasValidationErrors) {
+    return {
+      project: projectSlug,
+      session_number: sessionNumber,
+      handoff_version: handoffVersion,
+      // SRV-48: "" — no backup/prune write happened before the validation gate.
+      backup_created: backupPath,
+      results: validationResults.map((r) => ({
+        path: r.path,
+        success: false,
+        size_bytes: 0,
+        verified: false,
+        validation_errors: r.errors,
+        validation_warnings: r.warnings, // SRV-20
+      })),
+      living_documents_updated: 0,
+      all_succeeded: false,
+      diagnostics: diagnostics.list(),
+      confirmation: `Session ${sessionNumber} finalization FAILED — validation errors detected.`,
+    };
+  }
+
+  // SRV-48: validation passed — perform the deferred backup + prune write now.
+  // Every repo write is below this gate, so a validation-failed finalize never
+  // mutates the repo.
+  await writeBackupAndPrune();
+
   // 4. Guard all paths against root-level duplication (D-67 addendum)
   const guardResults = await Promise.all(
     files.map(file => guardPushPath(projectSlug, file.path))
@@ -1176,6 +1231,7 @@ async function commitPhase(
     commitMessage,
     readPaths: [],
     diagnostics,
+    signal,
     computeMutation: () => ({ writes: guardedFiles }),
   });
 
@@ -1185,24 +1241,29 @@ async function commitPhase(
     size_bytes: number;
     verified: boolean;
     validation_errors: string[];
+    validation_warnings: string[];
   }>;
 
   if (safeMutationResult.ok) {
-    results = guardedFiles.map(f => ({
+    // SRV-20: carry per-file validation_warnings through the success path
+    // (index-aligned: guardedFiles, files, and validationResults share order).
+    results = guardedFiles.map((f, idx) => ({
       path: f.path,
       success: true,
       size_bytes: new TextEncoder().encode(f.content).length,
       verified: true,
       validation_errors: [],
+      validation_warnings: validationResults[idx]?.warnings ?? [],
     }));
   } else {
     warnings.push(`Atomic commit failed: ${safeMutationResult.error}`);
-    results = guardedFiles.map(f => ({
+    results = guardedFiles.map((f, idx) => ({
       path: f.path,
       success: false,
       size_bytes: 0,
       verified: false,
       validation_errors: ["Atomic commit failed", safeMutationResult.error],
+      validation_warnings: validationResults[idx]?.warnings ?? [],
     }));
   }
 
@@ -1942,15 +2003,63 @@ async function fullPhase(
     }
   }
 
-  // Step 4 — Commit
-  const commitResult = await commitPhase(
-    projectSlug,
-    sessionNumber,
-    handoffVersion,
-    files,
-    skipSynthesis,
-    diagnostics,
-  );
+  // Step 4 — Commit. SRV-58 (brief-461): fullPhase previously called
+  // commitPhase directly with NO deadline, while the commit action wrapped the
+  // identical call in the FINALIZE_COMMIT_DEADLINE race. Apply the same race +
+  // AbortController-cancellation here so action=full's commit step is bounded
+  // and a timed-out commit is cancelled, not abandoned.
+  const fullCommitAbort = new AbortController();
+  let fullCommitDeadlineTimer: ReturnType<typeof setTimeout> | undefined;
+  const fullCommitDeadlinePromise = new Promise<typeof FINALIZE_COMMIT_DEADLINE_SENTINEL>((resolve) => {
+    fullCommitDeadlineTimer = setTimeout(() => {
+      fullCommitAbort.abort();
+      resolve(FINALIZE_COMMIT_DEADLINE_SENTINEL);
+    }, FINALIZE_COMMIT_DEADLINE_MS);
+  });
+  const fullCommitRaced = await Promise.race([
+    commitPhase(
+      projectSlug,
+      sessionNumber,
+      handoffVersion,
+      files,
+      skipSynthesis,
+      diagnostics,
+      fullCommitAbort.signal,
+    ),
+    fullCommitDeadlinePromise,
+  ]);
+  if (fullCommitDeadlineTimer) clearTimeout(fullCommitDeadlineTimer);
+
+  if (fullCommitRaced === FINALIZE_COMMIT_DEADLINE_SENTINEL) {
+    const deadlineSec = Math.round(FINALIZE_COMMIT_DEADLINE_MS / 1000);
+    logger.error("fullPhase commit deadline exceeded", {
+      projectSlug,
+      deadlineMs: FINALIZE_COMMIT_DEADLINE_MS,
+    });
+    diagnostics.error(
+      "SYNTHESIS_TIMEOUT",
+      `Commit deadline exceeded (${deadlineSec}s)`,
+      { deadlineMs: FINALIZE_COMMIT_DEADLINE_MS },
+    );
+    return {
+      action: "full" as const,
+      project: projectSlug,
+      session_number: sessionNumber,
+      handoff_version: handoffVersion,
+      all_succeeded: false,
+      error: `prism_finalize full commit deadline exceeded (${deadlineSec}s)`,
+      // SRV-49: describe the real partial surface (see the commit action).
+      partial_state_warning:
+        "Commit deadline exceeded. The final doc commit is atomic (all-or-nothing) and was signaled to abort — verify the repo HEAD before retrying. Pre-commit steps (handoff backup, history prune) may already have committed; a retry does not duplicate archived entries (SRV-47).",
+      phases: {
+        audit: { status: auditStatus, warnings: auditResult.audit.warnings },
+        draft: { status: draftStatus },
+        commit: { all_succeeded: false },
+      },
+      diagnostics: diagnostics.list(),
+    };
+  }
+  const commitResult = fullCommitRaced;
 
   // Step 5 — Finalization banner (brief-439 / R8 + brief-447 / D-249).
   // fullPhase previously returned no banner at all; the unified generator now
@@ -2256,12 +2365,19 @@ export function registerFinalize(server: McpServer): void {
         // commitPhase does the GitHub I/O (backup, prune, atomic commit,
         // optional fallback pushes). If it hangs past the deadline, return
         // a structured error instead of waiting for the MCP client timeout.
+        // SRV-42: the deadline aborts an AbortController threaded through
+        // commitPhase into the safeMutation primitive (which cancels the
+        // in-flight atomic commit), so a timed-out commit is CANCELLED rather
+        // than abandoned (and left to land after the error turn). The
+        // Promise.race still produces the structured response; the abort stops
+        // the in-flight work.
+        const commitAbort = new AbortController();
         let commitDeadlineTimer: ReturnType<typeof setTimeout> | undefined;
         const commitDeadlinePromise = new Promise<typeof FINALIZE_COMMIT_DEADLINE_SENTINEL>((resolve) => {
-          commitDeadlineTimer = setTimeout(
-            () => resolve(FINALIZE_COMMIT_DEADLINE_SENTINEL),
-            FINALIZE_COMMIT_DEADLINE_MS,
-          );
+          commitDeadlineTimer = setTimeout(() => {
+            commitAbort.abort();
+            resolve(FINALIZE_COMMIT_DEADLINE_SENTINEL);
+          }, FINALIZE_COMMIT_DEADLINE_MS);
         });
         const commitWork = commitPhase(
           project_slug,
@@ -2270,6 +2386,7 @@ export function registerFinalize(server: McpServer): void {
           files,
           skipSynthesis,
           diagnostics,
+          commitAbort.signal,
         );
         const raced = await Promise.race([commitWork, commitDeadlinePromise]);
         if (commitDeadlineTimer) clearTimeout(commitDeadlineTimer);
@@ -2290,8 +2407,14 @@ export function registerFinalize(server: McpServer): void {
                   project: project_slug,
                   action: "commit",
                   error: `prism_finalize commit deadline exceeded (${deadlineSec}s)`,
+                  // SRV-49: describe the actual partial surface. The final doc
+                  // commit is atomic (all-or-nothing) and was signaled to
+                  // abort, so it may or may not have landed; pre-commit steps
+                  // (handoff backup, history prune) may already have committed.
+                  // A retry is archive-idempotent (SRV-47).
                   partial_state_warning:
-                    "Atomic commit may have partially succeeded — verify repo state manually",
+                    "Commit deadline exceeded. The final doc commit is atomic (all-or-nothing) and was signaled to abort — verify the repo HEAD before retrying. Pre-commit steps (handoff backup, history prune) may already have committed; a retry does not duplicate archived entries (SRV-47).",
+                  backup_created: "",
                   diagnostics: diagnostics.list(),
                 }),
               },
@@ -2368,7 +2491,19 @@ export function registerFinalize(server: McpServer): void {
           content: [
             {
               type: "text" as const,
-              text: JSON.stringify({ error: message, project: project_slug }),
+              // SRV-49: a finalize that errors mid-turn previously dropped the
+              // diagnostics entirely, leaving the operator unable to tell what
+              // landed (INS-314). Include them — they may carry DELETE_FILE_FAILED
+              // / MUTATION_* / HANDOFF_SCHEMA_MISSING events from work that ran
+              // before the throw — plus a pointer to verify via the repo HEAD.
+              text: JSON.stringify({
+                error: message,
+                project: project_slug,
+                action,
+                partial_state_warning:
+                  "Finalize errored mid-turn. Doc commits are atomic, but pre-commit steps (handoff backup, history prune) may already have landed — verify the repo HEAD. A retry does not duplicate archived entries (SRV-47).",
+                diagnostics: diagnostics.list(),
+              }),
             },
           ],
           isError: true,

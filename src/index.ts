@@ -44,6 +44,7 @@ import { registerGhDeleteTag } from "./tools/gh-delete-tag.js";
 import { registerGhGetBranchProtection } from "./tools/gh-get-branch-protection.js";
 import { registerGhSetBranchProtection } from "./tools/gh-set-branch-protection.js";
 import { hydrateStore } from "./dispatch-store.js";
+import { registerShutdownHandlers } from "./shutdown.js";
 
 const app = express();
 app.use(express.json({ limit: "5mb" }));
@@ -182,7 +183,7 @@ app.get("/health", (_req: Request, res: Response) => {
 /**
  * Start the server.
  */
-app.listen(PORT, () => {
+const httpServer = app.listen(PORT, () => {
   logger.info("PRISM MCP Server started", {
     port: PORT,
     version: SERVER_VERSION,
@@ -205,3 +206,9 @@ app.listen(PORT, () => {
     });
   }
 });
+
+// SRV-65 (brief-461): graceful shutdown. Railway sends SIGTERM on every
+// deploy; without this the process is killed mid-request, which can strand an
+// in-flight atomic commit. Stop accepting new connections, let in-flight
+// handlers drain (bounded), then exit.
+registerShutdownHandlers(httpServer);
