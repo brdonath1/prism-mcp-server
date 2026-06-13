@@ -145,11 +145,25 @@ export async function commitAndPushBranch(
   }
 
   const run = (args: string[], opts?: { capture?: boolean }) => {
-    return execFileSync("git", ["-C", workdir, ...args], {
-      encoding: "utf8",
-      stdio: opts?.capture ? ["ignore", "pipe", "pipe"] : "pipe",
-      timeout: 60_000,
-    });
+    try {
+      return execFileSync("git", ["-C", workdir, ...args], {
+        encoding: "utf8",
+        stdio: opts?.capture ? ["ignore", "pipe", "pipe"] : "pipe",
+        timeout: 60_000,
+      });
+    } catch (error) {
+      // SRV-55: `git push` runs against an origin whose URL has the PAT baked
+      // in from the clone step, and git can echo that credentialed URL
+      // (https://x-access-token:PAT@github.com/...) into stderr, which Node
+      // appends to the thrown error's message. Scrub the PAT from EVERY git
+      // error here — the same defense cloneRepo already applies — so it never
+      // propagates into a committed dispatch record or the chat transcript.
+      // split/join replaces all occurrences and is safe for arbitrary PAT
+      // characters (no regex interpretation).
+      const message = error instanceof Error ? error.message : String(error);
+      const scrubbed = GITHUB_PAT ? message.split(GITHUB_PAT).join("***") : message;
+      throw new Error(scrubbed);
+    }
   };
 
   // Configure a throwaway committer identity. Railway containers don't have

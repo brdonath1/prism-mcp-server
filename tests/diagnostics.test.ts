@@ -405,7 +405,9 @@ describe("push diagnostics integration", () => {
         success: false,
         sha: "",
         files_committed: 0,
-        error: "Tree creation failed",
+        // SRV-96: a genuine 409/non-fast-forward conflict is what surfaces
+        // MUTATION_CONFLICT (a non-conflict failure is now MUTATION_RETRY).
+        error: "GitHub API 409: Update is not a fast forward (updateRef)",
       })
       .mockResolvedValueOnce({
         success: true,

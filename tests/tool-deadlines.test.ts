@@ -225,7 +225,10 @@ describe("S40 C4 — prism_finalize commit-phase wall-clock deadline", () => {
     const data = parseResult(result);
     expect(result.isError).toBe(true);
     expect(data.error).toMatch(/prism_finalize commit deadline exceeded/);
-    expect(data.partial_state_warning).toMatch(/verify repo state manually/i);
+    // SRV-49 (brief-461): the partial-state warning now describes the real
+    // atomic surface (the doc commit is all-or-nothing; verify the repo HEAD)
+    // rather than the vaguer "verify repo state manually".
+    expect(data.partial_state_warning).toMatch(/atomic|verify the repo HEAD/i);
     expect(data.action).toBe("commit");
   });
 });

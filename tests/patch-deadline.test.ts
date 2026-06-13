@@ -32,10 +32,11 @@ describe("PATCH_WALL_CLOCK_DEADLINE_MS — env-var parsing", () => {
     vi.resetModules();
   });
 
-  it("defaults to 60_000 when env var is unset", async () => {
+  it("defaults to MCP_SAFE_TIMEOUT (50_000) when env var is unset (SRV-97: was 60_000, at the client ceiling)", async () => {
     delete process.env.PATCH_WALL_CLOCK_DEADLINE_MS;
     const config = await import("../src/config.js");
-    expect(config.PATCH_WALL_CLOCK_DEADLINE_MS).toBe(60_000);
+    expect(config.PATCH_WALL_CLOCK_DEADLINE_MS).toBe(50_000);
+    expect(config.PATCH_WALL_CLOCK_DEADLINE_MS).toBe(config.MCP_SAFE_TIMEOUT);
   });
 
   it("honors an explicit numeric value", async () => {

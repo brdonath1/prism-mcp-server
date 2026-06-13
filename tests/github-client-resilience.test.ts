@@ -60,7 +60,13 @@ describe("GitHub client resilience patterns", () => {
     for (const fn of exportedFns) {
       const fnStart = source.indexOf(`export async function ${fn}`);
       expect(fnStart).toBeGreaterThan(-1);
-      const fnSection = source.slice(fnStart, fnStart + 5000);
+      // Slice to the NEXT exported function rather than a fixed char window —
+      // the fixed 5000-char window was fragile (createAtomicCommit's catch-block
+      // logger.error sits right at the boundary once the function grew, e.g. the
+      // brief-461 SRV-42 signal threading). Bounding by the real function extent
+      // keeps the "logs on error" intent without the off-by-a-few-chars break.
+      const nextExport = source.indexOf("\nexport ", fnStart + 1);
+      const fnSection = source.slice(fnStart, nextExport === -1 ? source.length : nextExport);
       const hasLogging = fnSection.includes("logger.error") || fnSection.includes("logger.warn");
       expect(hasLogging).toBe(true);
     }

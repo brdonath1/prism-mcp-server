@@ -359,7 +359,10 @@ describe("prism_push atomic conflict retry (safeMutation)", () => {
         success: false,
         sha: "",
         files_committed: 0,
-        error: "createTree failed: 500 Internal Server Error",
+        // SRV-96: a 409/non-fast-forward conflict is what the test name means
+        // by "conflict" and is what surfaces MUTATION_CONFLICT (a plain 500 is
+        // now MUTATION_RETRY).
+        error: "GitHub API 409: Update is not a fast forward (updateRef)",
       })
       .mockResolvedValueOnce({
         success: true,

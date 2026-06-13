@@ -26,6 +26,7 @@ vi.mock("../src/github/client.js", async (importOriginal) => {
     fetchFile: vi.fn(),
     createAtomicCommit: vi.fn(),
     getHeadSha: vi.fn(),
+    getCommit: vi.fn(),
   };
 });
 
@@ -33,6 +34,7 @@ import {
   fetchFile,
   createAtomicCommit,
   getHeadSha,
+  getCommit,
 } from "../src/github/client.js";
 import { DiagnosticsCollector } from "../src/utils/diagnostics.js";
 import { safeMutation } from "../src/utils/safe-mutation.js";
@@ -40,6 +42,7 @@ import { safeMutation } from "../src/utils/safe-mutation.js";
 const mockFetchFile = vi.mocked(fetchFile);
 const mockCreateAtomicCommit = vi.mocked(createAtomicCommit);
 const mockGetHeadSha = vi.mocked(getHeadSha);
+const mockGetCommit = vi.mocked(getCommit);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -91,6 +94,7 @@ describe("safeMutation — atomic commit success path", () => {
       [{ path: "a.md", content: "new" }],
       "test: success path",
       [],
+      undefined, // SRV-42: signal arg (undefined on the no-deadline path)
     );
     expect(diagnostics.list()).toHaveLength(0);
   });
@@ -103,6 +107,16 @@ describe("safeMutation — 409 conflict triggers re-read and recompute", () => {
       .mockResolvedValueOnce("head-1") // before 1st attempt
       .mockResolvedValueOnce("head-2") // after-failure check (HEAD moved)
       .mockResolvedValueOnce("head-2"); // before 2nd attempt
+
+    // SRV-41: HEAD moved, so safeMutation fetches the new HEAD commit to check
+    // whether OUR commit landed. Here it's an EXTERNAL writer (message differs)
+    // -> genuine conflict -> retry, preserving the original test intent.
+    mockGetCommit.mockResolvedValue({
+      sha: "head-2",
+      message: "someone else's concurrent commit",
+      date: "2026-06-13T00:00:00Z",
+      files: [],
+    });
 
     mockFetchFile
       .mockResolvedValueOnce({ content: "v1", sha: "blob-1", size: 2 })
@@ -155,6 +169,7 @@ describe("safeMutation — 409 conflict triggers re-read and recompute", () => {
       [{ path: "a.md", content: "v2+entry" }],
       "test: retry on conflict",
       [],
+      undefined, // SRV-42: signal arg (undefined on the no-deadline path)
     );
     // MUTATION_CONFLICT diagnostic emitted on the retry
     const codes = diagnostics.list().map((d) => d.code);
@@ -303,7 +318,156 @@ describe("safeMutation — delete support (createAtomicCommit pass-through)", ()
       [],
       "chore: prune",
       ["a.md", "b.md"],
+      undefined, // SRV-42: signal arg (undefined on the no-deadline path)
     );
+  });
+});
+
+describe("SRV-41 — landed-but-unreported commit is not double-applied on retry", () => {
+  it("returns ok (no retry) when the 'failed' commit actually landed (HEAD moved to OUR message)", async () => {
+    // Simulate: createAtomicCommit's ref PATCH succeeded server-side but the
+    // response was lost (timeout/socket drop) -> reported failure while HEAD
+    // moved to the commit we just made.
+    mockGetHeadSha
+      .mockResolvedValueOnce("head-before") // pre-atomic
+      .mockResolvedValueOnce("head-after"); // post-failure check (HEAD moved)
+    mockFetchFile.mockResolvedValue({ content: "v1", sha: "blob-1", size: 2 });
+    mockCreateAtomicCommit.mockResolvedValue({
+      success: false,
+      sha: "",
+      files_committed: 0,
+      error: "GitHub API request timed out after 15000ms",
+    });
+    // The new HEAD commit carries OUR exact commit message -> it landed.
+    mockGetCommit.mockResolvedValue({
+      sha: "head-after",
+      message: "prism: patch session-log",
+      date: "2026-06-13T00:00:00Z",
+      files: [],
+    });
+
+    const computeMutation = vi.fn(() => ({
+      writes: [{ path: "session-log.md", content: "appended" }],
+    }));
+
+    const diagnostics = new DiagnosticsCollector();
+    const result = await safeMutation({
+      repo: "test-repo",
+      commitMessage: "prism: patch session-log",
+      readPaths: ["session-log.md"],
+      computeMutation,
+      diagnostics,
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.commitSha).toBe("head-after");
+    // CRITICAL: the mutation was NOT re-applied — only the first attempt ran.
+    expect(mockCreateAtomicCommit).toHaveBeenCalledTimes(1);
+    expect(computeMutation).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("SRV-42 — deadline cancels (does not abandon) in-flight mutation", () => {
+  it("aborts the in-flight createAtomicCommit signal and never re-invokes it after DEADLINE_EXCEEDED", async () => {
+    mockGetHeadSha.mockResolvedValue("head-1");
+    mockFetchFile.mockResolvedValue({ content: "v1", sha: "blob-1", size: 2 });
+
+    let callCount = 0;
+    let capturedSignal: AbortSignal | undefined;
+    mockCreateAtomicCommit.mockImplementation(
+      async (_repo, _writes, _msg, _deletes, signal) => {
+        callCount += 1;
+        capturedSignal = signal;
+        // Hang until the deadline aborts the signal, then resolve as a failure.
+        return new Promise((resolve) => {
+          signal?.addEventListener("abort", () =>
+            resolve({ success: false, sha: "", files_committed: 0, error: "aborted" }),
+          );
+        });
+      },
+    );
+
+    const diagnostics = new DiagnosticsCollector();
+    const result = await safeMutation({
+      repo: "test-repo",
+      commitMessage: "test: deadline cancel",
+      readPaths: ["a.md"],
+      computeMutation: () => ({ writes: [{ path: "a.md", content: "new" }] }),
+      diagnostics,
+      deadlineMs: 30,
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe("DEADLINE_EXCEEDED");
+    // The in-flight commit received an aborted signal...
+    expect(capturedSignal?.aborted).toBe(true);
+    // ...and was never re-invoked after the deadline fired.
+    expect(callCount).toBe(1);
+  });
+});
+
+describe("SRV-96 — diagnostic code reflects the real failure class", () => {
+  it("emits MUTATION_RETRY (not MUTATION_CONFLICT) for a non-conflict atomic failure", async () => {
+    mockGetHeadSha.mockResolvedValue("head-1"); // HEAD did NOT move
+    mockFetchFile.mockResolvedValue({ content: "v1", sha: "blob-1", size: 2 });
+    mockCreateAtomicCommit.mockResolvedValue({
+      success: false,
+      sha: "",
+      files_committed: 0,
+      error: "GitHub validation failed: invalid path (createTree test-repo)",
+    });
+
+    const diagnostics = new DiagnosticsCollector();
+    const result = await safeMutation({
+      repo: "test-repo",
+      commitMessage: "test: non-conflict failure",
+      readPaths: ["a.md"],
+      computeMutation: () => ({ writes: [{ path: "a.md", content: "new" }] }),
+      diagnostics,
+      maxRetries: 1,
+    });
+
+    expect(result.ok).toBe(false);
+    const codes = diagnostics.list().map((d) => d.code);
+    // A 422 validation failure is NOT a 409 conflict — it must not be
+    // mislabeled MUTATION_CONFLICT (the SRV-96 false-contract bug).
+    expect(codes).toContain("MUTATION_RETRY");
+    expect(codes).not.toContain("MUTATION_CONFLICT");
+  });
+
+  it("still emits MUTATION_CONFLICT for a genuine 409/non-fast-forward failure", async () => {
+    mockGetHeadSha
+      .mockResolvedValueOnce("head-1")
+      .mockResolvedValueOnce("head-2")
+      .mockResolvedValueOnce("head-2");
+    mockGetCommit.mockResolvedValue({
+      sha: "head-2",
+      message: "external commit",
+      date: "2026-06-13T00:00:00Z",
+      files: [],
+    });
+    mockFetchFile.mockResolvedValue({ content: "v1", sha: "blob-1", size: 2 });
+    mockCreateAtomicCommit
+      .mockResolvedValueOnce({
+        success: false,
+        sha: "",
+        files_committed: 0,
+        error: "GitHub API 409: Update is not a fast forward (updateRef)",
+      })
+      .mockResolvedValueOnce({ success: true, sha: "commit-2", files_committed: 1 });
+
+    const diagnostics = new DiagnosticsCollector();
+    const result = await safeMutation({
+      repo: "test-repo",
+      commitMessage: "test: conflict",
+      readPaths: ["a.md"],
+      computeMutation: () => ({ writes: [{ path: "a.md", content: "new" }] }),
+      diagnostics,
+    });
+
+    expect(result.ok).toBe(true);
+    const codes = diagnostics.list().map((d) => d.code);
+    expect(codes).toContain("MUTATION_CONFLICT");
   });
 });
 

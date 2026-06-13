@@ -52,6 +52,13 @@ const inputSchema = {
     .describe(
       "Mask non-sensitive values in list output. Sensitive keys and URLs with credentials are always masked.",
     ),
+  reveal: z
+    .boolean()
+    .optional()
+    .default(false)
+    .describe(
+      "For get: return the UNMASKED value even for a sensitive-keyed / URL-credential variable. Defaults to false — sensitive get values are masked like list (SRV-66).",
+    ),
 };
 
 function buildResponse(body: Record<string, unknown>, isError = false) {
@@ -66,7 +73,7 @@ export function registerRailwayEnv(server: McpServer): void {
     "railway_env",
     "Read, set, and delete Railway environment variables. Sensitive values are masked in list output by default.",
     inputSchema,
-    async ({ project, service, environment, action, name, value, mask_values }) => {
+    async ({ project, service, environment, action, name, value, mask_values, reveal }) => {
       const start = Date.now();
       logger.info("railway_env", {
         project,
@@ -137,17 +144,27 @@ export function registerRailwayEnv(server: McpServer): void {
               true,
             );
           }
+          // SRV-66: `get` previously echoed the raw value, bypassing the
+          // masking infra that `list` already uses. Mask sensitive-keyed /
+          // url-credential values here too unless the caller explicitly opts
+          // in with reveal:true. Reuses isSensitiveKey / hasUrlCredentials /
+          // maskValue so the get/list classification stays consistent.
+          const rawValue = variables[name];
+          const sensitive = isSensitiveKey(name) || hasUrlCredentials(rawValue);
+          const masked = sensitive && !reveal;
           logger.info("railway_env complete", {
             project: resolvedProject.name,
             service: resolvedService.name,
             action,
             name,
+            masked,
             ms: Date.now() - start,
           });
           return buildResponse({
             ...baseBody,
             name,
-            value: variables[name],
+            value: masked ? maskValue(rawValue) : rawValue,
+            masked,
           });
         }
 

@@ -65,6 +65,58 @@ describe("buildDispatchEnv — env scrubbing", () => {
     expect(env.PATH).toBe("/usr/bin");
     expect("MAYBE" in env).toBe(false);
   });
+
+  // SRV-37 (brief-461 Task C): allowlist the env the subprocess actually needs.
+  // The dispatched CC subprocess runs with bypassPermissions; it must NOT
+  // inherit server secrets it never uses. Per the brief's scope decision, the
+  // clone PAT is retained (git clone/push needs it), the OAuth token is set
+  // explicitly, and MCP_AUTH_TOKEN / RAILWAY_API_TOKEN are dropped.
+  describe("SRV-37 — server-secret allowlist", () => {
+    const fullParentEnv = {
+      PATH: "/usr/bin",
+      HOME: "/home/x",
+      LANG: "en_US.UTF-8",
+      CC_DISPATCH_MODEL: "opus",
+      GITHUB_PAT: "ghp_clone_pat_value",
+      MCP_AUTH_TOKEN: "mcp-bearer-secret",
+      RAILWAY_API_TOKEN: "railway-secret",
+      ANTHROPIC_API_KEY: "sk-ant-leak",
+      ANTHROPIC_AUTH_TOKEN: "bearer-leak",
+      // A hypothetical future server secret the subprocess never needs — must
+      // be dropped by the allowlist heuristic, not survive because it isn't on
+      // a fixed denylist.
+      SOME_DB_PASSWORD: "p@ssw0rd",
+    };
+
+    it("drops MCP_AUTH_TOKEN from the subprocess env", () => {
+      const env = buildDispatchEnv(fullParentEnv, "tok", "max");
+      expect(env.MCP_AUTH_TOKEN).toBeUndefined();
+    });
+
+    it("drops RAILWAY_API_TOKEN from the subprocess env", () => {
+      const env = buildDispatchEnv(fullParentEnv, "tok", "max");
+      expect(env.RAILWAY_API_TOKEN).toBeUndefined();
+    });
+
+    it("drops an unknown future secret (allowlist, not denylist)", () => {
+      const env = buildDispatchEnv(fullParentEnv, "tok", "max");
+      expect(env.SOME_DB_PASSWORD).toBeUndefined();
+    });
+
+    it("retains the clone PAT (GITHUB_PAT) — cc_dispatch git clone/push needs it", () => {
+      const env = buildDispatchEnv(fullParentEnv, "tok", "max");
+      expect(env.GITHUB_PAT).toBe("ghp_clone_pat_value");
+    });
+
+    it("keeps the subprocess functional: OAuth token, model vars, and system vars survive", () => {
+      const env = buildDispatchEnv(fullParentEnv, "fresh-oauth", "max");
+      expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe("fresh-oauth");
+      expect(env.CC_DISPATCH_MODEL).toBe("opus");
+      expect(env.PATH).toBe("/usr/bin");
+      expect(env.HOME).toBe("/home/x");
+      expect(env.LANG).toBe("en_US.UTF-8");
+    });
+  });
 });
 
 describe("detectOAuthRejection — auth-failure pattern matching", () => {

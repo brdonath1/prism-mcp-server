@@ -92,9 +92,28 @@ function contentsUrl(repo: string, path: string, ref?: string): string {
  */
 function handleApiError(status: number, body: string, context: string): Error {
   if (status === 401) {
-    return new Error(`GitHub PAT is invalid or expired. (${context})`);
+    // SRV-35 / INS-311: a 401 on a valid PAT is a documented transient GitHub
+    // blip. fetchWithRetry already retried before we reached here, so the
+    // message must acknowledge the transient case instead of flatly declaring
+    // the credential dead — the old "invalid or expired" wording sent
+    // operators rotating a perfectly good PAT.
+    return new Error(
+      `GitHub returned 401 after bounded retries — this may be transient ` +
+        `(INS-311); retry before rotating the PAT. If it persists, the PAT ` +
+        `may be invalid or expired. (${context})`,
+    );
   }
   if (status === 403) {
+    // SRV-40: GitHub returns 403 for BOTH rate limiting (primary/secondary)
+    // and genuine scope/permission failures. Inspect the body for the
+    // rate-limit signature before emitting the (often wrong) PAT-scope
+    // message — retryWithBackoff already handled the retry decision from
+    // headers; this is the surfaced-error classification.
+    if (/rate limit/i.test(body)) {
+      return new Error(
+        `GitHub rate limit exceeded (403) — back off and retry, not a PAT-scope failure. (${context})`,
+      );
+    }
     return new Error(`GitHub API forbidden — check PAT scopes. (${context})`);
   }
   if (status === 404) {
@@ -114,6 +133,28 @@ function handleApiError(status: number, body: string, context: string): Error {
  */
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Bounded retries for transient 401s (SRV-35 / INS-311). A valid PAT can
+ * intermittently return 401; retry a small number of times with short backoff
+ * before surfacing — far fewer than the 429/rate-limit budget because a real
+ * credential failure should still fail fast-ish.
+ */
+const MAX_TRANSIENT_401_RETRIES = 2;
+
+/**
+ * Detect whether a 403 is a rate-limit response (SRV-40). GitHub signals its
+ * primary rate limit with `x-ratelimit-remaining: 0` and secondary rate limits
+ * with a `retry-after` header. Header-only by design: deciding from headers
+ * means we never consume the response body, so a non-rate-limit 403 (genuine
+ * scope failure) still has its body intact for the caller's error path.
+ */
+function is403RateLimited(res: Response): boolean {
+  return (
+    res.headers.get("retry-after") !== null ||
+    res.headers.get("x-ratelimit-remaining") === "0"
+  );
 }
 
 /**
@@ -155,6 +196,33 @@ export async function fetchWithRetry(url: string, options: RequestInit = {}, max
       const retryAfter = parseInt(res.headers.get("retry-after") ?? "1", 10);
       const delay = Math.min(retryAfter * 1000 * 2 ** attempt, 120_000);
       logger.warn("Rate limited, retrying", { attempt: attempt + 1, delay, url });
+      await sleep(delay);
+      continue;
+    }
+    // SRV-35 / INS-311: transient 401 on a valid PAT. Retry a bounded number
+    // of times with short backoff before letting the 401 surface as a
+    // credential diagnosis. GETs and the result-shaped mutations whose
+    // server-side effect did not occur on a real 401 are safe to re-issue.
+    if (res.status === 401 && attempt < MAX_TRANSIENT_401_RETRIES) {
+      await res.body?.cancel();
+      const delay = Math.min(500 * 2 ** attempt, 2_000);
+      logger.warn("Transient 401, retrying before diagnosing PAT death (INS-311)", {
+        attempt: attempt + 1,
+        delay,
+        url,
+      });
+      await sleep(delay);
+      continue;
+    }
+    // SRV-40: 403 rate limit (primary via x-ratelimit-remaining:0, secondary
+    // via retry-after). Back off and retry like a 429 instead of failing fast
+    // with a misleading PAT-scope error. Header-only detection keeps the body
+    // intact for the non-rate-limit 403 path.
+    if (res.status === 403 && is403RateLimited(res) && attempt < maxRetries) {
+      await res.body?.cancel();
+      const retryAfter = parseInt(res.headers.get("retry-after") ?? "1", 10);
+      const delay = Math.min(retryAfter * 1000 * 2 ** attempt, 120_000);
+      logger.warn("403 rate limit, retrying", { attempt: attempt + 1, delay, url });
       await sleep(delay);
       continue;
     }
@@ -401,8 +469,20 @@ export async function fileExists(repo: string, path: string): Promise<boolean> {
     logger.error("fileExists unexpected status", { repo, path, status: res.status });
     throw new Error(`Unexpected status ${res.status} checking ${repo}/${path}`);
   } catch (error) {
-    // Treat timeout as "file does not exist"
-    if (error instanceof DOMException && error.name === "AbortError") {
+    // SRV-14: treat a timed-out existence check as "file does not exist"
+    // rather than aborting the whole tool call. Match every real timeout
+    // shape: AbortSignal.timeout() aborts with a DOMException named
+    // "TimeoutError" (NOT "AbortError", which the old check looked for — so
+    // the degraded path was dead code), a caller-aborted signal yields
+    // "AbortError", and fetchWithRetry converts its own deadline into a plain
+    // Error whose message contains "timed out".
+    const errName = (error as { name?: string })?.name;
+    const errMsg = error instanceof Error ? error.message : String(error);
+    const isTimeout =
+      errName === "TimeoutError" ||
+      errName === "AbortError" ||
+      /timed out/i.test(errMsg);
+    if (isTimeout) {
       logger.warn("fileExists timed out, treating as not found", { repo, path });
       return false;
     }
@@ -686,7 +766,8 @@ export async function createAtomicCommit(
   repo: string,
   files: Array<{ path: string; content: string }>,
   message: string,
-  deletes: string[] = []
+  deletes: string[] = [],
+  signal?: AbortSignal,
 ): Promise<AtomicCommitResult> {
   const start = Date.now();
   logger.debug("github.createAtomicCommit", { repo, fileCount: files.length, deleteCount: deletes.length });
@@ -704,11 +785,17 @@ export async function createAtomicCommit(
       assertValidPath(path, `createAtomicCommit delete ${repo}/${path}`);
     }
 
+    // SRV-42: an aborted deadline must stop work before it starts a new
+    // attempt — short-circuit if the caller's signal already fired.
+    if (signal?.aborted) {
+      throw new Error("createAtomicCommit aborted before start (deadline)");
+    }
+
     // 1. Get current HEAD ref (dynamic branch detection — KI-17).
     //    GET uses the singular /git/ref/{ref} endpoint.
     const branch = await getDefaultBranch(repo);
     const refUrl = `${GITHUB_API_BASE}/repos/${GITHUB_OWNER}/${repo}/git/ref/heads/${branch}`;
-    const refRes = await fetchWithRetry(refUrl, { headers: headers() });
+    const refRes = await fetchWithRetry(refUrl, { headers: headers(), signal });
     if (!refRes.ok) {
       throw handleApiError(refRes.status, await refRes.text(), `getRef ${repo}`);
     }
@@ -717,7 +804,7 @@ export async function createAtomicCommit(
 
     // 2. Get base tree from HEAD commit
     const commitUrl = `${GITHUB_API_BASE}/repos/${GITHUB_OWNER}/${repo}/git/commits/${headSha}`;
-    const commitRes = await fetchWithRetry(commitUrl, { headers: headers() });
+    const commitRes = await fetchWithRetry(commitUrl, { headers: headers(), signal });
     if (!commitRes.ok) {
       throw handleApiError(commitRes.status, await commitRes.text(), `getCommit ${repo}/${headSha}`);
     }
@@ -748,6 +835,7 @@ export async function createAtomicCommit(
       method: "POST",
       headers: { ...headers(), "Content-Type": "application/json" },
       body: JSON.stringify(treePayload),
+      signal,
     });
     if (!treeRes.ok) {
       throw handleApiError(treeRes.status, await treeRes.text(), `createTree ${repo}`);
@@ -764,6 +852,7 @@ export async function createAtomicCommit(
         tree: treeData.sha,
         parents: [headSha],
       }),
+      signal,
     });
     if (!newCommitRes.ok) {
       throw handleApiError(newCommitRes.status, await newCommitRes.text(), `createCommit ${repo}`);
@@ -779,6 +868,7 @@ export async function createAtomicCommit(
       method: "PATCH",
       headers: { ...headers(), "Content-Type": "application/json" },
       body: JSON.stringify({ sha: newCommitData.sha }),
+      signal,
     });
     if (!updateRefRes.ok) {
       throw handleApiError(updateRefRes.status, await updateRefRes.text(), `updateRef ${repo}`);
@@ -849,12 +939,24 @@ export async function deleteRef(
     }
 
     if (res.status === 422) {
-      // GitHub returns 422 when the ref doesn't exist. Treat as idempotent
-      // success so callers re-running cleanup don't error on already-deleted
-      // branches.
-      await res.body?.cancel();
-      logger.debug("github.deleteRef ref already absent", { repo, ref });
-      return { success: true, note: "ref already absent" };
+      // SRV-45: GitHub uses 422 generically ("Validation Failed") — including
+      // a refusal to delete a protected branch. Only the specific
+      // "Reference does not exist" body is the idempotent already-deleted
+      // case; treating EVERY 422 as success would report deleted:true for a
+      // branch that still exists. Read the body and discriminate.
+      const errText = await res.text();
+      if (/Reference does not exist/i.test(errText)) {
+        logger.debug("github.deleteRef ref already absent", { repo, ref });
+        return { success: true, note: "ref already absent" };
+      }
+      const refusedMsg = handleApiError(422, errText, `deleteRef ${repo}/${ref}`).message;
+      logger.error("github.deleteRef refused (422 not 'already absent')", {
+        repo,
+        ref,
+        status: 422,
+        error: refusedMsg,
+      });
+      return { success: false, error: refusedMsg };
     }
 
     const errText = await res.text();
