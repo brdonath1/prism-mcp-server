@@ -34,6 +34,25 @@ export interface IntegrityResult {
 
 const HEADER_RE = /^(#{1,6})\s+(.+)$/;
 const FENCE_RE = /^```/;
+const EOF_SENTINEL_RE = /^<!--\s*EOF:/;
+
+/**
+ * Find the offset of the TRUE trailing `<!-- EOF:` sentinel within a section
+ * body slice, or -1 if none. The sentinel is line-anchored and lives outside
+ * any fenced code block; inline mentions (inside prose/backticks) and fenced
+ * code samples are ignored so they cannot prematurely clip a section (SRV-24).
+ */
+function findTrailingEofSentinel(slice: string): number {
+  const lines = slice.split("\n");
+  let inFence = false;
+  let offset = 0;
+  for (const line of lines) {
+    if (FENCE_RE.test(line)) inFence = !inFence;
+    if (!inFence && EOF_SENTINEL_RE.test(line)) return offset;
+    offset += line.length + 1; // +1 for the \n removed by split
+  }
+  return -1;
+}
 
 /**
  * Parse a markdown document into sections.
@@ -97,9 +116,13 @@ export function parseSections(content: string): Section[] {
       }
     }
 
-    // Check for <!-- EOF: sentinel within the section body range
+    // Check for the TRUE trailing <!-- EOF: sentinel within the section body
+    // range. The sentinel is always a line starting with `<!-- EOF:` and
+    // outside any code fence; an inline mention (e.g. a validation rule that
+    // documents the sentinel inside backticks) must NOT clip the section and
+    // tear the line on a subsequent patch (SRV-24).
     const bodySlice = content.substring(h.headerEndIndex, endIndex);
-    const eofIdx = bodySlice.indexOf("<!-- EOF:");
+    const eofIdx = findTrailingEofSentinel(bodySlice);
     if (eofIdx !== -1) {
       endIndex = h.headerEndIndex + eofIdx;
     }

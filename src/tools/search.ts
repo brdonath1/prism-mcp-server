@@ -71,6 +71,21 @@ function splitIntoSections(content: string, filePath: string): Array<{ file: str
 }
 
 /**
+ * Build the relevance query terms from a raw query string. Punctuation is
+ * stripped FIRST and the length filter runs AFTER, so a punctuation-only
+ * token ('???', '...') collapses to '' and is removed — rather than passing
+ * the length check and surviving as an empty string that `includes('')`
+ * matches against every section, defeating the relevance filter (SRV-33).
+ * Returns [] when the query has no usable 3+ character term.
+ */
+export function buildQueryTerms(query: string): string[] {
+  return query
+    .split(/\s+/)
+    .map((t) => t.replace(/[^a-zA-Z0-9-_]/g, ""))
+    .filter((t) => t.length > 2);
+}
+
+/**
  * Score a section against query terms.
  * Higher score = better match.
  */
@@ -92,6 +107,7 @@ function scoreSection(body: string, section: string, queryTerms: string[], fullQ
 
   // Individual term matches
   for (const term of queryTerms) {
+    if (!term) continue; // SRV-33: never let an empty term match every section
     const lowerTerm = term.toLowerCase();
 
     // Term in section header (high value — headers are semantically dense)
@@ -120,6 +136,7 @@ function extractSnippet(body: string, queryTerms: string[], maxLength: number = 
   // Find the first matching term's position
   let firstMatchIdx = body.length;
   for (const term of queryTerms) {
+    if (!term) continue; // SRV-33: an empty term would match at index 0 everywhere
     const idx = lowerBody.indexOf(term.toLowerCase());
     if (idx !== -1 && idx < firstMatchIdx) {
       firstMatchIdx = idx;
@@ -227,10 +244,7 @@ export function registerSearch(server: McpServer): void {
         const allSections = files.flatMap((f) => splitIntoSections(f.content, f.path));
 
         // Step 4: Score each section
-        const queryTerms = query
-          .split(/\s+/)
-          .filter((t) => t.length > 2) // Skip tiny words
-          .map((t) => t.replace(/[^a-zA-Z0-9-_]/g, ""));
+        const queryTerms = buildQueryTerms(query);
 
         if (queryTerms.length === 0) {
           return {

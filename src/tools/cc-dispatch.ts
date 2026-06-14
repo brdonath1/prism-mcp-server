@@ -51,6 +51,47 @@ import { writeDispatchRecord, type DispatchRecord } from "../dispatch-store.js";
 const QUERY_MODE_TOOLS = ["Read", "Glob", "Grep"];
 const EXECUTE_MODE_TOOLS = ["Read", "Write", "Edit", "Bash", "Glob", "Grep"];
 
+/**
+ * Step-0 account-attestation preamble (M-048 / D-259c / INS-319 §5).
+ *
+ * `cc_dispatch` is the THIRD dispatch channel (alongside Trigger briefs and the
+ * chat session). To make an account mismatch detectable on this path too, every
+ * dispatched worker must run the SAME attestation FIRST and emit it in its
+ * output (and PR body in execute mode) — there is no pane on this path. This is
+ * the single source of truth, prepended verbatim to the user prompt for BOTH
+ * query and execute modes; never duplicate the text per call site.
+ */
+export const CC_DISPATCH_ATTESTATION_PREAMBLE = [
+  "## STEP 0 — ACCOUNT ATTESTATION (D-259c / INS-319 §5 — run before ANY other action)",
+  "",
+  "Run exactly this as your FIRST action and include its full output verbatim in your dispatch result (and the PR body in execute mode):",
+  "",
+  "```bash",
+  'claude auth status --text 2>&1; echo "CLAUDE_CODE_OAUTH_TOKEN: $([ -n "$CLAUDE_CODE_OAUTH_TOKEN" ] && echo present || echo absent)"; echo "ANTHROPIC_API_KEY: $([ -n "$ANTHROPIC_API_KEY" ] && echo present || echo absent)"',
+  "```",
+  "",
+  'Then answer the mandatory first question (INS-320): "Which email address is associated with this Claude Max account?" — derived EXCLUSIVELY from THIS session\'s `claude auth status` output. Print a line `ACCOUNT EMAIL: <answer>`. If no email field is exposed, answer exactly `ACCOUNT EMAIL: UNKNOWN — claude auth status exposes no email field`.',
+  "",
+  "Never print token or key values, prefixes, or fragments — presence/absence only. `ANTHROPIC_API_KEY: present` is a RED FLAG: record it and continue. Prohibited sources: ~/.claude.json, Keychain, shell history, memory.",
+  "",
+  "There is no pane on the cc_dispatch path, so the Step-0 output AND the ACCOUNT EMAIL line MUST appear in your dispatch output (and under an `## Account attestation` section of the PR body in execute mode).",
+  "",
+  "---",
+  "",
+  "## TASK",
+  "",
+  "",
+].join("\n");
+
+/**
+ * Prepend the Step-0 attestation preamble (M-048) to the caller's task prompt.
+ * Used for both query and execute dispatches; the raw `prompt` is preserved
+ * separately for commit messages / dispatch records.
+ */
+export function buildDispatchPrompt(userPrompt: string): string {
+  return CC_DISPATCH_ATTESTATION_PREAMBLE + userPrompt;
+}
+
 const inputSchema = {
   repo: z
     .string()
@@ -342,9 +383,12 @@ async function runDispatch(
     const cloned = await cloneRepo(repo, branch);
     cleanup = cloned.cleanup;
 
-    // 2. Run the Agent SDK.
+    // 2. Run the Agent SDK. Prepend the Step-0 attestation preamble (M-048 /
+    //    D-259c) so the dispatched worker attests its account before any other
+    //    action, in both query and execute modes. The raw `prompt` is kept
+    //    intact for commit messages and dispatch records.
     const sdkResult = await dispatchTask({
-      prompt,
+      prompt: buildDispatchPrompt(prompt),
       workingDirectory: cloned.path,
       allowedTools,
       maxTurns,
