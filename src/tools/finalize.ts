@@ -184,6 +184,7 @@ export function extractJSON(text: string): unknown {
   throw new Error("Failed to extract JSON from AI response");
 }
 import { FINALIZATION_DRAFT_PROMPT, buildFinalizationDraftMessage } from "../ai/prompts.js";
+import { boundSynthesisInput } from "../ai/input-budget.js";
 import { synthesize } from "../ai/client.js";
 
 /**
@@ -435,13 +436,32 @@ async function draftPhase(projectSlug: string, sessionNumber: number) {
     // Non-critical — drafts will be less informed but still useful
   }
 
-  // 3. Build prompt and call Opus 4.6
+  // 3. Bound the input (SRV-67), then build the prompt. draftPhase is the
+  //    designated CS-1 timeout backstop (src/ai/input-budget.ts) yet pre-brief-465
+  //    NEVER applied boundSynthesisInput — only the brief/PDU paths did. The
+  //    draft concatenates ~7 unbounded living docs (decisions/_INDEX.md +
+  //    insights.md can be tens of KB), so an unbounded assembly could exceed
+  //    SYNTHESIS_INPUT_MAX_TOKENS and run into the very timeout this backstop
+  //    exists to prevent. Measured through the SAME builder the model call uses,
+  //    so the bound is enforced on exactly the assembled prompt.
+  const bounded = boundSynthesisInput(docMap, (docs) =>
+    buildFinalizationDraftMessage(projectSlug, sessionNumber, docs, sessionCommits),
+  );
   const userMessage = buildFinalizationDraftMessage(
     projectSlug,
     sessionNumber,
-    docMap,
+    bounded.docs,
     sessionCommits
   );
+  if (bounded.trimmed) {
+    logger.warn("SYNTHESIS_DRAFT_INPUT_TRIMMED — draft input exceeded the token ceiling and was priority-trimmed before the model call", {
+      projectSlug,
+      sessionNumber,
+      pre_trim_tokens: bounded.pre_trim_tokens,
+      post_trim_tokens: bounded.post_trim_tokens,
+      trimmed_docs: bounded.trimmed_docs,
+    });
+  }
 
   // Calculate total doc size for timeout scaling
   let totalDocBytes = 0;

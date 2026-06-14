@@ -128,8 +128,28 @@ export const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? "";
  *  availability). */
 export const SYNTHESIS_MODEL = process.env.SYNTHESIS_MODEL ?? SYNTHESIS_MODEL_ID;
 
-/** Whether synthesis is enabled (requires API key) */
-export const SYNTHESIS_ENABLED = !!process.env.ANTHROPIC_API_KEY;
+/** Whether synthesis is enabled — SRV-60.
+ *  Pre-brief-465 this was keyed SOLELY to ANTHROPIC_API_KEY, so a deployment
+ *  with ONLY CLAUDE_CODE_OAUTH_TOKEN could not synthesize even when every
+ *  call-site explicitly routes to the cc_subprocess transport (which uses the
+ *  OAuth surface, not the API key) — the gate short-circuited before routing was
+ *  ever consulted. Widened: enabled when the API key is present OR an OAuth token
+ *  is present AND at least one synthesis call-site is configured for
+ *  cc_subprocess. The messages_api path still requires ANTHROPIC_API_KEY (its own
+ *  callMessagesApi DISABLED guard enforces that), so this only UN-blocks the
+ *  legitimate OAuth-only + cc_subprocess deployment. */
+export function computeSynthesisEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (env.ANTHROPIC_API_KEY) return true;
+  return (
+    !!env.CLAUDE_CODE_OAUTH_TOKEN &&
+    [
+      "SYNTHESIS_BRIEF_TRANSPORT",
+      "SYNTHESIS_PDU_TRANSPORT",
+      "SYNTHESIS_DRAFT_TRANSPORT",
+    ].some((k) => env[k] === "cc_subprocess")
+  );
+}
+export const SYNTHESIS_ENABLED = computeSynthesisEnabled();
 
 /** Max output tokens for synthesis calls. Bumped from 4096 → 8192 for Phase 3a:
  *  adaptive thinking on Opus 4.7 emits internal thinking content blocks that
@@ -189,14 +209,23 @@ export const SYNTHESIS_INPUT_MAX_TOKENS =
 export const SYNTHESIS_INPUT_TARGET_TOKENS =
   parseInt(process.env.SYNTHESIS_INPUT_TARGET_TOKENS ?? "60000", 10) || 60_000;
 
-/** Calibrated chars-per-token ratio for synthesis input estimation. Matches
- *  the boot-cost estimator in src/tools/bootstrap.ts (ME-5 / brief-433) —
- *  the codebase-standard proxy for Claude tokenization of markdown-heavy
- *  English. A real tokenizer is deliberately NOT used: the Anthropic SDK
- *  ships no local tokenizer, and the countTokens endpoint is a network call
- *  — wrong for the fire-and-forget background path this cap exists to
- *  protect (adds latency plus a new failure mode). */
-export const SYNTHESIS_CHARS_PER_TOKEN = 3.5;
+/** Calibrated chars-per-token ratio for synthesis input estimation — SRV-62.
+ *  The codebase-standard proxy for Claude tokenization of markdown-heavy English
+ *  (a real tokenizer is deliberately NOT used: the SDK ships none locally and
+ *  countTokens is a network call — wrong for this fire-and-forget cap).
+ *
+ *  MODEL-AWARE (brief-465): 3.5 was calibrated for Opus-tier tokenization, but
+ *  the pinned default model (claude-fable-5) tokenizes ~30% HEAVIER — the same
+ *  content yields ~30% more real tokens. Under 3.5, the SYNTHESIS_INPUT_MAX_TOKENS
+ *  ceiling (estimated chars/3.5) silently admitted ~156K REAL Fable tokens before
+ *  trimming, risking the very SYNTHESIS_TIMEOUT the budget exists to prevent.
+ *  Derived from the RESOLVED SYNTHESIS_MODEL so a model bump re-calibrates
+ *  automatically: 2.7 for the Fable family (heavier tokenizer), 3.5 otherwise.
+ *  Lower ratio = MORE estimated tokens = earlier, safer trimming. */
+export function synthesisCharsPerToken(model: string): number {
+  return /fable/i.test(model) ? 2.7 : 3.5;
+}
+export const SYNTHESIS_CHARS_PER_TOKEN = synthesisCharsPerToken(SYNTHESIS_MODEL);
 
 /** Tool-level wall-clock deadline for prism_push (S40 C4). Hard backstop on
  *  top of the per-request GitHub fetch timeout. Configurable via env var so

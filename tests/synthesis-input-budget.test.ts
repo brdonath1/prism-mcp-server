@@ -33,6 +33,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 vi.mock("../src/ai/client.js", () => ({
   synthesize: vi.fn(),
+  resolveCallSiteTimeout: vi.fn(() => 240_000), // SRV-61: synthesize.ts resolves the per-call-site timeout here
 }));
 
 vi.mock("../src/github/client.js", () => ({
@@ -219,10 +220,12 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("estimateSynthesisTokens", () => {
-  it("uses the codebase-standard chars/3.5 proxy (matches bootstrap ME-5)", () => {
-    expect(estimateSynthesisTokens("x".repeat(350))).toBe(100);
-    expect(estimateSynthesisTokens("x".repeat(420_000))).toBe(120_000);
-    expect(SYNTHESIS_CHARS_PER_TOKEN).toBe(3.5);
+  it("uses the model-aware chars-per-token proxy (SRV-62: 2.7 for the Fable default)", () => {
+    // brief-465 / SRV-62: ratio is model-aware off the resolved SYNTHESIS_MODEL
+    // (Fable tokenizes ~30% heavier than Opus-tier). The default model is Fable 5.
+    expect(SYNTHESIS_CHARS_PER_TOKEN).toBe(2.7);
+    expect(estimateSynthesisTokens("x".repeat(350))).toBe(Math.round(350 / SYNTHESIS_CHARS_PER_TOKEN));
+    expect(estimateSynthesisTokens("x".repeat(420_000))).toBe(Math.round(420_000 / SYNTHESIS_CHARS_PER_TOKEN));
   });
 
   it("rounds rather than truncates", () => {

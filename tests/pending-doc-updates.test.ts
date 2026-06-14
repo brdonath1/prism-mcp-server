@@ -12,6 +12,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 vi.mock("../src/ai/client.js", () => ({
   synthesize: vi.fn(),
+  resolveCallSiteTimeout: vi.fn(() => 240_000), // SRV-61: synthesize.ts resolves the per-call-site timeout here
 }));
 
 vi.mock("../src/github/client.js", () => ({

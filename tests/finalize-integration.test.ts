@@ -858,6 +858,37 @@ describe("prism_finalize draft phase", () => {
     expect(draftCallArgs[5]).toBe(true);
   });
 
+  it("SRV-67: draftPhase bounds an oversized input before the model call", async () => {
+    const { SYNTHESIS_INPUT_MAX_TOKENS, SYNTHESIS_CHARS_PER_TOKEN } = await import("../src/config.js");
+    // ~140KB each × 3 draft-relevant docs = ~420KB → well over the est-token
+    // ceiling, so boundSynthesisInput must trim before the call (pre-brief-465
+    // draftPhase never bounded — the full ~420KB would reach the model).
+    const big = "Lorem ipsum dolor sit amet consectetur. ".repeat(3500);
+    const docMap = buildDocMap({
+      "session-log.md": `# Session Log\n${big}\n<!-- EOF: session-log.md -->`,
+      "insights.md": `# Insights\n${big}\n<!-- EOF: insights.md -->`,
+      "task-queue.md": `# Task Queue\n${big}\n<!-- EOF: task-queue.md -->`,
+    });
+    mockFetchFiles.mockResolvedValue(docMap);
+    mockListCommits.mockResolvedValue([]);
+    mockSynthesize.mockResolvedValue({
+      success: true,
+      content: '{"handoff": {"content": "x"}}',
+      input_tokens: 1,
+      output_tokens: 1,
+      model: "claude-fable-5",
+    });
+
+    await callFinalizeTool({ project_slug: "test-project", action: "draft", session_number: 26 });
+
+    expect(mockSynthesize).toHaveBeenCalledTimes(1);
+    const userMessage = mockSynthesize.mock.calls[0][1] as string;
+    // The raw draft input would have exceeded the ceiling ...
+    expect((big.length * 3) / SYNTHESIS_CHARS_PER_TOKEN).toBeGreaterThan(SYNTHESIS_INPUT_MAX_TOKENS);
+    // ... but the assembled message the model receives is bounded under it.
+    expect(userMessage.length / SYNTHESIS_CHARS_PER_TOKEN).toBeLessThanOrEqual(SYNTHESIS_INPUT_MAX_TOKENS);
+  });
+
   it("handles synthesis failure gracefully", async () => {
     const docMap = buildDocMap();
     mockFetchFiles.mockResolvedValue(docMap);
