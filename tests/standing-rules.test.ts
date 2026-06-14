@@ -12,7 +12,6 @@ import {
   normalizeTopic,
   selectStandingRulesByTopic,
   selectStandingRulesForBoot,
-  topicMatch,
   type StandingRule,
 } from "../src/utils/standing-rules.js";
 
@@ -235,10 +234,6 @@ describe("back-compat: bootstrap helpers still callable from this module", () =>
   // change. Spot-check the helpers extracted from bootstrap.ts still work.
   it("extractStandingRules returns [] for null input", () => {
     expect(extractStandingRules(null)).toEqual([]);
-  });
-
-  it("topicMatch returns false when openingMessage is undefined", () => {
-    expect(topicMatch(undefined, ["cc_dispatch"])).toBe(false);
   });
 
   it("selectStandingRulesForBoot includes Tier A unconditionally", () => {

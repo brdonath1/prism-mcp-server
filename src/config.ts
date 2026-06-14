@@ -43,16 +43,15 @@ export const PORT = parseInt(process.env.PORT ?? "3000", 10);
 /** Log level */
 export const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
 
-/** Server version. Bumped to 4.7.0 for brief-422 (living-doc enforcement):
- *  minor release wiring four mechanical maintenance behaviors into the
- *  finalize commit path and bootstrap. Auto-applies pending-doc-updates
- *  proposals at finalize, refreshes architecture.md `> Updated:` preamble +
- *  Stack version bullet (gated on `.prism/config.yaml`
- *  `auto_update_architecture: true`), caps `## Recently Completed` in
- *  task-queue.md at 15 entries, and runs a bootstrap-side stale-PDU safety
- *  net for sessions skipped at finalize. All four behaviors are non-fatal —
- *  failure in any one does not affect commit or bootstrap primary response. */
-export const SERVER_VERSION = "4.7.0";
+/** Server version. Bumped to 4.8.0 (SRV-90): the constant had been frozen at
+ *  4.7.0 across ~28 merged PRs of materially different deployments — payload
+ *  diet (D-253), synthesis-bundle dedup, banner restoration (D-249), branch-
+ *  protection tools (brief-446), transient-error handling, parsing-correctness
+ *  and dead-code sweeps (D-257 wave 3), etc. A frozen version made version
+ *  reporting meaningless and falsified the framework template's `>=4.7.1`
+ *  floor check (the CONSTANT, not the capability, failed it). Keep this in
+ *  lockstep with package.json `version`; bump on substantive src/** releases. */
+export const SERVER_VERSION = "4.8.0";
 
 /** MCP client timeout is ~60s. All server-side operations must complete within 50s
  *  to leave 10s buffer for transport overhead. This constrains synthesis, draft,
@@ -282,7 +281,8 @@ export const SCALE_WALL_CLOCK_DEADLINE_MS =
 /** Tool-level wall-clock deadlines for the four read-path tools (brief-444
  *  R-deadlines / D-240 Phase B / audit brief-431). prism_analytics,
  *  prism_search, prism_status, and prism_fetch previously had NO deadline —
- *  only 4/23 tools (push, finalize, patch, cc_dispatch) carried one — so a
+ *  only the four mutation tools (push, finalize, patch, cc_dispatch) carried
+ *  one — so a
  *  hung GitHub fan-out held the MCP client connection until the ~60s
  *  transport timeout with no structured error. Same pattern as
  *  PUSH_WALL_CLOCK_DEADLINE_MS: hard backstop on top of the per-request
@@ -361,11 +361,10 @@ export const LIVING_DOCUMENTS = [
 ] as const;
 
 /** Canonical list of living-document filenames WITHOUT the DOC_ROOT prefix.
- *  Consumed by resolveDocPath(), resolveDocFiles(), and
- *  resolveDocFilesOptimized() — all of which prepend `.prism/` internally.
- *  Distinct from LIVING_DOCUMENTS (which is the prefixed form used when
- *  calling GitHub APIs directly without the resolver). Keep both in sync
- *  when adding or removing a living document. */
+ *  Consumed by resolveDocPath() and resolveDocFiles() — both of which prepend
+ *  `.prism/` internally. Distinct from LIVING_DOCUMENTS (which is the prefixed
+ *  form used when calling GitHub APIs directly without the resolver). Keep both
+ *  in sync when adding or removing a living document. */
 export const LIVING_DOCUMENT_NAMES = [
   "handoff.md",
   "decisions/_INDEX.md",
@@ -408,7 +407,9 @@ export const PROJECT_DISPLAY_NAMES: Record<string, string> = {
  * Reverse map: display name (lowercase) → slug.
  * Derived from PROJECT_DISPLAY_NAMES for server-side slug resolution (KI-15).
  */
-export const DISPLAY_NAME_TO_SLUG: Record<string, string> = Object.fromEntries(
+// Internal lookup for resolveProjectSlug only (SRV-113: demoted from exported —
+// callers resolve display names via resolveProjectSlug, not this map directly).
+const DISPLAY_NAME_TO_SLUG: Record<string, string> = Object.fromEntries(
   Object.entries(PROJECT_DISPLAY_NAMES).map(([slug, name]) => [name.toLowerCase(), slug])
 );
 
@@ -477,36 +478,9 @@ export const PREFETCH_KEYWORDS: Record<string, string> = {
   learned: `${DOC_ROOT}/insights.md`,
 };
 
-/**
- * Topic keyword map for Tier B standing-rule selection at bootstrap (D-156 / Phase 2 PR 1).
- *
- * Each topic maps to a list of keywords that, when present in the opening_message
- * (case-insensitive substring match), triggers inclusion of Tier B standing rules
- * tagged with that topic. Tier A rules always load; Tier C rules never load at boot.
- *
- * Schema: `Record<topic, string[]>`. Topics are stable identifiers used in insights.md
- * `<!-- topics: foo, bar -->` comment lines.
- */
-export const STANDING_RULE_TOPIC_KEYWORDS: Record<string, string[]> = {
-  // Pre-existing topics
-  cc_dispatch: ["cc_dispatch", "dispatch", "claude code", "cc brief", "pr ", "pull request", "merge"],
-  mcp_server: ["mcp server", "prism-mcp-server", "deploy", "railway", "tool change", "tool surface"],
-  trigger: ["trigger", "daemon", "marker file", "brief_dir", "trigger.config"],
-  prism_push: ["prism_push", "prism_patch", "living doc", "artifact push"],
-  auth: ["oauth", "api key", "keychain", "anthropic_api_key", "claude_code_oauth_token"],
-  ci_workflow: [".github/workflows", "workflow", "actions", " ci "],
-  // Added S107 Phase 2 — covers newly-demoted Tier B rules (D-192 re-execution)
-  audit:      ["audit severity", "production failure", "live log", "triage", "railway logs audit"],
-  rollout:    ["rollout", "fleet-wide", "template migration", "batch rollout"],
-  debugging:  ["debugging", "reproducer", "root cause", "diagnostic session", "failure signature"],
-  brief:      ["brief spec", "brief authoring", "verify brief", "brief verification"],
-  cost:       ["token reduction", "cost analysis", "pencils out", "cost-saving", "synthesis cost"],
-  launchd:    ["launchd", "tahoe", "plist", "launchagent", "ex_config", "standardoutpath"],
-  credential: ["credential", "pat rotation", "api key rotate", "env leak", "set -a", "zshrc"],
-  deployment: ["dist artifact", "dist mtime", "etime vs", "deployed fix", "running process"],
-  enrollment: ["enrollment", "enroll", "batch enroll", "marker push", "trigger enrollment"],
-  post_merge: ["post_merge", "post merge", "merge action", "actions_completed"],
-};
+// SRV-108: STANDING_RULE_TOPIC_KEYWORDS (and its sole consumer topicMatch) was
+// removed — the D-156 keyword-expansion boot path has been dead since R7-b/
+// D-253 made Tier B/C lazy-loaded by explicit topic via prism_load_rules.
 
 /** MCP Auth Token for Bearer authentication (B.2) */
 export const MCP_AUTH_TOKEN = process.env.MCP_AUTH_TOKEN || "";
@@ -582,9 +556,11 @@ export const CC_DISPATCH_SYNC_TIMEOUT_MS =
   parseInt(process.env.CC_DISPATCH_SYNC_TIMEOUT_MS ?? `${MCP_SAFE_TIMEOUT - 5_000}`, 10) || (MCP_SAFE_TIMEOUT - 5_000);
 
 /**
- * Root directory for dispatch state files in the prism-mcp-server repo.
- * Dispatch records are persisted to GitHub so cc_status can read them
- * across stateless server requests.
+ * Dispatch state lives in the dedicated `brdonath1/prism-dispatch-state` repo
+ * (D-123), NOT in this repo — keeping it separate stops dispatch-record writes
+ * from triggering Railway auto-deploys that would kill in-flight dispatches.
+ * Records are persisted to GitHub so cc_status can read them across stateless
+ * server requests; CC_DISPATCH_STATE_DIR is the path within that state repo.
  */
 export const CC_DISPATCH_STATE_REPO = "prism-dispatch-state";
 export const CC_DISPATCH_STATE_DIR = ".dispatch";

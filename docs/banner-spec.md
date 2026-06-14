@@ -1,16 +1,26 @@
-# PRISM Banner Specification — v3.0 (Unified Text Contract)
+# PRISM Banner Specification — v4.1 (Unified Text + restored HTML/SVG widgets)
 
-> **Banner-Spec-Version:** 3.0
-> **Status:** Authoritative — all future banner changes MUST cite and update this document.
-> **Server:** prism-mcp-server (`src/utils/banner.ts` — `renderUnifiedBanner`)
-> **Consumers:** `core-template-mcp.md` Rule 2 (boot), `rules-session-end.md` Rule 11 Step 6 (finalization)
-> **Origin:** brief-439 / D-240 Phase B audit row R8
+> **Banner-Spec-Version:** 4.1
+> **Status:** SUPERSEDED as the authority (SRV-88). The live contract is owned
+>   by the prism-framework templates (`_templates/banner-spec.md` +
+>   `_templates/finalization-banner-spec.md`) and the server code
+>   (`src/utils/banner.ts`, `BANNER_SPEC_VERSION`). This file is retained for
+>   historical/reference context and kept version-aligned with the code.
+> **Server:** prism-mcp-server (`src/utils/banner.ts` — `renderUnifiedBanner`,
+>   `renderBootMastheadSvg`, `renderFinalizationBannerHtml`)
+> **Consumers:** `core-template-mcp.md` (boot), `rules-session-end.md` (finalization)
+> **Origin:** brief-439 / D-240 Phase B audit row R8 (unified text contract);
+>   graphical HTML/SVG widgets restored in spec 4.0/4.1 (D-249, brief-447/448).
 
-This document is the single source of truth for the PRISM banner contract:
-the line-by-line structure of the boot and finalization banners, the
-`banner_spec_version` handshake, the null fallback, and the deprecation of
-the HTML widgets. Spec 2.0 (the HTML banner contract, D-35/D-46) is
-superseded.
+This document describes the PRISM banner contract: the line-by-line structure
+of the boot and finalization banners, the `banner_spec_version` handshake, and
+the null fallback. **Currency note (SRV-88):** the earlier 3.0 text claimed the
+HTML widgets were permanently deprecated — that is no longer true. D-249
+restored graphical widgets via NEW fields (`boot_masthead_svg`,
+`finalization_banner_html`); the legacy always-null `banner_html` /
+`synthesis_banner_html` fields were removed in brief-466 (SRV-114). `banner_text`
+remains the universal text contract. The authoritative grammar now lives in the
+framework templates + `src/utils/banner.ts`.
 
 ---
 
@@ -32,8 +42,12 @@ Surface-specific values (the `finalized` tag, the docs label, the list-block
 label, the boot-only `[priority]` tag) are data routed through the same
 grammar — never a second format.
 
-There is **no HTML banner** and **no structured `banner_data` fallback
-object**. `banner_text` is the only banner format the server emits.
+`banner_text` is the universal text format every surface emits and the
+`banner_data` structured fallback object is gone. Spec 4.0/4.1 additionally
+restored OPTIONAL graphical widgets (D-249) as NEW, separate fields —
+`boot_masthead_svg` (boot) and `finalization_banner_html` (finalize) — rendered
+by `renderBootMastheadSvg` / `renderFinalizationBannerHtml`; `banner_text`
+stays the guaranteed fallback when a widget render fails.
 
 ---
 
@@ -189,20 +203,21 @@ place, `banner_text: null` should not occur in practice.
 
 ---
 
-## 5. Deprecated Surfaces
+## 5. Surface Status (current at spec 4.1)
 
-| Field | Status | Behavior since spec 3.0 |
-|-------|--------|-------------------------|
-| `banner_html` (bootstrap) | **Deprecated** (since ME-1 / template v2.10.0) | Always `null`. Field retained for backward compatibility. |
-| `finalization_banner_html` (finalize commit/full) | **Deprecated** (brief-439) | Always `null`. No HTML is generated server-side. Rule 11 Step 6's null path (minimal text confirmation) applies until the template consumes `banner_text`. |
-| `synthesis_banner_html` (finalize commit) | **Deprecated** (D-78 era) | Always `null`. Field retained for backward compatibility. |
-| `banner_data` (bootstrap) | **Removed** (brief-439) | Field no longer present. The single-line fallback in `banner_text` replaces it. `project_display_name` (previously only available inside `banner_data`) is now a top-level bootstrap response field. |
-| `banner_data` (finalize **input** param) | Retained | Optional banner customization input (`deliverables`, `decisions_note`, `step_statuses`) — still honored by the unified generator. Per-item deliverable `status` is accepted but not rendered. |
+| Field | Status | Behavior |
+|-------|--------|----------|
+| `banner_text` (boot + finalize) | **Live** | The universal text contract; always emitted. |
+| `boot_masthead_svg` (bootstrap) | **Live** (D-249, brief-447) | SVG masthead for `visualize:show_widget`; `null` on render failure (then `banner_text` is the fallback). |
+| `finalization_banner_html` (finalize commit/full) | **Live** (D-249, brief-447/448) | HTML widget for `visualize:show_widget`; `null` on render failure (then `banner_text` is the fallback). |
+| `banner_html` (bootstrap) | **Removed** (brief-466 / SRV-114) | Was a permanently-`null` back-compat field; the live SVG widget uses `boot_masthead_svg`. |
+| `synthesis_banner_html` (finalize commit) | **Removed** (brief-466 / SRV-114) | Was a permanently-`null` back-compat field. |
+| `banner_data` (bootstrap) | **Removed** (brief-439) | The single-line fallback in `banner_text` replaces it. `project_display_name` is now a top-level bootstrap response field. |
+| `banner_data` (finalize **input** param) | **Retained** | Optional banner customization input (`deliverables`, `decisions_note`, `step_statuses`) — still honored by the unified generator. Per-item deliverable `status` is accepted but not rendered. |
 
-No server code path produces banner HTML. The HTML renderers
-(`renderBannerHtml`, `renderFinalizationBanner`) and their helpers
-(`escapeHtml`, `formatResumptionHtml`, `toolIcon`) were deleted in
-brief-439.
+The text generator is the single source for `banner_text`; the graphical
+widgets are produced by `renderBootMastheadSvg` / `renderFinalizationBannerHtml`
+(restored in 4.0/4.1 after the brief-439 deletion described in §6).
 
 ---
 
@@ -213,5 +228,7 @@ brief-439.
 | 1.0 | S? (D-35) | Server-rendered boot banner HTML for `visualize:show_widget`. |
 | 2.0 | S? (D-46) | Finalization banner HTML added; banner-spec.md v2.0 referenced by `src/utils/banner.ts`. |
 | 3.0 | 2026-06-04 (brief-439 / D-240 Phase B R8) | Unified text contract: one generator for boot + finalize `banner_text`; `banner_spec_version` handshake + `BANNER_DRIFT` diagnostic; HTML widgets deprecated (fields null); `banner_data` fallback removed; Rule 2 single-line fallback rendered server-side. |
+| 4.0 | 2026-06-08 (brief-447 / D-249) | Graphical widgets RESTORED as new fields: `boot_masthead_svg` (boot) + `finalization_banner_html` (commit), rendered via `renderBootMastheadSvg` / `renderFinalizationBannerHtml` for `visualize:show_widget`. `banner_text` remains the guaranteed fallback. |
+| 4.1 | 2026-06 (brief-448 + 4c242ed) | `finalization_banner_html` extended to the `action=full` surface (matching commit). Authority for the contract moved to the framework templates + `src/utils/banner.ts`. |
 
 <!-- EOF: banner-spec.md -->

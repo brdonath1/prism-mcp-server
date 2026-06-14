@@ -22,7 +22,6 @@ vi.mock("../src/github/client.js", () => ({
   fetchFile: vi.fn(),
   fetchFiles: vi.fn(),
   pushFile: vi.fn(),
-  pushFiles: vi.fn(),
   fileExists: vi.fn(),
   listRepos: vi.fn(),
   listDirectory: vi.fn(),
@@ -233,7 +232,6 @@ describe("prism_bootstrap banner_spec_version handshake", () => {
     const data = parse(await handlers.prism_bootstrap({ project_slug: "prism" }));
     expect(data.banner_text).toBeTruthy();
     expect(data.banner_data).toBeUndefined();
-    expect(data.banner_html).toBeNull();
   });
 });
 

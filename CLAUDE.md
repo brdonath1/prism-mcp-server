@@ -25,12 +25,12 @@ The MCP server is the v2 evolution — separating Claude into a pure reasoning a
 └───────────────┬───────────────────────────────┘
                 │ MCP Protocol (HTTPS)
 ┌───────────────▼───────────────────────────────┐
-│  PRISM MCP Server (Railway) — v4.7.0          │
-│  23 MCP tools — stateless proxy               │
+│  PRISM MCP Server (Railway) — v4.8.0          │
+│  25 MCP tools — stateless proxy               │
 │  ├── 13 PRISM  (bootstrap/fetch/push/...)     │
 │  ├──  4 Railway (logs/deploy/env/status)      │
 │  ├──  2 Claude Code (cc_dispatch/cc_status)   │
-│  └──  4 GitHub (branch/release/tag ops)       │
+│  └──  6 GitHub (branch/release/tag/protect)   │
 │  Parallelized GitHub API operations           │
 │  Server-side validation + synthesis + dedup   │
 └──┬──────────────────────┬──────────────────┬──┘
@@ -54,7 +54,7 @@ The MCP server is the v2 evolution — separating Claude into a pure reasoning a
 - **HTTP framework:** Express 5.x
 - **Transport:** MCP Streamable HTTP, **stateless mode** (`sessionIdGenerator: undefined`)
 - **Validation:** Zod
-- **AI Synthesis:** `@anthropic-ai/sdk` (Opus 4.8 for intelligence briefs)
+- **AI Synthesis:** `@anthropic-ai/sdk` — model is the registry single-switch `SYNTHESIS_MODEL_ID` in `src/models.ts` (D-254); the live model is set by Railway env (`SYNTHESIS_{BRIEF,DRAFT,PDU}_MODEL/_TRANSPORT`), not hardcoded here
 - **Claude Code orchestration:** `@anthropic-ai/claude-agent-sdk` + `@anthropic-ai/claude-code` (subprocess)
 - **GitHub API client:** Plain `fetch` (Node.js 18+ built-in) — no Octokit
 - **Hosting:** Railway (persistent Node.js service)
@@ -73,13 +73,19 @@ The MCP server is the v2 evolution — separating Claude into a pure reasoning a
 | Variable | Required | Purpose |
 |----------|----------|---------|
 | `GITHUB_PAT` | ✅ | GitHub API auth for all read/write operations |
-| `MCP_AUTH_TOKEN` | ✅ | Bearer token for MCP client auth |
-| `ANTHROPIC_API_KEY` | optional | Enables intelligence-brief synthesis (cc_dispatch uses CLAUDE_CODE_OAUTH_TOKEN — see below) |
-| `CLAUDE_CODE_OAUTH_TOKEN` | optional | Enables `cc_dispatch`/`cc_status` (Claude Max subscription OAuth from `claude setup-token`) |
+| `MCP_AUTH_TOKEN` | ✅ (recommended) | Bearer token for MCP client auth. Enforced together with the IP allowlist (auth is OR-composed in code), so technically optional when the allowlist restricts access — but set it. |
+| `ANTHROPIC_API_KEY` | optional | Enables intelligence-brief synthesis via the Messages API (cc_dispatch uses CLAUDE_CODE_OAUTH_TOKEN — see below) |
+| `CLAUDE_CODE_OAUTH_TOKEN` | optional | Enables `cc_dispatch`/`cc_status` AND the cc_subprocess synthesis transport (Claude Max subscription OAuth from `claude setup-token`) |
 | `RAILWAY_API_TOKEN` | optional | Enables `railway_*` tools (brief-103) |
-| `SYNTHESIS_MODEL` | optional | Override Opus model for intelligence briefs |
-| `CC_DISPATCH_MODEL` | optional | Override model for Claude Code dispatches (default: `opus`) |
+| `SYNTHESIS_MODEL` | optional | Override the synthesis model. The registry default lives in `src/models.ts` (`SYNTHESIS_MODEL_ID`); do not assume a specific model name. |
+| `SYNTHESIS_{BRIEF,DRAFT,PDU}_MODEL` | optional | Per-call-site synthesis model override (production knob per `docs/model-bump.md`) |
+| `SYNTHESIS_{BRIEF,DRAFT,PDU}_TRANSPORT` | optional | Per-call-site transport: `messages_api` or `cc_subprocess` (production synthesis routing) |
+| `CC_DISPATCH_MODEL` | optional | Override the Claude Code dispatch model (default: `CC_DISPATCH_MODEL_ID` in `src/models.ts`) |
 | `CC_DISPATCH_MAX_TURNS` | optional | Default agent turn cap (default: 50) |
+
+> This table covers the load-bearing knobs. The complete, authoritative env-var
+> surface (~40 reads, including `SYNTHESIS_*`, `*_TIMEOUT_MS`, oversize/cap
+> thresholds) lives in `src/config.ts`; treat it as the source of truth.
 
 ## Key Technical Constraints
 
@@ -122,12 +128,12 @@ prism-mcp-server/
 │   │   ├── railway-*.ts          # 4 Railway tools (brief-103)
 │   │   ├── cc-dispatch.ts        # cc_dispatch (brief-104)
 │   │   ├── cc-status.ts          # cc_status (brief-104)
-│   │   └── gh-*.ts               # 4 GitHub utility tools (brief-403/404)
+│   │   └── gh-*.ts               # 6 GitHub utility tools (branch/release/tag/protection, brief-403/404/446)
 │   ├── middleware/               # auth + request logging
 │   ├── validation/               # Server-side push validation
 │   └── utils/                    # doc-resolver, doc-guard, logger, etc.
 ├── tests/                        # vitest unit + integration tests
-└── docs/briefs/                  # Session brief files
+└── docs/                         # banner-spec.md, model-bump.md, legacy-briefs/ (live briefs: .prism/briefs/queue/ on the `briefs` branch)
 ```
 
 ## PRISM Living Documents (10 Mandatory Per Project)
@@ -220,7 +226,7 @@ updates, follow these rules:
 ## Brief Status Tracking
 
 When Claude Code starts executing a brief, it writes a status file alongside
-the brief at `docs/briefs/{brief-name}.status.json`:
+the brief at `.prism/briefs/queue/{brief-name}.status.json` (on the `briefs` branch):
 
 ```json
 {
@@ -242,7 +248,7 @@ records in `brdonath1/prism-dispatch-state`.
 This repo is enrolled in the Trigger daemon (`brdonath1/trigger`) via the marker file at `.prism/trigger.yaml`. The daemon discovers this repo, dispatches Claude Code to execute briefs autonomously, and runs post-merge actions on PR merge.
 
 ### Brief execution
-- Briefs live at `docs/briefs/brief-NNN-description.md`.
+- Briefs live at `.prism/briefs/queue/brief-NNN-description.md` on the `briefs` branch (authoritative paths: `.prism/trigger.yaml` → `brief_dir` + `brief_branch`).
 - Branch strategy: feature branch from `main`, PR back to `main`. No staging branch.
 - Commit prefix: `prism(SN):` where N is the session number specified in the brief.
 - Every completed brief MUST end with a PR. Trigger detects PR creation via polling.

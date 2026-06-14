@@ -37,15 +37,6 @@ describe("Partial failure flagging (H-3)", () => {
     expect(fn).toContain("failedPaths");
   });
 
-  it("pushFiles returns structured result with failed_count", () => {
-    const source = readFileSync("src/github/client.ts", "utf-8");
-    const fn = source.slice(
-      source.indexOf("export async function pushFiles"),
-      source.indexOf("export async function fileExists")
-    );
-    expect(fn).toContain("failed_count");
-    expect(fn).toContain("incomplete:");
-  });
 });
 
 describe("Safer atomic commit primitive (H-6 → S64 Phase 1 Brief 1.5)", () => {

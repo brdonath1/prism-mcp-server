@@ -16,7 +16,7 @@ describe("GitHub client resilience patterns", () => {
   it("pushFile handles 409 conflict with fresh SHA retry", () => {
     const pushFileFn = source.slice(
       source.indexOf("export async function pushFile("),
-      source.indexOf("export async function pushFiles(")
+      source.indexOf("export async function fileExists(")
     );
     expect(pushFileFn).toContain("409");
     expect(pushFileFn).toContain("fresh SHA");

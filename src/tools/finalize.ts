@@ -407,7 +407,8 @@ async function auditPhase(projectSlug: string, sessionNumber: number) {
 }
 
 /**
- * Draft phase — use Opus 4.6 to generate finalization file drafts.
+ * Draft phase — use the configured synthesis model (SYNTHESIS_MODEL_ID, the
+ * registry single-switch per D-254) to generate finalization file drafts.
  * Returns structured content for Claude to review before commit.
  */
 async function draftPhase(projectSlug: string, sessionNumber: number) {
@@ -1485,8 +1486,6 @@ async function commitPhase(
     living_documents_updated: livingDocsUpdated,
     all_succeeded: allSucceeded,
     synthesis_outcome: synthesisOutcome,
-    synthesis_banner_html: null as string | null,
-    synthesis_warning: null as string | null,
     synthesis_status_hint: synthesisStatusHint,
     // brief-422: surface non-fatal post-commit sweep outcomes so the operator
     // can see what landed beyond the main commit. Null when sweeps did not run

@@ -1,5 +1,11 @@
 # PRISM Intelligence Layer — Design Document
 
+> ⚠️ **HISTORICAL (S22 design, SRV-106).** This is the original D-44 design and
+> its specifics (model = Opus 4.6, cost model, pricing) are 2+ months stale. The
+> CURRENT synthesis model is the registry single-switch `SYNTHESIS_MODEL_ID` in
+> `src/models.ts` (D-254); the live pipeline is `src/ai/` and the bump SOP is
+> `docs/model-bump.md`. Retained for design-rationale context only.
+
 > **Session:** S22 (04-01-26)
 > **Decision:** D-44 (Opus 4.6 Backend Intelligence Layer)
 > **Status:** Approved — implementation via Claude Code

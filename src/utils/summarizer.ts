@@ -98,6 +98,20 @@ export function parseNumberedList(text: string): string[] {
 }
 
 /**
+ * Split a single markdown table row into trimmed cells, preserving INTERIOR
+ * empty cells. Only the empty fragments produced by a leading/trailing pipe
+ * are dropped — an interior blank cell (`| a |  | c |`) is kept positionally
+ * so it cannot shift every subsequent column left (SRV-21).
+ */
+function splitTableRow(line: string): string[] {
+  const parts = line.split("|");
+  // A leading `|` yields an empty first fragment; a trailing `|` an empty last.
+  if (parts.length > 0 && parts[0].trim() === "") parts.shift();
+  if (parts.length > 0 && parts[parts.length - 1].trim() === "") parts.pop();
+  return parts.map(c => c.trim());
+}
+
+/**
  * Parse a markdown table into rows of objects.
  * Assumes the first row is the header and second row is the separator.
  */
@@ -105,20 +119,14 @@ export function parseMarkdownTable(content: string): Array<Record<string, string
   const lines = content.split("\n").filter(line => line.includes("|"));
   if (lines.length < 3) return []; // Need header + separator + at least 1 row
 
-  const headers = lines[0]
-    .split("|")
-    .map(h => h.trim())
-    .filter(h => h.length > 0);
+  const headers = splitTableRow(lines[0]).filter(h => h.length > 0);
 
   // Skip separator line (index 1)
   const rows: Array<Record<string, string>> = [];
   for (let i = 2; i < lines.length; i++) {
-    const cells = lines[i]
-      .split("|")
-      .map(c => c.trim())
-      .filter(c => c.length > 0);
+    const cells = splitTableRow(lines[i]);
 
-    if (cells.length === 0) continue;
+    if (cells.length === 0 || cells.every(c => c.length === 0)) continue;
 
     const row: Record<string, string> = {};
     headers.forEach((header, idx) => {

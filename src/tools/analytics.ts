@@ -18,6 +18,7 @@ import { logger } from "../utils/logger.js";
 import { DiagnosticsCollector } from "../utils/diagnostics.js";
 import {
   parseMarkdownTable,
+  extractSection,
 } from "../utils/summarizer.js";
 import { parseHandoffVersion, parseSessionCount } from "../validation/handoff.js";
 
@@ -37,12 +38,26 @@ const METRICS = [
 type Metric = (typeof METRICS)[number];
 
 /**
+ * Parse the Decision Summary rows from a `decisions/_INDEX.md`. Production
+ * indexes lead with a Domain Files reference table (File/Decisions/Scope)
+ * before the Decision Summary table (ID/Title/Domain/Status/Session); feeding
+ * the raw content to parseMarkdownTable reads every pipe line as ONE table and
+ * mis-attributes columns on every migrated project (SRV-08). We extract the
+ * Decision Summary section first and fall back to the whole content for bare
+ * tables (older fixtures). Mirrors validation/decisions.ts.
+ */
+export function parseDecisionSummaryRows(content: string): Array<Record<string, string>> {
+  const decisionSection = extractSection(content, "Decision Summary");
+  return parseMarkdownTable(decisionSection ?? content);
+}
+
+/**
  * Compute decision velocity — decisions per session over time.
  */
 async function decisionVelocity(projectSlug: string) {
   const resolved = await resolveDocPath(projectSlug, "decisions/_INDEX.md");
   const decisionFile = { content: resolved.content, sha: resolved.sha, size: resolved.content.length };
-  const rows = parseMarkdownTable(decisionFile.content);
+  const rows = parseDecisionSummaryRows(decisionFile.content);
 
   const sessionKey =
     Object.keys(rows[0] ?? {}).find((k) => k.toLowerCase() === "session") ?? "Session";
@@ -93,9 +108,11 @@ async function decisionVelocity(projectSlug: string) {
  *   PRISM-style:  `### Session 25 (2026-03-15)` or `### CC Session 3 (03-27-26 CST)`
  *   PF2-style:    `## S162 — 03-15-26`
  *
- * Returns one entry per matched header. Ignores any line that matches neither
- * format. Handles both em-dash (U+2014) and en-dash (U+2013) between "S" and
- * the date in PF2-style headers.
+ * Returns one entry per matched header. Lines matching neither format are
+ * ignored; a header that matches but whose date is unparseable is retained
+ * with date "unknown" (SRV-34) so the session is never silently dropped.
+ * Handles both em-dash (U+2014) and en-dash (U+2013) between "S" and the date
+ * in PF2-style headers.
  */
 export function parseSessionHeaders(
   content: string
@@ -140,7 +157,13 @@ export function parseSessionHeaders(
         number: sessionNum,
         date: `${yyyymmdd[1]}-${yyyymmdd[2]}-${yyyymmdd[3]}`,
       });
+      continue;
     }
+    // SRV-34: a matched session header whose date is unparseable must still be
+    // counted, not silently dropped. Retain it with date "unknown" —
+    // summarizeSessionTimeline counts it in totals but excludes it from gap/
+    // first/last-date math so one bad date can't poison the timeline.
+    parsed.push({ number: sessionNum, date: "unknown" });
   }
 
   return parsed;
@@ -184,11 +207,76 @@ export function resolveLastFreshEyesSession(content: string): number {
 }
 
 /**
+ * Merge current + archive session headers (deduped by session number; archive
+ * is authoritative for older numbers, current wins on collision) and compute
+ * the session_patterns metric. Sessions with date "unknown" (SRV-34) are
+ * counted in `total_sessions` and surfaced via `undated_sessions`, but excluded
+ * from sorting, gap math, and first/last-date so one unparseable header cannot
+ * poison the timeline. Pure (no I/O) for testability.
+ */
+export function summarizeSessionTimeline(
+  currentSessions: Array<{ number: number; date: string }>,
+  archiveSessions: Array<{ number: number; date: string }>,
+): {
+  data: {
+    total_sessions: number;
+    undated_sessions: number;
+    first_session_date: string;
+    last_session_date: string;
+    average_gap_days: number;
+    recent_sessions: Array<{ number: number; date: string }>;
+    gap_trend: number[];
+    archive_included: boolean;
+  };
+  summary: string;
+} {
+  const bySessionNum = new Map<number, { number: number; date: string }>();
+  for (const s of archiveSessions) bySessionNum.set(s.number, s);
+  for (const s of currentSessions) bySessionNum.set(s.number, s);
+  const allSessions = Array.from(bySessionNum.values());
+  const totalSessions = allSessions.length;
+
+  // Date math runs only over parseable dates. Document order is not reliable —
+  // PRISM writes newest-on-top, so relying on .split("\n") order inverts
+  // first/last; sort by parsed date ASC.
+  const datedSessions = allSessions
+    .filter((s) => s.date !== "unknown" && !Number.isNaN(new Date(s.date).getTime()))
+    .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+  const undatedSessions = totalSessions - datedSessions.length;
+
+  const gaps: number[] = [];
+  for (let i = 1; i < datedSessions.length; i++) {
+    const prev = new Date(datedSessions[i - 1].date);
+    const curr = new Date(datedSessions[i].date);
+    const diffDays = Math.round((curr.getTime() - prev.getTime()) / (1000 * 60 * 60 * 24));
+    gaps.push(diffDays);
+  }
+
+  const avgGap = gaps.length > 0 ? gaps.reduce((a, b) => a + b, 0) / gaps.length : 0;
+  const firstDate = datedSessions[0]?.date ?? "unknown";
+  const lastDate = datedSessions[datedSessions.length - 1]?.date ?? "unknown";
+
+  return {
+    data: {
+      total_sessions: totalSessions,
+      undated_sessions: undatedSessions,
+      first_session_date: firstDate,
+      last_session_date: lastDate,
+      average_gap_days: Math.round(avgGap * 10) / 10,
+      recent_sessions: datedSessions.slice(-5),
+      gap_trend: gaps.slice(-10),
+      archive_included: archiveSessions.length > 0,
+    },
+    summary: `${totalSessions} sessions from ${firstDate} to ${lastDate}. Average gap: ${avgGap.toFixed(1)} days between sessions.`,
+  };
+}
+
+/**
  * Compute session patterns — frequency and duration trends.
  *
  * Reads both `session-log.md` (current) and `session-log-archive.md` (rotated
- * older sessions) when present, then sorts by parsed date ASC before computing
- * gaps. Handles multiple session header formats via {@link parseSessionHeaders}.
+ * older sessions) when present, then delegates to {@link summarizeSessionTimeline}.
+ * Handles multiple session header formats via {@link parseSessionHeaders}.
  */
 async function sessionPatterns(projectSlug: string) {
   const resolved = await resolveDocPath(projectSlug, "session-log.md");
@@ -203,43 +291,7 @@ async function sessionPatterns(projectSlug: string) {
     // No archive — fine.
   }
 
-  // Merge + dedupe by session number (archive is authoritative for older numbers;
-  // current wins on collision since it reflects any re-numbering fixes).
-  const bySessionNum = new Map<number, { number: number; date: string }>();
-  for (const s of archiveSessions) bySessionNum.set(s.number, s);
-  for (const s of currentSessions) bySessionNum.set(s.number, s);
-
-  // Sort by parsed date ASC. Document order is not reliable — PRISM writes
-  // newest-on-top, so relying on .split("\n") order inverts first/last.
-  const sessions = Array.from(bySessionNum.values()).sort((a, b) => {
-    return new Date(a.date).getTime() - new Date(b.date).getTime();
-  });
-
-  const gaps: number[] = [];
-  for (let i = 1; i < sessions.length; i++) {
-    const prev = new Date(sessions[i - 1].date);
-    const curr = new Date(sessions[i].date);
-    const diffDays = Math.round((curr.getTime() - prev.getTime()) / (1000 * 60 * 60 * 24));
-    gaps.push(diffDays);
-  }
-
-  const avgGap = gaps.length > 0 ? gaps.reduce((a, b) => a + b, 0) / gaps.length : 0;
-  const totalSessions = sessions.length;
-  const firstDate = sessions[0]?.date ?? "unknown";
-  const lastDate = sessions[sessions.length - 1]?.date ?? "unknown";
-
-  return {
-    data: {
-      total_sessions: totalSessions,
-      first_session_date: firstDate,
-      last_session_date: lastDate,
-      average_gap_days: Math.round(avgGap * 10) / 10,
-      recent_sessions: sessions.slice(-5),
-      gap_trend: gaps.slice(-10),
-      archive_included: archiveSessions.length > 0,
-    },
-    summary: `${totalSessions} sessions from ${firstDate} to ${lastDate}. Average gap: ${avgGap.toFixed(1)} days between sessions.`,
-  };
+  return summarizeSessionTimeline(currentSessions, archiveSessions);
 }
 
 /**
@@ -430,7 +482,7 @@ export function extractDecisionEdges(
  */
 async function decisionGraph(projectSlug: string) {
   const indexResolved = await resolveDocPath(projectSlug, "decisions/_INDEX.md");
-  const rows = parseMarkdownTable(indexResolved.content);
+  const rows = parseDecisionSummaryRows(indexResolved.content);
 
   const idKey = Object.keys(rows[0] ?? {}).find((k) => k.toLowerCase() === "id") ?? "ID";
   const titleKey =

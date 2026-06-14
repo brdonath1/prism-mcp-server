@@ -21,9 +21,10 @@
  * The deeper `prism_finalize action=full` orchestration redesign (deadline
  * cancellation, etc.) is M-010 / W3-S5 — out of scope here.
  *
- * Cost note: `mode: "generate"` fires TWO Opus calls (~2x API cost vs
- * pre-PR-4 behavior). Operators calling this tool manually for refresh
- * should be aware. See D-156 §3.6 for design rationale.
+ * Cost note: `mode: "generate"` fires TWO synthesis-model calls (the model
+ * is SYNTHESIS_MODEL_ID from the registry; ~2x API cost vs pre-PR-4 behavior).
+ * Operators calling this tool manually for refresh should be aware. See
+ * D-156 §3.6 for design rationale.
  */
 
 import { z } from "zod";

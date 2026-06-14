@@ -2,11 +2,50 @@
 
 All notable changes to the PRISM MCP server, plus the banner-contract and
 framework-template history the server implements. Format loosely follows
-[Keep a Changelog](https://keepachangelog.com/). The banner contract itself
-lives in [docs/banner-spec.md](docs/banner-spec.md) — future banner changes
-cite that spec and add an entry here.
+[Keep a Changelog](https://keepachangelog.com/). The banner contract is owned
+by `src/utils/banner.ts` (`BANNER_SPEC_VERSION`) plus the prism-framework
+templates; [docs/banner-spec.md](docs/banner-spec.md) is historical reference.
+Banner changes add an entry here.
 
-## [Unreleased] — brief-439 (D-240 Phase B, R8): unified drift-proof banner
+## [4.8.0] — 2026-06-14 (D-257 wave 3, brief-466 / W3-S7)
+
+### Changed
+- **`SERVER_VERSION` un-frozen** (SRV-90): was stuck at 4.7.0 across ~28 merged
+  PRs of materially different deployments, which made version reporting
+  meaningless and falsified the framework template's `>=4.7.1` floor check.
+  Bumped to 4.8.0 and kept in lockstep with `package.json`.
+
+### Fixed (documentation currency, M-017)
+- CLAUDE.md tool inventory (25 = 13 prism / 4 railway / 2 claude_code / 6
+  github), brief paths (`.prism/briefs/queue/` per `.prism/trigger.yaml`), model
+  references (defer to `src/models.ts` registry), and env-var coverage corrected.
+- Synthesis-pipeline comments and the `prism_push` schema description no longer
+  hardcode stale model names / commit prefixes (derive from the registry /
+  `VALID_COMMIT_PREFIXES`). `docs/banner-spec.md`, `docs/intelligence-layer-design.md`,
+  and `docs/audit-s33c.md` marked current/superseded/historical.
+
+### Removed (dead code, M-018)
+- Dead boot topic-selection path, batch resolvers, `pushFiles`/`BatchPushResult`,
+  zero-consumer exports, permanently-null banner back-compat fields, the phantom
+  repo-root gitlink, and 15 legacy `.dispatch/` files.
+
+## [Banner 4.1] — 2026-06 (brief-448 + 4c242ed, D-249 follow-up)
+
+### Added
+- `finalization_banner_html` extended to the `prism_finalize action=full`
+  surface (matching the commit surface). `BANNER_SPEC_VERSION` → **4.1**.
+
+## [Banner 4.0] — 2026-06-08 (brief-447, D-249)
+
+### Added
+- **Graphical widgets restored** as NEW response fields after the brief-439
+  deletion: `boot_masthead_svg` (bootstrap) and `finalization_banner_html`
+  (finalize commit), rendered via `renderBootMastheadSvg` /
+  `renderFinalizationBannerHtml` for `visualize:show_widget`. `banner_text`
+  remains the guaranteed fallback when a widget render fails. `BANNER_SPEC_VERSION`
+  → **4.0**. (These changes were previously unlogged — backfilled per SRV-91.)
+
+## [Banner 3.0] — 2026-06-04 — brief-439 (D-240 Phase B, R8): unified drift-proof banner
 
 ### Added
 - **Unified banner generator** (`renderUnifiedBanner`, `src/utils/banner.ts`):

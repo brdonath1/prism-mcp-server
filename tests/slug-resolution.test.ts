@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { resolveProjectSlug, DISPLAY_NAME_TO_SLUG } from "../src/config.js";
+import { resolveProjectSlug } from "../src/config.js";
 
 describe("resolveProjectSlug", () => {
   // Completion criteria from the brief:
@@ -64,10 +64,12 @@ describe("resolveProjectSlug", () => {
   });
 });
 
-describe("DISPLAY_NAME_TO_SLUG", () => {
-  it("maps all display names to slugs", () => {
-    expect(DISPLAY_NAME_TO_SLUG["prism framework"]).toBe("prism");
-    expect(DISPLAY_NAME_TO_SLUG["platformforge v2"]).toBe("platformforge-v2");
-    expect(DISPLAY_NAME_TO_SLUG["snapquote"]).toBe("snapquote-ai");
+describe("display-name → slug resolution (via resolveProjectSlug)", () => {
+  it("resolves all display names to slugs", () => {
+    // SRV-113: the DISPLAY_NAME_TO_SLUG map is internal; assert behavior
+    // through the public resolveProjectSlug surface instead.
+    expect(resolveProjectSlug("prism framework")).toBe("prism");
+    expect(resolveProjectSlug("platformforge v2")).toBe("platformforge-v2");
+    expect(resolveProjectSlug("snapquote")).toBe("snapquote-ai");
   });
 });

@@ -16,7 +16,6 @@ vi.mock("../src/github/client.js", () => ({
   fetchFile: vi.fn(),
   fetchFiles: vi.fn(),
   pushFile: vi.fn(),
-  pushFiles: vi.fn(),
   fileExists: vi.fn(),
   listRepos: vi.fn(),
   listDirectory: vi.fn(),
@@ -125,7 +124,6 @@ describe("null-banner_text fallback matches the Rule 2 single-line spec", () => 
     // Session 29 = Session Count 28 + 1; handoff v33; 10/10 living docs.
     expect(data.banner_text).toBe("PRISM | Session 29 | Handoff v33 | 10/10 docs");
     expect(data.banner_data).toBeUndefined();
-    expect(data.banner_html).toBeNull();
   });
 
   it("finalize commit: render failure produces the same single-line fallback shape", async () => {

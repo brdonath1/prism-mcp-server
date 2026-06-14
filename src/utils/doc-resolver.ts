@@ -10,7 +10,7 @@
  * (2) with an explicit "arbitrary-path" code path.
  */
 
-import { fetchFile, fetchFiles, fileExists, listDirectory } from "../github/client.js";
+import { fetchFile, fileExists } from "../github/client.js";
 import { DOC_ROOT } from "../config.js";
 import { logger } from "./logger.js";
 
@@ -98,73 +98,12 @@ export async function resolveDocPushPath(
 }
 
 /**
- * Optimized batch document resolution using a single listDirectory call.
- * Reduces worst-case 20 API calls to 1 listing + N targeted fetches.
- *
- * @param projectSlug - Project repo name
- * @param docNames - Document names WITHOUT DOC_ROOT prefix
- * @returns Map keyed by docName
- */
-export async function resolveDocFilesOptimized(
-  projectSlug: string,
-  docNames: string[]
-): Promise<Map<string, { content: string; sha: string; size: number }>> {
-  const results = new Map<string, { content: string; sha: string; size: number }>();
-
-  // 1. Single listing of .prism/ directory
-  let prismListing: Set<string>;
-  try {
-    const entries = await listDirectory(projectSlug, DOC_ROOT);
-    prismListing = new Set<string>();
-    for (const entry of entries) {
-      prismListing.add(entry.name);
-      if (entry.type === "dir") {
-        const subEntries = await listDirectory(projectSlug, `${DOC_ROOT}/${entry.name}`);
-        for (const sub of subEntries) {
-          prismListing.add(`${entry.name}/${sub.name}`);
-        }
-      }
-    }
-  } catch {
-    prismListing = new Set();
-  }
-
-  // 2. Build fetch paths: .prism/ if listed, legacy root otherwise
-  const fetchPaths: string[] = [];
-  const pathToDocName = new Map<string, string>();
-  for (const docName of docNames) {
-    const path = prismListing.has(docName) ? `${DOC_ROOT}/${docName}` : docName;
-    fetchPaths.push(path);
-    pathToDocName.set(path, docName);
-  }
-
-  // 3. Fetch all in parallel
-  const fetched = await fetchFiles(projectSlug, fetchPaths);
-
-  for (const [path, file] of fetched.files) {
-    const docName = pathToDocName.get(path);
-    if (docName) {
-      results.set(docName, { content: file.content, sha: file.sha, size: file.size });
-    }
-  }
-
-  if (fetched.incomplete) {
-    logger.warn("resolveDocFilesOptimized: partial fetch", {
-      projectSlug,
-      requested: docNames.length,
-      fetched: results.size,
-      failed: fetched.failed,
-    });
-  }
-
-  return results;
-}
-
-/**
- * Resolve and fetch multiple documents in parallel.
- * @deprecated Use resolveDocFilesOptimized for better performance.
- * Returns a Map keyed by docName (without DOC_ROOT prefix) for backward compatibility
- * with existing code that uses .get("handoff.md"), etc.
+ * Resolve and fetch multiple documents in parallel. This is the production
+ * multi-doc resolver used by all call sites; it per-doc resolves .prism/ vs
+ * legacy-root location and fetches concurrently. (SRV-111: the never-wired
+ * `resolveDocFilesOptimized` variant was removed; this is no longer deprecated.)
+ * Returns a Map keyed by docName (without DOC_ROOT prefix) for callers that use
+ * .get("handoff.md"), etc.
  */
 export async function resolveDocFiles(
   projectSlug: string,

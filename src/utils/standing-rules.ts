@@ -7,7 +7,6 @@
  * bugs; the two call sites MUST call ONE function. `bootstrap.ts` re-exports
  * these names for back-compat with existing imports/tests.
  */
-import { STANDING_RULE_TOPIC_KEYWORDS } from "../config.js";
 import { logger } from "./logger.js";
 
 /** Standing rule extracted from insights — procedure-only (D-47), tier-aware (D-156). */
@@ -260,32 +259,6 @@ export function extractStandingRules(
 }
 
 /**
- * Match a standing rule's topics against an opening message via STANDING_RULE_TOPIC_KEYWORDS (D-156).
- * Returns true if any topic on the rule has at least one keyword present in the opening message
- * (case-insensitive substring match). Returns false when openingMessage is empty/undefined or
- * the rule has no topics.
- *
- * History: this matcher powered the bootstrap path until R7-b (D-240 Phase B)
- * made Tier B delivery unconditional at boot — it expands a free-form opening
- * message into the set of topics it implies, then checks rule.topics against
- * that set. Kept exported per the INS-28 back-compat contract (bootstrap.ts
- * re-exports it). The explicit-topic path (prism_load_rules) uses
- * {@link matchesExplicitTopic} instead.
- */
-export function topicMatch(openingMessage: string | undefined, ruleTopics: string[]): boolean {
-  if (!openingMessage || ruleTopics.length === 0) return false;
-  const lower = openingMessage.toLowerCase();
-  for (const topic of ruleTopics) {
-    const keywords = STANDING_RULE_TOPIC_KEYWORDS[topic];
-    if (!keywords) continue; // Unknown topic on the rule — no match (and worth a future cleanup signal)
-    for (const kw of keywords) {
-      if (lower.includes(kw)) return true;
-    }
-  }
-  return false;
-}
-
-/**
  * Select which standing rules to deliver at bootstrap based on tier.
  *
  * Selection rules (D-253 — partial, evidence-driven reversal of R7-b /
@@ -322,8 +295,7 @@ export function normalizeTopic(topic: string): string {
  *
  * Used by `prism_load_rules` — caller passes a single topic keyword (e.g. `"synthesis"`)
  * and we check whether that keyword equals any entry in `ruleTopics` after normalization.
- * Distinct from {@link topicMatch}: that function uses STANDING_RULE_TOPIC_KEYWORDS to
- * expand a free-form opening message; this one is direct array-contains.
+ * This is a direct array-contains match (case-insensitive), not keyword expansion.
  */
 export function matchesExplicitTopic(topic: string, ruleTopics: string[]): boolean {
   if (ruleTopics.length === 0) return false;

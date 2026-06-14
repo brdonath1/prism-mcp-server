@@ -18,6 +18,7 @@ import { validateFileAndCommit } from "../validation/index.js";
 import { invalidateTemplateCacheOnWrite } from "../utils/cache.js";
 import {
   PUSH_WALL_CLOCK_DEADLINE_MS,
+  VALID_COMMIT_PREFIXES,
 } from "../config.js";
 import { guardPushPath } from "../utils/doc-guard.js";
 import { DiagnosticsCollector } from "../utils/diagnostics.js";
@@ -33,7 +34,7 @@ const inputSchema = {
     z.object({
       path: z.string().describe("File path relative to repo root"),
       content: z.string().describe("File content to push"),
-      message: z.string().describe("Commit message (must start with prism:, fix:, docs:, or chore:)"),
+      message: z.string().describe(`Commit message (must start with ${VALID_COMMIT_PREFIXES.join(", ")})`),
     })
   ).describe("Files to push"),
   skip_validation: z.boolean().optional().default(false).describe("Skip validation (not recommended)"),
