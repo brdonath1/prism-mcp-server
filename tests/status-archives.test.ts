@@ -91,6 +91,35 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
+// SRV-70: legacy pre-.prism repos keep living docs at the repo root. The
+// listing-based getProjectHealth must fall back to the root listing when the
+// .prism/ listing is empty (the riskiest refactor path — external state).
+describe("prism_status SRV-70 legacy-root fallback", () => {
+  it("resolves existence + size from the root listing when .prism/ is empty", async () => {
+    mockListDirectory.mockImplementation(async (_repo: string, path: string) => {
+      if (path === ".prism" || path === ".prism/decisions") return []; // migrated layout absent
+      if (path === "") {
+        return LIVING_DOC_NAMES.map((name) => ({ name, path: name, size: 40, sha: "s", type: "file" as const }));
+      }
+      if (path === "decisions") {
+        return [{ name: "_INDEX.md", path: "decisions/_INDEX.md", size: 40, sha: "s", type: "file" as const }];
+      }
+      return [];
+    });
+    mockFetchFile.mockImplementation(async (_repo: string, p: string) => {
+      if (p.endsWith("handoff.md")) return { content: VALID_HANDOFF, sha: "h", size: VALID_HANDOFF.length };
+      return { content: "# x\n<!-- EOF -->", sha: "s", size: 40 };
+    });
+
+    const data = await callStatusTool({ project_slug: "legacy-project", include_details: false });
+
+    // All living docs resolved from the legacy root listing — none reported missing.
+    expect(data.missing_documents).toEqual([]);
+    expect(data.documents_present).toBe(data.documents_total);
+    expect(data.handoff_version).toBe(5); // parsed from the fetched handoff content
+  });
+});
+
 describe("formatArchivesLine (S40 FINDING-14 C4)", () => {
   it("formats not-yet-created archives clearly", () => {
     const archives = Object.fromEntries(
