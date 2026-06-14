@@ -587,8 +587,8 @@ describe("R-intel-SLO: INTEL_SLO diagnostic block", () => {
     expect(slo!.level).toBe("info");
     expect(slo!.context).toMatchObject({
       boot_completeness_percent: 100,
-      brief_sections_delivered: 6,
-      brief_sections_spec: 6,
+      brief_sections_delivered: 3, // brief-465 / SRV-72: spec re-spec'd 6 → 3 consumed sections
+      brief_sections_spec: 3,
       brief_sections_missing: [],
       brief_age_sessions: 1,
       brief_age_target_sessions: 2,
@@ -614,9 +614,10 @@ describe("R-intel-SLO: INTEL_SLO diagnostic block", () => {
 
     const slo = (parsed.diagnostics as Diagnostic[]).find(d => d.code === "INTEL_SLO");
     expect(slo).toBeDefined();
-    // Delivered: handoff + behavioral rules = 2 of 10 spec items → 20%.
+    // Delivered: handoff + behavioral rules = 2 of 7 spec items → 29% (brief-465:
+    // spec re-spec'd to 3 sections, so specTotal = 3 + 4 = 7).
     expect(slo!.context).toMatchObject({
-      boot_completeness_percent: 20,
+      boot_completeness_percent: 29,
       brief_sections_delivered: 0,
       brief_age_sessions: null,
       brief_age_within_target: null,
@@ -628,7 +629,7 @@ describe("R-intel-SLO: INTEL_SLO diagnostic block", () => {
         total: 3,
       },
     });
-    expect((slo!.context as any).brief_sections_missing).toHaveLength(6);
+    expect((slo!.context as any).brief_sections_missing).toHaveLength(3);
   });
 
   it("is log-only: a stale brief breaches the target in INTEL_SLO while BRIEF_STALE still warns independently", async () => {
@@ -652,21 +653,22 @@ describe("R-intel-SLO: INTEL_SLO diagnostic block", () => {
   });
 
   it("counts partially-delivered briefs section by section", async () => {
-    // Strip two spec sections from the fixture (rename one, drop one).
+    // brief-465 / SRV-72: spec is now Project State / Risk Flags / Quality Audit.
+    // Rename two of them so only Project State remains a delivered spec section.
     const partial = FULL_BRIEF
-      .replace("## Recent Trajectory", "## Trajectory (renamed)")
+      .replace("## Risk Flags", "## Flags (renamed)")
       .replace("## Quality Audit", "## Audit Notes");
     const handler = await setupBootstrap({ brief: partial, insights: null, standingRules: null });
     const parsed = await boot(handler);
 
     const slo = (parsed.diagnostics as Diagnostic[]).find(d => d.code === "INTEL_SLO");
     expect(slo!.context).toMatchObject({
-      brief_sections_delivered: 4,
-      // 4 sections + handoff + decisions + behavioral rules = 7 of 10 → 70%
-      boot_completeness_percent: 70,
+      brief_sections_delivered: 1,
+      // 1 section + handoff + decisions + behavioral rules = 4 of 7 → 57%
+      boot_completeness_percent: 57,
     });
     expect((slo!.context as any).brief_sections_missing).toEqual([
-      "## Recent Trajectory",
+      "## Risk Flags",
       "## Quality Audit",
     ]);
   });
@@ -689,26 +691,31 @@ describe("computeIntelSlo (pure computation)", () => {
     return mod.computeIntelSlo;
   }
 
-  it("100% when all 6 sections + all 4 fields are delivered", async () => {
+  // brief-465 / SRV-72: spec re-spec'd to 3 consumed sections, so the SLO
+  // denominator is 3 + 4 fields = 7. FULL_BRIEF still carries the legacy 6
+  // headers; only the 3 spec sections (Project State / Risk Flags / Quality
+  // Audit) count.
+  it("100% when all 3 sections + all 4 fields are delivered", async () => {
     const computeIntelSlo = await loadHelper();
     const slo = computeIntelSlo(fullInputs());
     expect(slo.boot_completeness_percent).toBe(100);
-    expect(slo.brief_sections_delivered).toBe(6);
+    expect(slo.brief_sections_delivered).toBe(3);
     expect(slo.brief_sections_missing).toEqual([]);
   });
 
-  it("40% when the brief is null but all 4 fields are present", async () => {
+  it("57% when the brief is null but all 4 fields are present (4/7)", async () => {
     const computeIntelSlo = await loadHelper();
     const slo = computeIntelSlo({ ...fullInputs(), intelligenceBrief: null, briefAgeSessions: null });
-    expect(slo.boot_completeness_percent).toBe(40);
+    expect(slo.boot_completeness_percent).toBe(57);
     expect(slo.brief_sections_delivered).toBe(0);
-    expect(slo.brief_sections_missing).toHaveLength(6);
+    expect(slo.brief_sections_missing).toHaveLength(3);
   });
 
-  it("rounds: 5 sections + 4 fields → 90%; 1 section + 0 fields → 10%", async () => {
+  it("rounds: 2 sections + 4 fields → 86%; 1 section + 0 fields → 14%", async () => {
     const computeIntelSlo = await loadHelper();
-    const fiveSections = FULL_BRIEF.replace("## Quality Audit", "## Audit");
-    expect(computeIntelSlo({ ...fullInputs(), intelligenceBrief: fiveSections }).boot_completeness_percent).toBe(90);
+    // Renaming Quality Audit drops it → 2 of 3 spec sections delivered: (2+4)/7 ≈ 86%.
+    const twoSections = FULL_BRIEF.replace("## Quality Audit", "## Audit");
+    expect(computeIntelSlo({ ...fullInputs(), intelligenceBrief: twoSections }).boot_completeness_percent).toBe(86);
 
     const oneSection = "## Project State\nOnly this.";
     expect(
@@ -720,7 +727,7 @@ describe("computeIntelSlo (pure computation)", () => {
         insightsPresent: false,
         behavioralRulesPresent: false,
       }).boot_completeness_percent,
-    ).toBe(10);
+    ).toBe(14);
   });
 
   it("brief_age_within_target: true at the 2-session boundary, false above, null when unknown", async () => {
@@ -805,7 +812,7 @@ describe("INTELLIGENCE_BRIEF_SPEC_SECTIONS single source of truth", () => {
       "../src/utils/intelligence-brief-spec.js"
     );
     const { FINALIZATION_SYNTHESIS_PROMPT } = await import("../src/ai/prompts.js");
-    expect(INTELLIGENCE_BRIEF_SPEC_SECTIONS).toHaveLength(6);
+    expect(INTELLIGENCE_BRIEF_SPEC_SECTIONS).toHaveLength(3); // brief-465 / SRV-72: re-spec'd 6 → 3
     for (const section of INTELLIGENCE_BRIEF_SPEC_SECTIONS) {
       expect(FINALIZATION_SYNTHESIS_PROMPT).toContain(section);
     }

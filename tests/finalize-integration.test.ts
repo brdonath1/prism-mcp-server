@@ -28,6 +28,10 @@ vi.mock("../src/ai/client.js", () => ({
 }));
 
 vi.mock("../src/ai/synthesize.js", () => ({
+  // brief-465 / SRV-73: finalize assembles the bundle once and passes it to both.
+  assembleSynthesisBundle: vi.fn().mockResolvedValue({
+    userMessage: "shared bundle", inputBudget: { pre_trim_tokens: 1, post_trim_tokens: 1, trimmed: false, trimmed_docs: [] }, timestamp: "t", docCount: 1,
+  }),
   generateIntelligenceBrief: vi.fn(),
   generatePendingDocUpdates: vi.fn(),
 }));
@@ -736,7 +740,8 @@ describe("prism_finalize background synthesis (D-78, FINDING-5)", () => {
     // Flush microtasks so the background .then() has a chance to execute.
     await new Promise((resolve) => setTimeout(resolve, 100));
 
-    expect(mockGenerateIntelligenceBrief).toHaveBeenCalledWith("test-project", 42);
+    // brief-465 / SRV-73: now called with the shared prebuilt bundle as 3rd arg.
+    expect(mockGenerateIntelligenceBrief).toHaveBeenCalledWith("test-project", 42, expect.anything());
   });
 
   it("Test 3: synthesis failure does not affect commit response", async () => {

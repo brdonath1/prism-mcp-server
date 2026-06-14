@@ -212,9 +212,9 @@ export const BRIEF_COMPACT_SECTIONS = {
   /** Section summarized to its first 3 sentences. */
   projectState: INTELLIGENCE_BRIEF_SPEC_SECTIONS[0], // "## Project State"
   /** First section passed through in full. */
-  riskFlags: INTELLIGENCE_BRIEF_SPEC_SECTIONS[4],    // "## Risk Flags"
+  riskFlags: INTELLIGENCE_BRIEF_SPEC_SECTIONS[1],    // "## Risk Flags" (brief-465 / SRV-72: spec re-spec'd to 3 sections)
   /** Second section passed through in full. */
-  qualityAudit: INTELLIGENCE_BRIEF_SPEC_SECTIONS[5], // "## Quality Audit"
+  qualityAudit: INTELLIGENCE_BRIEF_SPEC_SECTIONS[2], // "## Quality Audit"
 } as const;
 
 /**

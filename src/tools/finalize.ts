@@ -138,7 +138,7 @@ import { extractHeaders, extractSection, parseNumberedList } from "../utils/summ
 import { parseHandoffVersion, parseSessionCount, parseTemplateVersion } from "../validation/handoff.js";
 import { validateFile } from "../validation/index.js";
 import { parseMarkdownTable } from "../utils/summarizer.js";
-import { generateIntelligenceBrief, generatePendingDocUpdates } from "../ai/synthesize.js";
+import { assembleSynthesisBundle, generateIntelligenceBrief, generatePendingDocUpdates, type SynthesisBundle } from "../ai/synthesize.js";
 import { computeCurrencyWarning, type CurrencyWarning } from "../utils/doc-currency.js";
 import {
   BANNER_SPEC_VERSION,
@@ -1398,10 +1398,27 @@ async function commitPhase(
     // slower of the two does not block the other (D-156 §3.6 / D-155). Both
     // remain fire-and-forget per INS-178 — commit response is already built.
     const synthesisLabels = ["intelligence_brief", "pending_updates"] as const;
-    void Promise.allSettled([
-      generateIntelligenceBrief(projectSlug, sessionNumber),
-      generatePendingDocUpdates(projectSlug, sessionNumber),
-    ])
+    void (async () => {
+      // brief-465 / SRV-73: assemble the synthesis input bundle ONCE and share
+      // it across BOTH calls — the brief and PDU bundles are byte-identical
+      // (~103K tokens), and were previously fetched + assembled + sent twice per
+      // finalize. If the shared assembly fails, each call falls back to building
+      // its own (the pre-brief-465 behavior), preserving resilience.
+      let bundle: SynthesisBundle | undefined;
+      try {
+        bundle = await assembleSynthesisBundle(projectSlug, sessionNumber);
+      } catch (err) {
+        logger.warn("shared synthesis bundle assembly failed — each call assembles independently", {
+          projectSlug,
+          sessionNumber,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return Promise.allSettled([
+        generateIntelligenceBrief(projectSlug, sessionNumber, bundle),
+        generatePendingDocUpdates(projectSlug, sessionNumber, bundle),
+      ]);
+    })()
       .then((results) => {
         results.forEach((r, idx) => {
           const label = synthesisLabels[idx];

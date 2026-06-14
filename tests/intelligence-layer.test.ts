@@ -155,13 +155,16 @@ describe("buildSynthesisUserMessage", () => {
 // ---- Synthesis prompt content ----
 
 describe("FINALIZATION_SYNTHESIS_PROMPT", () => {
-  it("requires all 6 sections", () => {
+  // brief-465 / SRV-72: re-spec'd from 6 sections to the 3 the boot loader
+  // actually delivers (trajectory + active-knowledge folded into Project State;
+  // Standing Rules dropped per SRV-27).
+  it("requires the 3 consumed sections", () => {
     expect(FINALIZATION_SYNTHESIS_PROMPT).toContain("## Project State");
-    expect(FINALIZATION_SYNTHESIS_PROMPT).toContain("## Standing Rules & Workflows");
-    expect(FINALIZATION_SYNTHESIS_PROMPT).toContain("## Active Operational Knowledge");
-    expect(FINALIZATION_SYNTHESIS_PROMPT).toContain("## Recent Trajectory");
     expect(FINALIZATION_SYNTHESIS_PROMPT).toContain("## Risk Flags");
     expect(FINALIZATION_SYNTHESIS_PROMPT).toContain("## Quality Audit");
+    // The three synthesized-then-dropped sections are no longer separate H2s.
+    expect(FINALIZATION_SYNTHESIS_PROMPT).not.toContain("## Standing Rules & Workflows");
+    expect(FINALIZATION_SYNTHESIS_PROMPT).not.toContain("## Recent Trajectory");
   });
 
   it("specifies EOF sentinel", () => {
@@ -169,6 +172,6 @@ describe("FINALIZATION_SYNTHESIS_PROMPT", () => {
   });
 
   it("specifies token range", () => {
-    expect(FINALIZATION_SYNTHESIS_PROMPT).toContain("2000-4000 tokens");
+    expect(FINALIZATION_SYNTHESIS_PROMPT).toContain("1500-3000 tokens");
   });
 });
