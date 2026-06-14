@@ -237,6 +237,10 @@ function parseEntriesWithBounds(
  *
  * If `activeSection` is provided, parsing is restricted to the lines between
  * that section heading and the next top-level heading (or EOF).
+ *
+ * Deliberate test-only export (SRV-113): production code uses the internal
+ * {@link parseEntriesWithBounds}; this thin wrapper is retained as the stable
+ * surface that archive tests assert against. Not dead code.
  */
 export function parseEntries(
   input: string,

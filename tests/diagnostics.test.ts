@@ -102,7 +102,6 @@ vi.mock("../src/github/client.js", () => ({
   fetchFile: vi.fn(),
   fetchFiles: vi.fn(),
   pushFile: vi.fn(),
-  pushFiles: vi.fn(),
   fileExists: vi.fn(),
   listRepos: vi.fn(),
   listDirectory: vi.fn(),

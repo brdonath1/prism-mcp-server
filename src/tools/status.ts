@@ -50,6 +50,11 @@ const handoffExistenceCache = new MemoryCache<{ exists: boolean; path: string; l
 /**
  * Invalidate the repo-list cache. Call after a new repo is created so the
  * next multi-project status call picks it up without waiting for the TTL.
+ *
+ * Deliberate test-only export (SRV-112/SRV-113): no production caller wires
+ * this today — multi-status tolerates up to one TTL of staleness for a brand
+ * new repo. status-cache.test.ts uses it to reset module-level cache state
+ * between cases, so it is retained (not zero-consumer dead code).
  */
 export function clearRepoListCache(): void {
   listReposCache.invalidate(REPO_LIST_KEY);
@@ -59,6 +64,9 @@ export function clearRepoListCache(): void {
  * Invalidate the handoff-existence cache entry for a specific repo. Call
  * when a repo is scaffolded into PRISM (first handoff.md created) so the
  * next status sweep sees it.
+ *
+ * Deliberate test-only export (SRV-112/SRV-113), same rationale as
+ * {@link clearRepoListCache}: retained as test cache-reset infrastructure.
  */
 export function clearHandoffExistenceCache(repo?: string): void {
   if (repo) handoffExistenceCache.invalidate(repo);

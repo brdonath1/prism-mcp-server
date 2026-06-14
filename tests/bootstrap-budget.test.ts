@@ -100,12 +100,6 @@ describe("T-1: bootstrap response size budget", () => {
     expect(new TextEncoder().encode(parsed.banner_text).length).toBeLessThan(500);
   });
 
-  it("banner_html field is null", async () => {
-    const result = await bootstrapHandler({ project_slug: "prism", opening_message: "Begin next session" });
-    const parsed = JSON.parse(result.content[0].text);
-    expect(parsed.banner_html).toBeNull();
-  });
-
   it("banner_data is absent when banner_text is present", async () => {
     const result = await bootstrapHandler({ project_slug: "prism", opening_message: "Begin next session" });
     const parsed = JSON.parse(result.content[0].text);

@@ -11,7 +11,6 @@ vi.mock("../src/github/client.js", () => ({
   fetchFile: vi.fn(),
   fetchFiles: vi.fn(),
   pushFile: vi.fn(),
-  pushFiles: vi.fn(),
   listDirectory: vi.fn(),
   listCommits: vi.fn(),
   getCommit: vi.fn(),
@@ -49,7 +48,6 @@ import {
   fetchFile,
   fetchFiles,
   pushFile,
-  pushFiles,
   listDirectory,
   listCommits,
   getCommit,
@@ -63,7 +61,6 @@ import { registerFinalize } from "../src/tools/finalize.js";
 const mockFetchFile = vi.mocked(fetchFile);
 const mockFetchFiles = vi.mocked(fetchFiles);
 const mockPushFile = vi.mocked(pushFile);
-const mockPushFiles = vi.mocked(pushFiles);
 const mockListDirectory = vi.mocked(listDirectory);
 const mockListCommits = vi.mocked(listCommits);
 const mockGetCommit = vi.mocked(getCommit);
@@ -578,8 +575,6 @@ Completed audit remediation.
     const data = parseResult(result);
     expect(data).toHaveProperty("synthesis_outcome");
     expect(data.synthesis_outcome).toBe("background");
-    expect(data).toHaveProperty("synthesis_banner_html");
-    expect(data.synthesis_banner_html).toBeNull();
     expect(data).toHaveProperty("synthesis_status_hint");
     expect(data.synthesis_status_hint).toContain("background");
   });
@@ -720,7 +715,6 @@ describe("prism_finalize background synthesis (D-78, FINDING-5)", () => {
 
     const data = parseResult(result);
     expect(data.synthesis_outcome).toBe("background");
-    expect(data.synthesis_banner_html).toBeNull();
   });
 
   it("Test 2: synthesis still runs after commit returns", async () => {

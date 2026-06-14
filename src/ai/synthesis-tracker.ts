@@ -134,13 +134,6 @@ export function getSynthesisHealth(projectSlug?: string): {
 }
 
 /**
- * Get recent failures for alerting, optionally scoped by project.
- */
-export function getRecentFailures(limit = 5, projectSlug?: string): SynthesisEvent[] {
-  return getAllEvents(projectSlug).filter(e => !e.success).slice(-limit);
-}
-
-/**
  * Get the last N successful events for a project, optionally filtered by
  * synthesis kind. Used by quality-check baselines (brief-417 — CS-3 byte
  * count rolling baseline).

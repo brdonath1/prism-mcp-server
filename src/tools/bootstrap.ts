@@ -48,7 +48,6 @@ import { DiagnosticsCollector } from "../utils/diagnostics.js";
 import {
   extractStandingRules,
   selectStandingRulesForBoot,
-  topicMatch,
   type StandingRule,
 } from "../utils/standing-rules.js";
 import { unionStandingRules } from "../utils/standing-rules-union.js";
@@ -62,7 +61,6 @@ import { applyPendingDocUpdates, isPduEmpty, parseLastSynthesizedSession, type A
 export {
   extractStandingRules,
   selectStandingRulesForBoot,
-  topicMatch,
 };
 export type { StandingRule };
 
@@ -1381,7 +1379,6 @@ export function registerBootstrap(server: McpServer): void {
           intelligence_brief: intelligenceBrief,
           brief_age_sessions: briefAgeResult,
           behavioral_rules: behavioralRules,
-          banner_html: null,                           // ME-1: HTML replaced by banner_text; field kept null for back-compat (brief-439)
           banner_text: bannerText,                     // brief-439 / R8: unified generator output (single-line fallback on render failure)
           boot_masthead_svg: bootMastheadSvg,          // brief-447 / D-249: SVG masthead for visualize:show_widget (null on render failure — banner_text is the fallback)
           banner_spec_version: BANNER_SPEC_VERSION,    // brief-439 / R8: banner contract version this server emits

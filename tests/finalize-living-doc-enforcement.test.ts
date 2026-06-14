@@ -22,7 +22,6 @@ vi.mock("../src/utils/doc-resolver.js", () => ({
   resolveDocPath: vi.fn(),
   resolveDocPushPath: vi.fn(),
   resolveDocFiles: vi.fn(),
-  resolveDocFilesOptimized: vi.fn(),
 }));
 
 import {

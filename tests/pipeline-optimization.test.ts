@@ -4,32 +4,10 @@ process.env.GITHUB_PAT = process.env.GITHUB_PAT || "test-dummy-pat";
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "fs";
 
-describe("Batch path resolution (H-2)", () => {
-  it("preloadPrismPaths function exists in doc-guard.ts", () => {
-    const source = readFileSync("src/utils/doc-guard.ts", "utf-8");
-    expect(source).toContain("export async function preloadPrismPaths");
-    expect(source).toContain("Set<string>");
-  });
-
-  it("guardPushPathBatch function exists in doc-guard.ts", () => {
-    const source = readFileSync("src/utils/doc-guard.ts", "utf-8");
-    expect(source).toContain("export function guardPushPathBatch");
-    expect(source).toContain("prismPaths");
-  });
-});
-
-describe("Optimized doc resolution (H-10)", () => {
-  it("resolveDocFilesOptimized function exists in doc-resolver.ts", () => {
-    const source = readFileSync("src/utils/doc-resolver.ts", "utf-8");
-    expect(source).toContain("export async function resolveDocFilesOptimized");
-    expect(source).toContain("listDirectory");
-  });
-
-  it("old resolveDocFiles is marked deprecated", () => {
-    const source = readFileSync("src/utils/doc-resolver.ts", "utf-8");
-    expect(source).toContain("@deprecated");
-  });
-});
+// SRV-111: the "Batch path resolution (H-2)" and "Optimized doc resolution
+// (H-10)" grep-the-source blocks were removed alongside the never-wired
+// preloadPrismPaths / guardPushPathBatch / resolveDocFilesOptimized trio they
+// pinned. The remaining blocks cover live code.
 
 describe("Synthesis tracker scoped by project (H-9)", () => {
   it("uses Map keyed by project", () => {

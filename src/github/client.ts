@@ -9,8 +9,6 @@ import { logger } from "../utils/logger.js";
 import type {
   FileResult,
   PushResult,
-  PushFileInput,
-  BatchPushResult,
   AtomicCommitResult,
   GitHubContentsResponse,
   GitHubPutResponse,
@@ -406,49 +404,6 @@ export async function pushFile(
     size,
     sha: data.content.sha,
   };
-}
-
-/**
- * Push multiple files in parallel. One failure does not abort others.
- */
-export async function pushFiles(
-  repo: string,
-  files: PushFileInput[]
-): Promise<{ results: BatchPushResult[]; failed_count: number; incomplete: boolean }> {
-  const start = Date.now();
-  logger.debug("github.pushFiles", { repo, count: files.length });
-
-  const outcomes = await Promise.allSettled(
-    files.map(async (file) => {
-      const result = await pushFile(repo, file.path, file.content, file.message);
-      return { path: file.path, ...result };
-    })
-  );
-
-  const batchResults: BatchPushResult[] = outcomes.map((outcome, idx) => {
-    if (outcome.status === "fulfilled") {
-      return outcome.value;
-    }
-    return {
-      path: files[idx].path,
-      success: false,
-      size: 0,
-      sha: "",
-      error: outcome.reason?.message ?? "Unknown error",
-    };
-  });
-
-  const failedCount = batchResults.filter(r => !r.success).length;
-
-  logger.debug("github.pushFiles complete", {
-    repo,
-    total: files.length,
-    succeeded: batchResults.length - failedCount,
-    failed: failedCount,
-    ms: Date.now() - start,
-  });
-
-  return { results: batchResults, failed_count: failedCount, incomplete: failedCount > 0 };
 }
 
 /**

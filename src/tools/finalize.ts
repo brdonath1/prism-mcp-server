@@ -1485,8 +1485,6 @@ async function commitPhase(
     living_documents_updated: livingDocsUpdated,
     all_succeeded: allSucceeded,
     synthesis_outcome: synthesisOutcome,
-    synthesis_banner_html: null as string | null,
-    synthesis_warning: null as string | null,
     synthesis_status_hint: synthesisStatusHint,
     // brief-422: surface non-fatal post-commit sweep outcomes so the operator
     // can see what landed beyond the main commit. Null when sweeps did not run

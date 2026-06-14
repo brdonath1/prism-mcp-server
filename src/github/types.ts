@@ -17,18 +17,6 @@ export interface PushResult {
   error?: string;
 }
 
-/** Input for a batch file push */
-export interface PushFileInput {
-  path: string;
-  content: string;
-  message: string;
-}
-
-/** Result of a batch file push, per file */
-export interface BatchPushResult extends PushResult {
-  path: string;
-}
-
 /** GitHub Contents API response (JSON mode, for SHA retrieval) */
 export interface GitHubContentsResponse {
   name: string;
@@ -46,12 +34,6 @@ export interface GitHubPutResponse {
     sha: string;
     size: number;
   };
-}
-
-/** GitHub error response */
-export interface GitHubErrorResponse {
-  message: string;
-  documentation_url?: string;
 }
 
 /** GitHub repository list item */

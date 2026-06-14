@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, beforeEach } from "vitest";
-import { recordSynthesisEvent, getSynthesisHealth, getRecentFailures } from "../src/ai/synthesis-tracker.js";
+import { recordSynthesisEvent, getSynthesisHealth } from "../src/ai/synthesis-tracker.js";
 
 // Note: We need to reset the internal state between tests.
 // Since the tracker uses module-level state, we test in sequence.
@@ -56,34 +56,6 @@ describe("synthesis tracker", () => {
     expect(after.recent_failures).toBe(prevFailures + 1);
     expect(after.last_failure).not.toBeNull();
     expect(after.last_failure!.error).toBe("Anthropic API timeout");
-  });
-
-  it("getRecentFailures returns only failures", () => {
-    // Record a mix of successes and failures
-    recordSynthesisEvent({
-      project: "p1",
-      sessionNumber: 1,
-      timestamp: new Date().toISOString(),
-      success: true,
-    });
-    recordSynthesisEvent({
-      project: "p2",
-      sessionNumber: 2,
-      timestamp: new Date().toISOString(),
-      success: false,
-      error: "timeout",
-    });
-    recordSynthesisEvent({
-      project: "p3",
-      sessionNumber: 3,
-      timestamp: new Date().toISOString(),
-      success: false,
-      error: "API key expired",
-    });
-
-    const failures = getRecentFailures();
-    expect(failures.every(f => !f.success)).toBe(true);
-    expect(failures.length).toBeGreaterThanOrEqual(2);
   });
 
   it("reports degraded status when failures exist below 50%", () => {
