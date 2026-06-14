@@ -424,6 +424,43 @@ Completed audit remediation.
     expect(backupPushCalls).toHaveLength(0);
   });
 
+  it("SRV-69: fires a STANDING_RULES_OVERSIZE warning when the registry exceeds the finalize tripwire", async () => {
+    const big = "X".repeat(160_000);
+    const oversizeStandingRules = `# Standing Rules\n\n## Active\n\n### INS-1: Big rule — STANDING RULE\n**Standing procedure:** ${big}\n\n<!-- EOF: standing-rules.md -->`;
+    // Oversize ONLY standing-rules.md; everything else mirrors the passing
+    // commit test (HANDOFF_CONTENT), so the commit still succeeds.
+    mockFetchFile.mockImplementation(async (_repo: string, path: string) => {
+      if (path.includes("standing-rules.md")) {
+        return { content: oversizeStandingRules, sha: "sr", size: oversizeStandingRules.length };
+      }
+      return { content: HANDOFF_CONTENT, sha: "new_sha", size: HANDOFF_CONTENT.length };
+    });
+    mockListDirectory.mockResolvedValue([]);
+    mockPushFile.mockResolvedValue({ success: true, size: 100, sha: "new_sha" });
+    mockCreateAtomicCommit.mockResolvedValue({ success: true, sha: "atomic_sha", files_committed: 2 });
+    mockGenerateIntelligenceBrief.mockResolvedValue({ success: true, input_tokens: 1000, output_tokens: 500 });
+
+    const validHandoff = `## Meta\n- Handoff Version: 31\n- Session Count: 26\n- Template Version: v2.9.0\n- Status: Active\n\n## Critical Context\n1. Server deployed on Railway\n\n## Where We Are\nCompleted audit remediation.\n\n<!-- EOF: handoff.md -->`;
+
+    const result = await callFinalizeTool({
+      project_slug: "test-project",
+      action: "commit",
+      session_number: 26,
+      handoff_version: 31,
+      files: [
+        { path: "handoff.md", content: validHandoff },
+        { path: "glossary.md", content: "# Glossary\nTerms\n<!-- EOF: glossary.md -->" },
+      ],
+    });
+
+    const data = parseResult(result);
+    const oversize = (data.diagnostics as Array<{ code: string; context?: { standing_rules_bytes?: number } }>).find(
+      (d) => d.code === "STANDING_RULES_OVERSIZE",
+    );
+    expect(oversize).toBeDefined();
+    expect(oversize!.context!.standing_rules_bytes).toBeGreaterThan(150_000);
+  });
+
   it("rejects commit when validation fails — pushes nothing", async () => {
     mockFetchFile.mockResolvedValue({
       content: HANDOFF_CONTENT,

@@ -25,6 +25,7 @@ import {
   FINALIZE_DRAFT_DEADLINE_CC_MS,
   CC_SUBPROCESS_SYNTHESIS_TIMEOUT_MS,
   DOC_ROOT,
+  STANDING_RULES_WARNING_SIZE,
 } from "../config.js";
 import { detectSessionLogOrientation, splitForArchive, utf8ByteLength, type ArchiveConfig } from "../utils/archive.js";
 
@@ -699,7 +700,7 @@ export async function updateArchitectureMetadata(
 async function collectRegistryIdSets(
   projectSlug: string,
   files: Array<{ path: string; content: string }>,
-): Promise<{ decisionIds: Set<string> | null; insightIds: Set<string> | null }> {
+): Promise<{ decisionIds: Set<string> | null; insightIds: Set<string> | null; standingRulesBytes: number | null }> {
   const committed = (docName: string): string | null => {
     const f = files.find(
       (x) => x.path === docName || x.path === `${DOC_ROOT}/${docName}`,
@@ -749,7 +750,15 @@ async function collectRegistryIdSets(
     }
   }
 
-  return { decisionIds, insightIds };
+  // SRV-69: surface the standing-rules registry byte size so the commit path
+  // can fire a finalize-time oversize tripwire (the registry has no archival
+  // lifecycle). Measured from the source we already loaded — no extra fetch.
+  const standingRulesBytes =
+    standingRulesOutcome.ok && standingRulesOutcome.content !== null
+      ? new TextEncoder().encode(standingRulesOutcome.content).length
+      : null;
+
+  return { decisionIds, insightIds, standingRulesBytes };
 }
 
 /**
@@ -1281,6 +1290,25 @@ async function commitPhase(
   // affected ID family rather than risking false positives.
   try {
     const registry = await collectRegistryIdSets(projectSlug, files);
+    // SRV-69: finalize-time standing-rules registry oversize tripwire. The
+    // registry is on three hot read paths but had no size lifecycle; warn the
+    // operator past the threshold (mirrors handoff.md's size warning). Surface
+    // only — curation is the operator's call (Tier A has no lazy-load recovery).
+    if (
+      registry.standingRulesBytes !== null &&
+      registry.standingRulesBytes > STANDING_RULES_WARNING_SIZE
+    ) {
+      diagnostics.warn(
+        "STANDING_RULES_OVERSIZE",
+        `standing-rules.md is ${(registry.standingRulesBytes / 1024).toFixed(1)}KB — over the ${(STANDING_RULES_WARNING_SIZE / 1024).toFixed(0)}KB registry tripwire. It is on three hot read paths (boot/load_rules/synthesis) with no archival lifecycle — consider retiring superseded/expired rules (operator-curated; Tier A has no lazy-load recovery).`,
+        { standing_rules_bytes: registry.standingRulesBytes, threshold_bytes: STANDING_RULES_WARNING_SIZE },
+      );
+      logger.warn("standing-rules registry oversize at finalize", {
+        projectSlug,
+        sessionNumber,
+        standingRulesBytes: registry.standingRulesBytes,
+      });
+    }
     const unlogged = findUnloggedIds(files, registry);
     if (unlogged.decisions.length > 0 || unlogged.insights.length > 0) {
       const allIds = [...unlogged.decisions, ...unlogged.insights];

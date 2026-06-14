@@ -4,6 +4,7 @@
  */
 
 import { logger } from "./logger.js";
+import { FRAMEWORK_REPO, MCP_TEMPLATE_PATH } from "../config.js";
 
 interface CacheEntry<T> {
   value: T;
@@ -74,3 +75,23 @@ export class MemoryCache<T> {
 
 /** Shared cache for the behavioral rules template (D-31). 5-minute TTL. */
 export const templateCache = new MemoryCache<{ content: string; size: number }>("behavioral-rules", 5);
+
+/**
+ * Invalidate the behavioral-rules template cache when a write lands on the core
+ * template (SRV-86). Pre-brief-465 only prism_push invalidated, so a template
+ * update via prism_patch / prism_finalize / gh tools / a Claude Code dispatch
+ * served stale rules for up to the 5-minute TTL. Call this from EVERY write path
+ * that can land MCP_TEMPLATE_PATH on the framework repo so invalidation is no
+ * longer coupled to a single tool.
+ *
+ * @param repo          the repo the write targeted.
+ * @param writtenPaths  paths that successfully landed in this write.
+ * @returns true if the template cache was invalidated.
+ */
+export function invalidateTemplateCacheOnWrite(repo: string, writtenPaths: string[]): boolean {
+  if (repo !== FRAMEWORK_REPO) return false;
+  if (!writtenPaths.includes(MCP_TEMPLATE_PATH)) return false;
+  templateCache.invalidate(MCP_TEMPLATE_PATH);
+  logger.info("template cache invalidated", { reason: "core template write", repo });
+  return true;
+}

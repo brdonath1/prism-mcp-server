@@ -128,4 +128,36 @@ describe("summarizeMarkdown", () => {
     expect(summary).toContain("# Title");
     expect(summary).toContain("## Section Two");
   });
+
+  // SRV-74: the header list was unbounded — a header-dense doc (e.g. real
+  // task-queue.md, ~2.6KB summary) made the "bounded summary" claim false and
+  // turned prefetched_documents into a boot-payload growth vector. Cap it.
+  it("caps the section-header list at 25 with a (+N more) note (SRV-74)", () => {
+    const sections = Array.from({ length: 40 }, (_, i) => `## Section ${i + 1}`).join(
+      "\n\nfiller line\n\n",
+    );
+    const content = "x".repeat(600) + "\n\n" + sections;
+    const summary = summarizeMarkdown(content, 100);
+    const headerLines = summary.split("\n").filter((l) => /^\s+#{1,4}\s/.test(l));
+    expect(headerLines.length).toBe(25);
+    expect(summary).toMatch(/\(\+15 more headers\)/);
+  });
+
+  it("lists every header (no note) when under the cap (SRV-74)", () => {
+    const sections = Array.from({ length: 5 }, (_, i) => `## Section ${i + 1}`).join("\n\nbody\n\n");
+    const content = "x".repeat(600) + "\n\n" + sections;
+    const summary = summarizeMarkdown(content, 100);
+    const headerLines = summary.split("\n").filter((l) => /^\s+#{1,4}\s/.test(l));
+    expect(headerLines.length).toBe(5);
+    expect(summary).not.toMatch(/more headers/);
+  });
+
+  it("honors an explicit maxHeaders override (SRV-74)", () => {
+    const sections = Array.from({ length: 10 }, (_, i) => `## Section ${i + 1}`).join("\n\nbody\n\n");
+    const content = "x".repeat(600) + "\n\n" + sections;
+    const summary = summarizeMarkdown(content, 100, 3);
+    const headerLines = summary.split("\n").filter((l) => /^\s+#{1,4}\s/.test(l));
+    expect(headerLines.length).toBe(3);
+    expect(summary).toMatch(/\(\+7 more headers\)/);
+  });
 });

@@ -158,6 +158,7 @@ describe("T-1: bootstrap response size budget", () => {
     const measured = { ...parsed };
     delete measured.context_estimate;
     delete measured.response_bytes;
+    delete measured.bytes_delivered; // SRV-28: now a post-measurement attachment (= responseBytes)
     delete measured.diagnostics;
     expect(parsed.context_estimate.bootstrap_tokens).toBe(
       Math.round(JSON.stringify(measured).length / 3.5)
@@ -227,7 +228,7 @@ describe("T-1: bootstrap response size budget", () => {
     const parsed = JSON.parse(result.content[0].text);
     expect(parsed.standing_rules.map((r: { id: string }) => r.id)).toEqual(["INS-6"]);
     expect(parsed.standing_rules_index).toEqual([]);
-    expect(parsed.standing_rules_tier_c_index).toEqual([]);
+    expect(parsed.standing_rules_tier_c_index).toBeUndefined(); // SRV-109: deprecated alias removed
   });
 
   it("prefetched_documents is bounded only by the distinct PREFETCH_KEYWORDS targets (QW-4 cap removed, R7-b)", async () => {

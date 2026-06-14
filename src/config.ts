@@ -71,12 +71,46 @@ export const MCP_SAFE_TIMEOUT = 50_000;
 export const DEFAULT_CONTEXT_WINDOW_TOKENS =
   Number(process.env.DEFAULT_CONTEXT_WINDOW_TOKENS ?? 500_000) || 500_000;
 
+/** Bootstrap response-size tripwire thresholds (bytes) — SRV-39 recalibration.
+ *  The pre-brief-465 literals (80KB warn / 100KB error) fired the ERROR-level
+ *  BOOTSTRAP_OVERSIZE diagnostic on EVERY prism boot: measured steady state is
+ *  ~115KB (S166 115,803; S167 114,752; §D2 reconstruction 114,757) — already
+ *  over 100KB before any growth. A permanently-firing error is ambient noise
+ *  operators tune out, precisely while the append-only standing-rules registry
+ *  keeps growing toward the ~234–246KB platform-offload point that previously
+ *  caused TOTAL delivery failure (D-253 comments). Recalibrated against that
+ *  real cap with headroom: ERROR at 200KB (~35–45KB runway before the cliff),
+ *  WARN at 160KB (~40% above today's steady state — catches abnormal growth
+ *  without crying wolf). The tripwire also attaches per-section byte
+ *  attribution to its diagnostic context (SRV-39/SRV-68) so the operator sees
+ *  WHICH section drove the size. Env-overridable for per-deployment tuning.
+ *  NOTE: getting steady state under 100KB is a template-content diet
+ *  (W3-F3/M-019 — framework, out of scope here); this is the server-side
+ *  tripwire-correctness half. */
+export const BOOTSTRAP_OVERSIZE_WARN_BYTES =
+  parseInt(process.env.BOOTSTRAP_OVERSIZE_WARN_BYTES ?? "160000", 10) || 160_000;
+export const BOOTSTRAP_OVERSIZE_ERROR_BYTES =
+  parseInt(process.env.BOOTSTRAP_OVERSIZE_ERROR_BYTES ?? "200000", 10) || 200_000;
+
 /** GitHub API base URL */
 export const GITHUB_API_BASE = "https://api.github.com";
 
 /** Handoff size thresholds (bytes) */
 export const HANDOFF_WARNING_SIZE = 10_240;   // 10 KB — needs-attention
 export const HANDOFF_CRITICAL_SIZE = 15_360;  // 15 KB — scaling required
+
+/** Standing-rules registry finalize-time size tripwire (bytes) — SRV-69.
+ *  standing-rules.md is on three hot read paths (boot union, prism_load_rules,
+ *  synthesis) but — unlike its size-capped siblings session-log.md (15KB) and
+ *  insights.md (20KB) — had NO size lifecycle. It is append-mostly and was
+ *  measured at 394,693 B (≈26× insights' threshold). This is a WARNING tripwire
+ *  only (mirroring handoff.md's threshold): server-side truncation of standing
+ *  rules would silently lose intelligence (Tier A has no lazy-load recovery), so
+ *  the operator curates — the server's job is to surface the growth. A real
+ *  retention/archival mechanism is a larger change; this is the minimum
+ *  finalize-time visibility the audit asks for. Env-overridable. */
+export const STANDING_RULES_WARNING_SIZE =
+  parseInt(process.env.STANDING_RULES_WARNING_SIZE ?? "150000", 10) || 150_000;
 
 /** Summary mode threshold (bytes) */
 export const SUMMARY_SIZE_THRESHOLD = 5_120;  // 5 KB

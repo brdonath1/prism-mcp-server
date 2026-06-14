@@ -11,6 +11,7 @@ import { resolveDocPath } from "../utils/doc-resolver.js";
 import { DOC_ROOT, PATCH_WALL_CLOCK_DEADLINE_MS } from "../config.js";
 import { DiagnosticsCollector } from "../utils/diagnostics.js";
 import { safeMutation } from "../utils/safe-mutation.js";
+import { invalidateTemplateCacheOnWrite } from "../utils/cache.js";
 import {
   sanitizeContent,
   detectZwsHeaders,
@@ -243,6 +244,11 @@ export function registerPatch(server: McpServer): void {
           section: p.section,
           success: true,
         }));
+
+        // SRV-86: a prism_patch on the framework core template must invalidate
+        // the behavioral-rules cache too — pre-brief-465 only prism_push did, so
+        // a patch-driven template edit served stale rules up to the TTL.
+        invalidateTemplateCacheOnWrite(project_slug, [resolvedPath]);
 
         logger.info("prism_patch complete", {
           project_slug,

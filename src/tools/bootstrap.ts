@@ -18,7 +18,8 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { fetchFile, pushFile, listRepos } from "../github/client.js";
-import { CC_DISPATCH_ENABLED, DEFAULT_CONTEXT_WINDOW_TOKENS, DOC_ROOT, FRAMEWORK_REPO, GITHUB_PAT, HANDOFF_CRITICAL_SIZE, LIVING_DOCUMENTS, MCP_TEMPLATE_PATH, PREFETCH_KEYWORDS, PROJECT_DISPLAY_NAMES, RAILWAY_API_TOKEN, RAILWAY_ENABLED, STALE_ACTIVE_THRESHOLD_MS, SYNTHESIS_LOG_LOOKBACK_MS, TRIGGER_AUTO_ENROLL, resolveProjectSlug } from "../config.js";
+import { BOOTSTRAP_OVERSIZE_ERROR_BYTES, BOOTSTRAP_OVERSIZE_WARN_BYTES, CC_DISPATCH_ENABLED, DEFAULT_CONTEXT_WINDOW_TOKENS, DOC_ROOT, FRAMEWORK_REPO, GITHUB_PAT, HANDOFF_CRITICAL_SIZE, LIVING_DOCUMENTS, MCP_TEMPLATE_PATH, PREFETCH_KEYWORDS, PROJECT_DISPLAY_NAMES, RAILWAY_API_TOKEN, RAILWAY_ENABLED, STALE_ACTIVE_THRESHOLD_MS, SYNTHESIS_LOG_LOOKBACK_MS, TRIGGER_AUTO_ENROLL, resolveProjectSlug } from "../config.js";
+import { computePayloadAttribution } from "../utils/payload-attribution.js";
 import { getEnvironmentLogs } from "../railway/client.js";
 import { checkStaleActive } from "../utils/stale-active-check.js";
 import { checkSynthesisObservationEvents, type ObservationCheckResult } from "../utils/synthesis-fallback-check.js";
@@ -789,10 +790,30 @@ export function registerBootstrap(server: McpServer): void {
         // Parse guardrails from decisions.
         // R7-b (D-240 Phase B): cap raised 10 → 20 under the 500K-context
         // rationale — deliberate reversal of the token-economy slimming.
-        const guardrails = decisions
-          .filter(d => d.status.toUpperCase() === "SETTLED")
-          .slice(0, 20)
-          .map(d => ({ id: d.id, summary: d.title }));
+        // SRV-85: selection was position-blind — `.slice(0, 20)` over index
+        // order always shipped D-1..D-20 and NEVER surfaced any later settled
+        // decision (measured on the live 209-row prism index: guardrails were
+        // exactly D-1..D-20 while D-21..D-242 never reached boot). Blend the
+        // FOUNDATIONAL settled decisions (earliest — the architectural
+        // precedents) with the MOST-RECENT settled ones (current settled
+        // direction), deduped, count cap preserved. Uses only data already in
+        // the index (status + order); a curated "pinned" column is the cleaner
+        // fix but depends on the not-yet-landed M-021 payload contract (out of
+        // scope), so this is the server-side mechanical blend.
+        const GUARDRAIL_CAP = 20;
+        const GUARDRAIL_FOUNDATIONAL = 10;
+        const settledDecisions = decisions.filter(d => d.status.toUpperCase() === "SETTLED");
+        const guardrailMap = new Map<string, { id: string; summary: string }>();
+        for (const d of settledDecisions.slice(0, GUARDRAIL_FOUNDATIONAL)) {
+          guardrailMap.set(d.id, { id: d.id, summary: d.title });
+        }
+        // Fill the remaining slots from the tail (most-recent settled first),
+        // skipping any already pinned as foundational.
+        for (let i = settledDecisions.length - 1; i >= 0 && guardrailMap.size < GUARDRAIL_CAP; i--) {
+          const d = settledDecisions[i];
+          if (!guardrailMap.has(d.id)) guardrailMap.set(d.id, { id: d.id, summary: d.title });
+        }
+        const guardrails = Array.from(guardrailMap.values());
 
         // Recent decisions (last 15 — R7-b raised the cap from 5, D-240 Phase B)
         const recentDecisions = decisions.slice(-15);
@@ -837,7 +858,10 @@ export function registerBootstrap(server: McpServer): void {
         // the token-economy slimming; do not re-introduce the cap. The set is
         // naturally bounded by the distinct documents PREFETCH_KEYWORDS maps
         // to (7 today), and each entry delivers a bounded summarizeMarkdown
-        // summary (500-char preview + headers), not the full document.
+        // summary (500-char preview + up to 25 section headers with a "(+N
+        // more)" note — SRV-74), not the full document. Pre-brief-465 the
+        // header list was unbounded, so a header-dense doc (real task-queue.md)
+        // produced a ~2.6KB summary — a silent boot-payload growth vector.
         const prefetchPaths = Array.from(prefetchSet);
 
         if (prefetchPaths.length > 0) {
@@ -1166,10 +1190,13 @@ export function registerBootstrap(server: McpServer): void {
           ...tierB.map(r => ({ id: r.id, title: r.title, tier: r.tier, topics: r.topics })),
           ...tierC.map(r => ({ id: r.id, title: r.title, tier: r.tier, topics: r.topics })),
         ];
-        // DEPRECATED (D-253, one-release alias): superseded by
-        // `standing_rules_index`. Kept C-only ({id,title}) and unchanged for
-        // template back-compat — remove once templates read the new field.
-        const standingRulesTierCIndex = tierC.map(r => ({ id: r.id, title: r.title }));
+        // SRV-109: the deprecated `standing_rules_tier_c_index` alias (D-253
+        // "one-release" C-only {id,title}) is removed here — its removal window
+        // closed (D-253 shipped #69; many merges have deployed since) and the
+        // S167 audit verified zero consumers: the live framework template reads
+        // neither index field, and in-repo references were tests only. It
+        // duplicated ~2,836 B (~795 tokens) of standing_rules_index data on
+        // every prism boot — the #1 low-risk diet candidate (§D2).
 
         if (allStandingRules.length > 0) {
           logger.info("standing rules extracted", {
@@ -1351,7 +1378,6 @@ export function registerBootstrap(server: McpServer): void {
           prefetched_documents: prefetchedDocuments,
           standing_rules: standingRules,
           standing_rules_index: standingRulesIndex, // D-253: Tier B ∪ Tier C entries ({id,title,tier,topics}) — bodies via prism_load_rules
-          standing_rules_tier_c_index: standingRulesTierCIndex, // DEPRECATED (D-253 one-release alias): C-only {id,title}; superseded by standing_rules_index
           intelligence_brief: intelligenceBrief,
           brief_age_sessions: briefAgeResult,
           behavioral_rules: behavioralRules,
@@ -1362,7 +1388,11 @@ export function registerBootstrap(server: McpServer): void {
           template_banner_spec_version: templateBannerSpecVersion, // brief-439 / R8: version the template declares (null = pre-handshake template)
           boot_test_verified: bootTestResult.success,
           trigger_enrollment: triggerEnrollment,        // brief-105: marker drop outcome
-          bytes_delivered: bytesDelivered,
+          // bytes_delivered: SRV-28 — set post-measurement to the true delivered
+          // payload size (responseBytes). The pre-brief-465 field summed SOURCE
+          // content.length of fetched docs (handoff/decisions/template/prefetch
+          // sources), so it conflated source-fetched with delivered bytes
+          // (measured 99,797 vs the real 115,842). See the post-measurement block.
           files_fetched: filesFetched,
           expected_tool_surface: getExpectedToolSurface(RAILWAY_ENABLED, CC_DISPATCH_ENABLED, !!GITHUB_PAT),  // D-83 (S44); github category added in brief-403
           post_boot_tool_searches: POST_BOOT_TOOL_SEARCHES,                                     // D-83 (S44)
@@ -1383,24 +1413,34 @@ export function registerBootstrap(server: McpServer): void {
         // checked for oversize, and only THEN do those fields attach —
         // diagnostics LAST so it captures any oversize entry.
         //
-        // `measured` undercounts the final payload by exactly the three fields
-        // attached after it (context_estimate ~0.2KB, response_bytes ~0.03KB,
-        // diagnostics — small in practice). The chars/3.5 proxy's own error
-        // bars and the 80/100KB thresholds both dwarf that gap, so the
-        // undercount is acceptable for both the estimate and the tripwire.
+        // `measured` undercounts the final payload by exactly the fields
+        // attached after it (context_estimate, response_bytes, bytes_delivered,
+        // diagnostics — all small). The chars/3.5 proxy's own error bars and the
+        // recalibrated thresholds both dwarf that gap, so the undercount is
+        // acceptable for both the estimate and the tripwire.
         const measured = JSON.stringify(result);
         const bootstrapTokens = Math.round(measured.length / 3.5);
         const responseBytes = new TextEncoder().encode(measured).length;
 
-        // D-253: oversize tripwire — unchanged thresholds, log lines, and
-        // BOOTSTRAP_OVERSIZE code, now evaluated BEFORE diagnostics.list() is
-        // materialized below so the entry actually ships in-response.
-        if (responseBytes > 100_000) {
-          logger.error("bootstrap response exceeds 100KB", { project_slug: resolvedSlug, responseBytes });
-          diagnostics.error("BOOTSTRAP_OVERSIZE", `Response is ${(responseBytes / 1024).toFixed(1)}KB — exceeds 100KB`, { responseBytes });
-        } else if (responseBytes > 80_000) {
-          logger.warn("bootstrap response exceeds 80KB", { project_slug: resolvedSlug, responseBytes });
-          diagnostics.warn("BOOTSTRAP_OVERSIZE", `Response is ${(responseBytes / 1024).toFixed(1)}KB — exceeds 80KB warning threshold`, { responseBytes });
+        // SRV-39 / SRV-68: per-section DELIVERED byte attribution of the measured
+        // response. Replaces the old source-size componentSizes (which summed to
+        // ~157KB vs the real ~116KB and misdirected the diet). Computed from the
+        // measured `result` so it reconciles to responseBytes within the JSON
+        // envelope; the top sections attach to BOOTSTRAP_OVERSIZE so an operator
+        // who sees the tripwire fire knows WHICH section drove the size.
+        const attribution = computePayloadAttribution(result);
+
+        // SRV-39: oversize tripwire — recalibrated thresholds (config, env-
+        // tunable) against the real ~234–246KB platform-offload cap instead of
+        // the old 80/100KB literals that ERROR-fired on every ~115KB prism boot
+        // (ambient noise). Now carries per-section attribution. Evaluated BEFORE
+        // diagnostics.list() materializes below so the entry ships in-response.
+        if (responseBytes > BOOTSTRAP_OVERSIZE_ERROR_BYTES) {
+          logger.error("bootstrap response oversize (error)", { project_slug: resolvedSlug, responseBytes, top_sections: attribution.top });
+          diagnostics.error("BOOTSTRAP_OVERSIZE", `Response is ${(responseBytes / 1024).toFixed(1)}KB — exceeds ${(BOOTSTRAP_OVERSIZE_ERROR_BYTES / 1024).toFixed(0)}KB error threshold (approaching platform-offload cap)`, { responseBytes, top_sections: attribution.top });
+        } else if (responseBytes > BOOTSTRAP_OVERSIZE_WARN_BYTES) {
+          logger.warn("bootstrap response oversize (warn)", { project_slug: resolvedSlug, responseBytes, top_sections: attribution.top });
+          diagnostics.warn("BOOTSTRAP_OVERSIZE", `Response is ${(responseBytes / 1024).toFixed(1)}KB — exceeds ${(BOOTSTRAP_OVERSIZE_WARN_BYTES / 1024).toFixed(0)}KB warning threshold`, { responseBytes, top_sections: attribution.top });
         }
 
         const platformOverheadTokens = 5000;
@@ -1418,26 +1458,24 @@ export function registerBootstrap(server: McpServer): void {
           total_boot_percent: totalBootPercent,
           context_window_tokens: DEFAULT_CONTEXT_WINDOW_TOKENS,
         };
-        result.response_bytes = responseBytes; // D-253: measured response size (undercounts the 3 fields attached after measurement)
+        result.response_bytes = responseBytes; // D-253: measured response size (undercounts the fields attached after measurement)
+        // SRV-28: bytes_delivered is now the TRUE delivered size (the measured
+        // response), not the source-content sum the pre-brief-465 field reported.
+        // Retained (not renamed) for back-compat — it is now an accurate twin of
+        // response_bytes rather than a misleading source-bytes counter.
+        result.bytes_delivered = responseBytes;
         result.diagnostics = diagnostics.list();
 
-        // QW-5: component_sizes removed from response (logged only)
-        const componentSizes = {
-          handoff: handoff.size,
-          decisions_index: coreResults[1].status === "fulfilled" && coreResults[1].value ? (coreResults[1].value as { content: string }).content.length : 0,
-          behavioral_rules: coreResults[2].status === "fulfilled" && coreResults[2].value ? (coreResults[2].value as { size: number }).size : 0,
-          intelligence_brief: intelligenceBrief?.length ?? 0, // D-253: compacted brief (3-section, spec-coupled)
-          standing_rules: JSON.stringify(standingRules).length,
-          standing_rules_index: JSON.stringify(standingRulesIndex).length,
-          standing_rules_tier_c_index: JSON.stringify(standingRulesTierCIndex).length,
-          banner_text: bannerText.length,
-          prefetched_docs: prefetchedDocuments.reduce((sum, d) => sum + d.size_bytes, 0),
-        };
+        // QW-5: component_sizes removed from response (logged only).
+        // SRV-68: attribute DELIVERED bytes (per-field serialized sizes of the
+        // measured response) instead of SOURCE sizes — the old map summed to
+        // ~157KB against a real ~116KB response and misdirected the diet.
+        const componentSizes = attribution.sizes;
 
         logger.info("prism_bootstrap complete", {
           project_slug: resolvedSlug,
           filesFetched,
-          bytesDelivered,
+          sourceBytesFetched: bytesDelivered, // SRV-28: this counter sums SOURCE content.length of fetched docs — the honest name. bytes_delivered (response field) is responseBytes.
           responseBytes, // D-253: central payload-diet metric
           rulesDelivered: !!behavioralRules,
           rulesCached: templateCache.get(MCP_TEMPLATE_PATH) !== null,
@@ -1445,7 +1483,6 @@ export function registerBootstrap(server: McpServer): void {
           bannerSpecVersion: BANNER_SPEC_VERSION,
           standingRulesCount: standingRules.length,
           standingRulesIndexCount: standingRulesIndex.length,
-          standingRulesTierCIndexCount: standingRulesTierCIndex.length,
           intelligenceBriefDelivered: !!intelligenceBrief, // D-253: compacted at boot (spec-coupled, fallback-guarded)
           intelSlo: {
             completeness: intelSlo.boot_completeness_percent,
