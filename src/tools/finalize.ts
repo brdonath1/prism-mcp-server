@@ -25,6 +25,7 @@ import {
   FINALIZE_DRAFT_DEADLINE_CC_MS,
   CC_SUBPROCESS_SYNTHESIS_TIMEOUT_MS,
   DOC_ROOT,
+  STANDING_RULES_WARNING_SIZE,
 } from "../config.js";
 import { detectSessionLogOrientation, splitForArchive, utf8ByteLength, type ArchiveConfig } from "../utils/archive.js";
 
@@ -137,7 +138,7 @@ import { extractHeaders, extractSection, parseNumberedList } from "../utils/summ
 import { parseHandoffVersion, parseSessionCount, parseTemplateVersion } from "../validation/handoff.js";
 import { validateFile } from "../validation/index.js";
 import { parseMarkdownTable } from "../utils/summarizer.js";
-import { generateIntelligenceBrief, generatePendingDocUpdates } from "../ai/synthesize.js";
+import { assembleSynthesisBundle, generateIntelligenceBrief, generatePendingDocUpdates, type SynthesisBundle } from "../ai/synthesize.js";
 import { computeCurrencyWarning, type CurrencyWarning } from "../utils/doc-currency.js";
 import {
   BANNER_SPEC_VERSION,
@@ -183,6 +184,7 @@ export function extractJSON(text: string): unknown {
   throw new Error("Failed to extract JSON from AI response");
 }
 import { FINALIZATION_DRAFT_PROMPT, buildFinalizationDraftMessage } from "../ai/prompts.js";
+import { boundSynthesisInput } from "../ai/input-budget.js";
 import { synthesize } from "../ai/client.js";
 
 /**
@@ -434,13 +436,32 @@ async function draftPhase(projectSlug: string, sessionNumber: number) {
     // Non-critical — drafts will be less informed but still useful
   }
 
-  // 3. Build prompt and call Opus 4.6
+  // 3. Bound the input (SRV-67), then build the prompt. draftPhase is the
+  //    designated CS-1 timeout backstop (src/ai/input-budget.ts) yet pre-brief-465
+  //    NEVER applied boundSynthesisInput — only the brief/PDU paths did. The
+  //    draft concatenates ~7 unbounded living docs (decisions/_INDEX.md +
+  //    insights.md can be tens of KB), so an unbounded assembly could exceed
+  //    SYNTHESIS_INPUT_MAX_TOKENS and run into the very timeout this backstop
+  //    exists to prevent. Measured through the SAME builder the model call uses,
+  //    so the bound is enforced on exactly the assembled prompt.
+  const bounded = boundSynthesisInput(docMap, (docs) =>
+    buildFinalizationDraftMessage(projectSlug, sessionNumber, docs, sessionCommits),
+  );
   const userMessage = buildFinalizationDraftMessage(
     projectSlug,
     sessionNumber,
-    docMap,
+    bounded.docs,
     sessionCommits
   );
+  if (bounded.trimmed) {
+    logger.warn("SYNTHESIS_DRAFT_INPUT_TRIMMED — draft input exceeded the token ceiling and was priority-trimmed before the model call", {
+      projectSlug,
+      sessionNumber,
+      pre_trim_tokens: bounded.pre_trim_tokens,
+      post_trim_tokens: bounded.post_trim_tokens,
+      trimmed_docs: bounded.trimmed_docs,
+    });
+  }
 
   // Calculate total doc size for timeout scaling
   let totalDocBytes = 0;
@@ -699,7 +720,7 @@ export async function updateArchitectureMetadata(
 async function collectRegistryIdSets(
   projectSlug: string,
   files: Array<{ path: string; content: string }>,
-): Promise<{ decisionIds: Set<string> | null; insightIds: Set<string> | null }> {
+): Promise<{ decisionIds: Set<string> | null; insightIds: Set<string> | null; standingRulesBytes: number | null }> {
   const committed = (docName: string): string | null => {
     const f = files.find(
       (x) => x.path === docName || x.path === `${DOC_ROOT}/${docName}`,
@@ -749,7 +770,15 @@ async function collectRegistryIdSets(
     }
   }
 
-  return { decisionIds, insightIds };
+  // SRV-69: surface the standing-rules registry byte size so the commit path
+  // can fire a finalize-time oversize tripwire (the registry has no archival
+  // lifecycle). Measured from the source we already loaded — no extra fetch.
+  const standingRulesBytes =
+    standingRulesOutcome.ok && standingRulesOutcome.content !== null
+      ? new TextEncoder().encode(standingRulesOutcome.content).length
+      : null;
+
+  return { decisionIds, insightIds, standingRulesBytes };
 }
 
 /**
@@ -1281,6 +1310,25 @@ async function commitPhase(
   // affected ID family rather than risking false positives.
   try {
     const registry = await collectRegistryIdSets(projectSlug, files);
+    // SRV-69: finalize-time standing-rules registry oversize tripwire. The
+    // registry is on three hot read paths but had no size lifecycle; warn the
+    // operator past the threshold (mirrors handoff.md's size warning). Surface
+    // only — curation is the operator's call (Tier A has no lazy-load recovery).
+    if (
+      registry.standingRulesBytes !== null &&
+      registry.standingRulesBytes > STANDING_RULES_WARNING_SIZE
+    ) {
+      diagnostics.warn(
+        "STANDING_RULES_OVERSIZE",
+        `standing-rules.md is ${(registry.standingRulesBytes / 1024).toFixed(1)}KB — over the ${(STANDING_RULES_WARNING_SIZE / 1024).toFixed(0)}KB registry tripwire. It is on three hot read paths (boot/load_rules/synthesis) with no archival lifecycle — consider retiring superseded/expired rules (operator-curated; Tier A has no lazy-load recovery).`,
+        { standing_rules_bytes: registry.standingRulesBytes, threshold_bytes: STANDING_RULES_WARNING_SIZE },
+      );
+      logger.warn("standing-rules registry oversize at finalize", {
+        projectSlug,
+        sessionNumber,
+        standingRulesBytes: registry.standingRulesBytes,
+      });
+    }
     const unlogged = findUnloggedIds(files, registry);
     if (unlogged.decisions.length > 0 || unlogged.insights.length > 0) {
       const allIds = [...unlogged.decisions, ...unlogged.insights];
@@ -1370,10 +1418,27 @@ async function commitPhase(
     // slower of the two does not block the other (D-156 §3.6 / D-155). Both
     // remain fire-and-forget per INS-178 — commit response is already built.
     const synthesisLabels = ["intelligence_brief", "pending_updates"] as const;
-    void Promise.allSettled([
-      generateIntelligenceBrief(projectSlug, sessionNumber),
-      generatePendingDocUpdates(projectSlug, sessionNumber),
-    ])
+    void (async () => {
+      // brief-465 / SRV-73: assemble the synthesis input bundle ONCE and share
+      // it across BOTH calls — the brief and PDU bundles are byte-identical
+      // (~103K tokens), and were previously fetched + assembled + sent twice per
+      // finalize. If the shared assembly fails, each call falls back to building
+      // its own (the pre-brief-465 behavior), preserving resilience.
+      let bundle: SynthesisBundle | undefined;
+      try {
+        bundle = await assembleSynthesisBundle(projectSlug, sessionNumber);
+      } catch (err) {
+        logger.warn("shared synthesis bundle assembly failed — each call assembles independently", {
+          projectSlug,
+          sessionNumber,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return Promise.allSettled([
+        generateIntelligenceBrief(projectSlug, sessionNumber, bundle),
+        generatePendingDocUpdates(projectSlug, sessionNumber, bundle),
+      ]);
+    })()
       .then((results) => {
         results.forEach((r, idx) => {
           const label = synthesisLabels[idx];

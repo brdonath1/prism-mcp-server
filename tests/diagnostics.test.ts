@@ -162,6 +162,8 @@ vi.mock("../src/utils/cache.js", () => ({
     set: vi.fn(),
     invalidate: vi.fn(),
   },
+  // SRV-86: push/patch now invalidate via this shared helper.
+  invalidateTemplateCacheOnWrite: vi.fn().mockReturnValue(false),
   MemoryCache: vi.fn().mockImplementation(() => ({
     get: vi.fn().mockReturnValue(null),
     set: vi.fn(),

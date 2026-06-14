@@ -162,7 +162,7 @@ describe("generateIntelligenceBrief (CS-2) — forwards thinking: true to synthe
       model: "claude-opus-4-7",
     });
 
-    vi.doMock("../src/ai/client.js", () => ({ synthesize: synthesizeSpy }));
+    vi.doMock("../src/ai/client.js", () => ({ synthesize: synthesizeSpy, resolveCallSiteTimeout: () => 240_000 }));
     vi.doMock("../src/github/client.js", () => ({
       pushFile: vi.fn().mockResolvedValue({ success: true, sha: "abc", size: 1024 }),
       fetchFiles: vi.fn(),
@@ -224,7 +224,7 @@ describe("generatePendingDocUpdates (CS-3) — forwards thinking: true to synthe
       model: "claude-opus-4-7",
     });
 
-    vi.doMock("../src/ai/client.js", () => ({ synthesize: synthesizeSpy }));
+    vi.doMock("../src/ai/client.js", () => ({ synthesize: synthesizeSpy, resolveCallSiteTimeout: () => 240_000 }));
     vi.doMock("../src/github/client.js", () => ({
       pushFile: vi.fn().mockResolvedValue({ success: true, sha: "abc", size: 1024 }),
       fetchFiles: vi.fn(),

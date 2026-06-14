@@ -6,13 +6,29 @@
 /**
  * Summarize a markdown file: first N characters + extracted section headers.
  * Keeps the response within context budget while preserving document structure.
+ *
+ * SRV-74: the header list is CAPPED (default 25) with a "(+N more headers)"
+ * note. Pre-brief-465 it emitted EVERY header, so a header-dense doc (the real
+ * task-queue.md produced a ~2.6KB summary) made the in-code "bounded summary"
+ * claim false and turned prefetched_documents into a boot-payload growth vector.
+ * Headers beyond the first screenful add little orientation value; the 500-char
+ * preview is untouched.
  */
-export function summarizeMarkdown(content: string, maxPreviewChars = 500): string {
+export function summarizeMarkdown(
+  content: string,
+  maxPreviewChars = 500,
+  maxHeaders = 25,
+): string {
   const preview = content.slice(0, maxPreviewChars);
   const headers = extractHeaders(content);
-  const headerList = headers.length > 0
-    ? `\n\nSection headers:\n${headers.map(h => `  ${h}`).join("\n")}`
-    : "";
+  const shown = headers.slice(0, maxHeaders);
+  const extra = headers.length - shown.length;
+  const headerList =
+    shown.length > 0
+      ? `\n\nSection headers:\n${shown.map(h => `  ${h}`).join("\n")}${
+          extra > 0 ? `\n  (+${extra} more headers)` : ""
+        }`
+      : "";
 
   return `${preview}${content.length > maxPreviewChars ? "\n\n[... truncated ...]" : ""}${headerList}`;
 }

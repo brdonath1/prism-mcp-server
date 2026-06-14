@@ -8,9 +8,9 @@
 
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { fetchFile, } from "../github/client.js";
-import { LIVING_DOCUMENT_NAMES, SEARCH_WALL_CLOCK_DEADLINE_MS } from "../config.js";
-import { resolveDocPath, resolveDocExists } from "../utils/doc-resolver.js";
+import { fetchFile, listDirectory } from "../github/client.js";
+import { DOC_ROOT, LIVING_DOCUMENT_NAMES, SEARCH_WALL_CLOCK_DEADLINE_MS } from "../config.js";
+import { resolveDocPath } from "../utils/doc-resolver.js";
 import { logger } from "../utils/logger.js";
 import { DiagnosticsCollector } from "../utils/diagnostics.js";
 
@@ -144,36 +144,24 @@ function extractSnippet(body: string, queryTerms: string[], maxLength: number = 
 }
 
 /**
- * Discover decision domain files by checking which ones exist (F.2 — use fileExists, not fetchFile).
- * Returns paths for existing domain files.
+ * Discover decision domain files under the decisions directory.
+ *
+ * SRV-82: LIST the directory instead of probing a hardcoded 7-name list (which
+ * issued up to 14 fileExists calls AND missed any non-canonical domain file that
+ * analytics' decision_graph — which already lists — would find). Mirrors
+ * analytics.decisionGraph exactly: one listDirectory under .prism/decisions with
+ * a legacy-root fallback, excluding _INDEX.md. Returns full paths to fetch.
  */
 async function discoverDecisionDomainFiles(projectSlug: string): Promise<string[]> {
-  const possibleDomains = [
-    "decisions/architecture.md",
-    "decisions/operations.md",
-    "decisions/optimization.md",
-    "decisions/onboarding.md",
-    "decisions/integrity.md",
-    "decisions/resilience.md",
-    "decisions/efficiency.md",
-  ];
-
-  // D-67: Check both .prism/ and root paths for domain files
-  const results = await Promise.allSettled(
-    possibleDomains.map(async (path) => {
-      try {
-        const resolved = await resolveDocExists(projectSlug, path);
-        return resolved.exists ? resolved.path : null;
-      } catch {
-        return null;
-      }
-    })
-  );
-
-  return results
-    .filter((r): r is PromiseFulfilledResult<string | null> => r.status === "fulfilled")
-    .map((r) => r.value)
-    .filter((p): p is string => p !== null);
+  let entries = await listDirectory(projectSlug, `${DOC_ROOT}/decisions`);
+  let dir = `${DOC_ROOT}/decisions`;
+  if (entries.length === 0) {
+    entries = await listDirectory(projectSlug, "decisions");
+    dir = "decisions";
+  }
+  return entries
+    .filter((e) => e.type === "file" && e.name.endsWith(".md") && e.name !== "_INDEX.md")
+    .map((e) => `${dir}/${e.name}`);
 }
 
 /**

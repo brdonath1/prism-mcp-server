@@ -171,3 +171,59 @@ describe("prism_fetch — default content cap", () => {
     expect(file.summary).toBeTruthy();
   });
 });
+
+// SRV-63 — aggregate response budget. The per-file cap bounds any single body
+// but the files[] array is unbounded; N files each under the per-file cap can
+// still blow the response ceiling.
+describe("prism_fetch aggregate budget (SRV-63)", () => {
+  it("delivers files in request order until the budget, then size-only with a diagnostic", async () => {
+    const { FETCH_AGGREGATE_BUDGET_BYTES } = await import("../src/config.js");
+    // 30KB bodies — under the 50KB per-file cap, so each delivers full. Five of
+    // them = 150KB, crossing the 90KB aggregate budget mid-list.
+    const body = "y".repeat(30_000);
+    mockFetchFile.mockImplementation(async (_repo: string, _path: string) => ({
+      content: body,
+      sha: "s",
+      size: body.length,
+    }));
+
+    const handler = captureFetchHandler();
+    const result = await handler({
+      project_slug: "test-project",
+      files: ["a.md", "b.md", "c.md", "d.md", "e.md"],
+    });
+    const data = parseResult(result);
+
+    const delivered = data.files.filter((f: any) => f.content !== null);
+    const capped = data.files.filter((f: any) => f.is_aggregate_capped);
+    // The earliest files (request order) are delivered in full ...
+    expect(delivered.length).toBeGreaterThan(0);
+    expect(data.files[0].content).not.toBeNull();
+    // ... and later ones are withheld size-only once the budget is crossed.
+    expect(capped.length).toBeGreaterThan(0);
+    for (const f of capped) {
+      expect(f.content).toBeNull();
+      expect(f.size_bytes).toBe(body.length); // true size still reported
+      expect(f.summary).toContain("withheld");
+    }
+    // Never a silent omission — the budget event is surfaced as a diagnostic.
+    const diag = data.diagnostics.find((d: any) => d.code === "FETCH_AGGREGATE_BUDGET_EXCEEDED");
+    expect(diag).toBeDefined();
+    expect(diag.context.budgetBytes).toBe(FETCH_AGGREGATE_BUDGET_BYTES);
+    expect(diag.context.paths.length).toBe(capped.length);
+  });
+
+  it("does not cap when the total stays under the budget", async () => {
+    const body = "z".repeat(10_000);
+    mockFetchFile.mockImplementation(async (_repo: string, _path: string) => ({
+      content: body,
+      sha: "s",
+      size: body.length,
+    }));
+    const handler = captureFetchHandler();
+    const result = await handler({ project_slug: "test-project", files: ["a.md", "b.md", "c.md"] });
+    const data = parseResult(result);
+    expect(data.files.every((f: any) => f.is_aggregate_capped === false)).toBe(true);
+    expect(data.diagnostics.find((d: any) => d.code === "FETCH_AGGREGATE_BUDGET_EXCEEDED")).toBeUndefined();
+  });
+});

@@ -28,6 +28,10 @@ vi.mock("../src/ai/client.js", () => ({
 }));
 
 vi.mock("../src/ai/synthesize.js", () => ({
+  // brief-465 / SRV-73: finalize assembles the bundle once and passes it to both.
+  assembleSynthesisBundle: vi.fn().mockResolvedValue({
+    userMessage: "shared bundle", inputBudget: { pre_trim_tokens: 1, post_trim_tokens: 1, trimmed: false, trimmed_docs: [] }, timestamp: "t", docCount: 1,
+  }),
   generateIntelligenceBrief: vi.fn(),
   generatePendingDocUpdates: vi.fn(),
 }));
@@ -424,6 +428,43 @@ Completed audit remediation.
     expect(backupPushCalls).toHaveLength(0);
   });
 
+  it("SRV-69: fires a STANDING_RULES_OVERSIZE warning when the registry exceeds the finalize tripwire", async () => {
+    const big = "X".repeat(160_000);
+    const oversizeStandingRules = `# Standing Rules\n\n## Active\n\n### INS-1: Big rule — STANDING RULE\n**Standing procedure:** ${big}\n\n<!-- EOF: standing-rules.md -->`;
+    // Oversize ONLY standing-rules.md; everything else mirrors the passing
+    // commit test (HANDOFF_CONTENT), so the commit still succeeds.
+    mockFetchFile.mockImplementation(async (_repo: string, path: string) => {
+      if (path.includes("standing-rules.md")) {
+        return { content: oversizeStandingRules, sha: "sr", size: oversizeStandingRules.length };
+      }
+      return { content: HANDOFF_CONTENT, sha: "new_sha", size: HANDOFF_CONTENT.length };
+    });
+    mockListDirectory.mockResolvedValue([]);
+    mockPushFile.mockResolvedValue({ success: true, size: 100, sha: "new_sha" });
+    mockCreateAtomicCommit.mockResolvedValue({ success: true, sha: "atomic_sha", files_committed: 2 });
+    mockGenerateIntelligenceBrief.mockResolvedValue({ success: true, input_tokens: 1000, output_tokens: 500 });
+
+    const validHandoff = `## Meta\n- Handoff Version: 31\n- Session Count: 26\n- Template Version: v2.9.0\n- Status: Active\n\n## Critical Context\n1. Server deployed on Railway\n\n## Where We Are\nCompleted audit remediation.\n\n<!-- EOF: handoff.md -->`;
+
+    const result = await callFinalizeTool({
+      project_slug: "test-project",
+      action: "commit",
+      session_number: 26,
+      handoff_version: 31,
+      files: [
+        { path: "handoff.md", content: validHandoff },
+        { path: "glossary.md", content: "# Glossary\nTerms\n<!-- EOF: glossary.md -->" },
+      ],
+    });
+
+    const data = parseResult(result);
+    const oversize = (data.diagnostics as Array<{ code: string; context?: { standing_rules_bytes?: number } }>).find(
+      (d) => d.code === "STANDING_RULES_OVERSIZE",
+    );
+    expect(oversize).toBeDefined();
+    expect(oversize!.context!.standing_rules_bytes).toBeGreaterThan(150_000);
+  });
+
   it("rejects commit when validation fails — pushes nothing", async () => {
     mockFetchFile.mockResolvedValue({
       content: HANDOFF_CONTENT,
@@ -699,7 +740,8 @@ describe("prism_finalize background synthesis (D-78, FINDING-5)", () => {
     // Flush microtasks so the background .then() has a chance to execute.
     await new Promise((resolve) => setTimeout(resolve, 100));
 
-    expect(mockGenerateIntelligenceBrief).toHaveBeenCalledWith("test-project", 42);
+    // brief-465 / SRV-73: now called with the shared prebuilt bundle as 3rd arg.
+    expect(mockGenerateIntelligenceBrief).toHaveBeenCalledWith("test-project", 42, expect.anything());
   });
 
   it("Test 3: synthesis failure does not affect commit response", async () => {
@@ -814,6 +856,37 @@ describe("prism_finalize draft phase", () => {
     const draftCallArgs = mockSynthesize.mock.calls[0];
     // synthesize(systemPrompt, userContent, maxTokens, timeoutMs, maxRetries, thinking)
     expect(draftCallArgs[5]).toBe(true);
+  });
+
+  it("SRV-67: draftPhase bounds an oversized input before the model call", async () => {
+    const { SYNTHESIS_INPUT_MAX_TOKENS, SYNTHESIS_CHARS_PER_TOKEN } = await import("../src/config.js");
+    // ~140KB each × 3 draft-relevant docs = ~420KB → well over the est-token
+    // ceiling, so boundSynthesisInput must trim before the call (pre-brief-465
+    // draftPhase never bounded — the full ~420KB would reach the model).
+    const big = "Lorem ipsum dolor sit amet consectetur. ".repeat(3500);
+    const docMap = buildDocMap({
+      "session-log.md": `# Session Log\n${big}\n<!-- EOF: session-log.md -->`,
+      "insights.md": `# Insights\n${big}\n<!-- EOF: insights.md -->`,
+      "task-queue.md": `# Task Queue\n${big}\n<!-- EOF: task-queue.md -->`,
+    });
+    mockFetchFiles.mockResolvedValue(docMap);
+    mockListCommits.mockResolvedValue([]);
+    mockSynthesize.mockResolvedValue({
+      success: true,
+      content: '{"handoff": {"content": "x"}}',
+      input_tokens: 1,
+      output_tokens: 1,
+      model: "claude-fable-5",
+    });
+
+    await callFinalizeTool({ project_slug: "test-project", action: "draft", session_number: 26 });
+
+    expect(mockSynthesize).toHaveBeenCalledTimes(1);
+    const userMessage = mockSynthesize.mock.calls[0][1] as string;
+    // The raw draft input would have exceeded the ceiling ...
+    expect((big.length * 3) / SYNTHESIS_CHARS_PER_TOKEN).toBeGreaterThan(SYNTHESIS_INPUT_MAX_TOKENS);
+    // ... but the assembled message the model receives is bounded under it.
+    expect(userMessage.length / SYNTHESIS_CHARS_PER_TOKEN).toBeLessThanOrEqual(SYNTHESIS_INPUT_MAX_TOKENS);
   });
 
   it("handles synthesis failure gracefully", async () => {

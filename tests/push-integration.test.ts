@@ -143,6 +143,30 @@ describe("prism_push validate-all-or-push-none", () => {
     expect(mockCreateAtomicCommit).not.toHaveBeenCalled();
     expect(mockPushFile).not.toHaveBeenCalled();
   });
+
+  // SRV-76: a validation failure must set the MCP isError flag so clients
+  // surface it, instead of a success-shaped envelope that hides the failure.
+  it("SRV-76: a validation failure sets isError: true", async () => {
+    const result = await callPushTool({
+      project_slug: "test-project",
+      files: [{ path: "handoff.md", content: "", message: "prism: empty" }],
+      skip_validation: false,
+    });
+    expect(result.isError).toBe(true);
+    const data = parseResult(result);
+    expect(data.all_succeeded).toBe(false);
+  });
+
+  it("SRV-76: a clean push does NOT set isError", async () => {
+    mockCreateAtomicCommit.mockResolvedValue({ success: true, sha: "ok_sha", files_committed: 1 });
+    const result = await callPushTool({
+      project_slug: "test-project",
+      files: [{ path: "glossary.md", content: "# Glossary\nT\n<!-- EOF: glossary.md -->", message: "prism: update glossary" }],
+      skip_validation: false,
+    });
+    expect(result.isError).toBeUndefined();
+    expect(parseResult(result).all_succeeded).toBe(true);
+  });
 });
 
 // ── Successful push flow (atomic-first) ────────────────────────────────────────

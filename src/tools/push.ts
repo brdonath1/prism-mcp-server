@@ -15,10 +15,8 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { safeMutation } from "../utils/safe-mutation.js";
 import { logger } from "../utils/logger.js";
 import { validateFileAndCommit } from "../validation/index.js";
-import { templateCache } from "../utils/cache.js";
+import { invalidateTemplateCacheOnWrite } from "../utils/cache.js";
 import {
-  FRAMEWORK_REPO,
-  MCP_TEMPLATE_PATH,
   PUSH_WALL_CLOCK_DEADLINE_MS,
 } from "../config.js";
 import { guardPushPath } from "../utils/doc-guard.js";
@@ -124,6 +122,9 @@ export function registerPush(server: McpServer): void {
                 ),
               },
             ],
+            // SRV-76: a validation failure is an error — flag it so MCP clients
+            // surface it instead of treating the structured body as success.
+            isError: true,
           };
         }
 
@@ -220,16 +221,10 @@ export function registerPush(server: McpServer): void {
         const succeeded = results.filter((r) => r.success);
         const totalBytes = succeeded.reduce((sum, r) => sum + r.size_bytes, 0);
 
-        // Invalidate template cache if we just pushed an update to the core template
-        if (project_slug === FRAMEWORK_REPO) {
-          const templatePushed = succeeded.some((r) => r.path === MCP_TEMPLATE_PATH);
-          if (templatePushed) {
-            templateCache.invalidate(MCP_TEMPLATE_PATH);
-            logger.info("template cache invalidated", {
-              reason: "core template pushed via prism_push",
-            });
-          }
-        }
+        // SRV-86: invalidate the template cache via the shared helper used by
+        // every write path (push/patch/finalize), so a template update is never
+        // tied to a single tool serving stale rules up to the TTL.
+        invalidateTemplateCacheOnWrite(project_slug, succeeded.map((r) => r.path));
 
         const result = {
           project: project_slug,
@@ -252,6 +247,10 @@ export function registerPush(server: McpServer): void {
 
         return {
           content: [{ type: "text" as const, text: JSON.stringify(result) }],
+          // SRV-76: an atomic-commit failure leaves every result success:false
+          // and commit_sha undefined — flag it as an MCP error rather than
+          // returning a success-shaped envelope.
+          ...(result.all_succeeded ? {} : { isError: true as const }),
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

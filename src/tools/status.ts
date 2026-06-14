@@ -5,8 +5,9 @@
 
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { fetchFile, listRepos } from "../github/client.js";
+import { listDirectory, listRepos } from "../github/client.js";
 import {
+  DOC_ROOT,
   LIVING_DOCUMENTS,
   LIVING_DOCUMENT_NAMES,
   HANDOFF_CRITICAL_SIZE,
@@ -132,67 +133,68 @@ function computeHealth(missingCount: number, handoffSize: number): HealthLevel {
   return "healthy";
 }
 
-/** Fetch an archive file (if present) and report existence + size. Errors are
- *  absorbed into `exists: false` so one missing/inaccessible archive does not
- *  break the overall status call. */
-async function getArchiveStatus(
-  projectSlug: string,
-  archiveName: ArchiveFileName,
-): Promise<ArchiveStatus> {
-  try {
-    const resolved = await resolveDocPath(projectSlug, archiveName);
-    return { exists: true, sizeBytes: resolved.content.length };
-  } catch {
-    return { exists: false, sizeBytes: null };
+/**
+ * SRV-70: existence + size for every living doc + archive, sourced from
+ * directory LISTINGS rather than a fetchFile-per-doc fan-out. Lists .prism/ and
+ * .prism/decisions/, falling back to the legacy repo root for pre-migration
+ * projects (assertValidPath permits the "" root path). Returns bare-name → byte
+ * size; absence from the map means the file does not exist.
+ */
+async function listLivingDocSizes(projectSlug: string): Promise<Map<string, number>> {
+  let root = await listDirectory(projectSlug, DOC_ROOT);
+  let decisions = await listDirectory(projectSlug, `${DOC_ROOT}/decisions`);
+  if (root.length === 0) {
+    // Legacy pre-.prism layout — living docs live at the repo root.
+    root = await listDirectory(projectSlug, "");
+    decisions = await listDirectory(projectSlug, "decisions");
   }
+  const sizes = new Map<string, number>();
+  for (const e of root) if (e.type === "file") sizes.set(e.name, e.size);
+  for (const e of decisions) if (e.type === "file") sizes.set(`decisions/${e.name}`, e.size);
+  return sizes;
 }
 
 /**
  * Get health status for a single project.
+ *
+ * SRV-70: one directory listing carries existence + size for all 10 docs + 4
+ * archives. Pre-brief-465 this fetched every doc AND archive in FULL per project
+ * (~30 GitHub calls; a 10-project sweep ≈ 300) purely to read sizes the listing
+ * already provides — then used ONLY handoff.md's content. Now only handoff.md's
+ * content is fetched; everything else is existence + size from the listing.
  */
 async function getProjectHealth(
   projectSlug: string,
   includeDetails: boolean
 ): Promise<ProjectHealth> {
-  // Check all 10 living documents in parallel using backward-compatible resolution
-  const docChecks = await Promise.allSettled(
-    LIVING_DOCUMENT_NAMES.map(async (docName) => {
-      const resolved = await resolveDocExists(projectSlug, docName);
-      if (resolved.exists) {
-        try {
-          const result = await fetchFile(projectSlug, resolved.path);
-          return { document: docName, exists: true, size_bytes: result.size, content: result.content };
-        } catch {
-          return { document: docName, exists: false, size_bytes: 0, content: null };
-        }
-      }
-      return { document: docName, exists: false, size_bytes: 0, content: null };
-    })
-  );
+  const sizes = await listLivingDocSizes(projectSlug);
 
-  // Probe archive files in parallel (S40 FINDING-14 C4). Each probe is wrapped
-  // to absorb errors so one failure does not break the whole status call.
-  const archiveOutcomes = await Promise.allSettled(
-    STATUS_ARCHIVE_FILES.map(name => getArchiveStatus(projectSlug, name)),
-  );
-  const archives = STATUS_ARCHIVE_FILES.reduce((acc, name, idx) => {
-    const outcome = archiveOutcomes[idx];
-    acc[name] =
-      outcome.status === "fulfilled"
-        ? outcome.value
-        : { exists: false, sizeBytes: null };
+  const documents = LIVING_DOCUMENT_NAMES.map((docName) => {
+    const size = sizes.get(docName);
+    return { document: docName, exists: size !== undefined, size_bytes: size ?? 0 };
+  });
+
+  const archives = STATUS_ARCHIVE_FILES.reduce((acc, name) => {
+    const size = sizes.get(name);
+    acc[name] = { exists: size !== undefined, sizeBytes: size ?? null };
     return acc;
   }, {} as ArchiveMap);
 
-  const documents = docChecks.map((outcome) => {
-    if (outcome.status === "fulfilled") return outcome.value;
-    return { document: "unknown", exists: false, size_bytes: 0, content: null };
-  });
-
   const missingDocs = documents.filter(d => !d.exists).map(d => d.document);
-  const handoffDoc = documents.find(d => d.document === "handoff.md");
-  const handoffSize = handoffDoc?.size_bytes ?? 0;
-  const handoffContent = handoffDoc?.content ?? "";
+  const handoffSize = sizes.get("handoff.md") ?? 0;
+
+  // Only handoff.md's CONTENT is consumed (version/session/status). Existence is
+  // already known from the listing, so a content-fetch failure degrades to the
+  // parse defaults rather than dropping the project.
+  let handoffContent = "";
+  if (sizes.has("handoff.md")) {
+    try {
+      const resolved = await resolveDocPath(projectSlug, "handoff.md");
+      handoffContent = resolved.content;
+    } catch {
+      // keep "" — health still computes from the listed sizes
+    }
+  }
 
   const handoffVersion = parseHandoffVersion(handoffContent) ?? 0;
   const sessionCount = parseSessionCount(handoffContent) ?? 0;
@@ -324,8 +326,27 @@ export function registerStatus(server: McpServer): void {
           .filter((r): r is PromiseFulfilledResult<ProjectHealth> => r.status === "fulfilled")
           .map(r => r.value);
 
+        // SRV-54: confident omission is the most dangerous failure mode for a
+        // fleet-health surface — a transient GitHub failure made a project
+        // VANISH from the report indistinguishably from not existing, while the
+        // summary still claimed completeness. Surface the dropped projects (the
+        // health-fetch rejections, plus repos whose PRISM-classification check
+        // itself failed) as a diagnostic + a projects_failed field.
+        const droppedFromHealth = healthResults.flatMap((r, idx) =>
+          r.status === "rejected"
+            ? [{ project: prismProjects[idx], reason: r.reason instanceof Error ? r.reason.message : String(r.reason) }]
+            : [],
+        );
+        const droppedFromClassification = prismChecks.flatMap((r, idx) =>
+          r.status === "rejected"
+            ? [{ project: allRepos[idx], reason: r.reason instanceof Error ? r.reason.message : String(r.reason) }]
+            : [],
+        );
+        const droppedProjects = [...droppedFromHealth, ...droppedFromClassification];
+
         const summary = {
           total_projects: projects.length,
+          projects_failed: droppedProjects.length,
           healthy: projects.filter(p => p.health === "healthy").length,
           needs_attention: projects.filter(p => p.health === "needs-attention").length,
           critical: projects.filter(p => p.health === "critical").length,
@@ -335,6 +356,14 @@ export function registerStatus(server: McpServer): void {
           },
           projects,
         };
+
+        if (droppedProjects.length > 0) {
+          diagnostics.warn(
+            "PROJECTS_DROPPED",
+            `${droppedProjects.length} project(s) dropped from the fleet view due to fetch failures — the report below is INCOMPLETE: ${droppedProjects.map(d => d.project).join(", ")}`,
+            { dropped: droppedProjects },
+          );
+        }
 
         const unhealthyCount = summary.needs_attention + summary.critical;
         if (unhealthyCount > 0) {

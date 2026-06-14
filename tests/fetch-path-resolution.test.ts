@@ -29,6 +29,20 @@ describe("shouldResolveDocPath (A.2 — bare living-doc resolution)", () => {
     expect(shouldResolveDocPath("decisions/operations.md")).toBe(true);
   });
 
+  // SRV-17: the fetch resolver's known-name set drifted from doc-guard's, so
+  // standing-rules.md / archives / boot-test.md returned a false FILE_NOT_FOUND
+  // on migrated (.prism/-only) repos. Both sides now derive from KNOWN_PRISM_PATHS.
+  it.each([
+    "standing-rules.md",
+    "boot-test.md",
+    "session-log-archive.md",
+    "known-issues-archive.md",
+    "build-history-archive.md",
+    "insights-archive.md",
+  ])("routes support/archive doc %s through resolver (SRV-17)", (name) => {
+    expect(shouldResolveDocPath(name)).toBe(true);
+  });
+
   it("passes .prism/-prefixed paths through literally (no resolution)", () => {
     // Callers who already know the resolved path should not be re-routed.
     expect(shouldResolveDocPath(".prism/handoff.md")).toBe(false);

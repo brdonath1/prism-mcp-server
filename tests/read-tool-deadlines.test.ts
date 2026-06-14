@@ -132,6 +132,7 @@ describe("brief-444 — prism_search wall-clock deadline", () => {
   it("returns a structured deadline-exceeded response when the doc fan-out hangs", async () => {
     mockFetchFile.mockImplementation(HANGING as never);
     mockFileExists.mockImplementation(HANGING as never);
+    mockListDirectory.mockImplementation(HANGING as never); // SRV-82: domain discovery now lists
     const handler = captureHandler(registerSearch, "prism_search");
 
     const t0 = Date.now();
@@ -152,6 +153,7 @@ describe("brief-444 — prism_status wall-clock deadline", () => {
   it("returns a structured deadline-exceeded response when the doc probes hang (single project)", async () => {
     mockFetchFile.mockImplementation(HANGING as never);
     mockFileExists.mockImplementation(HANGING as never);
+    mockListDirectory.mockImplementation(HANGING as never); // SRV-70: existence/size now via listing
     const handler = captureHandler(registerStatus, "prism_status");
 
     const t0 = Date.now();

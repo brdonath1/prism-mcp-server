@@ -1253,6 +1253,13 @@ export function registerScaleHandoff(server: McpServer): void {
             );
           }
 
+          // SRV-76: surface partial/failed scaling as an MCP error rather than a
+          // success-shaped envelope — partial_state, an aborted fallback, or any
+          // failed push all mean the migration did not cleanly complete.
+          const scaleFailed =
+            partial_state ||
+            Boolean(fallback_aborted) ||
+            pushResults.some((r) => !r.success);
           return {
             content: [{
               type: "text" as const,
@@ -1271,6 +1278,7 @@ export function registerScaleHandoff(server: McpServer): void {
                 diagnostics: diagnostics.list(),
               }, null, 2),
             }],
+            ...(scaleFailed ? { isError: true as const } : {}),
           };
         }
 
@@ -1325,7 +1333,13 @@ export function registerScaleHandoff(server: McpServer): void {
               source_section: a.source_section,
               destination_file: a.destination_file,
               bytes_moved: a.bytes_moved,
-              content_to_move: a.content_to_move,
+              // SRV-71: content_to_move is NOT emitted — executeScaling never
+              // consumes it (it re-extracts each section from the freshly
+              // fetched handoff), so shipping the near-full section bodies in
+              // the analyze plan and echoing them back for execute round-tripped
+              // the handoff body through model context twice. bytes_moved is
+              // retained for reporting; the schema field stays optional for
+              // back-compat with any client still echoing an old plan.
             })),
           };
 
@@ -1378,7 +1392,13 @@ export function registerScaleHandoff(server: McpServer): void {
               source_section: a.source_section,
               destination_file: a.destination_file,
               bytes_moved: a.bytes_moved,
-              content_to_move: a.content_to_move,
+              // SRV-71: content_to_move is NOT emitted — executeScaling never
+              // consumes it (it re-extracts each section from the freshly
+              // fetched handoff), so shipping the near-full section bodies in
+              // the analyze plan and echoing them back for execute round-tripped
+              // the handoff body through model context twice. bytes_moved is
+              // retained for reporting; the schema field stays optional for
+              // back-compat with any client still echoing an old plan.
             })),
           };
 
@@ -1491,6 +1511,11 @@ export function registerScaleHandoff(server: McpServer): void {
           );
         }
 
+        // SRV-76: same failure flagging as the execute path.
+        const fullScaleFailed =
+          partial_state ||
+          Boolean(fallback_aborted) ||
+          pushResults.some((r) => !r.success);
         return {
           content: [{
             type: "text" as const,
@@ -1509,6 +1534,7 @@ export function registerScaleHandoff(server: McpServer): void {
               diagnostics: diagnostics.list(),
             }, null, 2),
           }],
+          ...(fullScaleFailed ? { isError: true as const } : {}),
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

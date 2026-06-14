@@ -164,9 +164,11 @@ const REGISTRY_B_AND_C = `# Standing Rules — prism
  * ~120KB of `standing_rules` alone, well over the BOOTSTRAP_OVERSIZE threshold.
  * Tier A so the bodies actually ship (only Tier A is delivered post-D-253).
  */
+// SRV-39: sized past the recalibrated 200KB error threshold (was 100KB). 110
+// Tier A bodies × ~2KB ≈ 225KB so the error-level tripwire still fires.
 const OVERSIZE_RULES =
   "# Standing Rules — prism\n\n## Active\n\n" +
-  Array.from({ length: 60 }, (_, i) => {
+  Array.from({ length: 110 }, (_, i) => {
     const body = "X".repeat(2000);
     return `### INS-${900 + i}: Oversize rule ${i} — STANDING RULE [TIER:A]\n- Category: operations — **STANDING RULE**\n- **Standing procedure:** ${body}`;
   }).join("\n\n") +
@@ -371,20 +373,28 @@ describe("R7-b: decision payload caps raised", () => {
     expect(parsed.recent_decisions[14].id).toBe("D-25");
   });
 
-  it("guardrails returns the first 20 SETTLED of 25 (cap raised from 10)", async () => {
+  it("SRV-85: guardrails blend foundational (first 10) + most-recent SETTLED, capped at 20", async () => {
     const handler = await setupBootstrap({ brief: FULL_BRIEF, insights: null, standingRules: null });
     const parsed = await boot(handler);
 
-    expect(parsed.guardrails).toHaveLength(20);
-    expect(parsed.guardrails[0].id).toBe("D-1");
-    expect(parsed.guardrails[19].id).toBe("D-20");
+    const ids = (parsed.guardrails as Array<{ id: string }>).map(g => g.id);
+    expect(ids).toHaveLength(20);
+    // Foundational decisions (D-1..D-10) lead:
+    expect(ids[0]).toBe("D-1");
+    expect(ids).toContain("D-10");
+    // Most-recent settled now surface (the position-blind slice never showed these):
+    expect(ids).toContain("D-25");
+    expect(ids).toContain("D-16");
+    // The mid-era gap (D-11..D-15) is neither foundational nor recent → excluded.
+    expect(ids).not.toContain("D-13");
   });
 
-  it("guardrails excludes non-SETTLED decisions BEFORE applying the 20-cap (mixed-status fixture)", async () => {
+  it("guardrails excludes non-SETTLED decisions BEFORE the blend/cap (mixed-status fixture)", async () => {
     // Metaswarm review (brief-443): the all-SETTLED fixture above cannot
     // detect deletion of the SETTLED filter — this one can. 25 rows with
-    // D-2 PENDING, D-5 SUPERSEDED, D-9 OPEN interleaved → 22 SETTLED →
-    // guardrails = first 20 SETTLED, ending at D-23.
+    // D-2 PENDING, D-5 SUPERSEDED, D-9 OPEN interleaved → 22 SETTLED. SRV-85:
+    // guardrails = first-10 settled (foundational) blended with the most-recent
+    // settled, deduped, capped at 20 — never any non-SETTLED row.
     const nonSettled: Record<number, string> = { 2: "PENDING", 5: "SUPERSEDED", 9: "OPEN" };
     const mixed =
       "| ID | Title | Domain | Status | Session |\n" +
@@ -399,11 +409,13 @@ describe("R7-b: decision payload caps raised", () => {
 
     const ids = (parsed.guardrails as Array<{ id: string }>).map(g => g.id);
     expect(ids).toHaveLength(20);
+    // The SETTLED filter still excludes every non-SETTLED row:
     expect(ids).not.toContain("D-2");
     expect(ids).not.toContain("D-5");
     expect(ids).not.toContain("D-9");
+    // Foundational leads; most-recent settled (D-25) now surfaces:
     expect(ids[0]).toBe("D-1");
-    expect(ids[19]).toBe("D-23"); // 20th SETTLED row, skipping the three non-SETTLED
+    expect(ids).toContain("D-25");
     // recent_decisions is intentionally unfiltered — the last 15 of ALL rows.
     expect(parsed.recent_decisions).toHaveLength(15);
     expect((parsed.recent_decisions as Array<{ id: string }>).map(d => d.id)).toContain("D-11");
@@ -506,7 +518,7 @@ describe("D-253: standing-rules delivery — Tier A bodies only, Tier B+C indexe
     expect(raw).not.toContain("Long reference body that must NOT ship at boot");
   });
 
-  it("standing_rules_tier_c_index is unchanged: C-only {id,title} back-compat alias", async () => {
+  it("SRV-109: the deprecated standing_rules_tier_c_index alias is removed; Tier C is reachable via standing_rules_index", async () => {
     const handler = await setupBootstrap({
       brief: FULL_BRIEF,
       insights: INSIGHTS_WITH_TIER_A,
@@ -514,26 +526,24 @@ describe("D-253: standing-rules delivery — Tier A bodies only, Tier B+C indexe
     });
     const parsed = await boot(handler);
 
-    expect(parsed.standing_rules_tier_c_index).toEqual([
-      { id: "INS-203", title: "deep audit walkthrough" },
-      { id: "INS-204", title: "cost reconciliation" },
-    ]);
-    // Alias entries are IDs + titles ONLY — no bodies, no tier/topics.
-    for (const entry of parsed.standing_rules_tier_c_index) {
-      expect(entry).not.toHaveProperty("procedure");
-      expect(entry).not.toHaveProperty("tier");
-      expect(entry).not.toHaveProperty("topics");
-    }
+    // brief-465 / SRV-109: the alias duplicated ~2.8KB/boot of data already in
+    // standing_rules_index with zero consumers — removed.
+    expect(parsed.standing_rules_tier_c_index).toBeUndefined();
+    // Tier C entries still ship in the canonical index ({id,title,tier,topics}).
+    const tierCInIndex = (parsed.standing_rules_index as Array<{ id: string; tier: string }>).filter(
+      e => e.tier === "C",
+    );
+    expect(tierCInIndex.map(e => e.id)).toEqual(["INS-203", "INS-204"]);
   });
 
-  it("tier_c index is empty (not absent) when no Tier C rules exist", async () => {
+  it("SRV-109: the alias stays absent when no Tier C rules exist", async () => {
     const handler = await setupBootstrap({
       brief: FULL_BRIEF,
       insights: INSIGHTS_WITH_TIER_A,
       standingRules: null,
     });
     const parsed = await boot(handler);
-    expect(parsed.standing_rules_tier_c_index).toEqual([]);
+    expect(parsed.standing_rules_tier_c_index).toBeUndefined();
   });
 
   it("STANDING_RULES_TIERED diagnostic reports the D-253 accounting (tier_b_indexed, Tier B+C indexed)", async () => {
@@ -577,8 +587,8 @@ describe("R-intel-SLO: INTEL_SLO diagnostic block", () => {
     expect(slo!.level).toBe("info");
     expect(slo!.context).toMatchObject({
       boot_completeness_percent: 100,
-      brief_sections_delivered: 6,
-      brief_sections_spec: 6,
+      brief_sections_delivered: 3, // brief-465 / SRV-72: spec re-spec'd 6 → 3 consumed sections
+      brief_sections_spec: 3,
       brief_sections_missing: [],
       brief_age_sessions: 1,
       brief_age_target_sessions: 2,
@@ -604,9 +614,10 @@ describe("R-intel-SLO: INTEL_SLO diagnostic block", () => {
 
     const slo = (parsed.diagnostics as Diagnostic[]).find(d => d.code === "INTEL_SLO");
     expect(slo).toBeDefined();
-    // Delivered: handoff + behavioral rules = 2 of 10 spec items → 20%.
+    // Delivered: handoff + behavioral rules = 2 of 7 spec items → 29% (brief-465:
+    // spec re-spec'd to 3 sections, so specTotal = 3 + 4 = 7).
     expect(slo!.context).toMatchObject({
-      boot_completeness_percent: 20,
+      boot_completeness_percent: 29,
       brief_sections_delivered: 0,
       brief_age_sessions: null,
       brief_age_within_target: null,
@@ -618,7 +629,7 @@ describe("R-intel-SLO: INTEL_SLO diagnostic block", () => {
         total: 3,
       },
     });
-    expect((slo!.context as any).brief_sections_missing).toHaveLength(6);
+    expect((slo!.context as any).brief_sections_missing).toHaveLength(3);
   });
 
   it("is log-only: a stale brief breaches the target in INTEL_SLO while BRIEF_STALE still warns independently", async () => {
@@ -642,21 +653,22 @@ describe("R-intel-SLO: INTEL_SLO diagnostic block", () => {
   });
 
   it("counts partially-delivered briefs section by section", async () => {
-    // Strip two spec sections from the fixture (rename one, drop one).
+    // brief-465 / SRV-72: spec is now Project State / Risk Flags / Quality Audit.
+    // Rename two of them so only Project State remains a delivered spec section.
     const partial = FULL_BRIEF
-      .replace("## Recent Trajectory", "## Trajectory (renamed)")
+      .replace("## Risk Flags", "## Flags (renamed)")
       .replace("## Quality Audit", "## Audit Notes");
     const handler = await setupBootstrap({ brief: partial, insights: null, standingRules: null });
     const parsed = await boot(handler);
 
     const slo = (parsed.diagnostics as Diagnostic[]).find(d => d.code === "INTEL_SLO");
     expect(slo!.context).toMatchObject({
-      brief_sections_delivered: 4,
-      // 4 sections + handoff + decisions + behavioral rules = 7 of 10 → 70%
-      boot_completeness_percent: 70,
+      brief_sections_delivered: 1,
+      // 1 section + handoff + decisions + behavioral rules = 4 of 7 → 57%
+      boot_completeness_percent: 57,
     });
     expect((slo!.context as any).brief_sections_missing).toEqual([
-      "## Recent Trajectory",
+      "## Risk Flags",
       "## Quality Audit",
     ]);
   });
@@ -679,26 +691,31 @@ describe("computeIntelSlo (pure computation)", () => {
     return mod.computeIntelSlo;
   }
 
-  it("100% when all 6 sections + all 4 fields are delivered", async () => {
+  // brief-465 / SRV-72: spec re-spec'd to 3 consumed sections, so the SLO
+  // denominator is 3 + 4 fields = 7. FULL_BRIEF still carries the legacy 6
+  // headers; only the 3 spec sections (Project State / Risk Flags / Quality
+  // Audit) count.
+  it("100% when all 3 sections + all 4 fields are delivered", async () => {
     const computeIntelSlo = await loadHelper();
     const slo = computeIntelSlo(fullInputs());
     expect(slo.boot_completeness_percent).toBe(100);
-    expect(slo.brief_sections_delivered).toBe(6);
+    expect(slo.brief_sections_delivered).toBe(3);
     expect(slo.brief_sections_missing).toEqual([]);
   });
 
-  it("40% when the brief is null but all 4 fields are present", async () => {
+  it("57% when the brief is null but all 4 fields are present (4/7)", async () => {
     const computeIntelSlo = await loadHelper();
     const slo = computeIntelSlo({ ...fullInputs(), intelligenceBrief: null, briefAgeSessions: null });
-    expect(slo.boot_completeness_percent).toBe(40);
+    expect(slo.boot_completeness_percent).toBe(57);
     expect(slo.brief_sections_delivered).toBe(0);
-    expect(slo.brief_sections_missing).toHaveLength(6);
+    expect(slo.brief_sections_missing).toHaveLength(3);
   });
 
-  it("rounds: 5 sections + 4 fields → 90%; 1 section + 0 fields → 10%", async () => {
+  it("rounds: 2 sections + 4 fields → 86%; 1 section + 0 fields → 14%", async () => {
     const computeIntelSlo = await loadHelper();
-    const fiveSections = FULL_BRIEF.replace("## Quality Audit", "## Audit");
-    expect(computeIntelSlo({ ...fullInputs(), intelligenceBrief: fiveSections }).boot_completeness_percent).toBe(90);
+    // Renaming Quality Audit drops it → 2 of 3 spec sections delivered: (2+4)/7 ≈ 86%.
+    const twoSections = FULL_BRIEF.replace("## Quality Audit", "## Audit");
+    expect(computeIntelSlo({ ...fullInputs(), intelligenceBrief: twoSections }).boot_completeness_percent).toBe(86);
 
     const oneSection = "## Project State\nOnly this.";
     expect(
@@ -710,7 +727,7 @@ describe("computeIntelSlo (pure computation)", () => {
         insightsPresent: false,
         behavioralRulesPresent: false,
       }).boot_completeness_percent,
-    ).toBe(10);
+    ).toBe(14);
   });
 
   it("brief_age_within_target: true at the 2-session boundary, false above, null when unknown", async () => {
@@ -795,7 +812,7 @@ describe("INTELLIGENCE_BRIEF_SPEC_SECTIONS single source of truth", () => {
       "../src/utils/intelligence-brief-spec.js"
     );
     const { FINALIZATION_SYNTHESIS_PROMPT } = await import("../src/ai/prompts.js");
-    expect(INTELLIGENCE_BRIEF_SPEC_SECTIONS).toHaveLength(6);
+    expect(INTELLIGENCE_BRIEF_SPEC_SECTIONS).toHaveLength(3); // brief-465 / SRV-72: re-spec'd 6 → 3
     for (const section of INTELLIGENCE_BRIEF_SPEC_SECTIONS) {
       expect(FINALIZATION_SYNTHESIS_PROMPT).toContain(section);
     }
@@ -805,7 +822,8 @@ describe("INTELLIGENCE_BRIEF_SPEC_SECTIONS single source of truth", () => {
 // ── D-253 §Change 2: in-response oversize tripwire + response_bytes ──────────
 
 describe("D-253: oversize tripwire ships in-response", () => {
-  it("an oversized payload exposes response_bytes > 100KB AND a BOOTSTRAP_OVERSIZE diagnostic in the response", async () => {
+  it("an oversized payload exposes response_bytes past the error threshold AND an error BOOTSTRAP_OVERSIZE diagnostic with attribution", async () => {
+    const { BOOTSTRAP_OVERSIZE_ERROR_BYTES } = await import("../src/config.js");
     const handler = await setupBootstrap({
       brief: FULL_BRIEF,
       insights: null,
@@ -814,7 +832,7 @@ describe("D-253: oversize tripwire ships in-response", () => {
     const parsed = await boot(handler);
 
     expect(typeof parsed.response_bytes).toBe("number");
-    expect(parsed.response_bytes).toBeGreaterThan(100_000);
+    expect(parsed.response_bytes).toBeGreaterThan(BOOTSTRAP_OVERSIZE_ERROR_BYTES);
 
     // Pre-D-253 this diagnostic was added to the collector AFTER
     // diagnostics.list() was already baked into the response, so it could
@@ -824,7 +842,11 @@ describe("D-253: oversize tripwire ships in-response", () => {
     );
     expect(oversize).toBeDefined();
     expect(oversize!.level).toBe("error");
-    expect((oversize!.context as { responseBytes: number }).responseBytes).toBeGreaterThan(100_000);
+    const ctx = oversize!.context as { responseBytes: number; top_sections: Array<{ field: string; bytes: number }> };
+    expect(ctx.responseBytes).toBeGreaterThan(BOOTSTRAP_OVERSIZE_ERROR_BYTES);
+    // SRV-39/68: the diagnostic now names WHICH sections drove the size.
+    expect(Array.isArray(ctx.top_sections)).toBe(true);
+    expect(ctx.top_sections[0].field).toBe("standing_rules");
   });
 
   it("a normal payload exposes response_bytes and emits NO BOOTSTRAP_OVERSIZE", async () => {

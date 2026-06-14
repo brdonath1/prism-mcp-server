@@ -74,11 +74,17 @@ describe("MemoryCache eviction (L-2)", () => {
 });
 
 describe("Response size monitoring (M-7)", () => {
-  it("bootstrap monitors response size", () => {
+  it("bootstrap monitors response size against the recalibrated config thresholds (SRV-39)", () => {
     const source = readFileSync("src/tools/bootstrap.ts", "utf-8");
     expect(source).toContain("responseBytes");
-    expect(source).toContain("100_000");
-    expect(source).toContain("80_000");
+    expect(source).toContain("BOOTSTRAP_OVERSIZE");
+    // SRV-39: the 80KB/100KB literals (which ERROR-fired on every ~115KB boot)
+    // moved to env-tunable config constants recalibrated against the real cap.
+    expect(source).toContain("BOOTSTRAP_OVERSIZE_ERROR_BYTES");
+    expect(source).toContain("BOOTSTRAP_OVERSIZE_WARN_BYTES");
+    const config = readFileSync("src/config.ts", "utf-8");
+    expect(config).toContain("BOOTSTRAP_OVERSIZE_ERROR_BYTES");
+    expect(config).toContain("200000"); // error threshold default
   });
 });
 

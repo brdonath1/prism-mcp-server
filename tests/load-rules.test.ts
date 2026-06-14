@@ -167,6 +167,41 @@ describe("prism_load_rules — registration + matching pipeline", () => {
     expect(codes).toContain("STANDING_RULES_TOPICS_UNPOPULATED");
   });
 
+  // SRV-81: a zero-match must hand back the topic vocabulary so an unknown topic
+  // fails loud with a next step, not silently.
+  it("SRV-81: zero-match response includes available_topics (Tier B by default)", async () => {
+    mockDocs({ insights: INSIGHTS_FIXTURE });
+
+    const handler = getHandler();
+    const result = await handler({ project_slug: "prism", topic: "no_such_topic" });
+    const payload = JSON.parse(result.content[0].text);
+
+    expect(payload.matched_rules).toEqual([]);
+    // Sorted unique Tier B topics (the empty-topics rule contributes nothing).
+    expect(payload.available_topics).toEqual(["cc_dispatch", "synthesis"]);
+  });
+
+  it("SRV-81: available_topics includes Tier C topics when include_tier_c is true", async () => {
+    mockDocs({ insights: INSIGHTS_FIXTURE });
+
+    const handler = getHandler();
+    const result = await handler({ project_slug: "prism", topic: "no_such_topic", include_tier_c: true });
+    const payload = JSON.parse(result.content[0].text);
+
+    expect(payload.available_topics).toEqual(["cc_dispatch", "synthesis", "trigger"]);
+  });
+
+  it("SRV-81: available_topics is omitted when rules DO match", async () => {
+    mockDocs({ insights: INSIGHTS_FIXTURE });
+
+    const handler = getHandler();
+    const result = await handler({ project_slug: "prism", topic: "synthesis" });
+    const payload = JSON.parse(result.content[0].text);
+
+    expect(payload.matched_rules.length).toBeGreaterThan(0);
+    expect(payload.available_topics).toBeUndefined();
+  });
+
   it("excludes Tier C when include_tier_c is false (default)", async () => {
     mockDocs({ insights: INSIGHTS_FIXTURE });
 

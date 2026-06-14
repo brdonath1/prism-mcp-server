@@ -6,8 +6,10 @@
 import Anthropic from "@anthropic-ai/sdk";
 import {
   ANTHROPIC_API_KEY,
+  CC_SUBPROCESS_SYNTHESIS_TIMEOUT_MS,
   SYNTHESIS_MODEL,
   SYNTHESIS_MAX_OUTPUT_TOKENS,
+  SYNTHESIS_TIMEOUT_MS,
   MCP_SAFE_TIMEOUT,
 } from "../config.js";
 import { logger } from "../utils/logger.js";
@@ -84,8 +86,46 @@ export function resolveCallSiteRouting(callSite: SynthesisCallSite): {
     });
   }
 
-  const model = modelEnv && modelEnv.trim().length > 0 ? modelEnv.trim() : SYNTHESIS_MODEL;
-  return { transport, model, modelOverridden: !!modelEnv };
+  let model = modelEnv && modelEnv.trim().length > 0 ? modelEnv.trim() : SYNTHESIS_MODEL;
+  let modelOverridden = !!modelEnv;
+
+  // SRV-50: the `[1m]` suffix is a Claude-Code CLI routing signal (1M-context
+  // opt-in), and a bare alias (e.g. "opus", missing the "claude-" prefix) is a
+  // CC shorthand — NEITHER is a Messages-API model id. If a per-call-site model
+  // override carries one but the transport resolved to messages_api (a typo'd or
+  // unset SYNTHESIS_*_TRANSPORT — an empty value is falsy and warns nowhere), the
+  // id would be sent verbatim to anthropic.messages.create and HARD-FAIL every
+  // synthesis at that call site with no fallback, visible only in error-level
+  // logs (invisible to the warn-filtered boot observation gate). Drop the
+  // override, fall back to the API-valid SYNTHESIS_MODEL, and warn loudly.
+  if (
+    transport === "messages_api" &&
+    modelOverridden &&
+    (/\[1m\]$/.test(model) || !model.startsWith("claude-"))
+  ) {
+    logger.warn(
+      "SYNTHESIS_MODEL_MISCONFIG — per-call-site model is Claude-Code-only ([1m] suffix or bare alias) but transport resolved to messages_api; dropping the override and using SYNTHESIS_MODEL",
+      { callSite, attempted_model: model, fallback_model: SYNTHESIS_MODEL },
+    );
+    model = SYNTHESIS_MODEL;
+    modelOverridden = false;
+  }
+
+  return { transport, model, modelOverridden };
+}
+
+/**
+ * Resolve the per-call-site request timeout (SRV-61). The transport decision —
+ * cc_subprocess needs the larger CC_SUBPROCESS ceiling because subprocess spawn
+ * + OAuth overhead sits on top of inference — was duplicated as a raw
+ * `process.env.SYNTHESIS_*_TRANSPORT === "cc_subprocess"` check at four sites
+ * that could drift from resolveCallSiteRouting. This is the single source: every
+ * timeout-selection site derives the transport HERE.
+ */
+export function resolveCallSiteTimeout(callSite: SynthesisCallSite): number {
+  return resolveCallSiteRouting(callSite).transport === "cc_subprocess"
+    ? CC_SUBPROCESS_SYNTHESIS_TIMEOUT_MS
+    : SYNTHESIS_TIMEOUT_MS;
 }
 
 /**
