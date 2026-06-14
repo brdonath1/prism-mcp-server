@@ -43,16 +43,15 @@ export const PORT = parseInt(process.env.PORT ?? "3000", 10);
 /** Log level */
 export const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
 
-/** Server version. Bumped to 4.7.0 for brief-422 (living-doc enforcement):
- *  minor release wiring four mechanical maintenance behaviors into the
- *  finalize commit path and bootstrap. Auto-applies pending-doc-updates
- *  proposals at finalize, refreshes architecture.md `> Updated:` preamble +
- *  Stack version bullet (gated on `.prism/config.yaml`
- *  `auto_update_architecture: true`), caps `## Recently Completed` in
- *  task-queue.md at 15 entries, and runs a bootstrap-side stale-PDU safety
- *  net for sessions skipped at finalize. All four behaviors are non-fatal —
- *  failure in any one does not affect commit or bootstrap primary response. */
-export const SERVER_VERSION = "4.7.0";
+/** Server version. Bumped to 4.8.0 (SRV-90): the constant had been frozen at
+ *  4.7.0 across ~28 merged PRs of materially different deployments — payload
+ *  diet (D-253), synthesis-bundle dedup, banner restoration (D-249), branch-
+ *  protection tools (brief-446), transient-error handling, parsing-correctness
+ *  and dead-code sweeps (D-257 wave 3), etc. A frozen version made version
+ *  reporting meaningless and falsified the framework template's `>=4.7.1`
+ *  floor check (the CONSTANT, not the capability, failed it). Keep this in
+ *  lockstep with package.json `version`; bump on substantive src/** releases. */
+export const SERVER_VERSION = "4.8.0";
 
 /** MCP client timeout is ~60s. All server-side operations must complete within 50s
  *  to leave 10s buffer for transport overhead. This constrains synthesis, draft,
@@ -282,7 +281,8 @@ export const SCALE_WALL_CLOCK_DEADLINE_MS =
 /** Tool-level wall-clock deadlines for the four read-path tools (brief-444
  *  R-deadlines / D-240 Phase B / audit brief-431). prism_analytics,
  *  prism_search, prism_status, and prism_fetch previously had NO deadline —
- *  only 4/23 tools (push, finalize, patch, cc_dispatch) carried one — so a
+ *  only the four mutation tools (push, finalize, patch, cc_dispatch) carried
+ *  one — so a
  *  hung GitHub fan-out held the MCP client connection until the ~60s
  *  transport timeout with no structured error. Same pattern as
  *  PUSH_WALL_CLOCK_DEADLINE_MS: hard backstop on top of the per-request

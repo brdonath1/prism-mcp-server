@@ -1,6 +1,8 @@
 /**
  * Intelligence synthesis pipeline.
- * Loads all living documents, calls Opus 4.6, pushes intelligence-brief.md.
+ * Loads all living documents, calls the configured synthesis model
+ * (SYNTHESIS_MODEL_ID — the model registry is the single switch, D-254),
+ * pushes intelligence-brief.md.
  */
 
 import { pushFile } from "../github/client.js";
@@ -454,8 +456,9 @@ export async function generatePendingDocUpdates(
 
     // 3. Call synthesize with callSite="pdu" so per-call-site routing
     //    (brief-417 Phase 3c-A) can route this through the Claude Code
-    //    subprocess + Sonnet 4.6 path when Railway env opts in. Default
-    //    behavior (no env vars set) preserves Opus 4.7 + Messages API.
+    //    subprocess path when Railway env opts in. Default behavior (no env
+    //    vars set) preserves the SYNTHESIS_MODEL_ID default + Messages API
+    //    (the model registry is the single switch, D-254).
     //    Fire-and-forget per D-78 / D-156 so latency overhead is invisible.
     // SRV-61: single-source timeout (see the brief path above).
     const pduTimeoutMs = resolveCallSiteTimeout("pdu");

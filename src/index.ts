@@ -92,8 +92,10 @@ function createServer(): McpServer {
     registerRailwayStatus(server);
   }
 
-  // Claude Code orchestration (brief-104). Tools only register when an
-  // ANTHROPIC_API_KEY is available to pay for the Agent SDK subprocess.
+  // Claude Code orchestration (brief-104). Tools only register when
+  // CLAUDE_CODE_OAUTH_TOKEN is set (CC_DISPATCH_ENABLED) — the Max-subscription
+  // OAuth token the Agent SDK subprocess authenticates with. ANTHROPIC_API_KEY
+  // gates synthesis, not this path.
   if (CC_DISPATCH_ENABLED) {
     registerCCDispatch(server);
     registerCCStatus(server);

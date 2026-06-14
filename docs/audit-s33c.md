@@ -1,5 +1,11 @@
 # PRISM MCP Server — Full-Stack Audit Report (S33)
 
+> ⚠️ **HISTORICAL (S33), SRV-107.** All critical/high findings below were
+> resolved by S34a–f and later work (e.g. timing-safe auth via `timingSafeEqual`
+> in `src/middleware/auth.ts`, path-traversal validation, MCP/synthesis timeout
+> reconciliation, GitHub retry logic). Retained for audit trail only — do NOT
+> treat the "must fix" items as open.
+
 ## Executive Summary
 
 This audit examined all 35 TypeScript source files (7,883 LOC) and 28 test files (4,545 LOC / 316 test cases) in the prism-mcp-server codebase. The server is production-grade infrastructure serving 17 active PRISM projects on Railway, so any instability cascades to every project.

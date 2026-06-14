@@ -407,7 +407,8 @@ async function auditPhase(projectSlug: string, sessionNumber: number) {
 }
 
 /**
- * Draft phase — use Opus 4.6 to generate finalization file drafts.
+ * Draft phase — use the configured synthesis model (SYNTHESIS_MODEL_ID, the
+ * registry single-switch per D-254) to generate finalization file drafts.
  * Returns structured content for Claude to review before commit.
  */
 async function draftPhase(projectSlug: string, sessionNumber: number) {

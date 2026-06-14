@@ -23,9 +23,10 @@
  *
  * Persistence:
  * - Every dispatch (sync or async) writes a status record to
- *   `brdonath1/prism-mcp-server/.dispatch/{id}.json`. The cc_status tool
- *   reads that file. The records survive server restarts because they live
- *   in GitHub, not memory.
+ *   `brdonath1/prism-dispatch-state/.dispatch/{id}.json` — a SEPARATE repo
+ *   (D-123) so dispatch-record writes don't trigger Railway auto-deploys that
+ *   would kill in-flight dispatches. The cc_status tool reads that file. The
+ *   records survive server restarts because they live in GitHub, not memory.
  */
 
 import { z } from "zod";
