@@ -8,23 +8,29 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { fetchFile } from "../github/client.js";
 import {
   DOC_ROOT,
+  FETCH_AGGREGATE_BUDGET_BYTES,
   FETCH_CONTENT_CAP_BYTES,
   FETCH_WALL_CLOCK_DEADLINE_MS,
-  LIVING_DOCUMENT_NAMES,
   SUMMARY_SIZE_THRESHOLD,
 } from "../config.js";
 import { logger } from "../utils/logger.js";
 import { DiagnosticsCollector } from "../utils/diagnostics.js";
 import { summarizeMarkdown } from "../utils/summarizer.js";
 import { resolveDocPath } from "../utils/doc-resolver.js";
+import { KNOWN_PRISM_PATHS } from "../utils/doc-guard.js";
 
 /**
- * Known PRISM living-document names that should be resolved through the
- * doc-resolver (A.2 — brief 104). Callers can request these by bare name
- * (e.g., "decisions/_INDEX.md") and the server will resolve to the actual
- * path (".prism/decisions/_INDEX.md" or legacy root).
+ * Known PRISM document names that should be resolved through the doc-resolver
+ * (A.2 — brief 104). Callers can request these by bare name (e.g.,
+ * "decisions/_INDEX.md") and the server resolves to the actual path
+ * (".prism/…" or legacy root).
+ *
+ * SRV-17: derived from doc-guard's KNOWN_PRISM_PATHS — the SAME list the push
+ * guard uses — so the fetch resolver covers standing-rules.md, the four
+ * *-archive.md files, and boot-test.md (not just the 10 mandatory docs). The
+ * two had drifted, causing a bare-name fetch of those files to 404 falsely.
  */
-const KNOWN_LIVING_DOC_NAMES = new Set<string>(LIVING_DOCUMENT_NAMES);
+const KNOWN_PRISM_DOC_NAMES = new Set<string>(KNOWN_PRISM_PATHS);
 
 /**
  * Determine whether a requested path should go through doc-resolver.
@@ -39,7 +45,7 @@ const KNOWN_LIVING_DOC_NAMES = new Set<string>(LIVING_DOCUMENT_NAMES);
  */
 export function shouldResolveDocPath(filePath: string): boolean {
   if (filePath.startsWith(`${DOC_ROOT}/`)) return false;
-  if (KNOWN_LIVING_DOC_NAMES.has(filePath)) return true;
+  if (KNOWN_PRISM_DOC_NAMES.has(filePath)) return true;
   if (filePath.startsWith("decisions/") && filePath.endsWith(".md")) return true;
   return false;
 }
@@ -152,11 +158,35 @@ export function registerFetch(server: McpServer): void {
                 summary: null,
                 is_summarized: false,
                 is_truncated: false,
+                is_aggregate_capped: false,
                 fetch_error: null as string | null,
               };
             }
 
             filesFetched++;
+
+            // SRV-63: aggregate response budget. The per-file cap bounds any
+            // single body, but the files[] array is unbounded — N files each
+            // under the per-file cap can still blow the ~25K-token MCP ceiling.
+            // Once cumulative delivered bytes cross the budget, remaining files
+            // (request order) are delivered size-only: true size + a withheld
+            // notice + is_aggregate_capped, with a diagnostic below. NOT a
+            // silent omission. `full_content: true` does not bypass the
+            // aggregate budget — it is a whole-response guard, not per-file.
+            if (bytesDelivered >= FETCH_AGGREGATE_BUDGET_BYTES) {
+              return {
+                path: file.path,
+                exists: true,
+                size_bytes: file.size,
+                content: null,
+                summary: `[prism_fetch: aggregate response budget (${(FETCH_AGGREGATE_BUDGET_BYTES / 1024).toFixed(0)}KB) reached — ${file.size}-byte body withheld. Re-request this file alone for the full body.]`,
+                is_summarized: false,
+                is_truncated: false,
+                is_aggregate_capped: true,
+                fetch_error: null as string | null,
+              };
+            }
+
             const shouldSummarize = summary_mode && file.size > SUMMARY_SIZE_THRESHOLD;
 
             if (shouldSummarize) {
@@ -170,6 +200,7 @@ export function registerFetch(server: McpServer): void {
                 summary,
                 is_summarized: true,
                 is_truncated: false,
+                is_aggregate_capped: false,
                 fetch_error: null as string | null,
               };
             }
@@ -194,6 +225,7 @@ export function registerFetch(server: McpServer): void {
                 summary: null,
                 is_summarized: false,
                 is_truncated: true,
+                is_aggregate_capped: false,
                 fetch_error: null as string | null,
               };
             }
@@ -207,6 +239,7 @@ export function registerFetch(server: McpServer): void {
               summary: null,
               is_summarized: false,
               is_truncated: false,
+              is_aggregate_capped: false,
               fetch_error: null as string | null,
             };
           }
@@ -226,6 +259,7 @@ export function registerFetch(server: McpServer): void {
             summary: null,
             is_summarized: false,
             is_truncated: false,
+            is_aggregate_capped: false,
             fetch_error: errorMessage as string | null,
           };
         });
@@ -252,6 +286,16 @@ export function registerFetch(server: McpServer): void {
             "FETCH_CONTENT_CAPPED",
             `Content cap applied to ${cappedCount} file(s) exceeding ${(FETCH_CONTENT_CAP_BYTES / 1024).toFixed(0)}KB — pass full_content: true to bypass`,
             { cappedCount, capBytes: FETCH_CONTENT_CAP_BYTES, paths: fileResults.filter(fr => fr.is_truncated).map(fr => fr.path) },
+          );
+        }
+        // SRV-63: surface aggregate-budget withholding so the omission is never
+        // silent — the consumer is told exactly which bodies it must re-request.
+        const aggregateCapped = fileResults.filter(fr => fr.is_aggregate_capped);
+        if (aggregateCapped.length > 0) {
+          diagnostics.warn(
+            "FETCH_AGGREGATE_BUDGET_EXCEEDED",
+            `Aggregate response budget (${(FETCH_AGGREGATE_BUDGET_BYTES / 1024).toFixed(0)}KB) reached — ${aggregateCapped.length} file(s) delivered size-only. Re-request them individually for full bodies.`,
+            { budgetBytes: FETCH_AGGREGATE_BUDGET_BYTES, paths: aggregateCapped.map(fr => fr.path) },
           );
         }
 

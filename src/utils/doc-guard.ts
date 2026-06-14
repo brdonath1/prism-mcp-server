@@ -58,8 +58,14 @@ export function guardPushPathBatch(
 /**
  * Known PRISM living document base names (without DOC_ROOT prefix).
  * Includes mandatory docs, archive files, support files, and known directory prefixes.
+ *
+ * Exported (SRV-17) as the single source for the set of bare names that resolve
+ * through the doc-resolver — prism_fetch derives its resolver allowlist from
+ * this same list so the two can no longer drift (the drift made a bare
+ * standing-rules.md / *-archive.md / boot-test.md fetch return a false
+ * FILE_NOT_FOUND on migrated repos).
  */
-const KNOWN_PRISM_PATHS: string[] = [
+export const KNOWN_PRISM_PATHS: string[] = [
   // 10 mandatory living documents
   "handoff.md",
   "decisions/_INDEX.md",

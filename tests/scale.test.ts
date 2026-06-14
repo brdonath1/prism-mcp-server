@@ -169,6 +169,15 @@ describe("prism_scale_handoff action=analyze", () => {
     expect(data.plan.actions).toBeInstanceOf(Array);
     expect(data.plan.actions.length).toBeGreaterThan(0);
 
+    // SRV-71: the analyze plan must NOT ship content_to_move — execute never
+    // consumes it (it re-extracts from the fetched handoff), so emitting the
+    // near-full section bodies round-tripped the handoff through model context
+    // twice. bytes_moved is retained for reporting.
+    for (const a of data.plan.actions) {
+      expect(a.content_to_move).toBeUndefined();
+      expect(typeof a.bytes_moved).toBe("number");
+    }
+
     // Verify no writes were made (neither sequential push nor atomic commit).
     expect(mockPushFile).not.toHaveBeenCalled();
     expect(mockCreateAtomicCommit).not.toHaveBeenCalled();

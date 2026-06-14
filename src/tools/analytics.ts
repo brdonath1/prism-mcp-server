@@ -605,19 +605,43 @@ async function healthSummary(projectSlug?: string) {
     .filter((r): r is PromiseFulfilledResult<any> => r.status === "fulfilled")
     .map((r) => r.value);
 
+  // SRV-54: a transient fetch failure must not make a project silently vanish
+  // from the fleet view — confident omission is the most dangerous failure mode
+  // for a continuity system. Surface dropped projects (health-fetch rejections +
+  // repos whose PRISM-classification probe itself failed) explicitly.
+  const droppedProjects = [
+    ...projectHealthResults.flatMap((r, idx) =>
+      r.status === "rejected"
+        ? [{ project: prismProjects[idx], reason: r.reason instanceof Error ? r.reason.message : String(r.reason) }]
+        : [],
+    ),
+    ...prismChecks.flatMap((r, idx) =>
+      r.status === "rejected"
+        ? [{ project: allRepos[idx], reason: r.reason instanceof Error ? r.reason.message : String(r.reason) }]
+        : [],
+    ),
+  ];
+
   const healthy = projects.filter((p: any) => p.health === "healthy").length;
   const needsAttention = projects.filter((p: any) => p.health === "needs-attention").length;
   const critical = projects.filter((p: any) => p.health === "critical").length;
 
+  const droppedNote =
+    droppedProjects.length > 0
+      ? ` ⚠ ${droppedProjects.length} project(s) DROPPED from this view due to fetch failures (incomplete): ${droppedProjects.map((d) => d.project).join(", ")}.`
+      : "";
+
   return {
     data: {
       total_projects: projects.length,
+      projects_failed: droppedProjects.length,
+      dropped_projects: droppedProjects,
       healthy,
       needs_attention: needsAttention,
       critical,
       projects,
     },
-    summary: `${projects.length} PRISM projects: ${healthy} healthy, ${needsAttention} need attention, ${critical} critical.`,
+    summary: `${projects.length} PRISM projects: ${healthy} healthy, ${needsAttention} need attention, ${critical} critical.${droppedNote}`,
   };
 }
 

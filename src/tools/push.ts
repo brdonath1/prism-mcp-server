@@ -122,6 +122,9 @@ export function registerPush(server: McpServer): void {
                 ),
               },
             ],
+            // SRV-76: a validation failure is an error — flag it so MCP clients
+            // surface it instead of treating the structured body as success.
+            isError: true,
           };
         }
 
@@ -244,6 +247,10 @@ export function registerPush(server: McpServer): void {
 
         return {
           content: [{ type: "text" as const, text: JSON.stringify(result) }],
+          // SRV-76: an atomic-commit failure leaves every result success:false
+          // and commit_sha undefined — flag it as an MCP error rather than
+          // returning a success-shaped envelope.
+          ...(result.all_succeeded ? {} : { isError: true as const }),
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

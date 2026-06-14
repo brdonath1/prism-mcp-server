@@ -30,11 +30,12 @@ vi.mock("../src/github/client.js", () => ({
   listRepos: vi.fn(),
 }));
 
-import { fetchFile, fileExists } from "../src/github/client.js";
+import { fetchFile, fileExists, listDirectory } from "../src/github/client.js";
 import { registerSearch } from "../src/tools/search.js";
 
 const mockFetchFile = vi.mocked(fetchFile);
 const mockFileExists = vi.mocked(fileExists);
+const mockListDirectory = vi.mocked(listDirectory);
 
 type ToolResult = { content: Array<{ type: string; text: string }>; isError?: boolean };
 type Handler = (args: Record<string, unknown>) => Promise<ToolResult>;
@@ -86,6 +87,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   // No decision domain files exist in any of these scenarios.
   mockFileExists.mockResolvedValue(false);
+  // SRV-82: decision-domain discovery now lists the decisions dir — empty here.
+  mockListDirectory.mockResolvedValue([]);
 });
 
 describe("brief-453 — prism_search corpus includes standing-rules.md", () => {
@@ -167,5 +170,39 @@ describe("brief-453 — prism_search corpus includes standing-rules.md", () => {
     expect(data.files_searched).toBe(1);
     const results = data.results as Snippet[];
     expect(results.every(r => r.file !== "standing-rules.md")).toBe(true);
+  });
+});
+
+// SRV-82: decision-domain discovery LISTS the decisions dir rather than probing
+// a hardcoded 7-name list, so a non-canonical domain file is now searchable.
+describe("SRV-82 — prism_search discovers non-canonical decision-domain files via listing", () => {
+  it("includes a custom-named domain file the old hardcoded probe would have missed", async () => {
+    const CUSTOM_DOMAIN = "# Custom Domain\n\n## D-99: bespoke-keyword decision\nRationale body here.\n\n<!-- EOF: custom-domain.md -->";
+    mockListDirectory.mockImplementation(async (_slug: string, path: string) => {
+      if (path === ".prism/decisions") {
+        return [
+          { name: "_INDEX.md", path: ".prism/decisions/_INDEX.md", size: 10, sha: "i", type: "file" },
+          { name: "custom-domain.md", path: ".prism/decisions/custom-domain.md", size: CUSTOM_DOMAIN.length, sha: "c", type: "file" },
+        ];
+      }
+      return [];
+    });
+    mockFetchFile.mockImplementation(async (_slug: string, path: string) => {
+      if (path === ".prism/handoff.md") return { content: HANDOFF_CONTENT, sha: "h1", size: HANDOFF_CONTENT.length };
+      if (path === ".prism/decisions/custom-domain.md") return { content: CUSTOM_DOMAIN, sha: "c1", size: CUSTOM_DOMAIN.length };
+      throw new Error(`Not found: ${path}`);
+    });
+    const handler = captureHandler(registerSearch, "prism_search");
+
+    const result = await handler({ project_slug: "test-project", query: "bespoke-keyword" });
+    const data = parseResult(result);
+
+    // The custom-named domain file — which the old hardcoded 7-name probe did
+    // not list — is now in the search corpus.
+    const hit = (data.results as Snippet[]).find(r => r.file.includes("custom-domain"));
+    expect(hit).toBeDefined();
+    // It was fetched exactly once as a discovered domain file.
+    const fetchedPaths = mockFetchFile.mock.calls.map(c => c[1] as string);
+    expect(fetchedPaths.filter(p => p.includes("custom-domain")).length).toBe(1);
   });
 });

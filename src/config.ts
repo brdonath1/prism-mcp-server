@@ -284,6 +284,17 @@ export const FETCH_WALL_CLOCK_DEADLINE_MS =
 export const FETCH_CONTENT_CAP_BYTES =
   parseInt(process.env.FETCH_CONTENT_CAP_BYTES ?? "50000", 10) || 50_000;
 
+/** Aggregate response budget (bytes) for prism_fetch — SRV-63.
+ *  FETCH_CONTENT_CAP_BYTES bounds any SINGLE file, but the files[] array is
+ *  unbounded: N files each under the per-file cap can still blow the ~25K-token
+ *  (~100KB) MCP response ceiling. Once cumulative delivered bytes cross this
+ *  budget, the remaining files (request order) are delivered size-only (true
+ *  size + a withheld notice + is_aggregate_capped) with a
+ *  FETCH_AGGREGATE_BUDGET_EXCEEDED diagnostic — never a silent omission. 90KB
+ *  leaves headroom under the response ceiling. Env-overridable. */
+export const FETCH_AGGREGATE_BUDGET_BYTES =
+  parseInt(process.env.FETCH_AGGREGATE_BUDGET_BYTES ?? "90000", 10) || 90_000;
+
 /** Per-attempt timeout for the Opus call inside prism_finalize draft phase.
  *  Accommodates large-project single-attempt latency (S41 — observed ~100s
  *  ceiling on PF-v2-scale inputs). Configurable via env for per-deployment

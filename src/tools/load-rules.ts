@@ -224,6 +224,20 @@ export function registerLoadRules(server: McpServer): void {
           ms: Date.now() - start,
         });
 
+        // SRV-81: on a zero-match, hand the caller the actual topic vocabulary
+        // (sorted unique topics across Tier B, plus Tier C when requested) so an
+        // unknown topic fails LOUD with a next step, instead of silently and
+        // forcing blind retries. Present only when nothing matched.
+        const availableTopics =
+          matchedRules.length === 0
+            ? Array.from(
+                new Set([
+                  ...tierB.flatMap(r => r.topics),
+                  ...(includeTierC ? tierC.flatMap(r => r.topics) : []),
+                ]),
+              ).sort()
+            : undefined;
+
         return {
           content: [{
             type: "text" as const,
@@ -233,6 +247,7 @@ export function registerLoadRules(server: McpServer): void {
               rule_id: rule_id ?? null,
               include_tier_c: includeTierC,
               matched_rules: matchedRules,
+              available_topics: availableTopics,
               counts: {
                 total_standing_rules: allRules.length,
                 tier_b_total: tierB.length,
