@@ -13,13 +13,19 @@
  * be 30 turns of mechanical work.
  */
 
-import { RECOMMENDATION_MODELS } from "../models.js";
+import { RECOMMENDATION_MODELS, modelDisplayFromId } from "../models.js";
+import { logger } from "./logger.js";
 
 /**
- * Short model identifier carried in the recommendation's `model` field.
- * DERIVED from RECOMMENDATION_MODELS (src/models.ts) so it can never drift
- * from the values the classifier actually emits — that drift was the S143 bug
- * (union topped out at "opus-4-7", so 4.8 was unrepresentable).
+ * Short model identifier of the registry DEFAULTS. DERIVED from
+ * RECOMMENDATION_MODELS (src/models.ts) so it can never drift from the default
+ * values — that drift was the S143 bug (union topped out at "opus-4-7", so 4.8
+ * was unrepresentable).
+ *
+ * Note: the recommendation's emitted `model` field is `string`, NOT this union
+ * — an env override (resolveRecommendationModel) can name any deployed model,
+ * which is both the point of the override and the permanent cure for the
+ * S143-class rigidity. This type still documents what the in-repo defaults are.
  */
 export type RecommendedModel =
   (typeof RECOMMENDATION_MODELS)[keyof typeof RECOMMENDATION_MODELS]["code"];
@@ -28,7 +34,12 @@ export type SessionCategory = "reasoning_heavy" | "executional" | "mixed";
 
 export interface SessionRecommendation {
   category: SessionCategory;
-  model: RecommendedModel;
+  /**
+   * Resolved recommendation model code (e.g. "opus-4-8"). Widened to `string`
+   * (not RecommendedModel) because an env override can carry any deployed
+   * model id — see resolveRecommendationModel.
+   */
+  model: string;
   thinking: RecommendedThinking;
   rationale: string;
   display: string;
@@ -270,33 +281,115 @@ const THINKING_DISPLAY: Record<RecommendedThinking, string> = {
   "adaptive-off": "Adaptive off",
 };
 
-// Model + display are DERIVED from the central registry (src/models.ts) so a
-// model bump is a one-line edit there and the banner display + `model` field
-// stay in lockstep. Thinking remains workload-driven (above).
-const MODEL_BY_CATEGORY: Record<SessionCategory, RecommendedModel> = {
-  reasoning_heavy: RECOMMENDATION_MODELS.reasoning_heavy.code,
-  executional: RECOMMENDATION_MODELS.executional.code,
-  mixed: RECOMMENDATION_MODELS.mixed.code,
-};
+// ─── Recommendation model resolution ────────────────────────────────────
+//
+// The model + display DEFAULT to the central registry (src/models.ts) so a
+// model bump stays a one-line edit there. A deployment overrides the
+// recommended model per category via env — matching the SYNTHESIS_MODEL /
+// CC_DISPATCH_MODEL pattern — but the override lives HERE, at the consumer,
+// never in the `as const` registry whose literal shape the freshness
+// automation (scripts/check-model-freshness.mjs extractPins()) regex-parses.
+// That is also why the resolved code widens to `string`: env can name any
+// deployed model, which both is the point of the override and retires the
+// S143-class rigidity. Thinking remains workload-driven (above).
 
-const DISPLAY_BY_CATEGORY: Record<SessionCategory, string> = {
-  reasoning_heavy: `${RECOMMENDATION_MODELS.reasoning_heavy.display} · ${THINKING_DISPLAY[THINKING_BY_CATEGORY.reasoning_heavy]}`,
-  executional: `${RECOMMENDATION_MODELS.executional.display} · ${THINKING_DISPLAY[THINKING_BY_CATEGORY.executional]}`,
-  mixed: `${RECOMMENDATION_MODELS.mixed.display} · ${THINKING_DISPLAY[THINKING_BY_CATEGORY.mixed]}`,
+interface ResolvedRecommendationModel {
+  /** Short code carried in the recommendation's `model` field. */
+  code: string;
+  /** Display label (model portion only; thinking is appended by the caller). */
+  display: string;
+}
+
+/**
+ * Env var per category (each value is an Anthropic model id, e.g.
+ * "claude-opus-4-8").
+ */
+const ENV_VAR_BY_CATEGORY: Record<SessionCategory, string> = {
+  reasoning_heavy: "RECOMMENDATION_MODEL_REASONING",
+  executional: "RECOMMENDATION_MODEL_EXECUTIONAL",
+  mixed: "RECOMMENDATION_MODEL_MIXED",
 };
 
 /**
+ * Light shape check for an Anthropic model id. Deliberately permissive —
+ * rejects obvious garbage (empty, missing `claude-` prefix) rather than
+ * enforcing a precise grammar. Tolerates the `[1m]` long-context suffix.
+ */
+function looksLikeModelId(value: string): boolean {
+  return /^claude-[a-z0-9]+(?:-[a-z0-9]+)*(?:\[1m\])?$/i.test(value.trim());
+}
+
+/** Build the resolved { code, display } from a full Anthropic model id. */
+function resolvedFromId(id: string): ResolvedRecommendationModel {
+  const trimmed = id.trim();
+  return {
+    // "claude-opus-4-8" → "opus-4-8"; "claude-sonnet-4-6[1m]" → "sonnet-4-6"
+    code: trimmed.replace(/\[1m\]$/, "").replace(/^claude-/, ""),
+    display: modelDisplayFromId(trimmed),
+  };
+}
+
+/**
+ * Read + validate a single env override. Returns the resolved model when the
+ * var is set to something that looks like a model id; `undefined` when unset
+ * or blank; warns and returns `undefined` when set to garbage so the caller's
+ * precedence chain continues (ultimately to the registry default) — a typo can
+ * never emit a broken banner.
+ */
+function readEnvOverride(
+  envVar: string,
+  env: NodeJS.ProcessEnv,
+): ResolvedRecommendationModel | undefined {
+  const raw = env[envVar];
+  if (raw === undefined || raw.trim() === "") return undefined;
+  if (!looksLikeModelId(raw)) {
+    logger.warn("recommendation model env override ignored — not a model id", {
+      envVar,
+      value: raw,
+    });
+    return undefined;
+  }
+  return resolvedFromId(raw);
+}
+
+/**
+ * Resolve the recommendation model for a category: the env override if set and
+ * valid, else the registry default. Precedence for `mixed` is
+ * MIXED → REASONING → registry (a deployment that bumps the reasoning
+ * recommendation almost always wants mixed to track it).
+ *
+ * Env is read at call time (not module load) so the stateless server reflects
+ * the live deployment config; cost is negligible (classification runs once per
+ * finalize/bootstrap).
+ */
+function resolveRecommendationModel(
+  category: SessionCategory,
+  env: NodeJS.ProcessEnv = process.env,
+): ResolvedRecommendationModel {
+  const own = readEnvOverride(ENV_VAR_BY_CATEGORY[category], env);
+  if (own) return own;
+  if (category === "mixed") {
+    const reasoning = readEnvOverride(ENV_VAR_BY_CATEGORY.reasoning_heavy, env);
+    if (reasoning) return reasoning;
+  }
+  const def = RECOMMENDATION_MODELS[category];
+  return { code: def.code, display: def.display };
+}
+
+/**
  * Classify the next session and produce a recommended model + thinking
- * setting. Pure function — no I/O.
+ * setting. Scoring is pure; the per-category model is then resolved via
+ * resolveRecommendationModel, which reads the RECOMMENDATION_MODEL_* env
+ * overrides and falls back to the src/models.ts registry default.
  *
- * Decision rule:
+ * Decision rule (category only — the concrete model per tier comes from the
+ * registry/env, and thinking is workload-driven via THINKING_BY_CATEGORY):
  *   ratio = reasoning_heavy_score / max(executional_score, 1)
- *   ratio >= 1.5  → reasoning_heavy → Opus 4.8 + Adaptive on
- *   ratio <= 0.67 → executional     → Sonnet 4.6 + Adaptive off
- *   otherwise     → mixed           → Opus 4.8 + Adaptive off (strong default)
+ *   ratio >= 1.5  → reasoning_heavy → top tier  + Adaptive on
+ *   ratio <= 0.67 → executional     → exec tier + Adaptive off
+ *   otherwise     → mixed           → top tier  + Adaptive off (strong default)
  *
- * Empty input yields the mixed verdict — safe default that matches the
- * pre-classifier behavior of running Opus + Adaptive off.
+ * Empty input yields the mixed verdict — safe default.
  */
 export function classifySession(input: ClassifySessionInput): SessionRecommendation {
   let reasoningScore = 0;
@@ -326,12 +419,13 @@ export function classifySession(input: ClassifySessionInput): SessionRecommendat
     category = "mixed";
   }
 
+  const resolved = resolveRecommendationModel(category);
   return {
     category,
-    model: MODEL_BY_CATEGORY[category],
+    model: resolved.code,
     thinking: THINKING_BY_CATEGORY[category],
     rationale: buildRationale(category),
-    display: DISPLAY_BY_CATEGORY[category],
+    display: `${resolved.display} · ${THINKING_DISPLAY[THINKING_BY_CATEGORY[category]]}`,
     scores: {
       reasoning_heavy: reasoningScore,
       executional: executionalScore,
@@ -437,9 +531,13 @@ export function parsePersistedRecommendation(
   if (!["reasoning_heavy", "executional", "mixed"].includes(category)) return null;
 
   const cat = category as SessionCategory;
+  // Resolve `model` (code) through the same env-aware path as classifySession
+  // so a deployment's override is reflected on the boot banner too; `display`
+  // stays reconstructed from the persisted text (operator-visible label).
+  const resolved = resolveRecommendationModel(cat);
   return {
     category: cat,
-    model: MODEL_BY_CATEGORY[cat],
+    model: resolved.code,
     thinking: THINKING_BY_CATEGORY[cat],
     rationale,
     display: `${modelDisplay} · ${thinkingDisplay}`,

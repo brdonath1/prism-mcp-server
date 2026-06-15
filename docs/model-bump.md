@@ -12,7 +12,7 @@ Every server-side model default is a named export of `src/models.ts`:
 
 | Constant | What it pins | Consumed by |
 |---|---|---|
-| `RECOMMENDATION_MODELS` | Operator-facing picker recommendation per session category (`code` + `display` + canonical API `id`) | `src/utils/session-classifier.ts` — derives the `RecommendedModel` union, `MODEL_BY_CATEGORY`, and the banner display strings; nothing re-pins a model literal |
+| `RECOMMENDATION_MODELS` | Operator-facing picker recommendation per session category (`code` + `display` + canonical API `id`) — the **default**, overridable per category via env (§2) | `src/utils/session-classifier.ts` — derives the `RecommendedModel` union (default codes) and feeds `resolveRecommendationModel()`, which applies any `RECOMMENDATION_MODEL_*` env override before falling back to these defaults; nothing re-pins a model literal |
 | `SYNTHESIS_MODEL_ID` | Default model the server calls for synthesis (intelligence-brief + pending-doc-updates) | `src/config.ts:95` → `SYNTHESIS_MODEL` |
 | `CC_DISPATCH_MODEL_ID` | Default model for Claude Code dispatches (`cc_dispatch`) | `src/config.ts:449` → `CC_DISPATCH_MODEL` |
 
@@ -39,9 +39,11 @@ editing the registry:
 
 ## 2. Precedence — env beats registry, registry is the fallback
 
-The rule, precisely: **for every server-call surface, a Railway env var that
-is set and non-blank wins; the registry constant applies only when the env
-var is unset (or blank/whitespace, for the per-call-site model vars).**
+The rule, precisely: **for every model surface — server-call and the
+operator-facing recommendation alike — a Railway env var that is set,
+non-blank, and well-formed wins; the registry constant applies only when the
+env var is unset (or blank/whitespace, or — for the recommendation vars —
+malformed).**
 
 | Surface | Env override (Railway, chat-side owned) | Fallback chain |
 |---|---|---|
@@ -49,10 +51,30 @@ var is unset (or blank/whitespace, for the per-call-site model vars).**
 | Synthesis per call-site (`brief` / `draft` / `pdu`) — model | `SYNTHESIS_{BRIEF\|DRAFT\|PDU}_MODEL` | → `SYNTHESIS_MODEL` → `SYNTHESIS_MODEL_ID` (`src/ai/client.ts:82`) |
 | Synthesis per call-site — transport | `SYNTHESIS_{BRIEF\|DRAFT\|PDU}_TRANSPORT` | → `messages_api` (`src/ai/client.ts:72`) |
 | Claude Code dispatch | `CC_DISPATCH_MODEL` | → `CC_DISPATCH_MODEL_ID` (`src/config.ts:449`) |
+| Recommendation — reasoning_heavy | `RECOMMENDATION_MODEL_REASONING` | → `RECOMMENDATION_MODELS.reasoning_heavy` (`src/utils/session-classifier.ts`) |
+| Recommendation — executional | `RECOMMENDATION_MODEL_EXECUTIONAL` | → `RECOMMENDATION_MODELS.executional` |
+| Recommendation — mixed | `RECOMMENDATION_MODEL_MIXED` | → `RECOMMENDATION_MODEL_REASONING` → `RECOMMENDATION_MODELS.mixed` |
+
+Each `RECOMMENDATION_MODEL_*` value is an Anthropic model id (e.g.
+`claude-opus-4-8`); the classifier derives the banner's short `code` and
+`display` from it (`modelDisplayFromId`, stripping a `claude-` prefix and any
+`[1m]` suffix).
 
 Env is **owned chat-side** (operator + claude.ai session via the Railway
 tools). This repo's code and dispatched Claude Code instances never read
 Railway state to mutate it and never write it.
+
+**The recommendation surface is advisory, not a server-call.**
+`RECOMMENDATION_MODEL_*` only changes which model the boot/finalize banner
+tells the operator to **select** — the server never calls that model — so the
+INS-244 / INS-245 OAuth-availability + cost gates (§5) do **not** apply.
+Because it is unvalidated free-form env, a value that does not look like a
+model id is ignored with a logged warning and the category falls back to its
+registry default, so a typo can never emit a broken banner. `mixed` resolves
+`RECOMMENDATION_MODEL_MIXED` → `RECOMMENDATION_MODEL_REASONING` → registry, so
+overriding only the reasoning recommendation moves mixed sessions with it
+(the common case: a deployment whose top tier is unavailable redirects both
+reasoning and mixed with a single var).
 
 ## 3. Unset-env routing behavior — what `resolveCallSiteRouting` actually does
 
