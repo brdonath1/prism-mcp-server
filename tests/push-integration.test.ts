@@ -67,7 +67,10 @@ function parseResult(result: { content: Array<{ type: string; text: string }> })
 
 beforeEach(() => {
   vi.clearAllMocks();
-  // Default: doc-guard fileExists → false (paths not redirected).
+  // Default: doc-guard fileExists → false for both the `.prism/` and the
+  // legacy-root probe. Per KI-28 a bare living-doc path that exists NOWHERE now
+  // resolves to the canonical `.prism/<path>` (a brand-new doc is created under
+  // `.prism/`, never at the repo root).
   mockFileExists.mockResolvedValue(false);
   // Default: HEAD lookup returns a stable SHA so failure-path tests can
   // assert HEAD-unchanged behavior without extra boilerplate.
@@ -245,9 +248,10 @@ describe("prism_push successful flow (atomic-first)", () => {
     expect(mockCreateAtomicCommit).toHaveBeenCalledTimes(1);
     const [, filesArg] = mockCreateAtomicCommit.mock.calls[0];
     expect(Array.isArray(filesArg)).toBe(true);
+    // KI-28: bare living-doc paths resolve to the canonical `.prism/` location.
     expect((filesArg as Array<{ path: string }>).map(f => f.path)).toEqual([
-      "glossary.md",
-      "eliminated.md",
+      ".prism/glossary.md",
+      ".prism/eliminated.md",
     ]);
     expect(mockPushFile).not.toHaveBeenCalled();
   });
@@ -558,5 +562,103 @@ describe("brief-460 / SRV-78 — prism_push ZWS contamination detection", () => 
     const data = parseResult(result);
     const codes = (data.diagnostics ?? []).map((d: { code: string }) => d.code);
     expect(codes).not.toContain("ZWS_CONTAMINATION_DETECTED");
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// KI-28 — prism_push applies the SAME root→.prism/ redirect as prism_patch /
+// prism_fetch. A bare living-doc path MUST land at `.prism/<path>`, report
+// `redirected: true`, and NEVER create a root-level duplicate. Covers both a
+// top-level doc (session-log.md) and a nested doc (decisions/_INDEX.md).
+// ───────────────────────────────────────────────────────────────────────────
+describe("KI-28 — prism_push bare-path root→.prism/ redirect", () => {
+  const SESSION_LOG = "# Session Log\n\n### Session 1\nwork\n\n<!-- EOF: session-log.md -->";
+  const DECISIONS_INDEX =
+    "# Decisions\n\n| ID | Title | Domain | Status | Session |\n|----|-------|--------|--------|---------|\n| D-1 | Seed | core | SETTLED | 1 |\n\n<!-- EOF: _INDEX.md -->";
+
+  beforeEach(() => {
+    mockCreateAtomicCommit.mockResolvedValue({
+      success: true,
+      sha: "ki28_sha",
+      files_committed: 1,
+    });
+  });
+
+  function bareCases(): Array<{ name: string; bare: string; prism: string; content: string }> {
+    return [
+      { name: "top-level doc", bare: "session-log.md", prism: ".prism/session-log.md", content: SESSION_LOG },
+      {
+        name: "nested doc",
+        bare: "decisions/_INDEX.md",
+        prism: ".prism/decisions/_INDEX.md",
+        content: DECISIONS_INDEX,
+      },
+    ];
+  }
+
+  // Canonical migrated repo: the `.prism/` copy already exists.
+  for (const { name, bare, prism, content } of bareCases()) {
+    it(`redirects a bare ${name} to .prism/ when the canonical copy exists`, async () => {
+      mockFileExists.mockResolvedValue(true); // `.prism/<path>` exists
+
+      const result = await callPushTool({
+        project_slug: "test-project",
+        files: [{ path: bare, content, message: "prism: artifact " + bare }],
+        skip_validation: true,
+      });
+
+      const data = parseResult(result);
+      // (a) lands at `.prism/<path>` and (b) reports redirected: true
+      expect(data.all_succeeded).toBe(true);
+      expect(data.results[0].path).toBe(prism);
+      expect(data.results[0].redirected).toBe(true);
+      expect(data.results[0].original_path).toBe(bare);
+
+      // (a) the atomic commit wrote ONLY the `.prism/` path …
+      const committed = mockCreateAtomicCommit.mock.calls[0][1] as Array<{ path: string }>;
+      expect(committed.map((f) => f.path)).toEqual([prism]);
+      // (c) … and NEVER the bare root path (no root-level duplicate).
+      expect(committed.some((f) => f.path === bare)).toBe(false);
+    });
+  }
+
+  // Brand-new doc: exists nowhere. Pre-fix this wrote to the literal root.
+  for (const { name, bare, prism, content } of bareCases()) {
+    it(`redirects a brand-new bare ${name} to .prism/ (no root duplicate)`, async () => {
+      mockFileExists.mockResolvedValue(false); // exists nowhere
+
+      const result = await callPushTool({
+        project_slug: "test-project",
+        files: [{ path: bare, content, message: "prism: artifact " + bare }],
+        skip_validation: true,
+      });
+
+      const data = parseResult(result);
+      expect(data.results[0].path).toBe(prism);
+      expect(data.results[0].redirected).toBe(true);
+      const committed = mockCreateAtomicCommit.mock.calls[0][1] as Array<{ path: string }>;
+      expect(committed.map((f) => f.path)).toEqual([prism]);
+      expect(committed.some((f) => f.path === bare)).toBe(false);
+    });
+  }
+
+  // Explicit `.prism/`-prefixed path is unchanged: redirected stays false.
+  it("an explicit .prism/ path is written as-is with redirected: false", async () => {
+    mockFileExists.mockResolvedValue(true);
+
+    const result = await callPushTool({
+      project_slug: "test-project",
+      files: [
+        { path: ".prism/session-log.md", content: SESSION_LOG, message: "prism: artifact session-log.md" },
+      ],
+      skip_validation: true,
+    });
+
+    const data = parseResult(result);
+    expect(data.results[0].path).toBe(".prism/session-log.md");
+    expect(data.results[0].redirected).toBe(false);
+    expect(data.results[0].original_path).toBeUndefined();
+    const committed = mockCreateAtomicCommit.mock.calls[0][1] as Array<{ path: string }>;
+    expect(committed.map((f) => f.path)).toEqual([".prism/session-log.md"]);
   });
 });
