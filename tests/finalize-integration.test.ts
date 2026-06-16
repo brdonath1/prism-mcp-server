@@ -970,10 +970,10 @@ describe("prism_finalize archive lifecycle (S40 FINDING-14 C2)", () => {
     });
 
     const paths = capturedFiles.map(f => f.path);
-    expect(paths).toContain("session-log.md");
+    expect(paths).toContain(".prism/session-log.md");
     expect(paths).toContain(".prism/session-log-archive.md");
 
-    const liveFile = capturedFiles.find(f => f.path === "session-log.md")!;
+    const liveFile = capturedFiles.find(f => f.path === ".prism/session-log.md")!;
     const archiveFile = capturedFiles.find(f => f.path === ".prism/session-log-archive.md")!;
 
     expect(liveFile.content.length).toBeLessThan(bigSessionLog.length);
@@ -1009,7 +1009,7 @@ describe("prism_finalize archive lifecycle (S40 FINDING-14 C2)", () => {
     });
 
     expect(capturedFiles).toHaveLength(1);
-    expect(capturedFiles[0].path).toBe("session-log.md");
+    expect(capturedFiles[0].path).toBe(".prism/session-log.md");
     expect(capturedFiles[0].content).toBe(smallSessionLog);
   });
 
@@ -1052,7 +1052,7 @@ describe("prism_finalize archive lifecycle (S40 FINDING-14 C2)", () => {
     expect(data.all_succeeded).toBe(true);
     // No archive added — live doc committed unchanged
     expect(capturedFiles.map(f => f.path)).not.toContain(".prism/insights-archive.md");
-    const insightsFile = capturedFiles.find(f => f.path === "insights.md")!;
+    const insightsFile = capturedFiles.find(f => f.path === ".prism/insights.md")!;
     expect(insightsFile.content).toBe(badInsights);
   });
 
@@ -1187,7 +1187,7 @@ describe("prism_finalize archival decoupled from files[] (brief-435 R2-A)", () =
     expect(liveFile.content).toContain("### INS-30: entry 30");
     expect(liveFile.content).not.toContain("### INS-1: entry 1");
     // Operator-declared session-log.md still committed untouched
-    const sessionLog = capturedFiles.find(f => f.path === "session-log.md")!;
+    const sessionLog = capturedFiles.find(f => f.path === ".prism/session-log.md")!;
     expect(sessionLog.content).toBe(SMALL_SESSION_LOG);
   });
 
@@ -1220,7 +1220,7 @@ describe("prism_finalize archival decoupled from files[] (brief-435 R2-A)", () =
     // Finalize still succeeds — a missing doc is genuinely nothing to archive
     expect(data.all_succeeded).toBe(true);
     expect(capturedFiles).toHaveLength(1);
-    expect(capturedFiles[0].path).toBe("session-log.md");
+    expect(capturedFiles[0].path).toBe(".prism/session-log.md");
     expect(capturedFiles[0].content).toBe(SMALL_SESSION_LOG);
   });
 
@@ -1257,7 +1257,7 @@ describe("prism_finalize archival decoupled from files[] (brief-435 R2-A)", () =
     expect(data.all_succeeded).toBe(true);
     // Under-threshold fetched doc must NOT be re-committed
     expect(capturedFiles).toHaveLength(1);
-    expect(capturedFiles[0].path).toBe("session-log.md");
+    expect(capturedFiles[0].path).toBe(".prism/session-log.md");
   });
 });
 

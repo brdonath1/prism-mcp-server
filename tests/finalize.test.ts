@@ -334,7 +334,7 @@ ${stepLines}
       "Architect the new module",
       "Brainstorm tradeoffs and compare strategy options",
     ]));
-    const handoffWrite = writes.find(w => w.path === "handoff.md")!;
+    const handoffWrite = writes.find(w => w.path === "handoff.md" || w.path.endsWith("/handoff.md"))!;
     expect(handoffWrite.content).toContain("<!-- prism:recommended_session_settings -->");
     expect(handoffWrite.content).toContain("- Category: reasoning_heavy");
     expect(handoffWrite.content).toContain(
@@ -349,7 +349,7 @@ ${stepLines}
       "Patch task-queue to demote stale items",
       "Push the updated boot-test fixture",
     ]));
-    const handoffWrite = writes.find(w => w.path === "handoff.md")!;
+    const handoffWrite = writes.find(w => w.path === "handoff.md" || w.path.endsWith("/handoff.md"))!;
     expect(handoffWrite.content).toContain("- Category: executional");
     expect(handoffWrite.content).toContain("- Model: Sonnet 4.6");
     expect(handoffWrite.content).toContain("- Thinking: Adaptive off");
@@ -360,7 +360,7 @@ ${stepLines}
       "Debug the regression",
       "Verify the fix",
     ]));
-    const handoffWrite = writes.find(w => w.path === "handoff.md")!;
+    const handoffWrite = writes.find(w => w.path === "handoff.md" || w.path.endsWith("/handoff.md"))!;
     expect(handoffWrite.content).toContain("- Category: mixed");
     expect(handoffWrite.content).toContain(
       `- Model: ${RECOMMENDATION_MODELS.mixed.display}`,
@@ -372,7 +372,7 @@ ${stepLines}
     const writes = await runCommit(buildHandoff([
       "Design the orchestrator",
     ]));
-    const handoffWrite = writes.find(w => w.path === "handoff.md")!;
+    const handoffWrite = writes.find(w => w.path === "handoff.md" || w.path.endsWith("/handoff.md"))!;
     const metaIdx = handoffWrite.content.indexOf("## Meta");
     const blockIdx = handoffWrite.content.indexOf("## Recommended Session Settings");
     const criticalIdx = handoffWrite.content.indexOf("## Critical Context");
@@ -415,7 +415,7 @@ Working.
 `;
 
     const writes = await runCommit(handoffWithStaleBlock);
-    const handoffWrite = writes.find(w => w.path === "handoff.md")!;
+    const handoffWrite = writes.find(w => w.path === "handoff.md" || w.path.endsWith("/handoff.md"))!;
 
     // Exactly one delimiter pair.
     const opens = (handoffWrite.content.match(/<!-- prism:recommended_session_settings -->/g) ?? []).length;
