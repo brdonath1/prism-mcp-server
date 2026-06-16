@@ -29,12 +29,27 @@ describe("guardPushPath", () => {
     expect(mockFileExists).toHaveBeenCalledWith("test-project", ".prism/task-queue.md");
   });
 
-  it("allows root-level living doc when no .prism/ version exists (unmigrated)", async () => {
-    mockFileExists.mockResolvedValueOnce(false); // .prism/task-queue.md doesn't exist
+  it("allows root-level living doc when only a legacy root copy exists (unmigrated)", async () => {
+    mockFileExists
+      .mockResolvedValueOnce(false) // .prism/task-queue.md doesn't exist
+      .mockResolvedValueOnce(true); // legacy root task-queue.md exists
 
     const result = await guardPushPath("test-project", "task-queue.md");
     expect(result.path).toBe("task-queue.md");
     expect(result.redirected).toBe(false);
+  });
+
+  it("KI-28: redirects a brand-new living doc (exists nowhere) to .prism/", async () => {
+    // Neither .prism/ nor a legacy root copy exists. Pre-fix, guardPushPath fell
+    // back to the LITERAL root path, creating a root-level duplicate. Now it
+    // resolves to the canonical .prism/ path like every other write path.
+    mockFileExists
+      .mockResolvedValueOnce(false) // .prism/session-log.md absent
+      .mockResolvedValueOnce(false); // root session-log.md absent
+
+    const result = await guardPushPath("test-project", "session-log.md");
+    expect(result.path).toBe(".prism/session-log.md");
+    expect(result.redirected).toBe(true);
   });
 
   it("allows .prism/-prefixed path as-is (no redirect)", async () => {
@@ -123,8 +138,10 @@ describe("guardPushPath", () => {
     }
   });
 
-  it("allows briefs/ directory path when .prism/ version doesn't exist", async () => {
-    mockFileExists.mockResolvedValueOnce(false);
+  it("allows briefs/ directory path when only a legacy root copy exists", async () => {
+    mockFileExists
+      .mockResolvedValueOnce(false) // .prism/briefs/brief-s31.md absent
+      .mockResolvedValueOnce(true); // legacy root briefs/brief-s31.md exists
 
     const result = await guardPushPath("test-project", "briefs/brief-s31.md");
     expect(result.path).toBe("briefs/brief-s31.md");
@@ -164,8 +181,10 @@ describe("guardPushPath", () => {
     expect(mockFileExists).toHaveBeenCalledWith("test-project", ".prism/standing-rules.md");
   });
 
-  it("allows root-level standing-rules.md when no .prism/ version exists (unmigrated)", async () => {
-    mockFileExists.mockResolvedValueOnce(false);
+  it("allows root-level standing-rules.md when only a legacy root copy exists (unmigrated)", async () => {
+    mockFileExists
+      .mockResolvedValueOnce(false) // .prism/standing-rules.md absent
+      .mockResolvedValueOnce(true); // legacy root standing-rules.md exists
 
     const result = await guardPushPath("test-project", "standing-rules.md");
     expect(result.path).toBe("standing-rules.md");

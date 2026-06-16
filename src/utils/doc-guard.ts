@@ -1,17 +1,28 @@
 /**
  * doc-guard — Prevents duplicate living documents at repo root (D-67).
  *
- * RULES:
+ * RULES (KI-28 — unified with resolveDocPushPath):
  * 1. If a push targets a root-level living doc path AND .prism/ version exists → REDIRECT to .prism/
- * 2. If a push targets a root-level living doc path AND no .prism/ version exists → ALLOW (unmigrated repo)
- * 3. If a push targets a .prism/ path → ALLOW (correct path)
- * 4. If a push targets a non-living-doc path → ALLOW (not our concern)
+ * 2. If a push targets a root-level living doc path AND only a legacy root copy exists → ALLOW root (unmigrated repo)
+ * 3. If a push targets a root-level living doc path AND it exists NOWHERE → REDIRECT to .prism/ (create canonical)
+ * 4. If a push targets a .prism/ path → ALLOW (correct path)
+ * 5. If a push targets a non-living-doc path → ALLOW (not our concern)
  *
  * This function is called before EVERY file push across ALL tools.
+ *
+ * KI-28: the redirect itself is NOT re-implemented here. doc-guard only owns
+ * the "is this a root-level PRISM living doc?" GATE; the actual root→.prism/
+ * resolution is delegated to `resolveDocPushPath` (src/utils/doc-resolver.ts) —
+ * the SAME write-path resolver used by prism_fetch/prism_patch's sibling
+ * resolveDocPath and by finalize/log-decision/log-insight/synthesize. Before
+ * this fix, prism_push fell back to the LITERAL root path when no `.prism/`
+ * copy existed, silently creating a root-level duplicate while the canonical
+ * `.prism/` file went stale. Delegating closes that divergence: a brand-new
+ * living doc now lands at `.prism/<path>` exactly like every other write path.
  */
 
-import { fileExists } from "../github/client.js";
 import { DOC_ROOT } from "../config.js";
+import { resolveDocPushPath } from "./doc-resolver.js";
 import { logger } from "./logger.js";
 
 /**
@@ -73,37 +84,45 @@ function isRootLevelPrismPath(path: string): boolean {
 }
 
 /**
- * Resolve a push path to prevent duplication.
+ * Resolve a push path to prevent duplication (KI-28).
  *
- * If the path is a root-level PRISM doc and .prism/ version exists,
- * redirects to .prism/. Otherwise returns the original path.
+ * doc-guard owns ONLY the gate: "is this a root-level PRISM living doc?".
+ * The actual root→`.prism/` resolution is delegated to the shared
+ * `resolveDocPushPath` so prism_push resolves a bare living-doc path
+ * IDENTICALLY to every other write path — including the brand-new-doc case,
+ * which now lands at the canonical `.prism/<path>` instead of the literal
+ * repo root. Non-living-doc and already-`.prism/`-prefixed paths short-circuit
+ * the gate and never touch the resolver (so arbitrary files are untouched).
  *
  * @param projectSlug - Project repo name
  * @param path - The file path about to be pushed
- * @returns The safe path to push to (may be redirected to .prism/)
+ * @returns The safe path to push to (redirected to `.prism/` when applicable)
  */
 export async function guardPushPath(
   projectSlug: string,
   path: string
 ): Promise<{ path: string; redirected: boolean }> {
-  // Not a root-level PRISM path — allow as-is
+  // Not a root-level PRISM living doc (arbitrary file, or already `.prism/`-
+  // prefixed) — allow as-is. This gate is what keeps resolveDocPushPath, which
+  // would otherwise `.prism/`-prefix ANY non-existent path, from redirecting
+  // genuine non-living-doc pushes (e.g. src/index.ts, CHANGELOG.md).
   if (!isRootLevelPrismPath(path)) {
     return { path, redirected: false };
   }
 
-  // It IS a root-level PRISM path. Check if .prism/ version exists.
-  const newPath = `${DOC_ROOT}/${path}`;
+  // Root-level PRISM living doc — resolve through the shared write-path
+  // resolver: `.prism/` if it exists, else a legacy root copy if it exists,
+  // else the canonical `.prism/<path>` for a brand-new doc.
+  const resolvedPath = await resolveDocPushPath(projectSlug, path);
+  const redirected = resolvedPath !== path;
 
-  if (await fileExists(projectSlug, newPath)) {
-    // .prism/ version exists — REDIRECT to prevent duplication
+  if (redirected) {
     logger.warn("doc-guard: REDIRECTED root push to .prism/", {
       projectSlug,
       originalPath: path,
-      redirectedPath: newPath,
+      redirectedPath: resolvedPath,
     });
-    return { path: newPath, redirected: true };
   }
 
-  // No .prism/ version — repo not yet migrated, allow root push
-  return { path, redirected: false };
+  return { path: resolvedPath, redirected };
 }
