@@ -149,11 +149,11 @@ renders it was previously undetectable. The handshake makes it visible:
 1. **Server emits.** Every `prism_bootstrap` response and every
    `prism_finalize` response (audit, commit, full) carries
    `banner_spec_version` — the spec version of this document that the
-   server's generator implements (currently `3.0`, the
+   server's generator implements (currently `4.1`, the
    `BANNER_SPEC_VERSION` constant in `src/utils/banner.ts`).
 2. **Template declares.** A framework template that consumes the banner
    declares the spec version it renders with a line of the form
-   `Banner-Spec-Version: 3.0` (tolerated variants: bold/blockquote markup,
+   `Banner-Spec-Version: 4.1` (tolerated variants: bold/blockquote markup,
    space/underscore separators, optional `v` prefix). Placement: in the
    template header block, **after** the `Template Version:` line —
    `prism_bootstrap` prefers the explicit `Template Version` declaration,
