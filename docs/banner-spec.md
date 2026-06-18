@@ -53,6 +53,29 @@ stays the guaranteed fallback when a widget render fails.
 
 ## 2. Unified Line Grammar
 
+Both surfaces consume the same TypeScript data contract, `UnifiedBannerInput`
+(`src/utils/banner.ts`):
+
+| Field | Type | Purpose |
+|-------|------|---------|
+| `surface` | `"boot" \| "finalize"` | Selects surface-specific behaviour: session tag, docs label, list-block label, boot-only `[priority]` |
+| `templateVersion` | `string` | Framework template version, e.g. `"2.19.1"`; `"unknown"` when unparseable |
+| `sessionNumber` | `number` | Current session number |
+| `timestamp` | `string` | CST timestamp `"MM-DD-YY HH:MM:SS"` |
+| `handoffVersion` | `number` | Handoff document version number |
+| `handoffNote` | `string` | Parenthetical after the handoff version: boot `"{size}KB"`; finalize `"pushed" \| "push failed" \| "unverified"` |
+| `decisionCount` | `number` | Total decision count |
+| `decisionNote` | `string \| null` (optional) | Parenthetical after the decision count: boot `"{N} guardrails"`; finalize `banner_data.decisions_note` or null |
+| `docCount` | `number` | Living documents in-scope count |
+| `docTotal` | `number` | Total living documents (always 10) |
+| `statusRow` | `BannerStatusEntry[]` | Status entries; each has `label: string` and `status: "ok" \| "warn" \| "critical"` |
+| `suggested` | `{ display: string; rationale: string } \| null` (optional) | Model recommendation (brief-405 / D-191); omitted entirely from output when null/undefined |
+| `resumption` | `string` | Resumption text; markdown stripped, truncated to 200 chars with `...` |
+| `listItems` | `string[]` | List block: boot next steps (first tagged `[priority]`); finalize deliverables |
+| `warnings` | `string[]` | Warning lines rendered as `⚠ {warning}` |
+
+The line grammar these fields produce:
+
 ```
 L1   PRISM v{templateVersion} | Session {N}[ finalized] | {MM-DD-YY HH:MM:SS} CST
 L2   Handoff v{V} ({note}) | {D} decisions[ ({note})] | {C}/{T} docs {healthy|updated}
