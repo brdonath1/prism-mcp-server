@@ -185,8 +185,8 @@ describe("brief-105: Trigger enrollment marker drop", () => {
     expect(contentArg).toContain("brief_dir: .prism/briefs/queue/");
     expect(contentArg).toContain('brief_pattern: "brief-*.md"');
     expect(contentArg).toContain("branch_strategy: main-only");
-    expect(contentArg).toContain("intra_project_parallel: false");
-    expect(contentArg).toContain("max_parallel_briefs: 1");
+    expect(contentArg).not.toContain("intra_project_parallel");
+    expect(contentArg).not.toContain("max_parallel_briefs");
     expect(contentArg).toContain("post_merge:");
     expect(contentArg).toContain("- notify");
     expect(contentArg).toContain("- archive");
@@ -264,8 +264,6 @@ describe("brief-105: Trigger enrollment marker drop", () => {
       "brief_dir: .prism/briefs/queue/\n" +
       'brief_pattern: "brief-*.md"\n' +
       "branch_strategy: main-only\n" +
-      "intra_project_parallel: false\n" +
-      "max_parallel_briefs: 1\n" +
       "post_merge:\n" +
       "  - notify\n" +
       "  - archive\n";
@@ -283,7 +281,7 @@ describe("brief-105: Trigger enrollment marker drop", () => {
     expect(contentArg).toContain("archive/");
   });
 
-  it("emits serial defaults + the D-241 dead-knob comment (brief-444)", async () => {
+  it("omits the dead concurrency knobs and explains real parallelism (S189)", async () => {
     const { bootstrapHandler, mockPushFile } = await setupBootstrap();
 
     const result = await bootstrapHandler({ project_slug: "prism" });
@@ -295,24 +293,24 @@ describe("brief-105: Trigger enrollment marker drop", () => {
     expect(markerPushCall).toBeDefined();
     const contentArg = markerPushCall![2] as string;
 
-    // D-241: the knobs stay pinned to serial defaults…
-    expect(contentArg).toContain("intra_project_parallel: false");
-    expect(contentArg).toContain("max_parallel_briefs: 1");
+    // The retired dead-config fields must no longer be emitted at all — the
+    // daemon's validateMarker never reads them.
+    expect(contentArg).not.toContain("intra_project_parallel");
+    expect(contentArg).not.toContain("max_parallel_briefs");
 
-    // …and the generated comment states they are dead config so an operator
-    // edit can never look like it enables parallelism (the S146 trap).
-    expect(contentArg).toContain("D-241");
-    expect(contentArg).toContain("DEAD CONFIG");
-    expect(contentArg).toContain("ALWAYS serial");
-    expect(contentArg).toContain("does NOT enable parallel dispatch");
+    // The generated comment accurately states where parallelism actually
+    // comes from (brief frontmatter + global worker cap) and that there are
+    // no per-marker concurrency knobs.
+    expect(contentArg).toContain("brief frontmatter");
+    expect(contentArg).toContain("parallel: true");
+    expect(contentArg).toContain("disjoint affects");
+    expect(contentArg).toContain("no");
+    expect(contentArg).toContain("per-marker concurrency knobs");
 
-    // Negative guard: nothing in the marker may imply the fields gate
-    // parallel dispatch (the S146 hand-edit claimed "raised 1 -> 5 to allow
-    // concurrent dispatch"). The only "enable parallel" phrasing permitted
-    // is the explicit negation asserted above.
+    // Negative guard: nothing in the marker may carry the old misleading S146
+    // phrasing that claimed a per-marker field enables concurrent dispatch.
     expect(contentArg).not.toMatch(/allow(s|ed)?\s+concurrent dispatch/i);
     expect(contentArg).not.toMatch(/raised\s+\d+\s*->\s*\d+/i);
-    expect(contentArg.replace("does NOT enable parallel dispatch", "")).not.toMatch(/enables?\s+parallel/i);
   });
 
   it("returns error status when pushFile throws (bootstrap still succeeds)", async () => {
