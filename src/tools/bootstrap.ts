@@ -54,6 +54,7 @@ import { unionStandingRules } from "../utils/standing-rules-union.js";
 import { INTELLIGENCE_BRIEF_SPEC_SECTIONS } from "../utils/intelligence-brief-spec.js";
 import { classifySession, parsePersistedRecommendation, type SessionRecommendation } from "../utils/session-classifier.js";
 import { applyPendingDocUpdates, isPduEmpty, parseLastSynthesizedSession, type ApplyPduResult } from "../utils/apply-pdu.js";
+import { buildAutonomousWorkLoopPayload } from "../utils/autonomous-work-loop.js";
 
 // Re-export the standing-rule helpers so existing imports from
 // "../src/tools/bootstrap.js" continue to resolve (PR 4 / D-156 §3.5
@@ -1394,6 +1395,7 @@ export function registerBootstrap(server: McpServer): void {
           expected_tool_surface: getExpectedToolSurface(RAILWAY_ENABLED, CC_DISPATCH_ENABLED, !!GITHUB_PAT),  // D-83 (S44); github category added in brief-403
           post_boot_tool_searches: POST_BOOT_TOOL_SEARCHES,                                     // D-83 (S44)
           recommended_session_settings: recommendedSessionSettings,                             // brief-405 / D-191 — advisory model + thinking suggestion
+          autonomous_work_loop: buildAutonomousWorkLoopPayload(),                                // PRISM Autonomous Work Loop v1 — additive post-boot queue autonomy contract
           pdu_applied_at_boot: pduAppliedAtBoot,                                                 // brief-422 Piece 2 — stale-PDU safety net summary (null when nothing was applied)
           warnings,
         };
