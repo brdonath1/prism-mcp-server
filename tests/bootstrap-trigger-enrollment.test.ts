@@ -99,7 +99,7 @@ function fetchFileMarkerPresent(repo: string, path: string) {
   if (path === ".prism/trigger.yaml") {
     return Promise.resolve({
       content:
-        "enabled: true\nbrief_dir: .prism/briefs/\nbrief_pattern: \"brief-*.md\"\nbranch_strategy: main-only\n",
+        "enabled: true\nbrief_dir: .prism/briefs/\nbrief_pattern: \"brief-*.md\"\n",
       sha: "marker-sha",
       size: 100,
     });
@@ -184,7 +184,7 @@ describe("brief-105: Trigger enrollment marker drop", () => {
     expect(contentArg).toContain("enabled: true");
     expect(contentArg).toContain("brief_dir: .prism/briefs/queue/");
     expect(contentArg).toContain('brief_pattern: "brief-*.md"');
-    expect(contentArg).toContain("branch_strategy: main-only");
+    expect(contentArg).not.toContain("branch_strategy");
     expect(contentArg).not.toContain("intra_project_parallel");
     expect(contentArg).not.toContain("max_parallel_briefs");
     expect(contentArg).toContain("post_merge:");
@@ -263,7 +263,6 @@ describe("brief-105: Trigger enrollment marker drop", () => {
       "enabled: true\n" +
       "brief_dir: .prism/briefs/queue/\n" +
       'brief_pattern: "brief-*.md"\n' +
-      "branch_strategy: main-only\n" +
       "post_merge:\n" +
       "  - notify\n" +
       "  - archive\n";
@@ -281,7 +280,7 @@ describe("brief-105: Trigger enrollment marker drop", () => {
     expect(contentArg).toContain("archive/");
   });
 
-  it("omits the dead concurrency knobs and explains real parallelism (S189)", async () => {
+  it("omits retired marker knobs and explains real parallelism (S189)", async () => {
     const { bootstrapHandler, mockPushFile } = await setupBootstrap();
 
     const result = await bootstrapHandler({ project_slug: "prism" });
@@ -295,6 +294,7 @@ describe("brief-105: Trigger enrollment marker drop", () => {
 
     // The retired dead-config fields must no longer be emitted at all — the
     // daemon's validateMarker never reads them.
+    expect(contentArg).not.toContain("branch_strategy");
     expect(contentArg).not.toContain("intra_project_parallel");
     expect(contentArg).not.toContain("max_parallel_briefs");
 
