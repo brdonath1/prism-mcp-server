@@ -280,6 +280,43 @@ beforeEach(() => {
 // ── D-253 §Change 3: compacted intelligence brief (R7-b full passthrough reversed) ─
 
 describe("D-253: intelligence_brief delivers the COMPACT brief (Project State digest + full Risk Flags + full Quality Audit)", () => {
+  it("includes the additive autonomous_work_loop contract in the bootstrap response", async () => {
+    const handler = await setupBootstrap({
+      brief: FULL_BRIEF,
+      insights: INSIGHTS_WITH_TIER_A,
+      standingRules: REGISTRY_B_AND_C,
+    });
+    const parsed = await boot(handler);
+
+    expect(parsed.autonomous_work_loop).toMatchObject({
+      version: "1.0.0",
+      default_mode: "queue_autonomy",
+      queue_sources: expect.arrayContaining([
+        "next_steps",
+        "resumption_point",
+        ".prism/task-queue.md",
+        "trigger_or_cc_dispatch_state",
+      ]),
+      work_classes: {
+        autonomous_now: expect.stringContaining("repo-visible"),
+        autonomous_with_review: expect.stringContaining("review"),
+        parallel_dispatch: expect.stringContaining("parallel: true"),
+        human_boundary: expect.stringContaining("operator"),
+      },
+      dispatch_policy: {
+        trigger_default: expect.stringContaining("mandatory default"),
+        cc_dispatch_exception: expect.stringContaining("efficiency, quality, or accuracy"),
+        status_polling: expect.stringContaining("cc_status"),
+        trigger_recovery_stops: expect.stringContaining("daemon-down"),
+      },
+      backward_compatibility: expect.stringContaining("additive"),
+      rollback: expect.stringContaining("revert"),
+    });
+    expect(parsed.autonomous_work_loop.next_action_directive).toContain(
+      "without asking Brian",
+    );
+  });
+
   it("emits the compact Project State digest plus the full Risk Flags and Quality Audit sections", async () => {
     const handler = await setupBootstrap({
       brief: FULL_BRIEF,
