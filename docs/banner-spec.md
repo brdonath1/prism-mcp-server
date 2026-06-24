@@ -1,6 +1,6 @@
-# PRISM Banner Specification — v4.1 (Unified Text + restored HTML/SVG widgets)
+# PRISM Banner Specification — v4.2 (Unified Text + restored HTML/SVG widgets)
 
-> **Banner-Spec-Version:** 4.1
+> **Banner-Spec-Version:** 4.2
 > **Status:** SUPERSEDED as the authority (SRV-88). The live contract is owned
 >   by the prism-framework templates (`_templates/banner-spec.md` +
 >   `_templates/finalization-banner-spec.md`) and the server code
@@ -10,7 +10,8 @@
 >   `renderBootMastheadSvg`, `renderFinalizationBannerHtml`)
 > **Consumers:** `core-template-mcp.md` (boot), `rules-session-end.md` (finalization)
 > **Origin:** brief-439 / D-240 Phase B audit row R8 (unified text contract);
->   graphical HTML/SVG widgets restored in spec 4.0/4.1 (D-249, brief-447/448).
+>   graphical HTML/SVG widgets restored in spec 4.0/4.1 (D-249, brief-447/448);
+>   chat-session title lines added in spec 4.2.
 
 This document describes the PRISM banner contract: the line-by-line structure
 of the boot and finalization banners, the `banner_spec_version` handshake, and
@@ -47,7 +48,10 @@ grammar — never a second format.
 restored OPTIONAL graphical widgets (D-249) as NEW, separate fields —
 `boot_masthead_svg` (boot) and `finalization_banner_html` (finalize) — rendered
 by `renderBootMastheadSvg` / `renderFinalizationBannerHtml`; `banner_text`
-stays the guaranteed fallback when a widget render fails.
+stays the guaranteed fallback when a widget render fails. Spec 4.2 adds
+chat-session title lines to those graphical widgets: boot renders
+`Chat: {session_name_line}` and finalization renders
+`Next chat: {nextSessionNameLine}`.
 
 ---
 
@@ -62,6 +66,7 @@ Both surfaces consume the same TypeScript data contract, `UnifiedBannerInput`
 | `templateVersion` | `string` | Framework template version, e.g. `"2.19.1"`; `"unknown"` when unparseable |
 | `sessionNumber` | `number` | Current session number |
 | `timestamp` | `string` | CST timestamp `"MM-DD-YY HH:MM:SS"` |
+| `sessionNameLine` | `string \| null` (optional, boot graphical widget only) | Full current chat title rendered inside `boot_masthead_svg` as `Chat: {session_name_line}` |
 | `handoffVersion` | `number` | Handoff document version number |
 | `handoffNote` | `string` | Parenthetical after the handoff version: boot `"{size}KB"`; finalize `"pushed" \| "push failed" \| "unverified"` |
 | `decisionCount` | `number` | Total decision count |
@@ -131,6 +136,10 @@ Rule 2 (core-template-mcp.md) consumes this field: lines 1–3 verbatim, the
 client-computed Tool Surface line inserted as line 4, the `Suggested:` line
 verbatim when present, and all remaining lines verbatim.
 
+`boot_masthead_svg` additionally renders the server-composed
+`session_name_line` as `Chat: {session_name_line}`. This does not change the
+plain `banner_text` grammar.
+
 ### 2.2 Finalization banner (surface `finalize`)
 
 | Element | Value |
@@ -172,11 +181,11 @@ renders it was previously undetectable. The handshake makes it visible:
 1. **Server emits.** Every `prism_bootstrap` response and every
    `prism_finalize` response (audit, commit, full) carries
    `banner_spec_version` — the spec version of this document that the
-   server's generator implements (currently `4.1`, the
+   server's generator implements (currently `4.2`, the
    `BANNER_SPEC_VERSION` constant in `src/utils/banner.ts`).
 2. **Template declares.** A framework template that consumes the banner
    declares the spec version it renders with a line of the form
-   `Banner-Spec-Version: 4.1` (tolerated variants: bold/blockquote markup,
+   `Banner-Spec-Version: 4.2` (tolerated variants: bold/blockquote markup,
    space/underscore separators, optional `v` prefix). Placement: in the
    template header block, **after** the `Template Version:` line —
    `prism_bootstrap` prefers the explicit `Template Version` declaration,
@@ -226,13 +235,13 @@ place, `banner_text: null` should not occur in practice.
 
 ---
 
-## 5. Surface Status (current at spec 4.1)
+## 5. Surface Status (current at spec 4.2)
 
 | Field | Status | Behavior |
 |-------|--------|----------|
 | `banner_text` (boot + finalize) | **Live** | The universal text contract; always emitted. |
-| `boot_masthead_svg` (bootstrap) | **Live** (D-249, brief-447) | SVG masthead for `visualize:show_widget`; `null` on render failure (then `banner_text` is the fallback). |
-| `finalization_banner_html` (finalize commit/full) | **Live** (D-249, brief-447/448) | HTML widget for `visualize:show_widget`; `null` on render failure (then `banner_text` is the fallback). |
+| `boot_masthead_svg` (bootstrap) | **Live** (D-249, brief-447; v4.2 title line) | SVG masthead for `visualize:show_widget`; includes `Chat: {session_name_line}`; `null` on render failure (then `banner_text` is the fallback). |
+| `finalization_banner_html` (finalize commit/full) | **Live** (D-249, brief-447/448; v4.2 next-title line) | HTML widget for `visualize:show_widget`; includes `Next chat: {nextSessionNameLine}` when supplied; `null` on render failure (then `banner_text` is the fallback). |
 | `banner_html` (bootstrap) | **Removed** (brief-466 / SRV-114) | Was a permanently-`null` back-compat field; the live SVG widget uses `boot_masthead_svg`. |
 | `synthesis_banner_html` (finalize commit) | **Removed** (brief-466 / SRV-114) | Was a permanently-`null` back-compat field. |
 | `banner_data` (bootstrap) | **Removed** (brief-439) | The single-line fallback in `banner_text` replaces it. `project_display_name` is now a top-level bootstrap response field. |
@@ -240,7 +249,8 @@ place, `banner_text: null` should not occur in practice.
 
 The text generator is the single source for `banner_text`; the graphical
 widgets are produced by `renderBootMastheadSvg` / `renderFinalizationBannerHtml`
-(restored in 4.0/4.1 after the brief-439 deletion described in §6).
+(restored in 4.0/4.1 after the brief-439 deletion described in §6, with
+chat-session title lines added in 4.2).
 
 ---
 
@@ -253,5 +263,6 @@ widgets are produced by `renderBootMastheadSvg` / `renderFinalizationBannerHtml`
 | 3.0 | 2026-06-04 (brief-439 / D-240 Phase B R8) | Unified text contract: one generator for boot + finalize `banner_text`; `banner_spec_version` handshake + `BANNER_DRIFT` diagnostic; HTML widgets deprecated (fields null); `banner_data` fallback removed; Rule 2 single-line fallback rendered server-side. |
 | 4.0 | 2026-06-08 (brief-447 / D-249) | Graphical widgets RESTORED as new fields: `boot_masthead_svg` (boot) + `finalization_banner_html` (commit), rendered via `renderBootMastheadSvg` / `renderFinalizationBannerHtml` for `visualize:show_widget`. `banner_text` remains the guaranteed fallback. |
 | 4.1 | 2026-06 (brief-448 + 4c242ed) | `finalization_banner_html` extended to the `action=full` surface (matching commit). Authority for the contract moved to the framework templates + `src/utils/banner.ts`. |
+| 4.2 | 2026-06-24 (PRISMA session title banners) | Graphical widgets include chat-session title lines: boot masthead renders `Chat: {session_name_line}`; finalization widget renders `Next chat: {nextSessionNameLine}`. Unified `banner_text` grammar is unchanged. |
 
 <!-- EOF: banner-spec.md -->

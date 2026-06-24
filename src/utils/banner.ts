@@ -45,11 +45,12 @@ export interface BannerStatusEntry {
  * 4.0 (D-249) restores the graphical banners — boot SVG masthead +
  * finalization HTML widget — atop the unified text generator. 4.1 (D-256) —
  * session-state color designation: green boot pill, red finalized pill + 3px
- * top accent strip; structure, grammar, and data contracts unchanged.
+ * top accent strip. 4.2 adds explicit chat-session title lines to the graphical
+ * boot/finalize widgets while leaving the unified text grammar unchanged.
  * Contracts: `_templates/banner-spec.md` and
  * `_templates/finalization-banner-spec.md`.
  */
-export const BANNER_SPEC_VERSION = "4.1";
+export const BANNER_SPEC_VERSION = "4.2";
 
 /** Status glyphs shared by every banner surface. */
 const STATUS_ICONS: Record<BannerStatusEntry["status"], string> = {
@@ -78,6 +79,8 @@ export interface UnifiedBannerInput {
   sessionNumber: number;
   /** CST timestamp, "MM-DD-YY HH:MM:SS" (see generateCstTimestamp). */
   timestamp: string;
+  /** Full chat title for the current boot session; graphical masthead only. */
+  sessionNameLine?: string | null;
   handoffVersion: number;
   /** Parenthetical after the handoff version — boot: "{size}KB";
    *  finalize: "pushed" | "push failed" | "unverified". */
@@ -298,7 +301,11 @@ export function renderBootMastheadSvg(data: UnifiedBannerInput): string {
   const desc =
     `Boot status masthead showing session ${data.sessionNumber}, timestamp, ` +
     `handoff and decision counts, ${data.statusRow.length} status checks` +
+    `${data.sessionNameLine ? ", chat session title" : ""}` +
     `${hasSuggested ? ", and the suggested session setting" : ""}.`;
+  const sessionLine = data.sessionNameLine?.trim()
+    ? `Chat: ${data.sessionNameLine.trim()}`
+    : `Session ${data.sessionNumber}`;
 
   const parts: string[] = [
     `<svg width="100%" viewBox="0 0 680 ${viewBoxHeight}" role="img" xmlns="http://www.w3.org/2000/svg">`,
@@ -310,8 +317,8 @@ export function renderBootMastheadSvg(data: UnifiedBannerInput): string {
     `<text x="182" y="80" class="ts" font-size="13">v${esc(data.templateVersion)}</text>`,
     `<g class="c-green"><rect x="556" y="60" width="60" height="22" rx="11"/><text x="586" y="75" class="ts" text-anchor="middle">boot</text></g>`,
     `<line x1="64" y1="98" x2="616" y2="98" stroke="var(--color-border-tertiary)" stroke-width="0.5"/>`,
-    `<text x="64" y="124" class="th" font-size="16">Session ${data.sessionNumber}</text>`,
-    `<text x="176" y="124" class="ts" font-size="13">${esc(data.timestamp)} CST</text>`,
+    `<text x="64" y="124" class="th" font-size="${data.sessionNameLine ? "13" : "16"}">${esc(sessionLine)}</text>`,
+    ...(data.sessionNameLine ? [] : [`<text x="176" y="124" class="ts" font-size="13">${esc(data.timestamp)} CST</text>`]),
     `<rect x="64" y="144" width="150" height="24" rx="6" fill="var(--color-background-primary)" stroke="var(--color-border-tertiary)" stroke-width="0.5"/>`,
     `<text x="139" y="160" class="ts" text-anchor="middle">Handoff v${data.handoffVersion} · ${esc(data.handoffNote)}</text>`,
     `<rect x="226" y="144" width="190" height="24" rx="6" fill="var(--color-background-primary)" stroke="var(--color-border-tertiary)" stroke-width="0.5"/>`,
@@ -387,6 +394,8 @@ export interface FinalizationBannerHtmlInput {
   deliverables: string[];
   /** Next-session pointer; the line is omitted when null/empty. */
   next?: string | null;
+  /** Full chat title for the next session; omitted when null/empty. */
+  nextSessionNameLine?: string | null;
 }
 
 /** Phase-step glyph CSS color variables for the finalization HTML widget. */
@@ -402,13 +411,14 @@ const PHASE_COLOR_VAR: Record<BannerStatusEntry["status"], string> = {
  * byte-identical to the approved `_templates/finalization-banner-spec.md`
  * target; only the annotated data interpolates. The "finalized" pill and the
  * card's 3px top accent strip carry the red session-end designation (D-256,
- * spec 4.1) via the danger CSS variables; phase-step glyphs keep their status
- * colors — green ✓ still means phase success. The variable-length
- * Deliverables list wraps natively — one `▸` row per deliverable (the last row
- * drops its bottom margin to match the target). The self-contained `.brand`/
- * `.mark` `<style>` block is intentionally hardcoded purple + dark `@media`
- * (no host CSS var exists for the brand color); all other colors stay on the
- * `visualize` design-system CSS variables for theming/dark-mode.
+ * spec 4.1) via the danger CSS variables; spec 4.2 adds the optional next
+ * chat-session title line. Phase-step glyphs keep their status colors — green
+ * ✓ still means phase success. The variable-length Deliverables list wraps
+ * natively — one `▸` row per deliverable (the last row drops its bottom margin
+ * to match the target). The self-contained `.brand`/`.mark` `<style>` block is
+ * intentionally hardcoded purple + dark `@media` (no host CSS var exists for
+ * the brand color); all other colors stay on the `visualize` design-system CSS
+ * variables for theming/dark-mode.
  */
 export function renderFinalizationBannerHtml(data: FinalizationBannerHtmlInput): string {
   const esc = escapeMarkup;
@@ -481,6 +491,12 @@ export function renderFinalizationBannerHtml(data: FinalizationBannerHtmlInput):
   if (data.next != null && data.next.trim() !== "") {
     lines.push(
       `  <div style="margin-top:12px;font-size:12px;color:var(--color-text-tertiary);">Next: ${esc(data.next)}</div>`,
+    );
+  }
+
+  if (data.nextSessionNameLine != null && data.nextSessionNameLine.trim() !== "") {
+    lines.push(
+      `  <div style="margin-top:${data.next?.trim() ? "6px" : "12px"};font-size:12px;color:var(--color-text-tertiary);">Next chat: ${esc(data.nextSessionNameLine.trim())}</div>`,
     );
   }
 

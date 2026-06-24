@@ -25,6 +25,7 @@ import {
   FINALIZE_DRAFT_DEADLINE_CC_MS,
   CC_SUBPROCESS_SYNTHESIS_TIMEOUT_MS,
   DOC_ROOT,
+  PROJECT_DISPLAY_NAMES,
   STANDING_RULES_WARNING_SIZE,
 } from "../config.js";
 import { detectSessionLogOrientation, splitForArchive, utf8ByteLength, type ArchiveConfig } from "../utils/archive.js";
@@ -34,6 +35,19 @@ const FINALIZE_COMMIT_DEADLINE_SENTINEL = Symbol("finalize.commit.deadline");
 
 /** Sentinel used to signal that the finalize-draft deadline fired (S41). */
 const FINALIZE_DRAFT_DEADLINE_SENTINEL = Symbol("finalize.draft.deadline");
+
+/**
+ * Derive the human-readable project name used in chat session titles.
+ * Mirrors bootstrap's display-name fallback so finalization can name the next
+ * chat without depending on bootstrap-local helpers.
+ */
+function getProjectDisplayName(slug: string): string {
+  if (PROJECT_DISPLAY_NAMES[slug]) return PROJECT_DISPLAY_NAMES[slug];
+  return slug
+    .split("-")
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
 
 /** Resolve the per-attempt timeout for draftPhase based on transport.
  *  cc_subprocess runs through the Agent SDK subprocess which has higher
@@ -1672,8 +1686,11 @@ async function assembleFinalizeBanner(
       { label: "verified", status: stepStatuses.verified ?? (allVerified ? "ok" : "warn") },
     ];
 
-    // One timestamp shared by the text banner and the HTML widget.
+    // One timestamp shared by the text banner, HTML widget, and next-chat
+    // title so the visible finalization contract cannot drift internally.
     const timestamp = generateCstTimestamp();
+    const nextSessionNameLine =
+      `${getProjectDisplayName(projectSlug)} \u2014 Session ${sessionNumber + 1}: ${timestamp} CST`;
 
     const bannerText = renderUnifiedBanner({
       surface: "finalize",
@@ -1720,6 +1737,7 @@ async function assembleFinalizeBanner(
         nextStepsForRecommendation.length > 0
           ? stripMarkdown(nextStepsForRecommendation[0])
           : null,
+      nextSessionNameLine,
     };
 
     logger.info("finalization banner rendered", { textLength: bannerText.length });
