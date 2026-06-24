@@ -1306,11 +1306,13 @@ export function registerBootstrap(server: McpServer): void {
         // is the only banner format (docs/banner-spec.md).
         // Shared boot-banner input — pure data assembly, feeds BOTH the text
         // generator and the SVG masthead so they agree by construction.
+        const sessionNameLine = `${projectDisplayName} \u2014 Session ${sessionNumber}: ${sessionTimestamp} CST`;
         const bannerInput: UnifiedBannerInput = {
           surface: "boot",
           templateVersion: handoffTemplateVersion,
           sessionNumber,
           timestamp: sessionTimestamp,
+          sessionNameLine,
           handoffVersion,
           handoffNote: `${(handoff.size / 1024).toFixed(1)}KB`,
           decisionCount: decisions.length,
@@ -1361,7 +1363,7 @@ export function registerBootstrap(server: McpServer): void {
           session_count: sessionCount,
           session_number: sessionNumber,
           session_timestamp: sessionTimestamp,
-          session_name_line: `${projectDisplayName} \u2014 Session ${sessionNumber}: ${sessionTimestamp} CST`,
+          session_name_line: sessionNameLine,
           handoff_size_bytes: handoff.size,
           scaling_required: scalingRequired,
           critical_context: criticalContext,

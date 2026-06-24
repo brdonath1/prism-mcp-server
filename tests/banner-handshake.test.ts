@@ -233,6 +233,13 @@ describe("prism_bootstrap banner_spec_version handshake", () => {
     expect(data.banner_text).toBeTruthy();
     expect(data.banner_data).toBeUndefined();
   });
+
+  it("boot_masthead_svg includes the exact server-composed session_name_line", async () => {
+    setupBootstrapMocks(templateContent(null));
+    const data = parse(await handlers.prism_bootstrap({ project_slug: "prism" }));
+    expect(data.session_name_line).toBeTruthy();
+    expect(data.boot_masthead_svg).toContain(data.session_name_line);
+  });
 });
 
 // ── Finalize: unified banner_text + handshake ────────────────────────────────
@@ -326,6 +333,7 @@ describe("prism_finalize unified banner", () => {
     expect(data.finalization_banner_html).toContain("PRISM");
     expect(data.finalization_banner_html).toContain("Session 26 finalized");
     expect(data.finalization_banner_html).toContain("Handoff v30 → v31 · pushed");
+    expect(data.finalization_banner_html).toContain("Next chat: Test Project — Session 27:");
     expect(data.banner_text).toBeTruthy();
   });
 
@@ -440,6 +448,7 @@ describe("prism_finalize unified banner", () => {
     expect(data.finalization_banner_html).toContain("finalized");
     expect(data.finalization_banner_html).toContain("Session 26 finalized");
     expect(data.finalization_banner_html).toContain("Handoff v30 → v31 · pushed");
+    expect(data.finalization_banner_html).toContain("Next chat: Test Project — Session 27:");
     // banner_text stays the genuine fallback alongside the widget.
     expect(data.banner_text).toBeTruthy();
   });
@@ -505,6 +514,7 @@ const MASTHEAD_INPUT: UnifiedBannerInput = {
   templateVersion: "2.19.1",
   sessionNumber: 156,
   timestamp: "06-07-26 14:21:51",
+  sessionNameLine: "PRISM Framework — Session 156: 06-07-26 14:21:51 CST",
   handoffVersion: 163,
   handoffNote: "7.3KB",
   decisionCount: 201,
@@ -538,6 +548,7 @@ describe("renderBootMastheadSvg (brief-447 / D-249)", () => {
     expect(svg).toContain("Handoff v163 · 7.3KB");
     expect(svg).toContain("201 decisions · 20 guardrails");
     expect(svg).toContain("10/10 docs healthy");
+    expect(svg).toContain("Chat: PRISM Framework — Session 156: 06-07-26 14:21:51 CST");
   });
 
   it("omits the Suggested line (and tightens the viewBox) when suggested is null", () => {
@@ -584,6 +595,7 @@ describe("renderFinalizationBannerHtml (brief-447 / D-249)", () => {
       ],
       deliverables,
       next: "D-249 follow-through → PAT rotation Phase 2",
+      nextSessionNameLine: "PRISM Framework — Session 157: 06-07-26 15:40:02 CST",
     });
     expect(html.length).toBeGreaterThan(0);
     expect(html).toContain("<style>");
@@ -594,6 +606,7 @@ describe("renderFinalizationBannerHtml (brief-447 / D-249)", () => {
       expect(html).toContain(deliverable);
     }
     expect(html).toContain("Next: D-249 follow-through → PAT rotation Phase 2");
+    expect(html).toContain("Next chat: PRISM Framework — Session 157: 06-07-26 15:40:02 CST");
   });
 
   it("omits the Next line when next is null", () => {
@@ -652,21 +665,21 @@ describe("renderFinalizationBannerHtml (brief-447 / D-249)", () => {
 });
 
 describe("banner spec version (brief-452 / D-256)", () => {
-  it("BANNER_SPEC_VERSION is bumped to 4.1", () => {
-    expect(BANNER_SPEC_VERSION).toBe("4.1");
+  it("BANNER_SPEC_VERSION is bumped to 4.2", () => {
+    expect(BANNER_SPEC_VERSION).toBe("4.2");
   });
 
-  it("parseTemplateBannerSpecVersion: a 3.x template declaration drifts from the 4.1 server spec", () => {
+  it("parseTemplateBannerSpecVersion: a 3.x template declaration drifts from the 4.2 server spec", () => {
     // A template still declaring spec 3.x parses to "3.0" and mismatches the
-    // server's current 4.1 — exactly the BANNER_DRIFT condition (expected and
+    // server's current 4.2 — exactly the BANNER_DRIFT condition (expected and
     // transient until the companion framework brief-602 templates declare
-    // 4.1). A 4.1 declaration matches and does not drift.
+    // 4.2). A 4.2 declaration matches and does not drift.
     expect(parseTemplateBannerSpecVersion("> **Banner-Spec-Version:** 3.0")).toBe("3.0");
     expect(parseTemplateBannerSpecVersion("> **Banner-Spec-Version:** 3.0")).not.toBe(
       BANNER_SPEC_VERSION,
     );
     expect(
       parseTemplateBannerSpecVersion(`> **Banner-Spec-Version:** ${BANNER_SPEC_VERSION}`),
-    ).toBe("4.1");
+    ).toBe("4.2");
   });
 });
