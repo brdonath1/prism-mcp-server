@@ -81,8 +81,8 @@ describe("SRV-60 — SYNTHESIS_ENABLED widened to the OAuth + cc_subprocess depl
 });
 
 describe("SRV-62 — model-aware chars-per-token", () => {
-  it("uses the Opus-tier 3.5 ratio for current fallback defaults", () => {
-    expect(synthesisCharsPerToken("claude-fable-5")).toBe(3.5);
+  it("keeps explicit Fable overrides on the conservative historical ratio", () => {
+    expect(synthesisCharsPerToken("claude-fable-5")).toBe(2.7);
     expect(synthesisCharsPerToken("claude-opus-4-8")).toBe(3.5);
     expect(synthesisCharsPerToken("claude-sonnet-4-6")).toBe(3.5);
   });

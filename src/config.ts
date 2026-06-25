@@ -214,11 +214,11 @@ export const SYNTHESIS_INPUT_TARGET_TOKENS =
  *  countTokens is a network call — wrong for this fire-and-forget cap).
  *
  *  Fable 5 previously used a heavier 2.7 proxy. After the 2026-06-25 Fable
- *  availability rollback, Opus-tier 3.5 is again the active fallback default.
+ *  availability rollback, Opus-tier 3.5 is again the active fallback default,
+ *  but explicit stale Fable env overrides still get the conservative estimate.
  *  Lower ratio = MORE estimated tokens = earlier, safer trimming. */
 export function synthesisCharsPerToken(model: string): number {
-  void model;
-  return 3.5;
+  return /fable/i.test(model) ? 2.7 : 3.5;
 }
 export const SYNTHESIS_CHARS_PER_TOKEN = synthesisCharsPerToken(SYNTHESIS_MODEL);
 
