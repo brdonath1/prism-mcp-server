@@ -6,7 +6,7 @@ This is the **PRISM MCP Server** — a custom remote MCP (Model Context Protocol
 
 **Owner:** Brian (brdonath1 on GitHub)
 **Framework:** PRISM — current version pinned by the framework repo's core-template; fetched dynamically at bootstrap.
-**Server Version:** 4.7.0
+**Server Version:** 4.9.0
 **Status:** Production — deployed on Railway, serving all active PRISM projects.
 
 ## What PRISM Is
@@ -25,7 +25,7 @@ The MCP server is the v2 evolution — separating Claude into a pure reasoning a
 └───────────────┬───────────────────────────────┘
                 │ MCP Protocol (HTTPS)
 ┌───────────────▼───────────────────────────────┐
-│  PRISM MCP Server (Railway) — v4.8.0          │
+│  PRISM MCP Server (Railway) — v4.9.0          │
 │  25 MCP tools — stateless proxy               │
 │  ├── 13 PRISM  (bootstrap/fetch/push/...)     │
 │  ├──  4 Railway (logs/deploy/env/status)      │
@@ -54,7 +54,7 @@ The MCP server is the v2 evolution — separating Claude into a pure reasoning a
 - **HTTP framework:** Express 5.x
 - **Transport:** MCP Streamable HTTP, **stateless mode** (`sessionIdGenerator: undefined`)
 - **Validation:** Zod
-- **AI Synthesis:** `@anthropic-ai/sdk` — model is the registry single-switch `SYNTHESIS_MODEL_ID` in `src/models.ts` (D-254); the live model is set by Railway env (`SYNTHESIS_{BRIEF,DRAFT,PDU}_MODEL/_TRANSPORT`), not hardcoded here
+- **AI Synthesis:** `@anthropic-ai/sdk` plus provider adapters for live multi-provider synthesis. Anthropic fallback uses the registry single-switch `SYNTHESIS_MODEL_ID` in `src/models.ts` (D-254); `LLM_ROUTING_*_PROVIDER` can route synthesis through OpenAI, Gemini, DeepSeek, xAI, or Perplexity when enabled.
 - **Claude Code orchestration:** `@anthropic-ai/claude-agent-sdk` + `@anthropic-ai/claude-code` (subprocess)
 - **GitHub API client:** Plain `fetch` (Node.js 18+ built-in) — no Octokit
 - **Hosting:** Railway (persistent Node.js service)
@@ -82,23 +82,28 @@ The MCP server is the v2 evolution — separating Claude into a pure reasoning a
 | `SYNTHESIS_{BRIEF,DRAFT,PDU}_TRANSPORT` | optional | Per-call-site transport: `messages_api` or `cc_subprocess` (production synthesis routing) |
 | `CC_DISPATCH_MODEL` | optional | Override the Claude Code dispatch model (default: `CC_DISPATCH_MODEL_ID` in `src/models.ts`) |
 | `CC_DISPATCH_MAX_TURNS` | optional | Default agent turn cap (default: 50) |
-| `LLM_ROUTING_ENABLED` / `LLM_ROUTING_DRY_RUN` | optional | Dormant multi-provider routing observation flags. Defaults are disabled/dry-run; these do not authorize live provider routing. |
-| `LLM_ROUTING_*_PROVIDER` | optional | Observation-only provider preference names for route readiness summaries. Existing `SYNTHESIS_*`, `RECOMMENDATION_MODEL_*`, and `CC_DISPATCH_*` env semantics remain authoritative. |
+| `OPENAI_API_KEY` / `GEMINI_API_KEY` / `DEEPSEEK_API_KEY` / `XAI_API_KEY` / `PERPLEXITY_API_KEY` | optional | Provider credentials for live multi-provider synthesis routes. Values must stay in Railway/env/secret stores, never source. |
+| `LLM_ROUTING_ENABLED` / `LLM_ROUTING_DRY_RUN` | optional | Multi-provider synthesis routing switch. Live provider invocation requires enabled=true and dry-run=false. |
+| `LLM_ROUTING_*_PROVIDER` | optional | Provider preference names for synthesis route selection and sanitized status. `LLM_ROUTING_CC_DISPATCH_PROVIDER` remains Claude-only unless a future non-Claude code runner exists. |
+| `LLM_ROUTING_{OPENAI,GEMINI,DEEPSEEK,XAI,PERPLEXITY}_MODEL` | optional | Provider model override. Defaults are OpenAI `gpt-5.5`, Gemini `gemini-3.1-pro-preview`, DeepSeek `deepseek-v4-pro`, xAI `grok-4.3`, and Perplexity `sonar-pro`. |
 
 > This table covers the load-bearing knobs. The complete, authoritative env-var
 > surface (~40 reads, including `SYNTHESIS_*`, `*_TIMEOUT_MS`, oversize/cap
 > thresholds) lives in `src/config.ts`; treat it as the source of truth.
 
-### Multi-provider routing boundary
+### Multi-provider synthesis routing boundary
 
-The `src/llm/*` route resolver is observation-only. It emits sanitized
+The `src/llm/*` route resolver can authorize live provider synthesis only when
+`LLM_ROUTING_ENABLED=true`, `LLM_ROUTING_DRY_RUN=false`, the selected provider is
+allowed, and the provider auth env var is present. It emits sanitized
 `LLM_ROUTE_OBSERVATION` logs and `prism_status.llm_routing` summaries using
-provider names, model ids, transport names, and auth env-var names only. It does
-not read or log credential values, does not authorize live provider routing,
-does not change existing Anthropic Messages API / Claude Code dispatch paths,
-and does not permit Railway routing variable mutation. Any live non-Anthropic
-provider activation requires a separate reviewed activation plan, redacted
-evidence, rollback path, and no unresolved model disagreement.
+provider names, model ids, transport names, and auth env-var names only. It must
+not log credential values or live provider payloads. Provider failures fall back
+to the existing Anthropic synthesis path.
+
+`cc_dispatch` remains Claude Code OAuth execution. A non-Claude provider name in
+`LLM_ROUTING_CC_DISPATCH_PROVIDER` must not redirect code dispatch to a generic
+completion API; that would require a separate code-runner subsystem.
 
 ## Key Technical Constraints
 

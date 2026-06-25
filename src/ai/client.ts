@@ -12,6 +12,10 @@ import {
   SYNTHESIS_TIMEOUT_MS,
   MCP_SAFE_TIMEOUT,
 } from "../config.js";
+import {
+  isLiveProviderSynthesisDecision,
+  synthesizeViaProvider,
+} from "../llm/provider-adapters.js";
 import { observeRoute } from "../llm/route-observer.js";
 import type { LlmSurface, LlmTransport } from "../llm/route-types.js";
 import { logger } from "../utils/logger.js";
@@ -36,7 +40,14 @@ export interface SynthesisResult {
   model: string;
   /** brief-417: which transport produced this result. Optional because legacy
    *  callers (no callSite passed to synthesize) don't always need to know. */
-  transport?: "messages_api" | "cc_subprocess" | "messages_api_fallback";
+  transport?:
+    | "messages_api"
+    | "cc_subprocess"
+    | "messages_api_fallback"
+    | "openai_responses"
+    | "openai_compatible_chat"
+    | "gemini_generate_content"
+    | "xai_responses";
   /** brief-456 (SRV-07): the Messages API stop_reason, propagated so callers
    *  can refuse to push truncated output (`max_tokens`) over a good artifact.
    *  Absent on the cc_subprocess transport (the Agent SDK has its own
@@ -176,8 +187,9 @@ export async function synthesize(
   // unchanged.
   const routing = callSite ? resolveCallSiteRouting(callSite) : null;
   const routeSurface = callSite ? SYNTHESIS_ROUTE_SURFACE[callSite] : undefined;
+  let routeDecision: ReturnType<typeof observeRoute> | null = null;
   if (routing && routeSurface) {
-    observeRoute({
+    routeDecision = observeRoute({
       surface: routeSurface,
       taskClass: `synthesis-${callSite}`,
       reasoningSetting: thinking ? "adaptive" : null,
@@ -187,6 +199,35 @@ export async function synthesize(
         routing.transport === "cc_subprocess"
           ? "CLAUDE_CODE_OAUTH_TOKEN"
           : "ANTHROPIC_API_KEY",
+    });
+  }
+
+  if (routeDecision && isLiveProviderSynthesisDecision(routeDecision)) {
+    const providerOutcome = await synthesizeViaProvider({
+      decision: routeDecision,
+      systemPrompt,
+      userContent,
+      maxTokens,
+      timeoutMs,
+    });
+    if (providerOutcome.success) {
+      logger.info("Synthesis provider call complete", {
+        provider: routeDecision.provider,
+        model: providerOutcome.model,
+        transport: providerOutcome.transport,
+        input_tokens: providerOutcome.input_tokens,
+        output_tokens: providerOutcome.output_tokens,
+        projectSlug,
+      });
+      return providerOutcome;
+    }
+    logger.warn("SYNTHESIS_PROVIDER_FALLBACK — provider route failed, retrying Anthropic path", {
+      provider: routeDecision.provider,
+      model: routeDecision.model,
+      transport: routeDecision.transport,
+      original_error: providerOutcome.error,
+      original_error_code: providerOutcome.error_code,
+      projectSlug,
     });
   }
 

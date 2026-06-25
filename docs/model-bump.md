@@ -169,28 +169,29 @@ They must not be used as active registry defaults, Railway env targets, or
 fresh model-bump destinations until a later target-specific reviewed plan
 records new operator availability evidence.
 
-## 7. Multi-provider routing readiness
+## 7. Multi-provider routing activation
 
-Multi-provider routing readiness is separate from the Anthropic model bump SOP.
-The dormant resolver can report route observations and status summaries from
-`LLM_ROUTING_ENABLED`, `LLM_ROUTING_DRY_RUN`, `LLM_ROUTING_PROFILE`, and
-`LLM_ROUTING_*_PROVIDER` names, but these flags are observation-only until a
-separate reviewed activation changes the live behavior.
+Multi-provider synthesis routing is separate from the Anthropic model bump SOP.
+When `LLM_ROUTING_ENABLED=true` and `LLM_ROUTING_DRY_RUN=false`, synthesis
+surfaces can invoke the configured non-Anthropic provider first, then fall back
+to the existing Anthropic path if the provider fails or returns unusable text.
+Dry-run mode still reports observations without changing execution.
 
 Current guarantees:
 
 - Existing `SYNTHESIS_*`, `RECOMMENDATION_MODEL_*`, and `CC_DISPATCH_*` env
-  precedence remains authoritative for real synthesis, advisory recommendation,
-  and dispatch execution.
+  precedence remains available for Anthropic/Claude fallback behavior.
 - `LLM_ROUTE_OBSERVATION` and `prism_status.llm_routing` must contain only
   provider names, model ids, transport names, auth env-var names, and routing
   status. They must not contain credential values or live provider payloads.
-- Non-Anthropic providers remain readiness-only or blocked until provider
-  adapters, auth contracts, quality/cost evidence, rollback, and implementation
-  review pass.
-- Railway routing variables, MCP live behavior, Trigger behavior, CI behavior,
-  production deploys, credential work, and active Claude.ai Project settings
-  remain outside this SOP unless a later target-specific reviewed plan says
-  otherwise.
+- Live synthesis adapters are implemented for OpenAI Responses, Gemini
+  generateContent, xAI Responses, and OpenAI-compatible chat providers
+  DeepSeek and Perplexity.
+- `cc_dispatch` remains Claude Code OAuth execution. Non-Claude providers do
+  not execute code dispatches unless a future runner subsystem is built.
+- Provider keys, credential creation/rotation, billing/payment changes, active
+  Claude.ai Project settings, Trigger behavior, CI behavior, and unrelated
+  Railway variables remain outside this SOP unless a target-specific operator
+  action says otherwise.
 
 <!-- EOF: model-bump.md -->
