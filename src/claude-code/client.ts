@@ -30,6 +30,7 @@ import { execSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { CC_DISPATCH_EFFORT, CC_DISPATCH_MODEL, CLAUDE_CODE_OAUTH_TOKEN } from "../config.js";
+import { observeRoute } from "../llm/route-observer.js";
 import { isSensitiveKey } from "../railway/client.js";
 import { logger } from "../utils/logger.js";
 
@@ -257,6 +258,14 @@ export async function dispatchTask(
     model = CC_DISPATCH_MODEL,
     timeoutMs,
   } = options;
+  observeRoute({
+    surface: "cc_dispatch",
+    taskClass: "code",
+    reasoningSetting: CC_DISPATCH_EFFORT,
+    currentModel: model,
+    currentTransport: "claude_code_oauth",
+    currentAuthEnvVar: "CLAUDE_CODE_OAUTH_TOKEN",
+  });
 
   // Pre-flight: find and validate the claude binary
   const executable = findClaudeExecutable();

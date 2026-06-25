@@ -14,6 +14,8 @@ vi.mock("../src/github/client.js", () => ({
 import { fetchFile, fileExists, listDirectory, listRepos } from "../src/github/client.js";
 import {
   registerStatus,
+  clearHandoffExistenceCache,
+  clearRepoListCache,
   formatArchivesLine,
   STATUS_ARCHIVE_FILES,
 } from "../src/tools/status.js";
@@ -89,6 +91,8 @@ async function callStatusTool(args: Record<string, unknown>): Promise<any> {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  clearRepoListCache();
+  clearHandoffExistenceCache();
 });
 
 // SRV-70: legacy pre-.prism repos keep living docs at the repo root. The
@@ -117,6 +121,58 @@ describe("prism_status SRV-70 legacy-root fallback", () => {
     expect(data.missing_documents).toEqual([]);
     expect(data.documents_present).toBe(data.documents_total);
     expect(data.handoff_version).toBe(5); // parsed from the fetched handoff content
+  });
+
+  it("includes sanitized LLM routing readiness without env values", async () => {
+    setupProject();
+    process.env.LLM_ROUTING_ENABLED = "true";
+    process.env.LLM_ROUTING_DRY_RUN = "true";
+    process.env.LLM_ROUTING_ALLOWED_PROVIDERS = "anthropic,perplexity";
+    process.env.PERPLEXITY_API_KEY = "pplx-test-secret-should-not-log";
+
+    try {
+      const data = await callStatusTool({ project_slug: "route-project", include_details: false });
+
+      expect(data.llm_routing).toMatchObject({
+        status: "dry_run",
+        liveInvocationAllowed: false,
+        allowedProviders: ["anthropic", "perplexity"],
+      });
+      expect(data.llm_routing.providerEnvVars).toContain("PERPLEXITY_API_KEY");
+      expect(JSON.stringify(data.llm_routing)).not.toContain("pplx-test-secret-should-not-log");
+    } finally {
+      delete process.env.LLM_ROUTING_ENABLED;
+      delete process.env.LLM_ROUTING_DRY_RUN;
+      delete process.env.LLM_ROUTING_ALLOWED_PROVIDERS;
+      delete process.env.PERPLEXITY_API_KEY;
+    }
+  });
+
+  it("includes sanitized LLM routing readiness in multi-project status", async () => {
+    setupProject();
+    mockListRepos.mockResolvedValue(["route-project"]);
+    process.env.LLM_ROUTING_ENABLED = "true";
+    process.env.LLM_ROUTING_DRY_RUN = "true";
+    process.env.LLM_ROUTING_ALLOWED_PROVIDERS = "anthropic,perplexity";
+    process.env.PERPLEXITY_API_KEY = "pplx-test-secret-should-not-log";
+
+    try {
+      const data = await callStatusTool({ include_details: false });
+
+      expect(data.total_projects).toBe(1);
+      expect(data.llm_routing).toMatchObject({
+        status: "dry_run",
+        liveInvocationAllowed: false,
+        allowedProviders: ["anthropic", "perplexity"],
+      });
+      expect(data.llm_routing.providerEnvVars).toContain("PERPLEXITY_API_KEY");
+      expect(JSON.stringify(data.llm_routing)).not.toContain("pplx-test-secret-should-not-log");
+    } finally {
+      delete process.env.LLM_ROUTING_ENABLED;
+      delete process.env.LLM_ROUTING_DRY_RUN;
+      delete process.env.LLM_ROUTING_ALLOWED_PROVIDERS;
+      delete process.env.PERPLEXITY_API_KEY;
+    }
   });
 });
 
