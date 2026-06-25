@@ -97,6 +97,7 @@ describe("SRV-95 — .env.example documents synthesis env vars", () => {
     expect(envExample).toContain("LLM_ROUTING_ENABLED=false");
     expect(envExample).toContain("LLM_ROUTING_DRY_RUN=true");
     expect(envExample).toContain("LLM_ROUTING_ALLOWED_PROVIDERS=anthropic");
+    expect(envExample).toContain("LLM_ROUTING_CC_DISPATCH_PROVIDER=anthropic");
     expect(envExample).not.toMatch(/sk-|ghp_|xox|BEGIN .*PRIVATE/);
   });
 });
