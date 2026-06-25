@@ -60,25 +60,26 @@
  * `as const` (no Record annotation) is required so the `code` literals survive
  * into the derived RecommendedModel union rather than widening to `string`.
  *
- * Fable 5 is the top capability tier as of S162 (a tier above Opus);
- * reasoning_heavy and mixed map to it. executional stays on Sonnet 4.6.
+ * Fable 5 was removed from active defaults on 2026-06-25 after operator
+ * availability evidence said it is unavailable for the foreseeable future.
+ * Opus 4.8 is the current Claude fallback target for reasoning_heavy and
+ * mixed. executional stays on Sonnet 4.6.
  */
 export const RECOMMENDATION_MODELS = {
-  reasoning_heavy: { code: "fable-5", display: "Fable 5", id: "claude-fable-5" },
-  mixed: { code: "fable-5", display: "Fable 5", id: "claude-fable-5" },
+  reasoning_heavy: { code: "opus-4-8", display: "Opus 4.8", id: "claude-opus-4-8" },
+  mixed: { code: "opus-4-8", display: "Opus 4.8", id: "claude-opus-4-8" },
   executional: { code: "sonnet-4-6", display: "Sonnet 4.6", id: "claude-sonnet-4-6" },
 } as const;
 
 /**
  * Model the server calls for background synthesis (intelligence-brief +
  * pending-doc-updates). This is an API model id. Overridable per deployment
- * via the SYNTHESIS_MODEL env var (see config.ts). Pinned to "claude-fable-5":
- * the INS-244 / INS-245 gate (OAuth-surface availability + cost) PASSED S162 —
- * operator probe confirmed both the full id and the "fable" alias return
- * completions on the Max OAuth CC surface. Future bumps remain gated the same
- * way and stay human-reviewed under the Phase-2 automation.
+ * via the SYNTHESIS_MODEL env var (see config.ts). Pinned to Opus 4.8 as the
+ * source fallback after Fable 5 was declared unavailable on 2026-06-25.
+ * Production merge/deploy and Railway env adoption remain gated by the model
+ * bump SOP's availability and cost checks.
  */
-export const SYNTHESIS_MODEL_ID = "claude-fable-5";
+export const SYNTHESIS_MODEL_ID = "claude-opus-4-8";
 
 /**
  * Default model for Claude Code dispatches (cc_dispatch / cc_status), sent to
@@ -88,7 +89,7 @@ export const SYNTHESIS_MODEL_ID = "claude-fable-5";
  * config.ts; pinning the full id keeps every server-side model default in
  * this file's single edit block.
  */
-export const CC_DISPATCH_MODEL_ID = "claude-fable-5";
+export const CC_DISPATCH_MODEL_ID = "claude-opus-4-8";
 
 /**
  * Derive a human display label from a model id — registry-coupled provenance

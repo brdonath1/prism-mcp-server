@@ -857,7 +857,7 @@ describe("prism_finalize draft phase", () => {
     // ~140KB each × 3 draft-relevant docs = ~420KB → well over the est-token
     // ceiling, so boundSynthesisInput must trim before the call (pre-brief-465
     // draftPhase never bounded — the full ~420KB would reach the model).
-    const big = "Lorem ipsum dolor sit amet consectetur. ".repeat(3500);
+    const big = "Lorem ipsum dolor sit amet consectetur. ".repeat(3600);
     const docMap = buildDocMap({
       "session-log.md": `# Session Log\n${big}\n<!-- EOF: session-log.md -->`,
       "insights.md": `# Insights\n${big}\n<!-- EOF: insights.md -->`,
@@ -870,7 +870,7 @@ describe("prism_finalize draft phase", () => {
       content: '{"handoff": {"content": "x"}}',
       input_tokens: 1,
       output_tokens: 1,
-      model: "claude-fable-5",
+      model: "claude-opus-4-8",
     });
 
     await callFinalizeTool({ project_slug: "test-project", action: "draft", session_number: 26 });

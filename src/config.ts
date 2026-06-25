@@ -213,16 +213,12 @@ export const SYNTHESIS_INPUT_TARGET_TOKENS =
  *  (a real tokenizer is deliberately NOT used: the SDK ships none locally and
  *  countTokens is a network call — wrong for this fire-and-forget cap).
  *
- *  MODEL-AWARE (brief-465): 3.5 was calibrated for Opus-tier tokenization, but
- *  the pinned default model (claude-fable-5) tokenizes ~30% HEAVIER — the same
- *  content yields ~30% more real tokens. Under 3.5, the SYNTHESIS_INPUT_MAX_TOKENS
- *  ceiling (estimated chars/3.5) silently admitted ~156K REAL Fable tokens before
- *  trimming, risking the very SYNTHESIS_TIMEOUT the budget exists to prevent.
- *  Derived from the RESOLVED SYNTHESIS_MODEL so a model bump re-calibrates
- *  automatically: 2.7 for the Fable family (heavier tokenizer), 3.5 otherwise.
+ *  Fable 5 previously used a heavier 2.7 proxy. After the 2026-06-25 Fable
+ *  availability rollback, Opus-tier 3.5 is again the active fallback default.
  *  Lower ratio = MORE estimated tokens = earlier, safer trimming. */
 export function synthesisCharsPerToken(model: string): number {
-  return /fable/i.test(model) ? 2.7 : 3.5;
+  void model;
+  return 3.5;
 }
 export const SYNTHESIS_CHARS_PER_TOKEN = synthesisCharsPerToken(SYNTHESIS_MODEL);
 

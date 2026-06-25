@@ -42,6 +42,8 @@ import {
   commitAndPushBranch,
 } from "../src/claude-code/repo.js";
 import { writeDispatchRecord } from "../src/dispatch-store.js";
+import { CC_DISPATCH_MODEL } from "../src/config.js";
+import { CC_DISPATCH_MODEL_ID } from "../src/models.js";
 import { registerCCDispatch } from "../src/tools/cc-dispatch.js";
 
 const mockDispatchTask = vi.mocked(dispatchTask);
@@ -131,6 +133,9 @@ describe("cc_dispatch — synchronous query mode", () => {
     const sdkArgs = mockDispatchTask.mock.calls[0][0];
     expect(sdkArgs.allowedTools).toEqual(["Read", "Glob", "Grep"]);
     expect(sdkArgs.workingDirectory).toBe("/tmp/cc-test-workdir");
+    expect(CC_DISPATCH_MODEL_ID).toBe("claude-opus-4-8");
+    expect(CC_DISPATCH_MODEL).toBe("claude-opus-4-8");
+    expect(sdkArgs.model).toBe("claude-opus-4-8");
 
     // Both initial + final records were persisted.
     expect(mockWriteRecord).toHaveBeenCalledTimes(2);

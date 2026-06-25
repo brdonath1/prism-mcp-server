@@ -1,10 +1,12 @@
 # Model Bump SOP — the canonical fleet migration procedure (D-254)
 
-> **Established S162** (brief-450), when the fleet moved to Claude Fable 5
-> (`claude-fable-5`). This document is the checklist for the NEXT bump. The
-> guiding invariant: **inside this repo, a model migration is one edit block
-> in `src/models.ts`** — everything else either derives from the registry or
-> lives on a surface outside this repo, enumerated below.
+> **Current source fallback** (2026-06-25): Claude Fable 5 is unavailable for
+> the foreseeable future per operator direction, so repo-visible defaults fall
+> back to Claude Opus 4.8 (`claude-opus-4-8`). This document is the checklist
+> for the NEXT bump. The guiding invariant: **inside this repo, a model
+> migration is one edit block in `src/models.ts`** — everything else either
+> derives from the registry or lives on a surface outside this repo, enumerated
+> below.
 
 ## 1. The single switch — `src/models.ts`
 
@@ -36,6 +38,9 @@ editing the registry:
 2. A new model **family** (as `fable` was in S162) must be added to
    `KNOWN_FAMILIES` in the script, or every scheduled run files an
    "unrecognized family" issue.
+3. Parser-compatible historical families are not automatically adoptable. If
+   operator evidence says a family is unavailable, the freshness automation
+   must not be merged to that family until a later reviewed plan re-enables it.
 
 ## 2. Precedence — env beats registry, registry is the fallback
 
@@ -121,9 +126,9 @@ changes both knobs at once:
 Therefore: clearing a call-site's env overrides is safe **only when the
 intended end-state for that call-site is `messages_api` + the registry
 default**. In particular, `SYNTHESIS_PDU_MODEL` is deliberately **held** on
-its Sonnet 4.6 long-context pin (with its `cc_subprocess` transport) until a
-Fable 5 long-context window probe passes — do not clear or "tidy" it during
-a bump.
+its Sonnet 4.6 long-context pin (with its `cc_subprocess` transport) until the
+replacement model's long-context window probe passes — do not clear or "tidy"
+it during a bump.
 
 ## 4. The canonical fleet bump — all surfaces, in order
 
@@ -133,7 +138,7 @@ the rest live outside this repo.
 | # | Surface | Owner / mechanism | Action |
 |---|---|---|---|
 | a | **This repo's registry** | PR to `src/models.ts` (the single switch, §1) | Edit the constants; keep `KNOWN_FAMILIES` + `extractPins()` contracts (§1); build/test/pin-audit; merge. Railway auto-deploys on merge. |
-| b | **Railway env overrides** | Chat-side (operator + claude.ai session) | Flip `SYNTHESIS_BRIEF_MODEL`, `SYNTHESIS_DRAFT_MODEL`, `CC_DISPATCH_MODEL` to the new id. S162 state: all three → `claude-fable-5`; `SYNTHESIS_PDU_MODEL` held (§3). Gate: INS-244 / INS-245 (§5). |
+| b | **Railway env overrides** | Chat-side (operator + claude.ai session) | Flip `SYNTHESIS_BRIEF_MODEL`, `SYNTHESIS_DRAFT_MODEL`, `CC_DISPATCH_MODEL` to the new id. 2026-06-25 source fallback: all three defaults → `claude-opus-4-8`; live Railway env values are not read or changed by this repo. `SYNTHESIS_PDU_MODEL` held (§3). Gate: INS-244 / INS-245 (§5). |
 | c | **Trigger daemon runtime config** | chezmoi-managed `~/.config/trigger/trigger.config.yaml` (INS-277) | Update the daemon's model setting in the chezmoi source, apply, then run the daemon's `rebuild-if-code` / kickstart path so running state picks it up. |
 | d | **Operator local Claude Code setting** | Operator's machine | Update the local CC model preference (e.g. `claude config` / settings) so interactive local sessions match the fleet. |
 | e | **Living-document references** | INS-307 per-line manifest — **only** | Do **not** mass-edit model mentions across PRISM living docs. The INS-307 manifest tracks model references per line; stale prose references are updated through normal doc maintenance, not a bump sweep. |
@@ -146,12 +151,22 @@ human-reviewed even when the freshness automation opens the PR:
 
 - **Availability probe:** confirm the new model id (and its alias) return
   completions on the Max OAuth CC surface before flipping any
-  `cc_subprocess`-routed call-site or the dispatch default. For Fable 5 this
-  passed S162 (operator probe: both `claude-fable-5` and the `fable` alias).
+  `cc_subprocess`-routed call-site or the dispatch default. The 2026-06-25
+  source fallback to Opus 4.8 uses official Anthropic availability and pricing
+  evidence only; no Max OAuth probe, Railway env flip, merge, or production
+  deploy is implied by the local source change.
 - **Long-context probe (per call-site):** a call-site relying on a `[1m]`
   window (currently `pdu`) needs its own probe on the new model's
   long-context variant before its held env is touched.
 - **Cost:** review the new model's pricing against synthesis + dispatch
   volume before adoption.
+
+## 6. Current Fable rollback note
+
+Claude Fable 5 references may remain in parser tests and historical examples
+so old pins, stale provenance, and prior registry shapes continue to parse.
+They must not be used as active registry defaults, Railway env targets, or
+fresh model-bump destinations until a later target-specific reviewed plan
+records new operator availability evidence.
 
 <!-- EOF: model-bump.md -->

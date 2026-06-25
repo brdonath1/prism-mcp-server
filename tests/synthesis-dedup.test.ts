@@ -59,7 +59,7 @@ describe("M-014 SRV-89 / PRM-23 — provenance is registry-coupled, not a hardco
     expect(modelDisplayFromId("claude-fable-5")).toBe("Fable 5");
     expect(modelDisplayFromId("claude-opus-4-8")).toBe("Opus 4.8");
     expect(modelDisplayFromId("claude-sonnet-4-6[1m]")).toBe("Sonnet 4.6");
-    expect(modelDisplayFromId(SYNTHESIS_MODEL_ID)).toBe("Fable 5");
+    expect(modelDisplayFromId(SYNTHESIS_MODEL_ID)).toBe("Opus 4.8");
   });
 
   it("enforceProvenanceHeader stamps the model used and corrects a stale line", () => {

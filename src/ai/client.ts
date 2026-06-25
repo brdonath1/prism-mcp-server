@@ -133,7 +133,7 @@ export function resolveCallSiteTimeout(callSite: SynthesisCallSite): number {
  *
  * @param thinking When true, sends `thinking: { type: "adaptive" }` so the
  *   model dynamically allocates its thinking-token budget per request.
- *   Current top-tier models (Fable 5, Opus 4.7+) accept ONLY the adaptive
+ *   Current Opus-tier models (Opus 4.7+) accept ONLY the adaptive
  *   variant — the legacy fixed-budget thinking shape returns HTTP 400. The
  *   text-extraction filter below ignores any `thinking` content blocks
  *   emitted alongside `text`, so callers see only the final text output.
@@ -272,7 +272,7 @@ async function callMessagesApi(params: MessagesApiCallParams): Promise<Synthesis
       messages: [{ role: "user", content: userContent }],
     };
     if (thinking) {
-      // Current top-tier models (Fable 5, Opus 4.7+) support ONLY the
+      // Current Opus-tier models (Opus 4.7+) support ONLY the
       // adaptive variant; the legacy fixed-budget thinking shape returns
       // HTTP 400. Cast through unknown because the installed SDK's
       // ThinkingConfig union does not yet include the "adaptive" variant.
