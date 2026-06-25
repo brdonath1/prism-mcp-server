@@ -82,10 +82,23 @@ The MCP server is the v2 evolution — separating Claude into a pure reasoning a
 | `SYNTHESIS_{BRIEF,DRAFT,PDU}_TRANSPORT` | optional | Per-call-site transport: `messages_api` or `cc_subprocess` (production synthesis routing) |
 | `CC_DISPATCH_MODEL` | optional | Override the Claude Code dispatch model (default: `CC_DISPATCH_MODEL_ID` in `src/models.ts`) |
 | `CC_DISPATCH_MAX_TURNS` | optional | Default agent turn cap (default: 50) |
+| `LLM_ROUTING_ENABLED` / `LLM_ROUTING_DRY_RUN` | optional | Dormant multi-provider routing observation flags. Defaults are disabled/dry-run; these do not authorize live provider routing. |
+| `LLM_ROUTING_*_PROVIDER` | optional | Observation-only provider preference names for route readiness summaries. Existing `SYNTHESIS_*`, `RECOMMENDATION_MODEL_*`, and `CC_DISPATCH_*` env semantics remain authoritative. |
 
 > This table covers the load-bearing knobs. The complete, authoritative env-var
 > surface (~40 reads, including `SYNTHESIS_*`, `*_TIMEOUT_MS`, oversize/cap
 > thresholds) lives in `src/config.ts`; treat it as the source of truth.
+
+### Multi-provider routing boundary
+
+The `src/llm/*` route resolver is observation-only. It emits sanitized
+`LLM_ROUTE_OBSERVATION` logs and `prism_status.llm_routing` summaries using
+provider names, model ids, transport names, and auth env-var names only. It does
+not read or log credential values, does not authorize live provider routing,
+does not change existing Anthropic Messages API / Claude Code dispatch paths,
+and does not permit Railway routing variable mutation. Any live non-Anthropic
+provider activation requires a separate reviewed activation plan, redacted
+evidence, rollback path, and no unresolved model disagreement.
 
 ## Key Technical Constraints
 

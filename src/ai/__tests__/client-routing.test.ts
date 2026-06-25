@@ -44,6 +44,9 @@ const ENV_KEYS_TO_RESET = [
   "SYNTHESIS_DRAFT_MODEL",
   "SYNTHESIS_BRIEF_TRANSPORT",
   "SYNTHESIS_BRIEF_MODEL",
+  "LLM_ROUTING_ENABLED",
+  "LLM_ROUTING_DRY_RUN",
+  "LLM_ROUTING_SYNTHESIS_BRIEF_PROVIDER",
 ];
 
 beforeEach(() => {
@@ -242,5 +245,40 @@ describe("synthesize() — per-call-site routing", () => {
     // @ts-expect-error — "frontend" is not a SynthesisCallSite
     void synthesize("sys", "user", undefined, undefined, undefined, false, "frontend");
     expect(true).toBe(true);
+  });
+
+  it("observes a dry-run route without changing the synthesis transport or leaking env values", async () => {
+    process.env.LLM_ROUTING_ENABLED = "true";
+    process.env.LLM_ROUTING_DRY_RUN = "true";
+    process.env.LLM_ROUTING_SYNTHESIS_BRIEF_PROVIDER = "perplexity";
+    process.env.PERPLEXITY_API_KEY = "pplx-test-secret-should-not-log";
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+
+    try {
+      const result = await synthesize("sys", "user", undefined, undefined, undefined, false, "brief");
+
+      expect(result.success).toBe(true);
+      expect(mockSubprocess).not.toHaveBeenCalled();
+      expect(mockMessagesCreate).toHaveBeenCalledTimes(1);
+      const passedBody = mockMessagesCreate.mock.calls[0][0];
+      expect(passedBody.model).toBe(SYNTHESIS_MODEL_ID);
+
+      const routeLogs = stdoutSpy.mock.calls
+        .map((call) => JSON.parse(String(call[0])))
+        .filter((entry) => entry.msg === "LLM_ROUTE_OBSERVATION");
+      expect(routeLogs).toHaveLength(1);
+      expect(routeLogs[0]).toMatchObject({
+        surface: "synthesis_brief",
+        provider: "perplexity",
+        transport: "future_provider_adapter",
+        authEnvVar: "PERPLEXITY_API_KEY",
+        liveInvocationAllowed: false,
+        reason: "routing-dry-run",
+      });
+      expect(JSON.stringify(routeLogs)).not.toContain("pplx-test-secret-should-not-log");
+    } finally {
+      stdoutSpy.mockRestore();
+      delete process.env.PERPLEXITY_API_KEY;
+    }
   });
 });

@@ -21,6 +21,7 @@ import { MemoryCache } from "../utils/cache.js";
 import { parseHandoffVersion, parseSessionCount } from "../validation/handoff.js";
 import { extractSection } from "../utils/summarizer.js";
 import { getSynthesisHealth } from "../ai/synthesis-tracker.js";
+import { buildRouteReadinessStatus } from "../llm/route-status.js";
 import { DiagnosticsCollector } from "../utils/diagnostics.js";
 
 /**
@@ -278,6 +279,7 @@ export function registerStatus(server: McpServer): void {
 
       const workPromise = (async () => {
       try {
+        const llmRouting = buildRouteReadinessStatus();
         if (project_slug) {
           // Single project status
           const health = await getProjectHealth(project_slug, include_details ?? false);
@@ -293,7 +295,10 @@ export function registerStatus(server: McpServer): void {
           });
 
           return {
-            content: [{ type: "text" as const, text: JSON.stringify({ ...health, diagnostics: diagnostics.list() }) }],
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({ ...health, llm_routing: llmRouting, diagnostics: diagnostics.list() }),
+            }],
           };
         }
 
@@ -362,6 +367,7 @@ export function registerStatus(server: McpServer): void {
             enabled: SYNTHESIS_ENABLED,
             ...getSynthesisHealth(),
           },
+          llm_routing: llmRouting,
           projects,
         };
 
