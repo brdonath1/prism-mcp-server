@@ -8,7 +8,7 @@
  * actually delivers. The pre-brief-465 spec mandated 6 sections, but
  * compactIntelligenceBrief delivered only Project State + Risk Flags + Quality
  * Audit — so "Standing Rules & Workflows", "Active Operational Knowledge", and
- * "Recent Trajectory" were synthesized at full Fable-5 cost every finalize and
+ * "Recent Trajectory" were synthesized at full frontier-model cost every finalize and
  * then silently dropped at boot. Trajectory + active-knowledge essentials are
  * now folded INTO Project State; Standing Rules is dropped entirely (it
  * duplicated the boot-time standing-rules pipeline AND demanded extraction from

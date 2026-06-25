@@ -220,10 +220,10 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("estimateSynthesisTokens", () => {
-  it("uses the model-aware chars-per-token proxy (SRV-62: 2.7 for the Fable default)", () => {
+  it("uses the Opus-tier chars-per-token proxy for the default synthesis model", () => {
     // brief-465 / SRV-62: ratio is model-aware off the resolved SYNTHESIS_MODEL
-    // (Fable tokenizes ~30% heavier than Opus-tier). The default model is Fable 5.
-    expect(SYNTHESIS_CHARS_PER_TOKEN).toBe(2.7);
+    // and Fable is no longer an active default target.
+    expect(SYNTHESIS_CHARS_PER_TOKEN).toBe(3.5);
     expect(estimateSynthesisTokens("x".repeat(350))).toBe(Math.round(350 / SYNTHESIS_CHARS_PER_TOKEN));
     expect(estimateSynthesisTokens("x".repeat(420_000))).toBe(Math.round(420_000 / SYNTHESIS_CHARS_PER_TOKEN));
   });

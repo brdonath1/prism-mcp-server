@@ -175,7 +175,7 @@ describe("recommendation model env override", () => {
   it("parsePersistedRecommendation resolves model via env override while preserving persisted display text", () => {
     process.env.RECOMMENDATION_MODEL_REASONING = "claude-opus-4-8";
     const block = `<!-- prism:recommended_session_settings -->
-- Model: Fable 5
+- Model: Opus 4.7
 - Thinking: Adaptive on
 - Category: reasoning_heavy
 - Rationale: Queue includes design / multi-doc investigation
@@ -186,7 +186,7 @@ describe("recommendation model env override", () => {
     // `model` (code) follows the live env override...
     expect(r?.model).toBe("opus-4-8");
     // ...while `display` is reconstructed from the persisted text verbatim.
-    expect(r?.display).toBe("Fable 5 · Adaptive on");
+    expect(r?.display).toBe("Opus 4.7 · Adaptive on");
   });
 });
 

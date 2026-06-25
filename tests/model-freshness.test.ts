@@ -306,14 +306,14 @@ export const SYNTHESIS_MODEL_ID = "claude-opus-4-7";
   // cc-dispatch default is pinned alongside the synthesis default.
   const d254SampleFile = `
 export const RECOMMENDATION_MODELS = {
-  reasoning_heavy: { code: "fable-5", display: "Fable 5", id: "claude-fable-5" },
-  mixed: { code: "fable-5", display: "Fable 5", id: "claude-fable-5" },
+  reasoning_heavy: { code: "opus-4-8", display: "Opus 4.8", id: "claude-opus-4-8" },
+  mixed: { code: "opus-4-8", display: "Opus 4.8", id: "claude-opus-4-8" },
   executional: { code: "sonnet-4-6", display: "Sonnet 4.6", id: "claude-sonnet-4-6" },
 } as const;
 
-export const SYNTHESIS_MODEL_ID = "claude-fable-5";
+export const SYNTHESIS_MODEL_ID = "claude-opus-4-8";
 
-export const CC_DISPATCH_MODEL_ID = "claude-fable-5";
+export const CC_DISPATCH_MODEL_ID = "claude-opus-4-8";
 `;
 
   it("extracts pins from the D-254 registry shape (id fields + cc-dispatch pin)", () => {
@@ -322,9 +322,9 @@ export const CC_DISPATCH_MODEL_ID = "claude-fable-5";
     expect(recommendations).toHaveLength(3);
     expect(recommendations[0]).toEqual({
       category: "reasoning_heavy",
-      code: "fable-5",
-      display: "Fable 5",
-      id: "claude-fable-5",
+      code: "opus-4-8",
+      display: "Opus 4.8",
+      id: "claude-opus-4-8",
     });
     expect(recommendations[2]).toEqual({
       category: "executional",
@@ -332,8 +332,8 @@ export const CC_DISPATCH_MODEL_ID = "claude-fable-5";
       display: "Sonnet 4.6",
       id: "claude-sonnet-4-6",
     });
-    expect(synthesisId).toBe("claude-fable-5");
-    expect(ccDispatchId).toBe("claude-fable-5");
+    expect(synthesisId).toBe("claude-opus-4-8");
+    expect(ccDispatchId).toBe("claude-opus-4-8");
   });
 
   it("returns null ccDispatchId for the legacy registry shape", () => {
