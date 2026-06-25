@@ -45,8 +45,8 @@ export const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
 
 /** Server version. Keep this in lockstep with package.json `version`; bump on
  *  substantive src/** releases so health/status can identify the deployed
- *  runtime. 4.9.0 activates live multi-provider synthesis routing. */
-export const SERVER_VERSION = "4.9.0";
+ *  runtime. 4.9.1 fixes workspace-scoped Railway API token project discovery. */
+export const SERVER_VERSION = "4.9.1";
 
 /** MCP client timeout is ~60s. All server-side operations must complete within 50s
  *  to leave 10s buffer for transport overhead. This constrains synthesis, draft,
@@ -478,6 +478,9 @@ export const MCP_AUTH_TOKEN = process.env.MCP_AUTH_TOKEN || "";
 
 /** Railway API token (workspace-scoped). Required to enable Railway tools. */
 export const RAILWAY_API_TOKEN = process.env.RAILWAY_API_TOKEN ?? "";
+
+/** Railway workspace ID for workspace-scoped API tokens. */
+export const RAILWAY_WORKSPACE_ID = process.env.RAILWAY_WORKSPACE_ID ?? "";
 
 /** Railway GraphQL API endpoint */
 export const RAILWAY_API_ENDPOINT =

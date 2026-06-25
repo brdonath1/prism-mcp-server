@@ -205,6 +205,11 @@ describe("Railway client — source-level contract", () => {
     expect(source).toContain("Bearer ${RAILWAY_API_TOKEN}");
   });
 
+  it("supports workspace-scoped Railway API tokens via RAILWAY_WORKSPACE_ID", () => {
+    expect(source).toContain("RAILWAY_WORKSPACE_ID");
+    expect(source).toContain("projects(workspaceId: $workspaceId)");
+  });
+
   it("posts to the Railway GraphQL endpoint from config", () => {
     expect(source).toContain("RAILWAY_API_ENDPOINT");
     expect(source).toContain("method: \"POST\"");
@@ -295,4 +300,3 @@ describe("Railway client — source-level contract", () => {
     expect(source).toContain("resolveEnvironment");
   });
 });
-

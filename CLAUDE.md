@@ -6,7 +6,7 @@ This is the **PRISM MCP Server** — a custom remote MCP (Model Context Protocol
 
 **Owner:** Brian (brdonath1 on GitHub)
 **Framework:** PRISM — current version pinned by the framework repo's core-template; fetched dynamically at bootstrap.
-**Server Version:** 4.9.0
+**Server Version:** 4.9.1
 **Status:** Production — deployed on Railway, serving all active PRISM projects.
 
 ## What PRISM Is
@@ -25,7 +25,7 @@ The MCP server is the v2 evolution — separating Claude into a pure reasoning a
 └───────────────┬───────────────────────────────┘
                 │ MCP Protocol (HTTPS)
 ┌───────────────▼───────────────────────────────┐
-│  PRISM MCP Server (Railway) — v4.9.0          │
+│  PRISM MCP Server (Railway) — v4.9.1          │
 │  25 MCP tools — stateless proxy               │
 │  ├── 13 PRISM  (bootstrap/fetch/push/...)     │
 │  ├──  4 Railway (logs/deploy/env/status)      │
@@ -77,6 +77,7 @@ The MCP server is the v2 evolution — separating Claude into a pure reasoning a
 | `ANTHROPIC_API_KEY` | optional | Enables intelligence-brief synthesis via the Messages API (cc_dispatch uses CLAUDE_CODE_OAUTH_TOKEN — see below) |
 | `CLAUDE_CODE_OAUTH_TOKEN` | optional | Enables `cc_dispatch`/`cc_status` AND the cc_subprocess synthesis transport (Claude Max subscription OAuth from `claude setup-token`) |
 | `RAILWAY_API_TOKEN` | optional | Enables `railway_*` tools (brief-103) |
+| `RAILWAY_WORKSPACE_ID` | optional | Required when `RAILWAY_API_TOKEN` is a workspace-scoped Railway token; selects `projects(workspaceId: ...)` for project discovery. |
 | `SYNTHESIS_MODEL` | optional | Override the synthesis model. The registry default lives in `src/models.ts` (`SYNTHESIS_MODEL_ID`); do not assume a specific model name. |
 | `SYNTHESIS_{BRIEF,DRAFT,PDU}_MODEL` | optional | Per-call-site synthesis model override (production knob per `docs/model-bump.md`) |
 | `SYNTHESIS_{BRIEF,DRAFT,PDU}_TRANSPORT` | optional | Per-call-site transport: `messages_api` or `cc_subprocess` (production synthesis routing) |
