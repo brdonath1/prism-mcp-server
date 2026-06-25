@@ -12,6 +12,7 @@
 import {
   RAILWAY_API_ENDPOINT,
   RAILWAY_API_TOKEN,
+  RAILWAY_WORKSPACE_ID,
   MCP_SAFE_TIMEOUT,
   SERVER_VERSION,
 } from "../config.js";
@@ -119,6 +120,23 @@ export async function railwayQuery<T>(
  * List all projects accessible to the authenticated token.
  */
 export async function listProjects(): Promise<RailwayProject[]> {
+  if (RAILWAY_WORKSPACE_ID) {
+    const query = `query($workspaceId: String!) {
+    projects(workspaceId: $workspaceId) {
+      edges {
+        node {
+          id
+          name
+        }
+      }
+    }
+  }`;
+    const data = await railwayQuery<{ projects: Connection<RailwayProject> }>(query, {
+      workspaceId: RAILWAY_WORKSPACE_ID,
+    });
+    return (data.projects?.edges ?? []).map((e) => e.node);
+  }
+
   const query = `query {
     projects {
       edges {
