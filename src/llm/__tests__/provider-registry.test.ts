@@ -23,19 +23,18 @@ describe("provider registry", () => {
     ]);
   });
 
-  it("keeps non-Anthropic providers readiness-only or blocked", () => {
+  it("marks synthesis providers active when configured while keeping cc_dispatch on Claude Code", () => {
     const registry = getProviderRegistry();
 
     expect(registry.find((provider) => provider.id === "anthropic")).toMatchObject({
       activationStatus: "active_when_present",
       supportedSurfaces: ["recommendation", "synthesis_brief", "synthesis_draft", "synthesis_pdu"],
     });
-    expect(registry.find((provider) => provider.id === "deepseek")).toMatchObject({
-      activationStatus: "blocked_readiness_only",
-    });
     for (const provider of registry.filter((entry) => entry.id !== "anthropic")) {
       expect(provider.supportedSurfaces).not.toContain("cc_dispatch");
-      expect(provider.activationStatus).not.toBe("active_when_present");
+      expect(provider.activationStatus).toBe("active_when_configured");
+      expect(provider.defaultModel).toMatch(/\S/);
+      expect(provider.modelEnvVar).toMatch(/^LLM_ROUTING_/);
     }
   });
 

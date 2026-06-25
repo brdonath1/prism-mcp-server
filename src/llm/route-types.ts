@@ -17,9 +17,7 @@ export type RouteProviderId = LlmProviderId | "none";
 
 export type LlmActivationStatus =
   | "active_when_present"
-  | "readiness_only"
-  | "blocked_readiness_only"
-  | "x_search_only_inactive_general_routing";
+  | "active_when_configured";
 
 export type LlmTransport =
   | "advisory_env_override"
@@ -27,7 +25,10 @@ export type LlmTransport =
   | "cc_subprocess"
   | "claude_code_oauth"
   | "existing"
-  | "future_provider_adapter"
+  | "openai_responses"
+  | "openai_compatible_chat"
+  | "gemini_generate_content"
+  | "xai_responses"
   | "blocked";
 
 export type LlmQualityTier =
@@ -41,12 +42,18 @@ export type RouteReason =
   | "routing-disabled"
   | "routing-dry-run"
   | "activation-not-authorized"
+  | "provider-not-allowed"
+  | "provider-auth-missing"
+  | "live-provider-route"
   | "protected-boundary";
 
 export interface ProviderMetadata {
   id: LlmProviderId;
   displayName: string;
   authEnvVar: string;
+  modelEnvVar: string;
+  defaultModel: string;
+  transport: LlmTransport;
   supportedSurfaces: LlmSurface[];
   activationStatus: LlmActivationStatus;
   qualityPolicy: "quality-before-cost";
@@ -74,7 +81,7 @@ export interface RouteDecision {
   authEnvVar: string | null;
   reasoningSetting: string | null;
   qualityTier: LlmQualityTier;
-  liveInvocationAllowed: false;
+  liveInvocationAllowed: boolean;
   fallbackChain: LlmProviderId[];
   reason: RouteReason;
 }

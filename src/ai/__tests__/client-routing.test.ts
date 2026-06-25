@@ -46,7 +46,9 @@ const ENV_KEYS_TO_RESET = [
   "SYNTHESIS_BRIEF_MODEL",
   "LLM_ROUTING_ENABLED",
   "LLM_ROUTING_DRY_RUN",
+  "LLM_ROUTING_ALLOWED_PROVIDERS",
   "LLM_ROUTING_SYNTHESIS_BRIEF_PROVIDER",
+  "OPENAI_API_KEY",
 ];
 
 beforeEach(() => {
@@ -71,6 +73,7 @@ beforeEach(() => {
 
 afterEach(() => {
   for (const key of ENV_KEYS_TO_RESET) delete process.env[key];
+  vi.unstubAllGlobals();
 });
 
 describe("resolveCallSiteRouting — env var resolution", () => {
@@ -270,7 +273,8 @@ describe("synthesize() — per-call-site routing", () => {
       expect(routeLogs[0]).toMatchObject({
         surface: "synthesis_brief",
         provider: "perplexity",
-        transport: "future_provider_adapter",
+        model: "sonar-pro",
+        transport: "openai_compatible_chat",
         authEnvVar: "PERPLEXITY_API_KEY",
         liveInvocationAllowed: false,
         reason: "routing-dry-run",
@@ -279,6 +283,57 @@ describe("synthesize() — per-call-site routing", () => {
     } finally {
       stdoutSpy.mockRestore();
       delete process.env.PERPLEXITY_API_KEY;
+    }
+  });
+
+  it("executes a live OpenAI provider route before the Anthropic Messages API", async () => {
+    process.env.LLM_ROUTING_ENABLED = "true";
+    process.env.LLM_ROUTING_DRY_RUN = "false";
+    process.env.LLM_ROUTING_ALLOWED_PROVIDERS = "anthropic,openai";
+    process.env.LLM_ROUTING_SYNTHESIS_BRIEF_PROVIDER = "openai";
+    process.env.OPENAI_API_KEY = "openai-test-secret";
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      output_text: "## architecture.md\n\nfrom openai",
+      usage: { input_tokens: 12, output_tokens: 6 },
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await synthesize("sys", "user", 300, 10_000, undefined, false, "brief");
+
+    expect(result.success).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(mockMessagesCreate).not.toHaveBeenCalled();
+    expect(mockSubprocess).not.toHaveBeenCalled();
+    if (result.success) {
+      expect(result.content).toContain("from openai");
+      expect(result.model).toBe("gpt-5.5");
+      expect(result.transport).toBe("openai_responses");
+    }
+    const [_url, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(init.body)).toMatchObject({
+      model: "gpt-5.5",
+      max_output_tokens: 300,
+    });
+  });
+
+  it("falls back to Anthropic Messages API when a live provider route fails", async () => {
+    process.env.LLM_ROUTING_ENABLED = "true";
+    process.env.LLM_ROUTING_DRY_RUN = "false";
+    process.env.LLM_ROUTING_ALLOWED_PROVIDERS = "anthropic,openai";
+    process.env.LLM_ROUTING_SYNTHESIS_BRIEF_PROVIDER = "openai";
+    process.env.OPENAI_API_KEY = "openai-test-secret";
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      error: { message: "upstream unavailable openai-test-secret" },
+    }), { status: 500 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await synthesize("sys", "user", undefined, undefined, undefined, false, "brief");
+
+    expect(result.success).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(mockMessagesCreate).toHaveBeenCalledTimes(1);
+    if (result.success) {
+      expect(result.transport).toBe("messages_api");
     }
   });
 });

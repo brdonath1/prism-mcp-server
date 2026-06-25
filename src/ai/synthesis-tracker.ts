@@ -22,11 +22,20 @@ export type SynthesisKind = "intelligence_brief" | "pending_updates";
  * - `messages_api_fallback` — call-site requested cc_subprocess but the
  *   subprocess attempt failed and we automatically retried via the Messages
  *   API. Distinct from `messages_api` so the fallback rate is observable.
+ * - provider transports — live multi-provider synthesis routes selected by
+ *   `LLM_ROUTING_*_PROVIDER` when routing is enabled and dry-run is false.
  *
  * Older events (pre-brief-417) lack this field. Absence means the transport
  * is unknown (effectively `messages_api` for everything historical).
  */
-export type SynthesisTransport = "messages_api" | "cc_subprocess" | "messages_api_fallback";
+export type SynthesisTransport =
+  | "messages_api"
+  | "cc_subprocess"
+  | "messages_api_fallback"
+  | "openai_responses"
+  | "openai_compatible_chat"
+  | "gemini_generate_content"
+  | "xai_responses";
 
 export interface SynthesisEvent {
   project: string;

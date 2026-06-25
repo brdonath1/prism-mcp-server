@@ -1,5 +1,6 @@
 import { getProviderRegistry } from "./provider-registry.js";
 import type { LlmProviderId, RoutingEnv } from "./route-types.js";
+import { resolveRoute } from "./routing-policy.js";
 
 const PROVIDER_OVERRIDE_ENV_VARS = [
   "LLM_ROUTING_DEFAULT_PROVIDER",
@@ -16,11 +17,16 @@ const CANDIDATE_ROUTING_ENV_VARS = [
   "LLM_ROUTING_DRY_RUN",
   "LLM_ROUTING_ALLOWED_PROVIDERS",
   ...PROVIDER_OVERRIDE_ENV_VARS,
+  "LLM_ROUTING_OPENAI_MODEL",
+  "LLM_ROUTING_GEMINI_MODEL",
+  "LLM_ROUTING_DEEPSEEK_MODEL",
+  "LLM_ROUTING_XAI_MODEL",
+  "LLM_ROUTING_PERPLEXITY_MODEL",
 ] as const;
 
 export interface RouteReadinessStatus {
-  status: "disabled" | "dry_run" | "activation_blocked";
-  liveInvocationAllowed: false;
+  status: "disabled" | "dry_run" | "live" | "activation_blocked";
+  liveInvocationAllowed: boolean;
   profile: string | null;
   allowedProviders: LlmProviderId[];
   configuredProviderOverrides: string[];
@@ -35,10 +41,17 @@ export function buildRouteReadinessStatus(
   const providerIds = new Set(registry.map((provider) => provider.id));
   const enabled = truthy(env.LLM_ROUTING_ENABLED);
   const dryRun = !falsey(env.LLM_ROUTING_DRY_RUN);
+  const liveInvocationAllowed = enabled && !dryRun && hasLiveSynthesisRoute(env);
 
   return {
-    status: !enabled ? "disabled" : dryRun ? "dry_run" : "activation_blocked",
-    liveInvocationAllowed: false,
+    status: !enabled
+      ? "disabled"
+      : dryRun
+        ? "dry_run"
+        : liveInvocationAllowed
+          ? "live"
+          : "activation_blocked",
+    liveInvocationAllowed,
     profile: safeLabel(env.LLM_ROUTING_PROFILE),
     allowedProviders: parseAllowedProviders(env.LLM_ROUTING_ALLOWED_PROVIDERS, providerIds),
     configuredProviderOverrides: PROVIDER_OVERRIDE_ENV_VARS.filter((key) => {
@@ -48,6 +61,14 @@ export function buildRouteReadinessStatus(
     providerEnvVars: registry.map((provider) => provider.authEnvVar),
     candidateRoutingEnvVars: [...CANDIDATE_ROUTING_ENV_VARS],
   };
+}
+
+function hasLiveSynthesisRoute(env: RoutingEnv): boolean {
+  return [
+    { surface: "synthesis_brief" as const, taskClass: "status-synthesis-brief" },
+    { surface: "synthesis_draft" as const, taskClass: "status-synthesis-draft" },
+    { surface: "synthesis_pdu" as const, taskClass: "status-synthesis-pdu" },
+  ].some((input) => resolveRoute(input, env).liveInvocationAllowed);
 }
 
 function parseAllowedProviders(

@@ -52,22 +52,40 @@ export function resolveRoute(
     );
   }
 
+  if (input.surface === "cc_dispatch") {
+    return currentAnthropicFallback(input, "activation-not-authorized");
+  }
+
   const provider = getProviderRegistry().find((entry) => entry.id === selectedProvider);
   if (!provider?.supportedSurfaces.includes(input.surface)) {
     return currentAnthropicFallback(input, "activation-not-authorized");
+  }
+
+  const liveCandidate = !dryRunEnabled(env);
+  let liveInvocationAllowed = liveCandidate;
+  let reason: RouteDecision["reason"] = liveCandidate
+    ? "live-provider-route"
+    : "routing-dry-run";
+  if (liveCandidate && !providerAllowed(provider.id, env)) {
+    liveInvocationAllowed = false;
+    reason = "provider-not-allowed";
+  }
+  if (liveCandidate && liveInvocationAllowed && !authConfigured(provider.authEnvVar, env)) {
+    liveInvocationAllowed = false;
+    reason = "provider-auth-missing";
   }
 
   return {
     surface: input.surface,
     taskClass: input.taskClass,
     provider: provider.id,
-    model: `future-${provider.id}-default`,
-    transport: "future_provider_adapter",
+    model: providerModel(provider, env),
+    transport: provider.transport,
     authEnvVar: provider.authEnvVar,
     reasoningSetting: input.reasoningSetting ?? null,
     qualityTier: qualityTierFor(input.surface, provider.id),
-    liveInvocationAllowed: false,
-    reason: dryRunEnabled(env) ? "routing-dry-run" : "activation-not-authorized",
+    liveInvocationAllowed,
+    reason,
     fallbackChain: [provider.id, "anthropic"],
   };
 }
@@ -100,6 +118,27 @@ function requestedProvider(
   const normalized = requested.trim().toLowerCase();
   const provider = getProviderRegistry().find((entry) => entry.id === normalized);
   return provider?.id ?? null;
+}
+
+function providerAllowed(provider: LlmProviderId, env: RoutingEnv): boolean {
+  const raw = env.LLM_ROUTING_ALLOWED_PROVIDERS;
+  if (!raw || raw.trim().length === 0) return false;
+  return raw
+    .split(",")
+    .map((part) => part.trim().toLowerCase())
+    .includes(provider);
+}
+
+function authConfigured(authEnvVar: string, env: RoutingEnv): boolean {
+  return !!env[authEnvVar]?.trim();
+}
+
+function providerModel(
+  provider: ReturnType<typeof getProviderRegistry>[number],
+  env: RoutingEnv,
+): string {
+  const override = env[provider.modelEnvVar]?.trim();
+  return override || provider.defaultModel;
 }
 
 function currentAnthropicFallback(

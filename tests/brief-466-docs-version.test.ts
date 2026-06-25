@@ -93,28 +93,29 @@ describe("SRV-95 — .env.example documents synthesis env vars", () => {
     expect(envExample).toContain("SYNTHESIS_PDU_MODEL");
   });
 
-  it("documents disabled LLM routing placeholders without secret-shaped examples", () => {
+  it("documents LLM routing placeholders without secret-shaped examples", () => {
     expect(envExample).toContain("LLM_ROUTING_ENABLED=false");
     expect(envExample).toContain("LLM_ROUTING_DRY_RUN=true");
     expect(envExample).toContain("LLM_ROUTING_ALLOWED_PROVIDERS=anthropic");
     expect(envExample).toContain("LLM_ROUTING_CC_DISPATCH_PROVIDER=anthropic");
+    expect(envExample).toContain("LLM_ROUTING_OPENAI_MODEL=gpt-5.5");
     expect(envExample).not.toMatch(/sk-|ghp_|xox|BEGIN .*PRIVATE/);
   });
 });
 
-describe("SRV-119 — dormant LLM routing docs stay observation-only", () => {
+describe("SRV-119 — LLM routing docs describe live synthesis activation", () => {
   const modelBump = readFileSync("docs/model-bump.md", "utf-8");
 
-  it("CLAUDE.md documents the protected observation-only routing boundary", () => {
+  it("CLAUDE.md documents sanitized live synthesis routing and cc_dispatch boundary", () => {
     expect(claudeMd).toContain("LLM_ROUTE_OBSERVATION");
-    expect(claudeMd).toContain("observation-only");
-    expect(claudeMd).toContain("does not authorize live provider routing");
+    expect(claudeMd).toContain("can authorize live provider synthesis");
+    expect(claudeMd).toContain("`cc_dispatch` remains Claude Code OAuth execution");
   });
 
   it("model-bump docs distinguish model bumps from multi-provider routing activation", () => {
-    expect(modelBump).toContain("Multi-provider routing readiness");
+    expect(modelBump).toContain("Multi-provider routing activation");
     expect(modelBump).toContain("LLM_ROUTING_ENABLED");
-    expect(modelBump).toContain("separate reviewed activation");
+    expect(modelBump).toMatch(/fall back\s+to the existing Anthropic path/);
   });
 });
 

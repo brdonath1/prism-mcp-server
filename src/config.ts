@@ -43,15 +43,10 @@ export const PORT = parseInt(process.env.PORT ?? "3000", 10);
 /** Log level */
 export const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
 
-/** Server version. Bumped to 4.8.0 (SRV-90): the constant had been frozen at
- *  4.7.0 across ~28 merged PRs of materially different deployments — payload
- *  diet (D-253), synthesis-bundle dedup, banner restoration (D-249), branch-
- *  protection tools (brief-446), transient-error handling, parsing-correctness
- *  and dead-code sweeps (D-257 wave 3), etc. A frozen version made version
- *  reporting meaningless and falsified the framework template's `>=4.7.1`
- *  floor check (the CONSTANT, not the capability, failed it). Keep this in
- *  lockstep with package.json `version`; bump on substantive src/** releases. */
-export const SERVER_VERSION = "4.8.0";
+/** Server version. Keep this in lockstep with package.json `version`; bump on
+ *  substantive src/** releases so health/status can identify the deployed
+ *  runtime. 4.9.0 activates live multi-provider synthesis routing. */
+export const SERVER_VERSION = "4.9.0";
 
 /** MCP client timeout is ~60s. All server-side operations must complete within 50s
  *  to leave 10s buffer for transport overhead. This constrains synthesis, draft,
