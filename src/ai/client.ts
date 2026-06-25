@@ -12,6 +12,8 @@ import {
   SYNTHESIS_TIMEOUT_MS,
   MCP_SAFE_TIMEOUT,
 } from "../config.js";
+import { observeRoute } from "../llm/route-observer.js";
+import type { LlmSurface, LlmTransport } from "../llm/route-types.js";
 import { logger } from "../utils/logger.js";
 import { synthesizeViaCcSubprocess } from "./cc-subprocess.js";
 
@@ -55,6 +57,12 @@ export type SynthesisOutcome = (SynthesisResult & { success: true }) | Synthesis
  *  and model overrides. Adding a new call-site here means consumers can
  *  configure routing for it via Railway env vars without code change. */
 export type SynthesisCallSite = "draft" | "brief" | "pdu";
+
+const SYNTHESIS_ROUTE_SURFACE: Record<SynthesisCallSite, LlmSurface> = {
+  draft: "synthesis_draft",
+  brief: "synthesis_brief",
+  pdu: "synthesis_pdu",
+};
 
 /**
  * Resolve the per-call-site transport + model overrides from environment.
@@ -167,6 +175,20 @@ export async function synthesize(
   // call-site) bypass env-var reads entirely so their behavior is bit-for-bit
   // unchanged.
   const routing = callSite ? resolveCallSiteRouting(callSite) : null;
+  const routeSurface = callSite ? SYNTHESIS_ROUTE_SURFACE[callSite] : undefined;
+  if (routing && routeSurface) {
+    observeRoute({
+      surface: routeSurface,
+      taskClass: `synthesis-${callSite}`,
+      reasoningSetting: thinking ? "adaptive" : null,
+      currentModel: routing.model,
+      currentTransport: routing.transport as LlmTransport,
+      currentAuthEnvVar:
+        routing.transport === "cc_subprocess"
+          ? "CLAUDE_CODE_OAUTH_TOKEN"
+          : "ANTHROPIC_API_KEY",
+    });
+  }
 
   if (routing && routing.transport === "cc_subprocess") {
     const subprocessOutcome = await synthesizeViaCcSubprocess(
