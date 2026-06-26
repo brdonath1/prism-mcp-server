@@ -11,8 +11,9 @@
  *      collapses to text only — the `block.type === "text"` filter in
  *      src/ai/client.ts already discards thinking blocks; verify nothing
  *      leaks into result.content.
- *   4. generateIntelligenceBrief (CS-2) forwards thinking:true to synthesize().
- *   5. generatePendingDocUpdates (CS-3) forwards thinking:true to synthesize().
+ *   4. generateIntelligenceBrief (CS-2) forwards default-on thinking and call-site metadata.
+ *   5. generatePendingDocUpdates (CS-3) forwards default-on thinking and call-site metadata.
+ *   6. SYNTHESIS_{BRIEF,PDU}_THINKING=false opts the matching call site out.
  *
  * Keep these tests at the unit boundary — they are not finalize-integration
  * tests; the draftPhase NOT-thinking assertion lives in finalize-integration
@@ -132,15 +133,17 @@ describe("synthesize() — adaptive thinking parameter (Phase 3a)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// CS-2 / CS-3 — fire-and-forget callers must forward thinking: true.
+// CS-2 / CS-3 — fire-and-forget callers must forward thinking and call-site metadata.
 // ---------------------------------------------------------------------------
 
 describe("generateIntelligenceBrief (CS-2) — forwards thinking: true to synthesize()", () => {
   beforeEach(() => {
+    delete process.env.SYNTHESIS_BRIEF_THINKING;
     vi.resetModules();
   });
 
   afterEach(() => {
+    delete process.env.SYNTHESIS_BRIEF_THINKING;
     vi.resetModules();
     vi.doUnmock("../src/ai/client.js");
     vi.doUnmock("../src/github/client.js");
@@ -149,7 +152,7 @@ describe("generateIntelligenceBrief (CS-2) — forwards thinking: true to synthe
     vi.doUnmock("../src/config.js");
   });
 
-  it("passes thinking: true as the 6th positional arg to synthesize()", async () => {
+  it("passes thinking: true plus brief call-site metadata to synthesize()", async () => {
     process.env.ANTHROPIC_API_KEY = "test-dummy-key";
     vi.resetModules();
 
@@ -192,17 +195,63 @@ describe("generateIntelligenceBrief (CS-2) — forwards thinking: true to synthe
     expect(outcome.success).toBe(true);
     expect(synthesizeSpy).toHaveBeenCalledTimes(1);
     const args = synthesizeSpy.mock.calls[0];
-    // synthesize(systemPrompt, userContent, maxTokens, timeoutMs, maxRetries, thinking)
+    // synthesize(systemPrompt, userContent, maxTokens, timeoutMs, maxRetries, thinking, callSite, projectSlug)
     expect(args[5]).toBe(true);
+    expect(args[6]).toBe("brief");
+    expect(args[7]).toBe("test-project");
+  });
+
+  it("honors SYNTHESIS_BRIEF_THINKING=false as a per-call-site opt-out", async () => {
+    process.env.ANTHROPIC_API_KEY = "test-dummy-key";
+    process.env.SYNTHESIS_BRIEF_THINKING = "false";
+    vi.resetModules();
+
+    const synthesizeSpy = vi.fn().mockResolvedValue({
+      success: true,
+      content:
+        "## Project State\n\n## Standing Rules & Workflows\n\n## Active Operational Knowledge\n\n## Recent Trajectory\n\n## Risk Flags\n\n## Quality Audit\n\n<!-- EOF: intelligence-brief.md -->",
+      input_tokens: 100,
+      output_tokens: 50,
+      model: "claude-opus-4-7",
+    });
+
+    vi.doMock("../src/ai/client.js", () => ({ synthesize: synthesizeSpy, resolveCallSiteTimeout: () => 240_000 }));
+    vi.doMock("../src/github/client.js", () => ({
+      pushFile: vi.fn().mockResolvedValue({ success: true, sha: "abc", size: 1024 }),
+      fetchFiles: vi.fn(),
+    }));
+    vi.doMock("../src/utils/doc-resolver.js", () => ({
+      resolveDocFiles: vi.fn().mockResolvedValue(new Map([["handoff.md", { content: "stub", sha: "h", size: 4 }]])),
+      resolveDocPushPath: vi.fn().mockResolvedValue(".prism/intelligence-brief.md"),
+    }));
+    vi.doMock("../src/ai/synthesis-tracker.js", () => ({
+      recordSynthesisEvent: vi.fn(),
+      getRecentSuccessful: vi.fn().mockReturnValue([]),
+    }));
+    vi.doMock("../src/config.js", async (importOriginal) => {
+      const actual = (await importOriginal()) as Record<string, unknown>;
+      return { ...actual, SYNTHESIS_ENABLED: true };
+    });
+
+    const { generateIntelligenceBrief } = await import("../src/ai/synthesize.js");
+
+    const outcome = await generateIntelligenceBrief("test-project", 71);
+    expect(outcome.success).toBe(true);
+    const args = synthesizeSpy.mock.calls[0];
+    expect(args[5]).toBe(false);
+    expect(args[6]).toBe("brief");
+    expect(args[7]).toBe("test-project");
   });
 });
 
 describe("generatePendingDocUpdates (CS-3) — forwards thinking: true to synthesize()", () => {
   beforeEach(() => {
+    delete process.env.SYNTHESIS_PDU_THINKING;
     vi.resetModules();
   });
 
   afterEach(() => {
+    delete process.env.SYNTHESIS_PDU_THINKING;
     vi.resetModules();
     vi.doUnmock("../src/ai/client.js");
     vi.doUnmock("../src/github/client.js");
@@ -211,7 +260,7 @@ describe("generatePendingDocUpdates (CS-3) — forwards thinking: true to synthe
     vi.doUnmock("../src/config.js");
   });
 
-  it("passes thinking: true as the 6th positional arg to synthesize()", async () => {
+  it("passes thinking: true plus PDU call-site metadata to synthesize()", async () => {
     process.env.ANTHROPIC_API_KEY = "test-dummy-key";
     vi.resetModules();
 
@@ -254,7 +303,51 @@ describe("generatePendingDocUpdates (CS-3) — forwards thinking: true to synthe
     expect(outcome.success).toBe(true);
     expect(synthesizeSpy).toHaveBeenCalledTimes(1);
     const args = synthesizeSpy.mock.calls[0];
-    // synthesize(systemPrompt, userContent, maxTokens, timeoutMs, maxRetries, thinking)
+    // synthesize(systemPrompt, userContent, maxTokens, timeoutMs, maxRetries, thinking, callSite, projectSlug)
     expect(args[5]).toBe(true);
+    expect(args[6]).toBe("pdu");
+    expect(args[7]).toBe("test-project");
+  });
+
+  it("honors SYNTHESIS_PDU_THINKING=false as a per-call-site opt-out", async () => {
+    process.env.ANTHROPIC_API_KEY = "test-dummy-key";
+    process.env.SYNTHESIS_PDU_THINKING = "false";
+    vi.resetModules();
+
+    const synthesizeSpy = vi.fn().mockResolvedValue({
+      success: true,
+      content:
+        "# Pending Doc Updates\n\n## architecture.md\n\n## glossary.md\n\n## insights.md\n\n## No Updates Needed\n\n<!-- EOF: pending-doc-updates.md -->",
+      input_tokens: 100,
+      output_tokens: 50,
+      model: "claude-opus-4-7",
+    });
+
+    vi.doMock("../src/ai/client.js", () => ({ synthesize: synthesizeSpy, resolveCallSiteTimeout: () => 240_000 }));
+    vi.doMock("../src/github/client.js", () => ({
+      pushFile: vi.fn().mockResolvedValue({ success: true, sha: "abc", size: 1024 }),
+      fetchFiles: vi.fn(),
+    }));
+    vi.doMock("../src/utils/doc-resolver.js", () => ({
+      resolveDocFiles: vi.fn().mockResolvedValue(new Map([["handoff.md", { content: "stub", sha: "h", size: 4 }]])),
+      resolveDocPushPath: vi.fn().mockResolvedValue(".prism/pending-doc-updates.md"),
+    }));
+    vi.doMock("../src/ai/synthesis-tracker.js", () => ({
+      recordSynthesisEvent: vi.fn(),
+      getRecentSuccessful: vi.fn().mockReturnValue([]),
+    }));
+    vi.doMock("../src/config.js", async (importOriginal) => {
+      const actual = (await importOriginal()) as Record<string, unknown>;
+      return { ...actual, SYNTHESIS_ENABLED: true };
+    });
+
+    const { generatePendingDocUpdates } = await import("../src/ai/synthesize.js");
+
+    const outcome = await generatePendingDocUpdates("test-project", 71);
+    expect(outcome.success).toBe(true);
+    const args = synthesizeSpy.mock.calls[0];
+    expect(args[5]).toBe(false);
+    expect(args[6]).toBe("pdu");
+    expect(args[7]).toBe("test-project");
   });
 });

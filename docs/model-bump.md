@@ -55,6 +55,7 @@ malformed).**
 | Synthesis global default | `SYNTHESIS_MODEL` | → `SYNTHESIS_MODEL_ID` (`src/config.ts:95`) |
 | Synthesis per call-site (`brief` / `draft` / `pdu`) — model | `SYNTHESIS_{BRIEF\|DRAFT\|PDU}_MODEL` | → `SYNTHESIS_MODEL` → `SYNTHESIS_MODEL_ID` (`src/ai/client.ts:82`) |
 | Synthesis per call-site — transport | `SYNTHESIS_{BRIEF\|DRAFT\|PDU}_TRANSPORT` | → `messages_api` (`src/ai/client.ts:72`) |
+| Background synthesis per call-site (`brief` / `pdu`) — adaptive thinking | `SYNTHESIS_{BRIEF\|PDU}_THINKING` | → `true` (`src/config.ts`) |
 | Claude Code dispatch | `CC_DISPATCH_MODEL` | → `CC_DISPATCH_MODEL_ID` (`src/config.ts:449`) |
 | Recommendation — reasoning_heavy | `RECOMMENDATION_MODEL_REASONING` | → `RECOMMENDATION_MODELS.reasoning_heavy` (`src/utils/session-classifier.ts`) |
 | Recommendation — executional | `RECOMMENDATION_MODEL_EXECUTIONAL` | → `RECOMMENDATION_MODELS.executional` |
