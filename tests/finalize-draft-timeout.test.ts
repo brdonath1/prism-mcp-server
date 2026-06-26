@@ -112,7 +112,7 @@ describe("S41 C5 — finalize draft timeout + deadline + no-retry", () => {
 
     expect(synthesizeSpy).toHaveBeenCalledTimes(1);
     const callArgs = synthesizeSpy.mock.calls[0];
-    // synthesize(systemPrompt, userContent, maxTokens, timeoutMs, maxRetries, thinking)
+    // synthesize(systemPrompt, userContent, maxTokens, timeoutMs, maxRetries, thinking, callSite, projectSlug)
     expect(callArgs[2]).toBe(4096);
     expect(callArgs[3]).toBe(5000);
     expect(callArgs[4]).toBe(0);
@@ -120,6 +120,8 @@ describe("S41 C5 — finalize draft timeout + deadline + no-retry", () => {
     // the benchmark in briefs/results/phase-3b-benchmark.md confirmed safety
     // of the 150s draft budget (D-159 successor).
     expect(callArgs[5]).toBe(true);
+    expect(callArgs[6]).toBe("draft");
+    expect(callArgs[7]).toBe("test-project");
   });
 
   it("synthesize() forwards maxRetries to Anthropic SDK when provided, omits it otherwise", async () => {

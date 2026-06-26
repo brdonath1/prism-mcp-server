@@ -8,6 +8,7 @@
 import { pushFile } from "../github/client.js";
 import {
   LIVING_DOCUMENT_NAMES,
+  computeSynthesisThinkingEnabled,
   SYNTHESIS_ENABLED,
   SYNTHESIS_INPUT_MAX_TOKENS,
   SYNTHESIS_MODEL,
@@ -256,7 +257,7 @@ export async function generateIntelligenceBrief(
       undefined,
       briefTimeoutMs,
       undefined,
-      true, // thinking: true — Phase 3a CS-2 adaptive-thinking flag
+      computeSynthesisThinkingEnabled("brief"), // Phase 5c: default-on per-call-site thinking switch
       "brief", // brief-424 Phase 3c-B: per-call-site routing (SYNTHESIS_BRIEF_* env vars)
       projectSlug, // brief-419: project tagging for boot-time observation surfacing
     );
@@ -468,7 +469,7 @@ export async function generatePendingDocUpdates(
       undefined,
       pduTimeoutMs,
       undefined,
-      true, // thinking: true — Phase 3a CS-3 adaptive-thinking flag
+      computeSynthesisThinkingEnabled("pdu"), // Phase 5c: default-on per-call-site thinking switch
       "pdu", // brief-417: per-call-site routing
       projectSlug, // brief-419: project tagging for boot-time observation surfacing
     );

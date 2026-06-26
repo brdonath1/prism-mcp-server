@@ -91,6 +91,8 @@ describe("SRV-95 — .env.example documents synthesis env vars", () => {
     expect(envExample).toContain("ANTHROPIC_API_KEY");
     expect(envExample).toContain("SYNTHESIS_BRIEF_TRANSPORT");
     expect(envExample).toContain("SYNTHESIS_PDU_MODEL");
+    expect(envExample).toContain("SYNTHESIS_BRIEF_THINKING=true");
+    expect(envExample).toContain("SYNTHESIS_PDU_THINKING=true");
   });
 
   it("documents LLM routing placeholders without secret-shaped examples", () => {

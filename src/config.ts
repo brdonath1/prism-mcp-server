@@ -145,6 +145,21 @@ export function computeSynthesisEnabled(env: NodeJS.ProcessEnv = process.env): b
 }
 export const SYNTHESIS_ENABLED = computeSynthesisEnabled();
 
+/** Per-call-site adaptive-thinking switch for fire-and-forget synthesis.
+ *  Defaults on to preserve the Phase 3a behavior. Set
+ *  SYNTHESIS_BRIEF_THINKING=false or SYNTHESIS_PDU_THINKING=false to opt a
+ *  specific background call site out without changing model or transport. */
+export function computeSynthesisThinkingEnabled(
+  callSite: "brief" | "pdu",
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const raw = env[`SYNTHESIS_${callSite.toUpperCase()}_THINKING`]?.trim().toLowerCase();
+  if (!raw) return true;
+  if (["false", "0", "no", "off"].includes(raw)) return false;
+  if (["true", "1", "yes", "on"].includes(raw)) return true;
+  return true;
+}
+
 /** Max output tokens for synthesis calls. Bumped from 4096 → 8192 for Phase 3a:
  *  adaptive thinking on Opus 4.7 emits internal thinking content blocks that
  *  are counted against max_tokens. Text-output budget after thinking overhead

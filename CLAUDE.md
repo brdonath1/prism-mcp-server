@@ -81,6 +81,7 @@ The MCP server is the v2 evolution — separating Claude into a pure reasoning a
 | `SYNTHESIS_MODEL` | optional | Override the synthesis model. The registry default lives in `src/models.ts` (`SYNTHESIS_MODEL_ID`); do not assume a specific model name. |
 | `SYNTHESIS_{BRIEF,DRAFT,PDU}_MODEL` | optional | Per-call-site synthesis model override (production knob per `docs/model-bump.md`) |
 | `SYNTHESIS_{BRIEF,DRAFT,PDU}_TRANSPORT` | optional | Per-call-site transport: `messages_api` or `cc_subprocess` (production synthesis routing) |
+| `SYNTHESIS_{BRIEF,PDU}_THINKING` | optional | Per-call-site adaptive-thinking switch for background synthesis. Defaults to `true`; set a specific call site to `false`/`0`/`no`/`off` to opt out without changing model or transport. |
 | `CC_DISPATCH_MODEL` | optional | Override the Claude Code dispatch model (default: `CC_DISPATCH_MODEL_ID` in `src/models.ts`) |
 | `CC_DISPATCH_MAX_TURNS` | optional | Default agent turn cap (default: 50) |
 | `OPENAI_API_KEY` / `GEMINI_API_KEY` / `DEEPSEEK_API_KEY` / `XAI_API_KEY` / `PERPLEXITY_API_KEY` | optional | Provider credentials for live multi-provider synthesis routes. Values must stay in Railway/env/secret stores, never source. |

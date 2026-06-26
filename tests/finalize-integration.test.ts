@@ -848,8 +848,10 @@ describe("prism_finalize draft phase", () => {
     // benchmark in briefs/results/phase-3b-benchmark.md confirmed safety.
     expect(mockSynthesize).toHaveBeenCalledTimes(1);
     const draftCallArgs = mockSynthesize.mock.calls[0];
-    // synthesize(systemPrompt, userContent, maxTokens, timeoutMs, maxRetries, thinking)
+    // synthesize(systemPrompt, userContent, maxTokens, timeoutMs, maxRetries, thinking, callSite, projectSlug)
     expect(draftCallArgs[5]).toBe(true);
+    expect(draftCallArgs[6]).toBe("draft");
+    expect(draftCallArgs[7]).toBe("test-project");
   });
 
   it("SRV-67: draftPhase bounds an oversized input before the model call", async () => {
