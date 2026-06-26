@@ -34,7 +34,7 @@ export interface ToolRegistryEntry {
  *                     optional categories).
  */
 export const TOOL_REGISTRY: readonly ToolRegistryEntry[] = [
-  // PRISM core (13)
+  // PRISM core (14)
   { name: "prism_bootstrap", category: "prism_core" },
   { name: "prism_fetch", category: "prism_core" },
   { name: "prism_push", category: "prism_core" },
@@ -48,6 +48,7 @@ export const TOOL_REGISTRY: readonly ToolRegistryEntry[] = [
   { name: "prism_log_insight", category: "prism_core" },
   { name: "prism_patch", category: "prism_core" },
   { name: "prism_load_rules", category: "prism_core" },
+  { name: "prism_x_sentiment", category: "prism_core" },
   // Railway (4)
   { name: "railway_logs", category: "railway" },
   { name: "railway_deploy", category: "railway" },
@@ -87,7 +88,7 @@ export function getExpectedToolSurface(
 
 /**
  * Post-boot tool_search queries that Claude executes after receiving the
- * bootstrap response. Together these three queries empirically load all 25
+ * bootstrap response. Together these three queries empirically load all 26
  * registered tools (verified live S43; expanded for the github category in
  * brief-403/404; "tag" keyword added S105 to surface gh_delete_tag, which
  * was ranking below limit:20 in the github query without it; "protection"
@@ -106,7 +107,7 @@ export interface PostBootToolSearch {
 }
 
 export const POST_BOOT_TOOL_SEARCHES: readonly PostBootToolSearch[] = [
-  { query: "prism log patch scale synthesize analytics finalize", limit: 20 },
+  { query: "prism log patch scale synthesize analytics finalize sentiment x", limit: 20 },
   { query: "railway deploy environment status dispatch claude code", limit: 20 },
   { query: "github branch release tag protection delete create update", limit: 20 },
 ] as const;
