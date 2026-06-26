@@ -18,11 +18,11 @@ import {
 } from "../src/tool-registry.js";
 
 describe("D-83 — TOOL_REGISTRY shape", () => {
-  it("contains exactly 25 tools", () => {
-    expect(TOOL_REGISTRY).toHaveLength(25);
+  it("contains exactly 26 tools", () => {
+    expect(TOOL_REGISTRY).toHaveLength(26);
   });
 
-  it("categorizes 13 prism_core, 4 railway, 2 claude_code, 6 github", () => {
+  it("categorizes 14 prism_core, 4 railway, 2 claude_code, 6 github", () => {
     const counts: Record<ToolCategory, number> = {
       prism_core: 0,
       railway: 0,
@@ -30,7 +30,7 @@ describe("D-83 — TOOL_REGISTRY shape", () => {
       github: 0,
     };
     for (const t of TOOL_REGISTRY) counts[t.category]++;
-    expect(counts).toEqual({ prism_core: 13, railway: 4, claude_code: 2, github: 6 });
+    expect(counts).toEqual({ prism_core: 14, railway: 4, claude_code: 2, github: 6 });
   });
 
   it("has unique tool names", () => {
@@ -40,9 +40,9 @@ describe("D-83 — TOOL_REGISTRY shape", () => {
 });
 
 describe("D-83 — getExpectedToolSurface() feature-flag gating", () => {
-  it("returns all 25 tools when all flags enabled", () => {
+  it("returns all 26 tools when all flags enabled", () => {
     const surface = getExpectedToolSurface(true, true, true);
-    expect(surface.prism_core).toHaveLength(13);
+    expect(surface.prism_core).toHaveLength(14);
     expect(surface.railway).toHaveLength(4);
     expect(surface.claude_code).toHaveLength(2);
     expect(surface.github).toHaveLength(6);
@@ -58,7 +58,7 @@ describe("D-83 — getExpectedToolSurface() feature-flag gating", () => {
   it("excludes railway when RAILWAY_ENABLED=false", () => {
     const surface = getExpectedToolSurface(false, true, true);
     expect(surface.railway).toEqual([]);
-    expect(surface.prism_core).toHaveLength(13);
+    expect(surface.prism_core).toHaveLength(14);
     expect(surface.claude_code).toHaveLength(2);
     expect(surface.github).toHaveLength(6);
   });
@@ -66,7 +66,7 @@ describe("D-83 — getExpectedToolSurface() feature-flag gating", () => {
   it("excludes claude_code when CC_DISPATCH_ENABLED=false", () => {
     const surface = getExpectedToolSurface(true, false, true);
     expect(surface.claude_code).toEqual([]);
-    expect(surface.prism_core).toHaveLength(13);
+    expect(surface.prism_core).toHaveLength(14);
     expect(surface.railway).toHaveLength(4);
     expect(surface.github).toHaveLength(6);
   });
@@ -74,14 +74,14 @@ describe("D-83 — getExpectedToolSurface() feature-flag gating", () => {
   it("excludes github when GITHUB_PAT-derived flag is false", () => {
     const surface = getExpectedToolSurface(true, true, false);
     expect(surface.github).toEqual([]);
-    expect(surface.prism_core).toHaveLength(13);
+    expect(surface.prism_core).toHaveLength(14);
     expect(surface.railway).toHaveLength(4);
     expect(surface.claude_code).toHaveLength(2);
   });
 
   it("returns only prism_core when all optional flags disabled", () => {
     const surface = getExpectedToolSurface(false, false, false);
-    expect(surface.prism_core).toHaveLength(13);
+    expect(surface.prism_core).toHaveLength(14);
     expect(surface.railway).toEqual([]);
     expect(surface.claude_code).toEqual([]);
     expect(surface.github).toEqual([]);
@@ -105,6 +105,7 @@ describe("D-83 — drift guard: src/index.ts registers every TOOL_REGISTRY entry
     prism_log_insight: "registerLogInsight",
     prism_patch: "registerPatch",
     prism_load_rules: "registerLoadRules",
+    prism_x_sentiment: "registerXSentiment",
     railway_logs: "registerRailwayLogs",
     railway_deploy: "registerRailwayDeploy",
     railway_env: "registerRailwayEnv",

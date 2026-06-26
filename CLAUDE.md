@@ -6,7 +6,7 @@ This is the **PRISM MCP Server** — a custom remote MCP (Model Context Protocol
 
 **Owner:** Brian (brdonath1 on GitHub)
 **Framework:** PRISM — current version pinned by the framework repo's core-template; fetched dynamically at bootstrap.
-**Server Version:** 4.9.1
+**Server Version:** 4.10.0
 **Status:** Production — deployed on Railway, serving all active PRISM projects.
 
 ## What PRISM Is
@@ -25,9 +25,9 @@ The MCP server is the v2 evolution — separating Claude into a pure reasoning a
 └───────────────┬───────────────────────────────┘
                 │ MCP Protocol (HTTPS)
 ┌───────────────▼───────────────────────────────┐
-│  PRISM MCP Server (Railway) — v4.9.1          │
-│  25 MCP tools — stateless proxy               │
-│  ├── 13 PRISM  (bootstrap/fetch/push/...)     │
+│  PRISM MCP Server (Railway) — v4.10.0         │
+│  26 MCP tools — stateless proxy               │
+│  ├── 14 PRISM  (bootstrap/fetch/push/X sentiment) │
 │  ├──  4 Railway (logs/deploy/env/status)      │
 │  ├──  2 Claude Code (cc_dispatch/cc_status)   │
 │  └──  6 GitHub (branch/release/tag/protect)   │
@@ -85,6 +85,7 @@ The MCP server is the v2 evolution — separating Claude into a pure reasoning a
 | `CC_DISPATCH_MAX_TURNS` | optional | Default agent turn cap (default: 50) |
 | `OPENAI_API_KEY` / `GEMINI_API_KEY` / `DEEPSEEK_API_KEY` / `XAI_API_KEY` / `PERPLEXITY_API_KEY` | optional | Provider credentials for live multi-provider synthesis routes. Values must stay in Railway/env/secret stores, never source. |
 | `LLM_ROUTING_ENABLED` / `LLM_ROUTING_DRY_RUN` | optional | Multi-provider synthesis routing switch. Live provider invocation requires enabled=true and dry-run=false. |
+| `LLM_ROUTING_X_SENTIMENT_ENABLED` | optional | Additional explicit switch for `prism_x_sentiment`; live xAI sentiment calls require this true, routing enabled, dry-run false, `xai` allowed, and `XAI_API_KEY` present. |
 | `LLM_ROUTING_*_PROVIDER` | optional | Provider preference names for synthesis route selection and sanitized status. `LLM_ROUTING_CC_DISPATCH_PROVIDER` remains Claude-only unless a future non-Claude code runner exists. |
 | `LLM_ROUTING_{OPENAI,GEMINI,DEEPSEEK,XAI,PERPLEXITY}_MODEL` | optional | Provider model override. Defaults are OpenAI `gpt-5.5`, Gemini `gemini-3.1-pro-preview`, DeepSeek `deepseek-v4-pro`, xAI `grok-4.3`, and Perplexity `sonar-pro`. |
 
@@ -105,6 +106,11 @@ to the existing Anthropic synthesis path.
 `cc_dispatch` remains Claude Code OAuth execution. A non-Claude provider name in
 `LLM_ROUTING_CC_DISPATCH_PROVIDER` must not redirect code dispatch to a generic
 completion API; that would require a separate code-runner subsystem.
+
+`prism_x_sentiment` uses xAI `x_search` through the Responses API for aggregate
+public X sentiment. It returns handle-free `/i/status/...` source URLs,
+aggregate labels, caveats, and warnings only; it must not return raw X post
+text, handles, provider payloads, or credential values.
 
 ## Key Technical Constraints
 

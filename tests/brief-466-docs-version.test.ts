@@ -56,7 +56,7 @@ describe("SRV-92 — CLAUDE.md tool inventory matches TOOL_REGISTRY", () => {
   const total = TOOL_REGISTRY.length;
 
   it("total tool count is stated correctly", () => {
-    expect(total).toBe(25); // tripwire: changing the surface must update CLAUDE.md
+    expect(total).toBe(26); // tripwire: changing the surface must update CLAUDE.md
     expect(claudeMd).toContain(`${total} MCP tools`);
   });
 
@@ -96,6 +96,7 @@ describe("SRV-95 — .env.example documents synthesis env vars", () => {
   it("documents LLM routing placeholders without secret-shaped examples", () => {
     expect(envExample).toContain("LLM_ROUTING_ENABLED=false");
     expect(envExample).toContain("LLM_ROUTING_DRY_RUN=true");
+    expect(envExample).toContain("LLM_ROUTING_X_SENTIMENT_ENABLED=false");
     expect(envExample).toContain("LLM_ROUTING_ALLOWED_PROVIDERS=anthropic");
     expect(envExample).toContain("LLM_ROUTING_CC_DISPATCH_PROVIDER=anthropic");
     expect(envExample).toContain("LLM_ROUTING_OPENAI_MODEL=gpt-5.5");
