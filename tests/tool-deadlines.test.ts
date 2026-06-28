@@ -229,5 +229,8 @@ describe("S40 C4 — prism_finalize commit-phase wall-clock deadline", () => {
     // rather than the vaguer "verify repo state manually".
     expect(data.partial_state_warning).toMatch(/atomic|verify the repo HEAD/i);
     expect(data.action).toBe("commit");
+    expect(data.banner_text).toBe("PRISM | Session 1 | Handoff v2 | 0/10 docs");
+    expect(data.banner_spec_version).toBe("4.2");
+    expect(data.finalization_banner_html).toBeNull();
   });
 });

@@ -1758,6 +1758,26 @@ async function assembleFinalizeBanner(
   }
 }
 
+function assembleFinalizeErrorBannerFields(
+  sessionNumber: number,
+  handoffVersion: number,
+): {
+  banner_text: string;
+  banner_spec_version: typeof BANNER_SPEC_VERSION;
+  finalization_banner_html: null;
+} {
+  return {
+    banner_text: renderBannerFallback({
+      sessionNumber,
+      handoffVersion,
+      docCount: 0,
+      docTotal: LIVING_DOCUMENTS.length,
+    }),
+    banner_spec_version: BANNER_SPEC_VERSION,
+    finalization_banner_html: null,
+  };
+}
+
 /**
  * Full phase — run audit + draft + commit atomically in a single tool call.
  * Enables Trigger-driven finalization without inter-call state management.
@@ -2138,6 +2158,7 @@ async function fullPhase(
         draft: { status: draftStatus },
         commit: { all_succeeded: false },
       },
+      ...assembleFinalizeErrorBannerFields(sessionNumber, handoffVersion),
       diagnostics: diagnostics.list(),
     };
   }
@@ -2497,6 +2518,7 @@ export function registerFinalize(server: McpServer): void {
                   partial_state_warning:
                     "Commit deadline exceeded. The final doc commit is atomic (all-or-nothing) and was signaled to abort — verify the repo HEAD before retrying. Pre-commit steps (handoff backup, history prune) may already have committed; a retry does not duplicate archived entries (SRV-47).",
                   backup_created: "",
+                  ...assembleFinalizeErrorBannerFields(session_number, handoff_version ?? 1),
                   diagnostics: diagnostics.list(),
                 }),
               },
@@ -2584,6 +2606,9 @@ export function registerFinalize(server: McpServer): void {
                 action,
                 partial_state_warning:
                   "Finalize errored mid-turn. Doc commits are atomic, but pre-commit steps (handoff backup, history prune) may already have landed — verify the repo HEAD. A retry does not duplicate archived entries (SRV-47).",
+                ...(action === "commit" || action === "full"
+                  ? assembleFinalizeErrorBannerFields(session_number, handoff_version ?? 1)
+                  : {}),
                 diagnostics: diagnostics.list(),
               }),
             },
