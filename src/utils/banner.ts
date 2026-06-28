@@ -46,11 +46,12 @@ export interface BannerStatusEntry {
  * finalization HTML widget — atop the unified text generator. 4.1 (D-256) —
  * session-state color designation: green boot pill, red finalized pill + 3px
  * top accent strip. 4.2 adds explicit chat-session title lines to the graphical
- * boot/finalize widgets while leaving the unified text grammar unchanged.
+ * boot/finalize widgets while leaving the unified text grammar unchanged. 4.3
+ * adds the optional finalization LLM usage table.
  * Contracts: `_templates/banner-spec.md` and
  * `_templates/finalization-banner-spec.md`.
  */
-export const BANNER_SPEC_VERSION = "4.2";
+export const BANNER_SPEC_VERSION = "4.3";
 
 /** Status glyphs shared by every banner surface. */
 const STATUS_ICONS: Record<BannerStatusEntry["status"], string> = {
@@ -371,6 +372,15 @@ export function renderBootMastheadSvg(data: UnifiedBannerInput): string {
  * finalize commit. Optional fields (`decisionDelta`, `next`) drop their
  * segment/line when null/undefined.
  */
+export interface FinalizationBannerLlmUsageEntry {
+  /** Session work aspect, e.g. "Chat orchestration" or "Codex review". */
+  aspect: string;
+  /** Model used for that aspect, reported from explicit session evidence. */
+  model: string;
+  /** Settings used for that aspect, reported from explicit session evidence. */
+  settings?: string | null;
+}
+
 export interface FinalizationBannerHtmlInput {
   /** Framework template version (e.g. "2.19.1"); "unknown" when unparseable. */
   templateVersion: string;
@@ -392,6 +402,8 @@ export interface FinalizationBannerHtmlInput {
   statusRow: BannerStatusEntry[];
   /** Deliverable lines — the list wraps natively in HTML. */
   deliverables: string[];
+  /** Optional compact table of known model/settings usage for this session. */
+  llmUsage?: FinalizationBannerLlmUsageEntry[] | null;
   /** Next-session pointer; the line is omitted when null/empty. */
   next?: string | null;
   /** Full chat title for the next session; omitted when null/empty. */
@@ -415,7 +427,9 @@ const PHASE_COLOR_VAR: Record<BannerStatusEntry["status"], string> = {
  * chat-session title line. Phase-step glyphs keep their status colors — green
  * ✓ still means phase success. The variable-length Deliverables list wraps
  * natively — one `▸` row per deliverable (the last row drops its bottom margin
- * to match the target). The self-contained `.brand`/`.mark` `<style>` block is
+ * to match the target). Spec 4.3 adds the optional LLM usage table after
+ * Deliverables when known rows are supplied. The self-contained `.brand`/`.mark`
+ * `<style>` block is
  * intentionally hardcoded purple + dark `@media` (no host CSS var exists for
  * the brand color); all other colors stay on the `visualize` design-system CSS
  * variables for theming/dark-mode.
@@ -426,6 +440,9 @@ export function renderFinalizationBannerHtml(data: FinalizationBannerHtmlInput):
   const decisionsText = `${data.decisionCount} decisions${
     data.decisionDelta != null ? ` (+${data.decisionDelta})` : ""
   }`;
+  const llmUsageRows = (data.llmUsage ?? []).filter(
+    (row) => row.aspect.trim() !== "" && row.model.trim() !== "",
+  );
 
   // Docs chip: success-colored when every doc updated, else a neutral chip
   // (matching the two stat chips before it).
@@ -487,6 +504,39 @@ export function renderFinalizationBannerHtml(data: FinalizationBannerHtmlInput):
   });
 
   lines.push(`  </div>`);
+
+  if (llmUsageRows.length > 0) {
+    lines.push(
+      `  <div style="border-top:0.5px solid var(--color-border-tertiary);padding-top:12px;margin-top:12px;">`,
+      `    <div style="font-size:12px;font-weight:500;color:var(--color-text-secondary);margin-bottom:8px;">LLM usage</div>`,
+      `    <table style="width:100%;border-collapse:collapse;table-layout:fixed;font-size:12px;color:var(--color-text-primary);">`,
+      `      <thead>`,
+      `        <tr>`,
+      `          <th style="text-align:left;font-weight:500;color:var(--color-text-secondary);padding:0 10px 6px 0;">Aspect</th>`,
+      `          <th style="text-align:left;font-weight:500;color:var(--color-text-secondary);padding:0 10px 6px 0;">Model</th>`,
+      `          <th style="text-align:left;font-weight:500;color:var(--color-text-secondary);padding:0 0 6px 0;">Settings</th>`,
+      `        </tr>`,
+      `      </thead>`,
+      `      <tbody>`,
+    );
+
+    for (const row of llmUsageRows) {
+      const settings = row.settings?.trim() ? row.settings.trim() : "Not recorded";
+      lines.push(
+        `        <tr>`,
+        `          <td style="vertical-align:top;border-top:0.5px solid var(--color-border-tertiary);padding:7px 10px 7px 0;line-height:1.4;word-break:break-word;">${esc(row.aspect.trim())}</td>`,
+        `          <td style="vertical-align:top;border-top:0.5px solid var(--color-border-tertiary);padding:7px 10px 7px 0;line-height:1.4;word-break:break-word;">${esc(row.model.trim())}</td>`,
+        `          <td style="vertical-align:top;border-top:0.5px solid var(--color-border-tertiary);padding:7px 0;line-height:1.4;word-break:break-word;color:var(--color-text-secondary);">${esc(settings)}</td>`,
+        `        </tr>`,
+      );
+    }
+
+    lines.push(
+      `      </tbody>`,
+      `    </table>`,
+      `  </div>`,
+    );
+  }
 
   if (data.next != null && data.next.trim() !== "") {
     lines.push(
