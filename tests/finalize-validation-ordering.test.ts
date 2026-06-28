@@ -119,7 +119,7 @@ describe("SRV-48 — no repo write happens before validation passes", () => {
     const data = parse(result);
     expect(data.all_succeeded).toBe(false);
     expect(data.banner_text).toContain("Session 25 finalized");
-    expect(data.banner_spec_version).toBe("4.2");
+    expect(data.banner_spec_version).toBe("4.3");
     expect(data.finalization_banner_html).toContain("Session 25 finalized");
     // The SRV-48 guarantee: NOTHING was committed before validation gated it.
     expect(mockCreateAtomicCommit).not.toHaveBeenCalled();
@@ -154,7 +154,7 @@ describe("SRV-48 — no repo write happens before validation passes", () => {
     const data = parse(result);
     expect(data.all_succeeded).toBe(false);
     expect(data.banner_text).toContain("Session 25 finalized");
-    expect(data.banner_spec_version).toBe("4.2");
+    expect(data.banner_spec_version).toBe("4.3");
     expect(data.finalization_banner_html).toContain("Session 25 finalized");
   });
 });

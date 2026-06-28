@@ -164,6 +164,7 @@ import {
   stripMarkdown,
   type BannerStatusEntry,
   type FinalizationBannerHtmlInput,
+  type FinalizationBannerLlmUsageEntry,
 } from "../utils/banner.js";
 import { DiagnosticsCollector } from "../utils/diagnostics.js";
 import { classifySession, injectPersistedRecommendation, type SessionRecommendation } from "../utils/session-classifier.js";
@@ -1575,16 +1576,7 @@ async function assembleFinalizeBanner(
   files: Array<{ path: string; content: string }>,
   results: Array<{ path: string; success: boolean; verified: boolean }>,
   allSucceeded: boolean,
-  bannerData?: {
-    deliverables?: Array<{ text: string; status: "ok" | "warn" }>;
-    decisions_note?: string;
-    step_statuses?: {
-      audit?: "ok" | "warn" | "critical";
-      draft?: "ok" | "warn" | "critical";
-      commit?: "ok" | "warn" | "critical";
-      verified?: "ok" | "warn" | "critical";
-    };
-  },
+  bannerData?: FinalizeBannerData,
 ): Promise<{ text: string; htmlInput: FinalizationBannerHtmlInput | null }> {
   const docsTotal = LIVING_DOCUMENTS.length;
 
@@ -1733,6 +1725,7 @@ async function assembleFinalizeBanner(
       docTotal: docsTotal,
       statusRow,
       deliverables: listItems,
+      llmUsage: normalizeFinalizationLlmUsage(bannerData?.llm_usage),
       next:
         nextStepsForRecommendation.length > 0
           ? stripMarkdown(nextStepsForRecommendation[0])
@@ -1756,6 +1749,52 @@ async function assembleFinalizeBanner(
       htmlInput: null,
     };
   }
+}
+
+interface FinalizeBannerData {
+  deliverables?: Array<{ text: string; status: "ok" | "warn" }>;
+  decisions_note?: string;
+  step_statuses?: {
+    audit?: "ok" | "warn" | "critical";
+    draft?: "ok" | "warn" | "critical";
+    commit?: "ok" | "warn" | "critical";
+    verified?: "ok" | "warn" | "critical";
+  };
+  llm_usage?: unknown[];
+}
+
+function normalizeBannerText(value: unknown, maxLength: number): string {
+  if (typeof value !== "string") return "";
+  const normalized = stripMarkdown(value).replace(/\s+/g, " ").trim();
+  return normalized.length > maxLength
+    ? normalized.slice(0, maxLength).trim()
+    : normalized;
+}
+
+function normalizeFinalizationLlmUsage(
+  entries: unknown,
+): FinalizationBannerLlmUsageEntry[] {
+  if (!Array.isArray(entries)) return [];
+
+  const rows: FinalizationBannerLlmUsageEntry[] = [];
+  for (const entry of entries) {
+    const record =
+      entry != null && typeof entry === "object"
+        ? (entry as Record<string, unknown>)
+        : {};
+    const aspect = normalizeBannerText(record.aspect, 80);
+    const model = normalizeBannerText(record.model, 80);
+    const settings = normalizeBannerText(record.settings, 120);
+    if (!aspect || !model) continue;
+
+    rows.push({
+      aspect,
+      model,
+      settings: settings || null,
+    });
+    if (rows.length >= 8) break;
+  }
+  return rows;
 }
 
 function assembleFinalizeErrorBannerFields(
@@ -1987,7 +2026,7 @@ async function fullPhase(
   handoffVersion: number,
   handoffContent: string,
   skipSynthesis: boolean,
-  bannerData?: { deliverables?: Array<{text: string; status: "ok"|"warn"}>; decisions_note?: string; step_statuses?: { audit?: "ok"|"warn"|"critical"; draft?: "ok"|"warn"|"critical"; commit?: "ok"|"warn"|"critical"; verified?: "ok"|"warn"|"critical" } },
+  bannerData?: FinalizeBannerData,
 ) {
   const diagnostics = new DiagnosticsCollector();
 
@@ -2283,6 +2322,7 @@ export function registerFinalize(server: McpServer): void {
           commit: z.enum(["ok", "warn", "critical"]).optional(),
           verified: z.enum(["ok", "warn", "critical"]).optional(),
         }).optional(),
+        llm_usage: z.array(z.unknown()).optional(),
       }).optional().describe("Optional banner customization data (commit phase only)"),
       handoff_content: z.string().optional().describe("Complete handoff.md content (full action only)"),
     },

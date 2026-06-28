@@ -17,6 +17,7 @@ process.env.GITHUB_PAT = process.env.GITHUB_PAT || "test-dummy-pat";
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { z } from "zod";
 
 vi.mock("../src/github/client.js", () => ({
   fetchFile: vi.fn(),
@@ -100,8 +101,10 @@ type ToolHandler = (
 ) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
 
 const handlers: Record<string, ToolHandler> = {};
+const toolSchemas: Record<string, Record<string, unknown>> = {};
 const mockServer = {
-  tool: vi.fn((name: string, _desc: string, _schema: unknown, handler: unknown) => {
+  tool: vi.fn((name: string, _desc: string, schema: unknown, handler: unknown) => {
+    toolSchemas[name] = schema as Record<string, unknown>;
     handlers[name] = handler as ToolHandler;
   }),
 } as unknown as McpServer;
@@ -111,6 +114,10 @@ registerFinalize(mockServer);
 
 function parse(result: { content: Array<{ type: string; text: string }> }): any {
   return JSON.parse(result.content[0].text);
+}
+
+function validateFinalizeArgs(args: Record<string, unknown>) {
+  return z.object(toolSchemas.prism_finalize as any).safeParse(args);
 }
 
 const HANDOFF_BOOT = `# Handoff
@@ -362,6 +369,77 @@ describe("prism_finalize unified banner", () => {
     expect(data.banner_text).toContain("▸ Docs updated");
   });
 
+  it("commit passes banner_data llm_usage rows into finalization_banner_html", async () => {
+    const result = await handlers.prism_finalize({
+      project_slug: "test-project",
+      action: "commit",
+      session_number: 26,
+      handoff_version: 31,
+      skip_synthesis: true,
+      files: [{ path: "handoff.md", content: HANDOFF_FINALIZE }],
+      banner_data: {
+        llm_usage: [
+          {
+            aspect: "Chat orchestration",
+            model: "Claude Opus 4.8",
+            settings: "Adaptive off · 500K context",
+          },
+          {
+            aspect: "Codex review",
+            model: "GPT-5.5",
+            settings: "xhigh reasoning · priority",
+          },
+        ],
+      },
+    });
+    const data = parse(result);
+    expect(data.finalization_banner_html).toContain("LLM usage");
+    expect(data.finalization_banner_html).toContain("Chat orchestration");
+    expect(data.finalization_banner_html).toContain("Claude Opus 4.8");
+    expect(data.finalization_banner_html).toContain("Adaptive off · 500K context");
+    expect(data.finalization_banner_html).toContain("Codex review");
+    expect(data.finalization_banner_html).toContain("GPT-5.5");
+    expect(data.finalization_banner_html).toContain("xhigh reasoning · priority");
+  });
+
+  it("commit ignores malformed optional llm_usage rows instead of rejecting finalization input", async () => {
+    const args = {
+      project_slug: "test-project",
+      action: "commit",
+      session_number: 26,
+      handoff_version: 31,
+      skip_synthesis: true,
+      files: [{ path: "handoff.md", content: HANDOFF_FINALIZE }],
+      banner_data: {
+        llm_usage: [
+          {
+            aspect: "Codex review",
+            model: "GPT-5.5",
+            settings: "xhigh reasoning · priority",
+          },
+          {
+            model: "Claude Opus 4.8",
+            settings: "missing aspect",
+          },
+          {
+            aspect: "Draft synthesis",
+            settings: "missing model",
+          },
+        ],
+      },
+    };
+
+    expect(validateFinalizeArgs(args).success).toBe(true);
+
+    const data = parse(await handlers.prism_finalize(args));
+    expect(data.finalization_banner_html).toContain("LLM usage");
+    expect(data.finalization_banner_html).toContain("Codex review");
+    expect(data.finalization_banner_html).toContain("GPT-5.5");
+    expect(data.finalization_banner_html).toContain("xhigh reasoning · priority");
+    expect(data.finalization_banner_html).not.toContain("missing aspect");
+    expect(data.finalization_banner_html).not.toContain("missing model");
+  });
+
   it("commit counts multiple legacy-layout living docs; domain decision files do NOT count (R8 doc-count fix)", async () => {
     const result = await handlers.prism_finalize({
       project_slug: "test-project",
@@ -405,6 +483,31 @@ describe("prism_finalize unified banner", () => {
     // Derived outcomes in this fixture are audit=warn (all docs missing) and
     // draft=warn (synthesize mock fails) — the operator override must win.
     expect(stepRow).toBe("✓ audit | ✓ draft | ✓ commit | ✓ verified");
+  });
+
+  it("full action passes banner_data llm_usage rows into finalization_banner_html", async () => {
+    const result = await handlers.prism_finalize({
+      project_slug: "test-project",
+      action: "full",
+      session_number: 26,
+      handoff_version: 31,
+      skip_synthesis: true,
+      handoff_content: HANDOFF_FINALIZE,
+      banner_data: {
+        llm_usage: [
+          {
+            aspect: "Chat orchestration",
+            model: "Claude Opus 4.8",
+            settings: "Adaptive off · 500K context",
+          },
+        ],
+      },
+    });
+    const data = parse(result);
+    expect(data.finalization_banner_html).toContain("LLM usage");
+    expect(data.finalization_banner_html).toContain("Chat orchestration");
+    expect(data.finalization_banner_html).toContain("Claude Opus 4.8");
+    expect(data.finalization_banner_html).toContain("Adaptive off · 500K context");
   });
 
   it("full action also returns banner_text + banner_spec_version (previously had no banner)", async () => {
@@ -662,24 +765,88 @@ describe("renderFinalizationBannerHtml (brief-447 / D-249)", () => {
     // ok phase glyphs keep success-green — red there would read as failure.
     expect(html).toContain('color:var(--color-text-success);font-weight:500;">✓</span>');
   });
+
+  it("renders an optional escaped LLM usage table when llmUsage rows are supplied", () => {
+    const html = renderFinalizationBannerHtml({
+      templateVersion: "2.19.1",
+      sessionNumber: 164,
+      timestamp: "06-10-26 10:00:00",
+      handoffFromVersion: 171,
+      handoffToVersion: 172,
+      handoffStatus: "pushed",
+      decisionCount: 210,
+      decisionDelta: 1,
+      docCount: 10,
+      docTotal: 10,
+      statusRow: [{ label: "verified", status: "ok" }],
+      deliverables: ["Banner Spec 4.3 — LLM usage table"],
+      llmUsage: [
+        {
+          aspect: "Chat orchestration",
+          model: "Claude Opus 4.8",
+          settings: "Adaptive off · 500K context",
+        },
+        {
+          aspect: "Review & approval",
+          model: "Model <script>",
+          settings: 'Settings "quoted"',
+        },
+      ],
+      next: null,
+    });
+
+    expect(html).toContain("LLM usage");
+    expect(html).toContain("Aspect");
+    expect(html).toContain("Model");
+    expect(html).toContain("Settings");
+    expect(html).toContain("Chat orchestration");
+    expect(html).toContain("Claude Opus 4.8");
+    expect(html).toContain("Adaptive off · 500K context");
+    expect(html).toContain("Review &amp; approval");
+    expect(html).toContain("Model &lt;script&gt;");
+    expect(html).toContain("Settings &quot;quoted&quot;");
+    expect(html).not.toContain("Model <script>");
+    expect(html).not.toContain('Settings "quoted"');
+  });
+
+  it("omits the optional LLM usage table when no valid rows are supplied", () => {
+    const html = renderFinalizationBannerHtml({
+      templateVersion: "2.19.1",
+      sessionNumber: 164,
+      timestamp: "06-10-26 10:00:00",
+      handoffFromVersion: 171,
+      handoffToVersion: 172,
+      handoffStatus: "pushed",
+      decisionCount: 210,
+      decisionDelta: 1,
+      docCount: 10,
+      docTotal: 10,
+      statusRow: [{ label: "verified", status: "ok" }],
+      deliverables: ["No model rows"],
+      llmUsage: [],
+      next: null,
+    });
+
+    expect(html).not.toContain("LLM usage");
+  });
 });
 
 describe("banner spec version (brief-452 / D-256)", () => {
-  it("BANNER_SPEC_VERSION is bumped to 4.2", () => {
-    expect(BANNER_SPEC_VERSION).toBe("4.2");
+  it("BANNER_SPEC_VERSION is bumped to 4.3", () => {
+    expect(BANNER_SPEC_VERSION).toBe("4.3");
   });
 
-  it("parseTemplateBannerSpecVersion: a 3.x template declaration drifts from the 4.2 server spec", () => {
+  it("parseTemplateBannerSpecVersion: a 3.x template declaration drifts from the 4.3 server spec", () => {
     // A template still declaring spec 3.x parses to "3.0" and mismatches the
-    // server's current 4.2 — exactly the BANNER_DRIFT condition (expected and
-    // transient until the companion framework brief-602 templates declare
-    // 4.2). A 4.2 declaration matches and does not drift.
+    // server's current 4.3 — exactly the BANNER_DRIFT condition (expected and
+    // transient until the companion framework templates declare 4.3). A 4.3
+    // declaration matches and does not drift.
     expect(parseTemplateBannerSpecVersion("> **Banner-Spec-Version:** 3.0")).toBe("3.0");
     expect(parseTemplateBannerSpecVersion("> **Banner-Spec-Version:** 3.0")).not.toBe(
       BANNER_SPEC_VERSION,
     );
     expect(
       parseTemplateBannerSpecVersion(`> **Banner-Spec-Version:** ${BANNER_SPEC_VERSION}`),
-    ).toBe("4.2");
+    ).toBe("4.3");
   });
 });
