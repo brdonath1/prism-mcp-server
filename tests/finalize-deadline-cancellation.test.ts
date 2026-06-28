@@ -122,6 +122,9 @@ describe("SRV-42/49 — commit deadline cancels the in-flight commit and reports
     // SRV-49: faithful partial-state description + diagnostics present.
     expect(data.partial_state_warning).toMatch(/atomic|verify the repo HEAD/i);
     expect(Array.isArray(data.diagnostics)).toBe(true);
+    expect(data.banner_text).toBe("PRISM | Session 25 | Handoff v5 | 0/10 docs");
+    expect(data.banner_spec_version).toBe("4.2");
+    expect(data.finalization_banner_html).toBeNull();
     // SRV-42: the in-flight commit was actually signaled to abort.
     expect(capturedSignal?.aborted).toBe(true);
   });
@@ -159,6 +162,9 @@ describe("SRV-58 — action=full commit step is bounded by the same deadline", (
     expect(data.all_succeeded).toBe(false);
     expect(data.error).toMatch(/deadline exceeded/i);
     expect(data.partial_state_warning).toBeTruthy();
+    expect(data.banner_text).toBe("PRISM | Session 25 | Handoff v5 | 0/10 docs");
+    expect(data.banner_spec_version).toBe("4.2");
+    expect(data.finalization_banner_html).toBeNull();
     expect(capturedSignal?.aborted).toBe(true);
   });
 });
@@ -185,5 +191,30 @@ describe("SRV-49 — a mid-turn error still surfaces diagnostics", () => {
     // SRV-49: outer catch no longer drops diagnostics / partial state.
     expect(data).toHaveProperty("diagnostics");
     expect(data).toHaveProperty("partial_state_warning");
+    expect(data.banner_text).toBe("PRISM | Session 25 | Handoff v5 | 0/10 docs");
+    expect(data.banner_spec_version).toBe("4.2");
+    expect(data.finalization_banner_html).toBeNull();
+  });
+
+  it("includes fallback banner fields when full finalization throws mid-flight", async () => {
+    mockFileExists.mockRejectedValue(new Error("boom: unexpected GitHub 500 during full guard"));
+    mockCreateAtomicCommit.mockResolvedValue({ success: true, sha: "s", files_committed: 1 });
+
+    const handler = captureHandler();
+    const result = await handler({
+      project_slug: "test-project",
+      action: "full",
+      session_number: 25,
+      handoff_version: 5,
+      handoff_content: VALID_HANDOFF,
+      skip_synthesis: true,
+    });
+
+    const data = parse(result);
+    expect(result.isError).toBe(true);
+    expect(data.action).toBe("full");
+    expect(data.banner_text).toBe("PRISM | Session 25 | Handoff v5 | 0/10 docs");
+    expect(data.banner_spec_version).toBe("4.2");
+    expect(data.finalization_banner_html).toBeNull();
   });
 });
