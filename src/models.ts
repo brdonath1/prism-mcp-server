@@ -63,12 +63,12 @@
  * Fable 5 was removed from active defaults on 2026-06-25 after operator
  * availability evidence said it is unavailable for the foreseeable future.
  * Opus 4.8 is the current Claude fallback target for reasoning_heavy and
- * mixed. executional stays on Sonnet 4.6.
+ * mixed. executional stays on Sonnet 5.
  */
 export const RECOMMENDATION_MODELS = {
   reasoning_heavy: { code: "opus-4-8", display: "Opus 4.8", id: "claude-opus-4-8" },
   mixed: { code: "opus-4-8", display: "Opus 4.8", id: "claude-opus-4-8" },
-  executional: { code: "sonnet-4-6", display: "Sonnet 4.6", id: "claude-sonnet-4-6" },
+  executional: { code: "sonnet-5", display: "Sonnet 5", id: "claude-sonnet-5" },
 } as const;
 
 /**
@@ -101,7 +101,7 @@ export const CC_DISPATCH_MODEL_ID = "claude-opus-4-8";
  *
  *   "claude-fable-5"      -> "Fable 5"
  *   "claude-opus-4-8"     -> "Opus 4.8"
- *   "claude-sonnet-4-6[1m]" -> "Sonnet 4.6"
+ *   "claude-sonnet-5"      -> "Sonnet 5"
  *
  * Unparseable ids fall back to the id verbatim (still truthful, just unstyled).
  */

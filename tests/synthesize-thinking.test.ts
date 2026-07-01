@@ -4,9 +4,10 @@
  *
  *   1. synthesize() called WITHOUT a thinking arg → request body MUST NOT
  *      include `thinking`. Preserves CS-1 (draft) behavior.
- *   2. synthesize() called WITH thinking:true → request body MUST include
- *      `thinking: { type: "adaptive" }`. (Opus 4.7 rejects the legacy
- *      "enabled" + budget_tokens form with HTTP 400.)
+ *   2. synthesize() called WITH thinking:true -> request body MUST include
+ *      `thinking: { type: "adaptive" }` plus `output_config.effort=max`.
+ *      Current Claude models reject the legacy "enabled" + budget_tokens form
+ *      with HTTP 400; Sonnet 5 also rejects non-default sampling params.
  *   3. A mock API response carrying both `thinking` and `text` content blocks
  *      collapses to text only — the `block.type === "text"` filter in
  *      src/ai/client.ts already discards thinking blocks; verify nothing
@@ -26,6 +27,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 interface CapturedPayload {
   thinking?: { type: string };
+  output_config?: { effort: string };
   model?: string;
   max_tokens?: number;
   [k: string]: unknown;
@@ -75,7 +77,7 @@ describe("synthesize() — adaptive thinking parameter (Phase 3a)", () => {
     expect(captured[0]).not.toHaveProperty("thinking");
   });
 
-  it("sets thinking: { type: 'adaptive' } when thinking flag is true", async () => {
+  it("sets adaptive thinking and max effort when thinking flag is true", async () => {
     const captured: CapturedPayload[] = [];
     const createSpy = vi.fn().mockImplementation((payload: CapturedPayload) => {
       captured.push(payload);
@@ -99,6 +101,11 @@ describe("synthesize() — adaptive thinking parameter (Phase 3a)", () => {
     expect(result.success).toBe(true);
     expect(captured).toHaveLength(1);
     expect(captured[0].thinking).toEqual({ type: "adaptive" });
+    expect(captured[0].output_config).toEqual({ effort: "max" });
+    expect(captured[0]).not.toHaveProperty("budget_tokens");
+    expect(captured[0]).not.toHaveProperty("temperature");
+    expect(captured[0]).not.toHaveProperty("top_p");
+    expect(captured[0]).not.toHaveProperty("top_k");
   });
 
   it("strips thinking content blocks from the response — only text reaches result.content", async () => {

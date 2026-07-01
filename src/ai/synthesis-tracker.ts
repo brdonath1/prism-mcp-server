@@ -49,7 +49,7 @@ export interface SynthesisEvent {
   synthesis_kind?: SynthesisKind;
   /** brief-417: which transport ultimately produced this result. */
   transport?: SynthesisTransport;
-  /** brief-417: model identifier (e.g. `claude-sonnet-4-6`, `claude-opus-4-7`). */
+  /** brief-417: model identifier (e.g. `claude-sonnet-5`, `claude-opus-4-8`). */
   model?: string;
   /** brief-417: byte count of the synthesized output content (UTF-8). Drives
    *  the rolling-baseline quality check on CS-3. Optional for legacy events. */

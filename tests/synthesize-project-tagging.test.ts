@@ -70,7 +70,7 @@ beforeEach(() => {
     content: "## architecture.md\n\nfrom subprocess",
     input_tokens: 80,
     output_tokens: 40,
-    model: "claude-sonnet-4-6",
+    model: "claude-sonnet-5",
   });
 });
 

@@ -126,7 +126,7 @@ Example:
 PRISM v2.19.1 | Session 29 | 04-04-26 07:47:30 CST
 Handoff v33 (4.4KB) | 65 decisions (10 guardrails) | 10/10 docs healthy
 ✓ bootstrap | ✓ push verified | ✓ template loaded | ✓ no scaling needed
-Suggested: Opus 4.7 · Adaptive off — Executional queue
+Suggested: Sonnet 5 · Adaptive on — Executional queue
 
 Resumption: All S28 work complete. Verify IP allowlist deploy.
 
@@ -163,7 +163,7 @@ Example:
 PRISM v2.19.1 | Session 29 finalized | 04-04-26 18:30:00 CST
 Handoff v34 (pushed) | 65 decisions | 6/10 docs updated
 ✓ audit | ✓ draft | ✓ commit | ✓ verified
-Suggested: Sonnet 4.6 · Adaptive off — Mechanical queue
+Suggested: Sonnet 5 · Adaptive on — Mechanical queue
 
 Resumption: All S29 work complete. Begin D-241 Phase C.
 

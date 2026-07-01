@@ -74,13 +74,23 @@ describe("synthesizeViaCcSubprocess — wrapper behavior", () => {
     expect(capturedQueryPrompt).toContain("Project: prism-mcp-server");
   });
 
-  it("test 2: overrides thinking=true to false on cc_subprocess path (S118 / D-206)", async () => {
+  it("test 2: overrides thinking=true to false on legacy Sonnet 4.6 cc_subprocess path (S118 / D-206)", async () => {
     // Adaptive thinking on Sonnet 4.6[1m] via the Agent SDK OAuth path is
-    // unverified — the cc_subprocess wrapper always disables thinking
-    // regardless of caller intent. (brief-423 root cause B)
+    // unverified — the cc_subprocess wrapper keeps thinking disabled for
+    // legacy Sonnet routing regardless of caller intent. (brief-423 root cause B)
     await synthesizeViaCcSubprocess("sys", "user", "claude-sonnet-4-6", undefined, undefined, true);
 
     expect(capturedQueryOptions?.thinking).toBeUndefined();
+    expect(capturedQueryOptions?.effort).toBe("high");
+  });
+
+  it("test 2a: forwards adaptive thinking and max effort for explicit Sonnet 5", async () => {
+    await synthesizeViaCcSubprocess("sys", "user", "claude-sonnet-5", undefined, undefined, true);
+
+    expect(capturedQueryOptions?.thinking).toEqual({ type: "adaptive" });
+    expect(capturedQueryOptions?.effort).toBe("max");
+    const env = capturedQueryOptions?.env as Record<string, string> | undefined;
+    expect(env?.CLAUDE_CODE_EFFORT_LEVEL).toBe("max");
   });
 
   it("test 2b: omits thinking when flag not set", async () => {
@@ -210,6 +220,7 @@ describe("synthesizeViaCcSubprocess — wrapper behavior", () => {
     expect(env).toBeDefined();
     expect(env?.ANTHROPIC_API_KEY).toBeUndefined();
     expect(env?.CLAUDE_CODE_OAUTH_TOKEN).toBe("sk-ant-oat01-test-dummy");
+    expect(env?.CLAUDE_CODE_EFFORT_LEVEL).toBe("high");
   });
 
   it("returns AUTH error when CLAUDE_CODE_OAUTH_TOKEN is unset at runtime", async () => {

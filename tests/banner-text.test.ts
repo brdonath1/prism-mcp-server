@@ -83,7 +83,7 @@ describe("T-4: banner text format", () => {
     // Frozen expected output captured from the pre-unification generator.
     const text = renderUnifiedBanner(
       makeBannerInput({
-        suggested: { display: "Opus 4.7 · Adaptive off", rationale: "Executional queue" },
+        suggested: { display: "Sonnet 5 · Adaptive on", rationale: "Executional queue" },
         warnings: ["Handoff is 16.2KB"],
       }),
     );
@@ -92,7 +92,7 @@ describe("T-4: banner text format", () => {
         "PRISM v2.10.0 | Session 29 | 04-04-26 07:47:30 CST",
         "Handoff v33 (4.4KB) | 65 decisions (10 guardrails) | 10/10 docs healthy",
         "✓ bootstrap | ✓ push verified | ✓ template loaded | ✓ no scaling needed",
-        "Suggested: Opus 4.7 · Adaptive off — Executional queue",
+        "Suggested: Sonnet 5 · Adaptive on — Executional queue",
         "",
         "Resumption: All S28 work complete. Verify IP allowlist deploy.",
         "",

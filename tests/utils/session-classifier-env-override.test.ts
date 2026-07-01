@@ -82,7 +82,7 @@ describe("recommendation model env override", () => {
     const e = classifySession({ next_steps: EXECUTIONAL_STEPS });
     expect(e.category).toBe("executional");
     expect(e.model).toBe(RECOMMENDATION_MODELS.executional.code);
-    expect(e.display).toBe(`${RECOMMENDATION_MODELS.executional.display} · Adaptive off`);
+    expect(e.display).toBe(`${RECOMMENDATION_MODELS.executional.display} · Adaptive on`);
 
     const m = classifySession({ next_steps: MIXED_STEPS });
     expect(m.category).toBe("mixed");
@@ -108,7 +108,7 @@ describe("recommendation model env override", () => {
     const e = classifySession({ next_steps: EXECUTIONAL_STEPS });
     expect(e.category).toBe("executional");
     expect(e.model).toBe(RECOMMENDATION_MODELS.executional.code);
-    expect(e.display).toBe(`${RECOMMENDATION_MODELS.executional.display} · Adaptive off`);
+    expect(e.display).toBe(`${RECOMMENDATION_MODELS.executional.display} · Adaptive on`);
   });
 
   it("RECOMMENDATION_MODEL_MIXED overrides only mixed", () => {
@@ -136,7 +136,7 @@ describe("recommendation model env override", () => {
 
     const e = classifySession({ next_steps: EXECUTIONAL_STEPS });
     expect(e.model).toBe("opus-4-8");
-    expect(e.display).toBe("Opus 4.8 · Adaptive off");
+    expect(e.display).toBe("Opus 4.8 · Adaptive on");
 
     expect(classifySession({ next_steps: REASONING_STEPS }).model).toBe(
       RECOMMENDATION_MODELS.reasoning_heavy.code,
@@ -147,10 +147,10 @@ describe("recommendation model env override", () => {
   });
 
   it("strips a [1m] long-context suffix when deriving the short code", () => {
-    process.env.RECOMMENDATION_MODEL_REASONING = "claude-sonnet-4-6[1m]";
+    process.env.RECOMMENDATION_MODEL_REASONING = "claude-sonnet-5[1m]";
     const r = classifySession({ next_steps: REASONING_STEPS });
-    expect(r.model).toBe("sonnet-4-6");
-    expect(r.display).toBe("Sonnet 4.6 · Adaptive on");
+    expect(r.model).toBe("sonnet-5");
+    expect(r.display).toBe("Sonnet 5 · Adaptive on");
   });
 
   it("garbage env value → registry default + a logged warning", () => {
@@ -172,7 +172,7 @@ describe("recommendation model env override", () => {
     expect(warn).not.toHaveBeenCalled();
   });
 
-  it("parsePersistedRecommendation resolves model via env override while preserving persisted display text", () => {
+  it("parsePersistedRecommendation resolves model and display via env override", () => {
     process.env.RECOMMENDATION_MODEL_REASONING = "claude-opus-4-8";
     const block = `<!-- prism:recommended_session_settings -->
 - Model: Opus 4.7
@@ -183,10 +183,8 @@ describe("recommendation model env override", () => {
 
     const r = parsePersistedRecommendation(block);
     expect(r).not.toBeNull();
-    // `model` (code) follows the live env override...
     expect(r?.model).toBe("opus-4-8");
-    // ...while `display` is reconstructed from the persisted text verbatim.
-    expect(r?.display).toBe("Opus 4.7 · Adaptive on");
+    expect(r?.display).toBe("Opus 4.8 · Adaptive on");
   });
 });
 

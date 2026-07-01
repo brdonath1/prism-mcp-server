@@ -181,7 +181,7 @@ export function buildDispatchEnv(
     childEnv[key] = value;
   }
   childEnv.CLAUDE_CODE_OAUTH_TOKEN = oauthToken;
-  childEnv.CLAUDE_CODE_EFFORT = effort;
+  childEnv.CLAUDE_CODE_EFFORT_LEVEL = effort;
   return childEnv;
 }
 
@@ -315,10 +315,8 @@ export async function dispatchTask(
         abortController,
         pathToClaudeCodeExecutable: executable.path,
         persistSession: false,
-        // D-124: Pass effort level for max reasoning depth on Opus 4.6.
-        // The Agent SDK may or may not forward this to the underlying API.
-        // If ignored, Opus 4.6 defaults to "high" effort which is still
-        // excellent. "max" is an experimental upgrade for maximum capability.
+        // D-124/Sonnet 5: pass the highest configured reasoning effort.
+        // The child env also carries CLAUDE_CODE_EFFORT_LEVEL for CLI paths.
         effort: CC_DISPATCH_EFFORT,
         env: buildDispatchEnv(process.env, CLAUDE_CODE_OAUTH_TOKEN, CC_DISPATCH_EFFORT),
       } as any,

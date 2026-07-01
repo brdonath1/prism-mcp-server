@@ -105,10 +105,10 @@ describe("unified banner — boot surface grammar", () => {
   it("Suggested line occupies position 4 when present", () => {
     const lines = renderUnifiedBanner(
       makeBootInput({
-        suggested: { display: "Opus 4.7 · Adaptive off", rationale: "Executional queue" },
+        suggested: { display: "Sonnet 5 · Adaptive on", rationale: "Executional queue" },
       }),
     ).split("\n");
-    expect(lines[3]).toBe("Suggested: Opus 4.7 · Adaptive off — Executional queue");
+    expect(lines[3]).toBe("Suggested: Sonnet 5 · Adaptive on — Executional queue");
     expect(lines[4]).toBe("");
     expect(lines[5]).toBe("Resumption: All S28 work complete. Verify IP allowlist deploy.");
   });
@@ -197,10 +197,10 @@ describe("unified banner — finalize surface grammar", () => {
   it("supports the Suggested line at position 4 like boot", () => {
     const lines = renderUnifiedBanner(
       makeFinalizeInput({
-        suggested: { display: "Sonnet 4.6 · Adaptive off", rationale: "Mechanical queue" },
+        suggested: { display: "Sonnet 5 · Adaptive on", rationale: "Mechanical queue" },
       }),
     ).split("\n");
-    expect(lines[3]).toBe("Suggested: Sonnet 4.6 · Adaptive off — Mechanical queue");
+    expect(lines[3]).toBe("Suggested: Sonnet 5 · Adaptive on — Mechanical queue");
   });
 
   it("contains no HTML", () => {

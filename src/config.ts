@@ -54,12 +54,12 @@ export const SERVER_VERSION = "4.10.0";
 export const MCP_SAFE_TIMEOUT = 50_000;
 
 /** Default context window (tokens) for the server-side boot estimate.
- *  500K matches the documented window of every chat-surface model PRISM
- *  actually runs on — Opus 4.8/4.7/4.6 and Sonnet 4.6
- *  (https://support.claude.com/en/articles/8606394-how-large-is-the-context-window-on-paid-claude-plans).
- *  The true window is still resolved client-side per core-template Rule 9 —
- *  the server cannot know the exact active model; this default only feeds
- *  the boot-cost percentage in the banner. The prior 200K default overstated
+ *  500K is the conservative fallback for Opus 4.8/4.7/4.6 chat sessions.
+ *  Sonnet 5 is 1M on API / supported Claude Code surfaces, but the true
+ *  Claude.ai chat window is resolved client-side per core-template Rule 9
+ *  because the server cannot know the operator's active model selector.
+ *  This default only feeds the boot-cost percentage in the banner. The prior
+ *  200K default overstated
  *  boot cost ~2.5× against the real budget (brief-433 / D-240 Phase B R7-a).
  *  Env-overridable for per-deployment tuning without code change. */
 export const DEFAULT_CONTEXT_WINDOW_TOKENS =
@@ -541,9 +541,9 @@ export const CC_DISPATCH_MAX_TURNS = parseInt(
 
 /** Effort level for Claude Code dispatch.
  *  Controls reasoning depth via the Anthropic API effort parameter.
- *  Accepted values: "low", "medium", "high", "max".
- *  "max" is only supported on Claude Opus 4.6 — it enables the absolute
- *  highest reasoning capability with no constraints on token spending.
+ *  Accepted values: "low", "medium", "high", "xhigh", "max".
+ *  On first-party Anthropic / Claude Code surfaces, Sonnet 5 supports
+ *  "max" for the highest available reasoning capability.
  *  Defaults to "max" for maximum intelligence. Override via env var. */
 export const CC_DISPATCH_EFFORT = process.env.CC_DISPATCH_EFFORT ?? "max";
 

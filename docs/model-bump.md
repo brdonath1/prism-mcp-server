@@ -126,10 +126,11 @@ changes both knobs at once:
 
 Therefore: clearing a call-site's env overrides is safe **only when the
 intended end-state for that call-site is `messages_api` + the registry
-default**. In particular, `SYNTHESIS_PDU_MODEL` is deliberately **held** on
-its Sonnet 4.6 long-context pin (with its `cc_subprocess` transport) until the
-replacement model's long-context window probe passes — do not clear or "tidy"
-it during a bump.
+default**. In particular, a `cc_subprocess` call-site with a long-context model
+pin must be migrated by explicit model replacement after the replacement
+model's long-context probe passes — do not clear or "tidy" it during a bump.
+For the Sonnet 5 migration, the target replacement is `claude-sonnet-5`
+because Sonnet 5 is natively 1M on supported Claude Code versions.
 
 ## 4. The canonical fleet bump — all surfaces, in order
 

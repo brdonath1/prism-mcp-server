@@ -61,7 +61,7 @@ Phase 3c adjusted the per-call-site routing.
 
 **Apply via \`prism_patch replace\` on \`### Synthesis Per-Call-Site Routing\`:**
 \`\`\`
-CS-3 routes via Sonnet 4.6 + cc_subprocess when SYNTHESIS_PDU_TRANSPORT=cc_subprocess.
+CS-3 routes via the configured cc_subprocess model when SYNTHESIS_PDU_TRANSPORT=cc_subprocess.
 \`\`\`
 
 ## glossary.md

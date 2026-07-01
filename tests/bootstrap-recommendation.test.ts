@@ -179,9 +179,13 @@ describe("brief-411: bootstrap reads persisted recommendation", () => {
 
     expect(parsed.recommended_session_settings).toBeTruthy();
     expect(parsed.recommended_session_settings.category).toBe("executional");
-    expect(parsed.recommended_session_settings.model).toBe("sonnet-4-6");
-    expect(parsed.recommended_session_settings.thinking).toBe("adaptive-off");
-    expect(parsed.recommended_session_settings.display).toBe("Sonnet 4.6 · Adaptive off");
+    expect(parsed.recommended_session_settings.model).toBe(
+      RECOMMENDATION_MODELS.executional.code,
+    );
+    expect(parsed.recommended_session_settings.thinking).toBe("adaptive-on");
+    expect(parsed.recommended_session_settings.display).toBe(
+      `${RECOMMENDATION_MODELS.executional.display} · Adaptive on`,
+    );
     expect(parsed.recommended_session_settings.rationale).toBe(
       "Queue is mechanical cleanup / patches",
     );

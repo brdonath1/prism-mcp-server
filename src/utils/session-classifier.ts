@@ -272,7 +272,7 @@ function buildRationale(category: SessionCategory): string {
 
 const THINKING_BY_CATEGORY: Record<SessionCategory, RecommendedThinking> = {
   reasoning_heavy: "adaptive-on",
-  executional: "adaptive-off",
+  executional: "adaptive-on",
   mixed: "adaptive-off",
 };
 
@@ -323,7 +323,7 @@ function looksLikeModelId(value: string): boolean {
 function resolvedFromId(id: string): ResolvedRecommendationModel {
   const trimmed = id.trim();
   return {
-    // "claude-opus-4-8" → "opus-4-8"; "claude-sonnet-4-6[1m]" → "sonnet-4-6"
+    // "claude-opus-4-8" → "opus-4-8"; "claude-sonnet-5" → "sonnet-5"
     code: trimmed.replace(/\[1m\]$/, "").replace(/^claude-/, ""),
     display: modelDisplayFromId(trimmed),
   };
@@ -386,7 +386,7 @@ function resolveRecommendationModel(
  * registry/env, and thinking is workload-driven via THINKING_BY_CATEGORY):
  *   ratio = reasoning_heavy_score / max(executional_score, 1)
  *   ratio >= 1.5  → reasoning_heavy → top tier  + Adaptive on
- *   ratio <= 0.67 → executional     → exec tier + Adaptive off
+ *   ratio <= 0.67 → executional     → exec tier + Adaptive on
  *   otherwise     → mixed           → top tier  + Adaptive off (strong default)
  *
  * Empty input yields the mixed verdict — safe default.
@@ -503,8 +503,9 @@ export function injectPersistedRecommendation(
  *
  * Per brief-411: do not parse free-form display strings — the canonical
  * model + thinking enum values come from the `category` field via the
- * existing mapping tables. The display string is reconstructed from the
- * parsed Model + Thinking text fields for human-visible labels only.
+ * existing mapping tables. The human-visible display is also rebuilt from the
+ * current registry so old persisted blocks track reviewed model migrations
+ * without rewriting historical handoff text.
  *
  * Scores are not preserved across persistence — they are informational
  * only and would be misleading if stored as a snapshot. Both fields are
@@ -531,16 +532,17 @@ export function parsePersistedRecommendation(
   if (!["reasoning_heavy", "executional", "mixed"].includes(category)) return null;
 
   const cat = category as SessionCategory;
-  // Resolve `model` (code) through the same env-aware path as classifySession
-  // so a deployment's override is reflected on the boot banner too; `display`
-  // stays reconstructed from the persisted text (operator-visible label).
+  // Resolve `model` and `display` through the same env-aware path as
+  // classifySession so persisted handoff blocks follow reviewed model
+  // migrations without rewriting historical text.
   const resolved = resolveRecommendationModel(cat);
+  const thinking = THINKING_BY_CATEGORY[cat];
   return {
     category: cat,
     model: resolved.code,
-    thinking: THINKING_BY_CATEGORY[cat],
+    thinking,
     rationale,
-    display: `${modelDisplay} · ${thinkingDisplay}`,
+    display: `${resolved.display} · ${THINKING_DISPLAY[thinking]}`,
     scores: { reasoning_heavy: 0, executional: 0 },
   };
 }
