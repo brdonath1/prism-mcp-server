@@ -351,8 +351,10 @@ ${stepLines}
     ]));
     const handoffWrite = writes.find(w => w.path === "handoff.md" || w.path.endsWith("/handoff.md"))!;
     expect(handoffWrite.content).toContain("- Category: executional");
-    expect(handoffWrite.content).toContain("- Model: Sonnet 4.6");
-    expect(handoffWrite.content).toContain("- Thinking: Adaptive off");
+    expect(handoffWrite.content).toContain(
+      `- Model: ${RECOMMENDATION_MODELS.executional.display}`,
+    );
+    expect(handoffWrite.content).toContain("- Thinking: Adaptive on");
   });
 
   it("writes a mixed block when next_steps balance reasoning and execution", async () => {

@@ -271,7 +271,7 @@ describe("extractPins", () => {
 export const RECOMMENDATION_MODELS = {
   reasoning_heavy: { code: "opus-4-8", display: "Opus 4.8" },
   mixed: { code: "opus-4-8", display: "Opus 4.8" },
-  executional: { code: "sonnet-4-6", display: "Sonnet 4.6" },
+  executional: { code: "sonnet-5", display: "Sonnet 5" },
 } as const;
 
 export const SYNTHESIS_MODEL_ID = "claude-opus-4-7";
@@ -287,8 +287,8 @@ export const SYNTHESIS_MODEL_ID = "claude-opus-4-7";
     });
     expect(recommendations[2]).toEqual({
       category: "executional",
-      code: "sonnet-4-6",
-      display: "Sonnet 4.6",
+      code: "sonnet-5",
+      display: "Sonnet 5",
     });
   });
 
@@ -308,7 +308,7 @@ export const SYNTHESIS_MODEL_ID = "claude-opus-4-7";
 export const RECOMMENDATION_MODELS = {
   reasoning_heavy: { code: "opus-4-8", display: "Opus 4.8", id: "claude-opus-4-8" },
   mixed: { code: "opus-4-8", display: "Opus 4.8", id: "claude-opus-4-8" },
-  executional: { code: "sonnet-4-6", display: "Sonnet 4.6", id: "claude-sonnet-4-6" },
+  executional: { code: "sonnet-5", display: "Sonnet 5", id: "claude-sonnet-5" },
 } as const;
 
 export const SYNTHESIS_MODEL_ID = "claude-opus-4-8";
@@ -328,9 +328,9 @@ export const CC_DISPATCH_MODEL_ID = "claude-opus-4-8";
     });
     expect(recommendations[2]).toEqual({
       category: "executional",
-      code: "sonnet-4-6",
-      display: "Sonnet 4.6",
-      id: "claude-sonnet-4-6",
+      code: "sonnet-5",
+      display: "Sonnet 5",
+      id: "claude-sonnet-5",
     });
     expect(synthesisId).toBe("claude-opus-4-8");
     expect(ccDispatchId).toBe("claude-opus-4-8");

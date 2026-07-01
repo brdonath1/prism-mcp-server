@@ -67,7 +67,7 @@ beforeEach(() => {
     content: "## architecture.md\n\nfrom cc_subprocess",
     input_tokens: 80,
     output_tokens: 40,
-    model: "claude-sonnet-4-6",
+    model: "claude-sonnet-5",
   });
 });
 
@@ -91,9 +91,9 @@ describe("resolveCallSiteRouting — env var resolution", () => {
   });
 
   it("reads SYNTHESIS_PDU_MODEL override", () => {
-    process.env.SYNTHESIS_PDU_MODEL = "claude-sonnet-4-6";
+    process.env.SYNTHESIS_PDU_MODEL = "claude-sonnet-5";
     const r = resolveCallSiteRouting("pdu");
-    expect(r.model).toBe("claude-sonnet-4-6");
+    expect(r.model).toBe("claude-sonnet-5");
     expect(r.modelOverridden).toBe(true);
   });
 
@@ -116,16 +116,16 @@ describe("resolveCallSiteRouting — env var resolution", () => {
   });
 
   it("reads SYNTHESIS_DRAFT_MODEL override", () => {
-    process.env.SYNTHESIS_DRAFT_MODEL = "claude-sonnet-4-6";
+    process.env.SYNTHESIS_DRAFT_MODEL = "claude-sonnet-5";
     const r = resolveCallSiteRouting("draft");
-    expect(r.model).toBe("claude-sonnet-4-6");
+    expect(r.model).toBe("claude-sonnet-5");
     expect(r.modelOverridden).toBe(true);
   });
 
   it("uses per-call-site env namespace (DRAFT vs PDU vs BRIEF)", () => {
-    process.env.SYNTHESIS_PDU_MODEL = "claude-sonnet-4-6";
+    process.env.SYNTHESIS_PDU_MODEL = "claude-sonnet-5";
     process.env.SYNTHESIS_BRIEF_MODEL = "claude-haiku-4-5";
-    expect(resolveCallSiteRouting("pdu").model).toBe("claude-sonnet-4-6");
+    expect(resolveCallSiteRouting("pdu").model).toBe("claude-sonnet-5");
     expect(resolveCallSiteRouting("brief").model).toBe("claude-haiku-4-5");
     expect(resolveCallSiteRouting("draft").model).toBe(SYNTHESIS_MODEL_ID);
   });
@@ -178,31 +178,31 @@ describe("synthesize() — per-call-site routing", () => {
     }
   });
 
-  it("test 3: cc_subprocess transport with model override → subprocess called with sonnet-4-6", async () => {
+  it("test 3: cc_subprocess transport with model override → subprocess called with Sonnet 5", async () => {
     process.env.SYNTHESIS_PDU_TRANSPORT = "cc_subprocess";
-    process.env.SYNTHESIS_PDU_MODEL = "claude-sonnet-4-6";
+    process.env.SYNTHESIS_PDU_MODEL = "claude-sonnet-5";
 
     await synthesize("sys", "user", undefined, undefined, undefined, true, "pdu");
 
     expect(mockSubprocess).toHaveBeenCalledTimes(1);
     const args = mockSubprocess.mock.calls[0];
-    expect(args[2]).toBe("claude-sonnet-4-6"); // model is the 3rd positional arg
+    expect(args[2]).toBe("claude-sonnet-5"); // model is the 3rd positional arg
   });
 
   it("test 4: messages_api transport with model override → Messages API called with override", async () => {
     process.env.SYNTHESIS_PDU_TRANSPORT = "messages_api";
-    process.env.SYNTHESIS_PDU_MODEL = "claude-sonnet-4-6";
+    process.env.SYNTHESIS_PDU_MODEL = "claude-sonnet-5";
 
     await synthesize("sys", "user", undefined, undefined, undefined, true, "pdu");
 
     expect(mockMessagesCreate).toHaveBeenCalledTimes(1);
     const passedBody = mockMessagesCreate.mock.calls[0][0];
-    expect(passedBody.model).toBe("claude-sonnet-4-6");
+    expect(passedBody.model).toBe("claude-sonnet-5");
   });
 
   it("test 5: cc_subprocess failure → automatic fallback to messages_api with DEFAULT model", async () => {
     process.env.SYNTHESIS_PDU_TRANSPORT = "cc_subprocess";
-    process.env.SYNTHESIS_PDU_MODEL = "claude-sonnet-4-6";
+    process.env.SYNTHESIS_PDU_MODEL = "claude-sonnet-5";
     mockSubprocess.mockResolvedValueOnce({
       success: false,
       error: "subprocess crashed",
@@ -226,7 +226,7 @@ describe("synthesize() — per-call-site routing", () => {
 
   it("test 6: synthesize() with NO callSite → legacy behavior, no env-var reads", async () => {
     process.env.SYNTHESIS_PDU_TRANSPORT = "cc_subprocess"; // would normally route
-    process.env.SYNTHESIS_PDU_MODEL = "claude-sonnet-4-6";
+    process.env.SYNTHESIS_PDU_MODEL = "claude-sonnet-5";
 
     const result = await synthesize("sys", "user");
 

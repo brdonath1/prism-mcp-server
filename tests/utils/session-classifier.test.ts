@@ -22,8 +22,8 @@ describe("classifySession", () => {
     });
     expect(result.category).toBe("executional");
     expect(result.model).toBe(RECOMMENDATION_MODELS.executional.code);
-    expect(result.thinking).toBe("adaptive-off");
-    expect(result.display).toBe(`${RECOMMENDATION_MODELS.executional.display} · Adaptive off`);
+    expect(result.thinking).toBe("adaptive-on");
+    expect(result.display).toBe(`${RECOMMENDATION_MODELS.executional.display} · Adaptive on`);
     expect(result.rationale.length).toBeLessThanOrEqual(80);
   });
 
@@ -412,9 +412,9 @@ describe("parsePersistedRecommendation", () => {
     const result = parsePersistedRecommendation(block);
     expect(result).not.toBeNull();
     expect(result?.category).toBe("reasoning_heavy");
-    // Fixture deliberately carries a stale display ("Opus 4.8", written by a
-    // pre-bump session): `model` derives from category via the CURRENT
-    // registry, while `display` is reconstructed from the persisted text.
+    // Fixture deliberately carries a persisted display, but `model` and
+    // `display` derive from the CURRENT registry/category policy so old
+    // handoffs track reviewed model migrations without rewriting history.
     expect(result?.model).toBe(RECOMMENDATION_MODELS.reasoning_heavy.code);
     expect(result?.thinking).toBe("adaptive-on");
     expect(result?.display).toBe("Opus 4.8 · Adaptive on");
@@ -422,7 +422,7 @@ describe("parsePersistedRecommendation", () => {
     expect(result?.scores).toEqual({ reasoning_heavy: 0, executional: 0 });
   });
 
-  it("parses an executional block", () => {
+  it("parses an executional block through the current registry", () => {
     const block = `<!-- prism:recommended_session_settings -->
 - Model: Sonnet 4.6
 - Thinking: Adaptive off
@@ -431,9 +431,9 @@ describe("parsePersistedRecommendation", () => {
 <!-- /prism:recommended_session_settings -->`;
     const result = parsePersistedRecommendation(block);
     expect(result?.category).toBe("executional");
-    expect(result?.model).toBe("sonnet-4-6");
-    expect(result?.thinking).toBe("adaptive-off");
-    expect(result?.display).toBe("Sonnet 4.6 · Adaptive off");
+    expect(result?.model).toBe(RECOMMENDATION_MODELS.executional.code);
+    expect(result?.thinking).toBe("adaptive-on");
+    expect(result?.display).toBe(`${RECOMMENDATION_MODELS.executional.display} · Adaptive on`);
   });
 
   it("parses a mixed block", () => {
@@ -482,7 +482,7 @@ describe("parsePersistedRecommendation", () => {
     const result = parsePersistedRecommendation(block);
     expect(result).not.toBeNull();
     expect(result?.category).toBe("reasoning_heavy");
-    expect(result?.display).toBe("Opus 4.7 · Adaptive on");
+    expect(result?.display).toBe("Opus 4.8 · Adaptive on");
     expect(result?.rationale).toBe("spaced rationale");
   });
 });

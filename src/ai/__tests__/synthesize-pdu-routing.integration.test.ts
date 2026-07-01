@@ -1,13 +1,13 @@
 /**
  * brief-417 Phase 3c-A: live integration test for the cc_subprocess +
- * Sonnet 4.6 routing path on `generatePendingDocUpdates`.
+ * Sonnet 5 routing path on `generatePendingDocUpdates`.
  *
  * This test is gated behind `RUN_LIVE_INTEGRATION_TESTS=true` to avoid
  * burning OAuth quota on CI. To run locally:
  *
  *   RUN_LIVE_INTEGRATION_TESTS=true \
  *   SYNTHESIS_PDU_TRANSPORT=cc_subprocess \
- *   SYNTHESIS_PDU_MODEL=claude-sonnet-4-6 \
+ *   SYNTHESIS_PDU_MODEL=claude-sonnet-5 \
  *   CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-... \
  *   GITHUB_PAT=ghp-... \
  *   ANTHROPIC_API_KEY=sk-ant-... \
@@ -25,14 +25,14 @@ const LIVE_TESTS_ENABLED = process.env.RUN_LIVE_INTEGRATION_TESTS === "true";
 const TARGET_PROJECT = process.env.LIVE_INTEGRATION_PROJECT ?? "prism-mcp-server";
 
 describe.skipIf(!LIVE_TESTS_ENABLED)(
-  "generatePendingDocUpdates — cc_subprocess + Sonnet 4.6 (LIVE)",
+  "generatePendingDocUpdates — cc_subprocess + Sonnet 5 (LIVE)",
   () => {
     it("synthesizes a well-formed pending-doc-updates output with the routed transport", async () => {
       // Force cc_subprocess transport for this test if not already configured.
       process.env.SYNTHESIS_PDU_TRANSPORT =
         process.env.SYNTHESIS_PDU_TRANSPORT ?? "cc_subprocess";
       process.env.SYNTHESIS_PDU_MODEL =
-        process.env.SYNTHESIS_PDU_MODEL ?? "claude-sonnet-4-6";
+        process.env.SYNTHESIS_PDU_MODEL ?? "claude-sonnet-5";
 
       const { generatePendingDocUpdates } = await import("../synthesize.js");
 

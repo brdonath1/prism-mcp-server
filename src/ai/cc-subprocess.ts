@@ -29,24 +29,26 @@
  * converts it into a `SynthesisError` so the caller's
  * `SYNTHESIS_TRANSPORT_FALLBACK` machinery engages.
  *
- * Context-window opt-in (Sonnet 1M on Claude Code OAuth):
+ * Context-window opt-in (Claude Code OAuth):
  *
- * Claude Code's `--model` argument supports a `[1m]` suffix (e.g.
- * `claude-sonnet-4-6[1m]`) that selects the 1M-context variant of the named
- * model. The suffix is a Claude Code routing signal — the binary itself
- * parses `[1m]` and routes to the extended-context variant, per
- * code.claude.com/docs/en/model-config. This is unrelated to and should
- * not be confused with the API-side beta header
- * `context-1m-2025-08-07`, which is a different mechanism on a different
- * surface (Anthropic Messages API). The API-side beta header was retired
- * April 30, 2026 for legacy Sonnet 4 / 4.5; that retirement does not affect
- * the Claude Code OAuth path.
+ * Legacy Sonnet 4.x uses Claude Code's `[1m]` suffix (e.g.
+ * `claude-sonnet-4-6[1m]`) to select the 1M-context variant of the named
+ * model. Sonnet 5 is natively 1M on supported Claude Code versions, so
+ * `claude-sonnet-5` is the correct pin and `sonnet[1m]` adds no capability
+ * when the `sonnet` alias resolves to Sonnet 5. The suffix is a Claude Code
+ * routing signal — the binary itself parses `[1m]` and routes to the
+ * extended-context variant where applicable, per code.claude.com/docs/en/model-config.
+ * This is unrelated to and should not be confused with the API-side beta
+ * header `context-1m-2025-08-07`, which is a different mechanism on a
+ * different surface (Anthropic Messages API).
  *
  * Auto-upgrade behavior on Max OAuth plans:
  *  - Opus 4.7 / 4.6 auto-upgrade to 1M without configuration (default since
  *    Claude Code v2.1.75, March 13, 2026).
- *  - Sonnet 4.6 does NOT auto-upgrade. Requesting 1M context on Sonnet
+ *  - Legacy Sonnet 4.6 does NOT auto-upgrade. Requesting 1M context on Sonnet
  *    requires the explicit `[1m]` suffix on the model identifier.
+ *  - Sonnet 5 is natively 1M and supports max effort on first-party Anthropic
+ *    / Claude Code surfaces when the installed Claude Code version supports it.
  *  - Sonnet 1M on Max requires "extra usage" enabled per the operator's
  *    plan configuration and may not be available on all Max accounts. If
  *    not enabled, the binary falls back to the 200K Sonnet variant; large
@@ -61,14 +63,15 @@
  * (the held SYNTHESIS_PDU_MODEL routing) to `synthesizeViaCcSubprocess()`
  * works end-to-end without any env-var pinning.
  *
- * Thinking override:
+ * Thinking and effort:
  *
- * The `thinking` parameter is accepted for signature parity with `synthesize()`
- * but is always overridden to `false` for cc_subprocess calls. Adaptive
- * thinking on Sonnet 4.6[1m] via the Agent SDK OAuth path is unverified —
- * the combination may cause dramatically increased processing time or silent
- * hangs compared to the messages_api path. Thinking is disabled until
- * explicitly validated on this surface (S118 root cause B, D-206).
+ * Legacy Sonnet 4.6[1m] keeps the D-206 safety posture: adaptive thinking is
+ * disabled on the Agent SDK OAuth path because that combination was unverified
+ * and caused timeout risk. Explicit Sonnet 5 routing is the reviewed exception:
+ * when the caller requests thinking and the model id is `claude-sonnet-5`, this
+ * wrapper passes adaptive thinking and max effort through to the SDK. This
+ * keeps current live Sonnet 4.6 PDU routing unchanged until an operator flips
+ * the model env to Sonnet 5.
  */
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
@@ -81,6 +84,14 @@ import {
 import { logger } from "../utils/logger.js";
 import type { SynthesisOutcome } from "./client.js";
 
+function isExplicitSonnet5(model: string): boolean {
+  return model.trim().replace(/\[1m\]$/, "").toLowerCase() === "claude-sonnet-5";
+}
+
+function ccSubprocessEffortForModel(model: string): "high" | "max" {
+  return isExplicitSonnet5(model) ? "max" : "high";
+}
+
 /**
  * Run a single-turn synthesis prompt through the Claude Code subprocess.
  *
@@ -88,7 +99,7 @@ import type { SynthesisOutcome } from "./client.js";
  *   coding-agent prompt (D-161 concern #3 — prompt-cache geometry).
  * @param userContent Initial user message (the actual synthesis input bundle).
  * @param model Model identifier — passed straight to the SDK's `model` option.
- *   Aliases (`sonnet`, `opus`) and full IDs (`claude-sonnet-4-6`) both work.
+ *   Aliases (`sonnet`, `opus`) and full IDs (`claude-sonnet-5`) both work.
  * @param maxTokens Reserved for future use — the Agent SDK does not currently
  *   expose a per-call max-output-tokens override, so this parameter is
  *   accepted for signature parity with `synthesize()` but not yet forwarded.
@@ -118,17 +129,14 @@ export async function synthesizeViaCcSubprocess(
     };
   }
 
-  // cc_subprocess always disables thinking, regardless of caller intent.
-  // Adaptive thinking on Sonnet 4.6[1m] via the Agent SDK OAuth path is
-  // unverified — it may cause dramatically increased processing time or
-  // silent hangs. The PDU prompt was designed for Opus 4.7 + messages_api
-  // with thinking; the cc_subprocess + Sonnet path should use text-only mode
-  // until thinking behavior is explicitly validated on this surface.
-  // (S118 diagnosis — root cause B of Phase 3c-A PDU timeout failures, D-206)
-  if (thinking) {
+  const effort = ccSubprocessEffortForModel(model);
+  const effectiveThinking = Boolean(thinking && isExplicitSonnet5(model));
+
+  // Preserve the D-206 safety posture for legacy Sonnet 4.x routing while
+  // allowing the reviewed Sonnet 5 max-effort path to use adaptive thinking.
+  if (thinking && !effectiveThinking) {
     logger.warn("cc_subprocess: ignoring thinking=true — adaptive thinking is disabled on cc_subprocess path", { model });
   }
-  const effectiveThinking = false;
 
   const start = Date.now();
   const executable = findClaudeExecutable();
@@ -154,7 +162,8 @@ export async function synthesizeViaCcSubprocess(
       abortController,
       pathToClaudeCodeExecutable: executable.path,
       persistSession: false,
-      env: buildDispatchEnv(process.env, CLAUDE_CODE_OAUTH_TOKEN, "high"),
+      effort,
+      env: buildDispatchEnv(process.env, CLAUDE_CODE_OAUTH_TOKEN, effort),
       ...(effectiveThinking ? { thinking: { type: "adaptive" as const } } : {}),
     };
 

@@ -11,9 +11,10 @@ describe("buildDispatchEnv — env scrubbing", () => {
     expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe("tok-abc");
   });
 
-  it("sets CLAUDE_CODE_EFFORT to the provided value", () => {
+  it("sets CLAUDE_CODE_EFFORT_LEVEL to the provided value", () => {
     const env = buildDispatchEnv({}, "tok", "high");
-    expect(env.CLAUDE_CODE_EFFORT).toBe("high");
+    expect(env.CLAUDE_CODE_EFFORT_LEVEL).toBe("high");
+    expect(env.CLAUDE_CODE_EFFORT).toBeUndefined();
   });
 
   it("scrubs ANTHROPIC_API_KEY from the parent env", () => {
