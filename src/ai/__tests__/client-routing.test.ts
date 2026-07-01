@@ -144,9 +144,9 @@ describe("resolveCallSiteRouting — env var resolution", () => {
   });
 
   it("reads SYNTHESIS_BRIEF_MODEL override", () => {
-    process.env.SYNTHESIS_BRIEF_MODEL = "claude-opus-4-7";
+    process.env.SYNTHESIS_BRIEF_MODEL = "claude-opus-4-8";
     const r = resolveCallSiteRouting("brief");
-    expect(r.model).toBe("claude-opus-4-7");
+    expect(r.model).toBe("claude-opus-4-8");
     expect(r.modelOverridden).toBe(true);
   });
 });

@@ -153,7 +153,7 @@ export function resolveCallSiteTimeout(callSite: SynthesisCallSite): number {
  * @param thinking When true, sends `thinking: { type: "adaptive" }` plus
  *   `output_config: { effort: "max" }` so current Claude models dynamically
  *   allocate the highest first-party reasoning effort per request. Current
- *   Opus-tier models (Opus 4.7+) and Sonnet 5 accept ONLY the adaptive
+ *   Opus-tier models (Opus 4.8) and Sonnet 5 accept ONLY the adaptive
  *   thinking variant — the legacy fixed-budget thinking shape returns HTTP
  *   400. The text-extraction filter below ignores any `thinking` content
  *   blocks emitted alongside `text`, so callers see only the final text output.
@@ -336,7 +336,7 @@ async function callMessagesApi(params: MessagesApiCallParams): Promise<Synthesis
       messages: [{ role: "user", content: userContent }],
     };
     if (thinking) {
-      // Current Opus-tier models (Opus 4.7+) and Sonnet 5 support ONLY the
+      // Current Opus-tier models (Opus 4.8) and Sonnet 5 support ONLY the
       // adaptive thinking variant; the legacy fixed-budget thinking shape
       // returns HTTP 400. Cast through unknown because the installed SDK's
       // declarations do not yet include adaptive thinking/output_config effort.
