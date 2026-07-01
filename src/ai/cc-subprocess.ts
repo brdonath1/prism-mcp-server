@@ -43,7 +43,7 @@
  * different surface (Anthropic Messages API).
  *
  * Auto-upgrade behavior on Max OAuth plans:
- *  - Opus 4.7 / 4.6 auto-upgrade to 1M without configuration (default since
+ *  - Current Opus 4.x models auto-upgrade to 1M without configuration (default since
  *    Claude Code v2.1.75, March 13, 2026).
  *  - Legacy Sonnet 4.6 does NOT auto-upgrade. Requesting 1M context on Sonnet
  *    requires the explicit `[1m]` suffix on the model identifier.

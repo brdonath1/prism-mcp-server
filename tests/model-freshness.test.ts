@@ -34,9 +34,9 @@ describe("parseModelIdentifier", () => {
   });
 
   it("parses API model id with claude- prefix", () => {
-    expect(parseModelIdentifier("claude-opus-4-7")).toEqual({
+    expect(parseModelIdentifier("claude-opus-4-8")).toEqual({
       family: "opus",
-      version: [4, 7],
+      version: [4, 8],
     });
     expect(parseModelIdentifier("claude-sonnet-4-5")).toEqual({
       family: "sonnet",
@@ -96,8 +96,8 @@ describe("parseModelIdentifier", () => {
 describe("findNewestInFamily", () => {
   const mockModels = [
     {
-      id: "claude-opus-4-7",
-      display_name: "Opus 4.7",
+      id: "claude-opus-4-6",
+      display_name: "Opus 4.6",
       created_at: "2025-01-15T00:00:00Z",
     },
     {
@@ -274,7 +274,7 @@ export const RECOMMENDATION_MODELS = {
   executional: { code: "sonnet-5", display: "Sonnet 5" },
 } as const;
 
-export const SYNTHESIS_MODEL_ID = "claude-opus-4-7";
+export const SYNTHESIS_MODEL_ID = "claude-opus-4-8";
 `;
 
   it("extracts all recommendation pins", () => {
@@ -294,7 +294,7 @@ export const SYNTHESIS_MODEL_ID = "claude-opus-4-7";
 
   it("extracts the synthesis model id", () => {
     const { synthesisId } = extractPins(sampleFile);
-    expect(synthesisId).toBe("claude-opus-4-7");
+    expect(synthesisId).toBe("claude-opus-4-8");
   });
 
   it("returns null synthesisId when not present", () => {

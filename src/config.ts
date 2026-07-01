@@ -161,7 +161,7 @@ export function computeSynthesisThinkingEnabled(
 }
 
 /** Max output tokens for synthesis calls. Bumped from 4096 → 8192 for Phase 3a:
- *  adaptive thinking on Opus 4.7 emits internal thinking content blocks that
+ *  adaptive thinking on Opus 4.8 emits internal thinking content blocks that
  *  are counted against max_tokens. Text-output budget after thinking overhead
  *  remains ample for the 2K–4K-token brief target. */
 export const SYNTHESIS_MAX_OUTPUT_TOKENS = 8192;

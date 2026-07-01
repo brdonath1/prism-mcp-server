@@ -169,7 +169,7 @@ describe("generateIntelligenceBrief (CS-2) — forwards thinking: true to synthe
         "## Project State\n\n## Standing Rules & Workflows\n\n## Active Operational Knowledge\n\n## Recent Trajectory\n\n## Risk Flags\n\n## Quality Audit\n\n<!-- EOF: intelligence-brief.md -->",
       input_tokens: 100,
       output_tokens: 50,
-      model: "claude-opus-4-7",
+      model: "claude-opus-4-8",
     });
 
     vi.doMock("../src/ai/client.js", () => ({ synthesize: synthesizeSpy, resolveCallSiteTimeout: () => 240_000 }));
@@ -219,7 +219,7 @@ describe("generateIntelligenceBrief (CS-2) — forwards thinking: true to synthe
         "## Project State\n\n## Standing Rules & Workflows\n\n## Active Operational Knowledge\n\n## Recent Trajectory\n\n## Risk Flags\n\n## Quality Audit\n\n<!-- EOF: intelligence-brief.md -->",
       input_tokens: 100,
       output_tokens: 50,
-      model: "claude-opus-4-7",
+      model: "claude-opus-4-8",
     });
 
     vi.doMock("../src/ai/client.js", () => ({ synthesize: synthesizeSpy, resolveCallSiteTimeout: () => 240_000 }));
@@ -277,7 +277,7 @@ describe("generatePendingDocUpdates (CS-3) — forwards thinking: true to synthe
         "# Pending Doc Updates\n\n## architecture.md\n\n## glossary.md\n\n## insights.md\n\n## No Updates Needed\n\n<!-- EOF: pending-doc-updates.md -->",
       input_tokens: 100,
       output_tokens: 50,
-      model: "claude-opus-4-7",
+      model: "claude-opus-4-8",
     });
 
     vi.doMock("../src/ai/client.js", () => ({ synthesize: synthesizeSpy, resolveCallSiteTimeout: () => 240_000 }));
@@ -327,7 +327,7 @@ describe("generatePendingDocUpdates (CS-3) — forwards thinking: true to synthe
         "# Pending Doc Updates\n\n## architecture.md\n\n## glossary.md\n\n## insights.md\n\n## No Updates Needed\n\n<!-- EOF: pending-doc-updates.md -->",
       input_tokens: 100,
       output_tokens: 50,
-      model: "claude-opus-4-7",
+      model: "claude-opus-4-8",
     });
 
     vi.doMock("../src/ai/client.js", () => ({ synthesize: synthesizeSpy, resolveCallSiteTimeout: () => 240_000 }));

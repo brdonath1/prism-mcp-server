@@ -26,7 +26,7 @@ export const KNOWN_FAMILIES = ["fable", "opus", "sonnet", "haiku"];
  *
  * Handles four naming conventions:
  *   "opus-4-8"                      → recommendation pin (short form)
- *   "claude-opus-4-7"               → API / synthesis id
+ *   "claude-opus-4-8"               → API / synthesis id
  *   "claude-3-5-sonnet-20241022"    → legacy date-suffixed
  *   "claude-3-opus-20240229"        → legacy major-only date-suffixed
  *

@@ -64,7 +64,7 @@ describe("S41 C5 — finalize draft timeout + deadline + no-retry", () => {
       content: '{"drafts": []}',
       input_tokens: 100,
       output_tokens: 200,
-      model: "claude-opus-4-7",
+      model: "claude-opus-4-8",
     });
 
     vi.doMock("../src/ai/client.js", () => ({
