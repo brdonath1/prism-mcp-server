@@ -6,7 +6,7 @@ This is the **PRISM MCP Server** — a custom remote MCP (Model Context Protocol
 
 **Owner:** Brian (brdonath1 on GitHub)
 **Framework:** PRISM — current version pinned by the framework repo's core-template; fetched dynamically at bootstrap.
-**Server Version:** 4.10.0
+**Server Version:** 4.11.0
 **Status:** Production — deployed on Railway, serving all active PRISM projects.
 
 ## What PRISM Is
@@ -25,10 +25,10 @@ The MCP server is the v2 evolution — separating Claude into a pure reasoning a
 └───────────────┬───────────────────────────────┘
                 │ MCP Protocol (HTTPS)
 ┌───────────────▼───────────────────────────────┐
-│  PRISM MCP Server (Railway) — v4.10.0         │
-│  26 MCP tools — stateless proxy               │
+│  PRISM MCP Server (Railway) — v4.11.0         │
+│  32 MCP tools — stateless proxy               │
 │  ├── 14 PRISM  (bootstrap/fetch/push/X sentiment) │
-│  ├──  4 Railway (logs/deploy/env/status)      │
+│  ├── 10 Railway (logs/deploy/env/status/CRUD) │
 │  ├──  2 Claude Code (cc_dispatch/cc_status)   │
 │  └──  6 GitHub (branch/release/tag/protect)   │
 │  Parallelized GitHub API operations           │
@@ -151,7 +151,7 @@ prism-mcp-server/
 │   │   ├── log-insight.ts        # prism_log_insight
 │   │   ├── patch.ts              # prism_patch
 │   │   ├── load-rules.ts         # prism_load_rules
-│   │   ├── railway-*.ts          # 4 Railway tools (brief-103)
+│   │   ├── railway-*.ts          # 10 Railway tools (read/mutate: brief-103; provision/lifecycle: create-project/service/volume/domain, update-service-settings, delete-service)
 │   │   ├── cc-dispatch.ts        # cc_dispatch (brief-104)
 │   │   ├── cc-status.ts          # cc_status (brief-104)
 │   │   └── gh-*.ts               # 6 GitHub utility tools (branch/release/tag/protection, brief-403/404/446)

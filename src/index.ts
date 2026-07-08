@@ -36,6 +36,12 @@ import { registerRailwayLogs } from "./tools/railway-logs.js";
 import { registerRailwayDeploy } from "./tools/railway-deploy.js";
 import { registerRailwayEnv } from "./tools/railway-env.js";
 import { registerRailwayStatus } from "./tools/railway-status.js";
+import { registerRailwayCreateProject } from "./tools/railway-create-project.js";
+import { registerRailwayCreateService } from "./tools/railway-create-service.js";
+import { registerRailwayUpdateServiceSettings } from "./tools/railway-update-service-settings.js";
+import { registerRailwayCreateVolume } from "./tools/railway-create-volume.js";
+import { registerRailwayCreateDomain } from "./tools/railway-create-domain.js";
+import { registerRailwayDeleteService } from "./tools/railway-delete-service.js";
 import { registerCCDispatch } from "./tools/cc-dispatch.js";
 import { registerCCStatus } from "./tools/cc-status.js";
 import { registerGhDeleteBranch } from "./tools/gh-delete-branch.js";
@@ -92,6 +98,13 @@ function createServer(): McpServer {
     registerRailwayDeploy(server);
     registerRailwayEnv(server);
     registerRailwayStatus(server);
+    // Provisioning & lifecycle tools — full autonomous Railway management.
+    registerRailwayCreateProject(server);
+    registerRailwayCreateService(server);
+    registerRailwayUpdateServiceSettings(server);
+    registerRailwayCreateVolume(server);
+    registerRailwayCreateDomain(server);
+    registerRailwayDeleteService(server);
   }
 
   // Claude Code orchestration (brief-104). Tools only register when

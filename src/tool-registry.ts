@@ -49,11 +49,17 @@ export const TOOL_REGISTRY: readonly ToolRegistryEntry[] = [
   { name: "prism_patch", category: "prism_core" },
   { name: "prism_load_rules", category: "prism_core" },
   { name: "prism_x_sentiment", category: "prism_core" },
-  // Railway (4)
+  // Railway (10)
   { name: "railway_logs", category: "railway" },
   { name: "railway_deploy", category: "railway" },
   { name: "railway_env", category: "railway" },
   { name: "railway_status", category: "railway" },
+  { name: "railway_create_project", category: "railway" },
+  { name: "railway_create_service", category: "railway" },
+  { name: "railway_update_service_settings", category: "railway" },
+  { name: "railway_create_volume", category: "railway" },
+  { name: "railway_create_domain", category: "railway" },
+  { name: "railway_delete_service", category: "railway" },
   // Claude Code (2)
   { name: "cc_dispatch", category: "claude_code" },
   { name: "cc_status", category: "claude_code" },
@@ -88,14 +94,16 @@ export function getExpectedToolSurface(
 
 /**
  * Post-boot tool_search queries that Claude executes after receiving the
- * bootstrap response. Together these three queries empirically load all 26
+ * bootstrap response. Together these three queries empirically load all 32
  * registered tools (verified live S43; expanded for the github category in
  * brief-403/404; "tag" keyword added S105 to surface gh_delete_tag, which
  * was ranking below limit:20 in the github query without it; "protection"
  * added in brief-446 for the two branch-protection tools, mirroring the
- * S105 fix proactively). Each query's limit is intentionally set to 20 to
- * defeat the relevance-ranking cap that causes
- * `tool_search("prism", limit=20)` to still return only 7 results.
+ * S105 fix proactively; "create service volume domain project settings
+ * delete" added for the six Railway provisioning/lifecycle tools). Each
+ * query's limit is intentionally set to 20 to defeat the relevance-ranking
+ * cap that causes `tool_search("prism", limit=20)` to still return only 7
+ * results.
  *
  * When adding a new tool: verify at least one of these queries contains a
  * keyword that matches the tool's name or description. The coverage test
@@ -108,6 +116,10 @@ export interface PostBootToolSearch {
 
 export const POST_BOOT_TOOL_SEARCHES: readonly PostBootToolSearch[] = [
   { query: "prism log patch scale synthesize analytics finalize sentiment x", limit: 20 },
-  { query: "railway deploy environment status dispatch claude code", limit: 20 },
+  {
+    query:
+      "railway deploy environment status create service volume domain project settings delete dispatch claude code",
+    limit: 20,
+  },
   { query: "github branch release tag protection delete create update", limit: 20 },
 ] as const;
