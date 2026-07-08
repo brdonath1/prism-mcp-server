@@ -7,6 +7,38 @@ by `src/utils/banner.ts` (`BANNER_SPEC_VERSION`) plus the prism-framework
 templates; [docs/banner-spec.md](docs/banner-spec.md) is historical reference.
 Banner changes add an entry here.
 
+## [4.11.0] — 2026-07-08 (Railway provisioning & lifecycle)
+
+### Added
+- **Six Railway creation/lifecycle tools** so PRISM sessions can manage Railway
+  fully autonomously (previously the surface was read/mutate-only:
+  `railway_status`, `railway_env`, `railway_logs`, `railway_deploy`):
+  - `railway_create_project(name)` — create a project; returns the ID and the
+    auto-created production environment.
+  - `railway_create_service(project, name, source, variables?, region?)` —
+    create a service from a GitHub **repo** (with optional `rootDirectory` /
+    `branch`) **or** a Docker **image**. Variables are forwarded verbatim, so
+    Railway reference syntax like `${{Postgres.DATABASE_URL}}` is never
+    interpolated server-side.
+  - `railway_update_service_settings(project, service, …)` — update
+    `rootDirectory` / `startCommand` / `healthcheckPath` / `restartPolicy`.
+  - `railway_create_volume(project, service, mountPath)` — attach a persistent
+    volume.
+  - `railway_create_domain(project, service, targetPort?)` — generate a Railway
+    domain and return it in the result.
+  - `railway_delete_service(project, service, confirm)` — hard-requires
+    `confirm === true`; refuses with a clear error otherwise.
+- New GraphQL client helpers in `src/railway/client.ts` (`createProject`,
+  `createService`, `updateServiceInstanceSettings`, `createVolume`,
+  `createServiceDomain`, `deleteService`) plus supporting types. All reuse the
+  existing `railwayQuery` transport, Bearer auth, name→ID resolver, and
+  production-environment defaulting. Existing tools are unchanged.
+- Registered behind the existing `RAILWAY_ENABLED` flag; tool surface count
+  updated 26 → 32 (14 PRISM / 10 Railway / 2 Claude Code / 6 GitHub) across
+  `TOOL_REGISTRY`, the bootstrap tool-search keywords, CLAUDE.md, and the
+  drift-guard tests. Unit tests (mocked GraphQL) cover a happy path and a
+  failure path for each new tool.
+
 ## [4.8.0] — 2026-06-14 (D-257 wave 3, brief-466 / W3-S7)
 
 ### Changed

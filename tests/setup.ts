@@ -16,3 +16,10 @@ process.env.FRAMEWORK_REPO = process.env.FRAMEWORK_REPO || "prism-framework";
 process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "test-dummy-anthropic";
 process.env.CLAUDE_CODE_OAUTH_TOKEN =
   process.env.CLAUDE_CODE_OAUTH_TOKEN || "sk-ant-oat01-test-dummy";
+
+// Railway tools capture RAILWAY_API_TOKEN as an import-time const in config.ts
+// (RAILWAY_ENABLED). Provide a dummy here so railway_* tests that drive the
+// REAL client with a mocked fetch clear the "token not configured" guard.
+// Tests needing the unset/disabled behavior set/delete it themselves at
+// runtime (see bootstrap-synthesis-observation.test.ts).
+process.env.RAILWAY_API_TOKEN = process.env.RAILWAY_API_TOKEN || "test-railway-token";

@@ -20,12 +20,17 @@ import { logger } from "../utils/logger.js";
 import type {
   Connection,
   GraphQLResponse,
+  RailwayCreatedProject,
   RailwayDeployment,
   RailwayEnvironment,
   RailwayLog,
   RailwayProject,
   RailwayService,
+  RailwayServiceDomain,
+  RailwayServiceInstanceSettings,
+  RailwayServiceSource,
   RailwayVariables,
+  RailwayVolume,
   ResolvedProject,
 } from "./types.js";
 
@@ -572,6 +577,168 @@ export async function deleteVariable(
   await railwayQuery<{ variableDelete: boolean }>(query, {
     input: { projectId, serviceId, environmentId, name },
   });
+}
+
+// ---------------------------------------------------------------------------
+// Provisioning & lifecycle operations (project/service/volume/domain CRUD)
+// ---------------------------------------------------------------------------
+
+/**
+ * Create a new Railway project.
+ *
+ * When RAILWAY_WORKSPACE_ID is set (workspace-scoped token), the project is
+ * created inside that workspace/team via `teamId`, mirroring how listProjects
+ * scopes queries with `workspaceId`. Railway auto-creates a default
+ * `production` environment, returned here so callers can immediately scope
+ * follow-up service/volume/domain operations to it.
+ */
+export async function createProject(name: string): Promise<RailwayCreatedProject> {
+  const input: Record<string, unknown> = { name };
+  if (RAILWAY_WORKSPACE_ID) input.teamId = RAILWAY_WORKSPACE_ID;
+  const query = `mutation($input: ProjectCreateInput!) {
+    projectCreate(input: $input) {
+      id
+      name
+      environments { edges { node { id name } } }
+    }
+  }`;
+  const data = await railwayQuery<{
+    projectCreate: {
+      id: string;
+      name: string;
+      environments: Connection<RailwayEnvironment>;
+    };
+  }>(query, { input });
+  const p = data.projectCreate;
+  return {
+    id: p.id,
+    name: p.name,
+    environments: (p.environments?.edges ?? []).map((e) => e.node),
+  };
+}
+
+/**
+ * Create a new service in a project.
+ *
+ * Supports both repo-based (`source.repo`) and image-based (`source.image`)
+ * services. `variables` are sent as a Railway `ServiceVariables` map — values
+ * are passed VERBATIM as GraphQL variables (never interpolated here), so
+ * Railway reference syntax such as `${{Postgres.DATABASE_URL}}` reaches the
+ * API untouched and is resolved server-side by Railway.
+ *
+ * NOTE: `rootDirectory`/`region` are NOT part of `ServiceCreateInput`; apply
+ * them with `updateServiceInstanceSettings` after the service is created.
+ */
+export async function createService(params: {
+  projectId: string;
+  name: string;
+  environmentId?: string;
+  source: RailwayServiceSource;
+  branch?: string;
+  variables?: RailwayVariables;
+}): Promise<RailwayService> {
+  const input: Record<string, unknown> = {
+    projectId: params.projectId,
+    name: params.name,
+    source: params.source,
+  };
+  if (params.environmentId) input.environmentId = params.environmentId;
+  if (params.branch) input.branch = params.branch;
+  if (params.variables && Object.keys(params.variables).length > 0) {
+    // Sent as a GraphQL variable object — never string-interpolated — so
+    // Railway reference syntax passes through verbatim.
+    input.variables = params.variables;
+  }
+  const query = `mutation($input: ServiceCreateInput!) {
+    serviceCreate(input: $input) {
+      id
+      name
+    }
+  }`;
+  const data = await railwayQuery<{ serviceCreate: RailwayService }>(query, { input });
+  return data.serviceCreate;
+}
+
+/**
+ * Update service-instance settings for a (service, environment) pair via
+ * `serviceInstanceUpdate`. Only the provided fields are sent; omitted fields
+ * are left unchanged server-side. The mutation returns Boolean; callers get
+ * void on success and a thrown error otherwise.
+ */
+export async function updateServiceInstanceSettings(
+  serviceId: string,
+  environmentId: string,
+  settings: RailwayServiceInstanceSettings,
+): Promise<void> {
+  const query = `mutation($serviceId: String!, $environmentId: String!, $input: ServiceInstanceUpdateInput!) {
+    serviceInstanceUpdate(serviceId: $serviceId, environmentId: $environmentId, input: $input)
+  }`;
+  await railwayQuery<{ serviceInstanceUpdate: boolean }>(query, {
+    serviceId,
+    environmentId,
+    input: settings,
+  });
+}
+
+/**
+ * Create a persistent volume mounted into a service at `mountPath` within the
+ * given environment.
+ */
+export async function createVolume(
+  projectId: string,
+  environmentId: string,
+  serviceId: string,
+  mountPath: string,
+): Promise<RailwayVolume> {
+  const query = `mutation($input: VolumeCreateInput!) {
+    volumeCreate(input: $input) {
+      id
+      name
+    }
+  }`;
+  const data = await railwayQuery<{ volumeCreate: RailwayVolume }>(query, {
+    input: { projectId, environmentId, serviceId, mountPath },
+  });
+  return data.volumeCreate;
+}
+
+/**
+ * Create a Railway-generated service domain (e.g. `*.up.railway.app`).
+ *
+ * `targetPort` binds the domain to a specific container port; omit to let
+ * Railway infer it. Returns the generated domain string.
+ */
+export async function createServiceDomain(
+  environmentId: string,
+  serviceId: string,
+  targetPort?: number,
+): Promise<RailwayServiceDomain> {
+  const input: Record<string, unknown> = { environmentId, serviceId };
+  if (targetPort !== undefined) input.targetPort = targetPort;
+  const query = `mutation($input: ServiceDomainCreateInput!) {
+    serviceDomainCreate(input: $input) {
+      id
+      domain
+    }
+  }`;
+  const data = await railwayQuery<{ serviceDomainCreate: RailwayServiceDomain }>(query, {
+    input,
+  });
+  return data.serviceDomainCreate;
+}
+
+/**
+ * Permanently delete a service and all of its deployments.
+ *
+ * Destructive and irreversible — callers MUST gate this behind an explicit
+ * confirmation flag (see the railway_delete_service tool). The mutation
+ * returns Boolean; callers get void on success and a thrown error otherwise.
+ */
+export async function deleteService(serviceId: string): Promise<void> {
+  const query = `mutation($id: String!) {
+    serviceDelete(id: $id)
+  }`;
+  await railwayQuery<{ serviceDelete: boolean }>(query, { id: serviceId });
 }
 
 // ---------------------------------------------------------------------------

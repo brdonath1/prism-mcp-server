@@ -56,7 +56,7 @@ describe("SRV-92 — CLAUDE.md tool inventory matches TOOL_REGISTRY", () => {
   const total = TOOL_REGISTRY.length;
 
   it("total tool count is stated correctly", () => {
-    expect(total).toBe(26); // tripwire: changing the surface must update CLAUDE.md
+    expect(total).toBe(32); // tripwire: changing the surface must update CLAUDE.md
     expect(claudeMd).toContain(`${total} MCP tools`);
   });
 

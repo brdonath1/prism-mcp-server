@@ -45,8 +45,10 @@ export const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
 
 /** Server version. Keep this in lockstep with package.json `version`; bump on
  *  substantive src/** releases so health/status can identify the deployed
- *  runtime. 4.10.0 adds the production prism_x_sentiment tool. */
-export const SERVER_VERSION = "4.10.0";
+ *  runtime. 4.10.0 adds the production prism_x_sentiment tool; 4.11.0 adds the
+ *  six Railway provisioning/lifecycle tools (create project/service/volume/
+ *  domain, update service settings, delete service). */
+export const SERVER_VERSION = "4.11.0";
 
 /** MCP client timeout is ~60s. All server-side operations must complete within 50s
  *  to leave 10s buffer for transport overhead. This constrains synthesis, draft,

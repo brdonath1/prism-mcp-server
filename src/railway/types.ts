@@ -54,6 +54,54 @@ export interface RailwayLog {
 /** Railway environment variables are returned as a flat key→value object, not an array. */
 export type RailwayVariables = Record<string, string>;
 
+/**
+ * Service source — repo-based OR image-based deploy. Railway's
+ * `ServiceSourceInput` accepts exactly one of these; callers enforce the
+ * mutual exclusivity before building the mutation input.
+ */
+export interface RailwayServiceSource {
+  /** GitHub repo in `owner/name` form for repo-based deploys. */
+  repo?: string;
+  /** Docker image reference (e.g. `postgres:16-alpine`) for image-based deploys. */
+  image?: string;
+}
+
+/**
+ * Service-instance settings updatable via `serviceInstanceUpdate`. Only the
+ * provided fields are sent; omitted fields are left unchanged server-side.
+ */
+export interface RailwayServiceInstanceSettings {
+  rootDirectory?: string;
+  startCommand?: string;
+  healthcheckPath?: string;
+  /** Railway `RestartPolicyType` enum. */
+  restartPolicyType?: "ON_FAILURE" | "ALWAYS" | "NEVER";
+  region?: string;
+}
+
+/** Result of `volumeCreate`. */
+export interface RailwayVolume {
+  id: string;
+  name: string;
+}
+
+/** Result of `serviceDomainCreate` — the generated Railway domain. */
+export interface RailwayServiceDomain {
+  id: string;
+  domain: string;
+}
+
+/**
+ * Result of `projectCreate`. Includes the auto-created environments (Railway
+ * seeds a default `production` environment) so callers can immediately scope
+ * follow-up service/volume/domain operations.
+ */
+export interface RailwayCreatedProject {
+  id: string;
+  name: string;
+  environments: RailwayEnvironment[];
+}
+
 /** Standard GraphQL edges/node connection pattern */
 export interface Connection<T> {
   edges: Array<{ node: T }>;
