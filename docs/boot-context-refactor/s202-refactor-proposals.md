@@ -309,4 +309,54 @@ operator-gated by design — nothing in Phase 0a executes without the rule-by-ru
 (4) INS-363's source-file cleanup (326KB registry) is tracked in Phase 3 but its boot effect is
 fully realized in Phase 0a — the two must not be conflated in savings claims.
 
+---
+
+## §3 v2 consolidation — operator-approved execution plan (S202 chat follow-up)
+
+Adopted in the S202 operator session after review of §1/§2. **This section supersedes the §2 phase
+table as the execution vehicle** — the five phases collapse into THREE parallel briefs (one per repo,
+the daemon's hard boundary), with the phase gates preserved as merge/flip gates. Two design upgrades
+were approved beyond §1:
+
+**(a) Three-band rule classification (P-2 taken to its end-state).** Band 1 — always-loaded kernel:
+every-response behaviors (Rule 9, posture/brevity, interaction rules) AND interrupt-class rules that
+fire when the model does not know it needs them (guardrails, verify-before-assert) — irreducible in
+*presence*, aggressively editable in *length*: kernel budget **≤18KB (~5K tok)**, below §1's committed
+~26KB, achieved by cutting rationale/history prose while preserving every ⛔ mandate verbatim (a
+mandate-preservation table is a merge gate). Band 2 — event-triggered modules behind imperative
+kernel trigger lines (dispatch, ingest, finalize — the three production-proven lazy-load precedents
+generalized). Band 3 — reference/manifest (P-1).
+
+**(b) `rules_hint` — the server as second trigger mechanism.** The stateless server sees every tool
+call; matching calls carry a ≤120 B additive hint field (push/patch under `.prism/ingest/` → "load
+the ingest module first"; `cc_dispatch` → channel-discipline pointer). This converts part of Band 1's
+unknown-unknown risk into a known prompt delivered exactly at the moment of relevance, for bytes paid
+only when relevant — the prevention-side complement to the harness's detection-side Probe H.
+
+**The three briefs (queued on the respective queue branches, `parallel: true`, no execution-time
+coupling — s202c is written server-generation-tolerant per the template's existing "if absent, skip"
+pattern):**
+
+| Brief | Repo | Scope | Boot effect (est) |
+|---|---|---|---|
+| `brief-s202b-boot-lean-server-bundle` | prism-mcp-server | P-1 manifest + `BOOT_INDEX_MODE`; `rules_hint`; P-3 digest-dedup + item-budget warn; P-4 `PREFETCH_MODE`; P-6a SVG knob; P-2 kernel handshake guard; **F-1 finalize compose-offload** (GLM composes complete validated finalization files; chat approves a ≤1.5KB digest — supersedes the INS-178 wall on the happy path); CS-2 size contract; input-trim annotation (unblocks the `synthesis_brief`→GLM env re-flip) | −6.5 to −7.5K tok/boot at full flip, plus ~1.5K chat-output tok saved per finalize (F-1: 75–150K tok/mo) |
+| `brief-s202c-kernel-split-v3` | prism-framework | Template v3.0.0: ≤18KB Band-1 kernel + `modules/document-ingest.md` + CC-discipline body merged into `reference/trigger-channel.md` + deferred category tool-searches + `Kernel-Manifest` handshake + monolith archived for rollback | −7.0 to −7.5K tok/boot (+~1.6K post-boot on non-dispatch boots) |
+| `brief-s202d-standing-rules-curation` | prism | INS-363 pass from audit §B.2: retire INS-319/230/354 (archive, never delete), demote INS-178/187/324/340 to Tier B with topics, trim INS-226/193/260 to procedure-only, flag INS-291/302/318 for operator decision | −3.4 to −3.7K tok/boot |
+
+**Merge/flip sequence (the surviving phase gates):** s202b and s202d merge on green CI + PR review
+(additive/env-defaulted and data-only respectively). s202c merges after its mandate-preservation
+table review; its fidelity gate is the §0.6 harness run (Probes B/C/D/F/G + new Probe H, S157/S177
+anchors) over the following sessions, with same-day `git revert` (template-only, 5-min cache) as
+rollback. `BOOT_INDEX_MODE=compact` flips after s202c is live + one soak session;
+`synthesis_brief` re-joins `LLM_ROUTING_OPENROUTER_SITES` only after the T9 trim-annotation fix is
+deployed AND an INS-370 zero-drift pass on a fresh brief.
+
+**v2 end-state arithmetic (revises the §2 table):** kernel ~5.1K tok (18KB) + Tier-A 10 trimmed
+rules ~3.3K + manifest ~1.3K + brief (RF+QA, digest-deduped) ~1.9K + handoff fields (item-budgeted)
+~2.3K + work loop 0.9K + banner 1.1K (0.35K SVG-off) + prefetch ~0.25K + misc/envelope ~1.4K ≈
+**bootstrap ~11.6-12.4K tok** (vs 33.9K measured) — at or below the 12–15K target band's floor.
+First exchange ≈ 11.6-12.4K + ~5K platform + ~0.9K single boot search + ~4.3K sidecar (unchanged,
+PRISMA-owned) + ~0.7K Rule 2 + ~1.5K opening ≈ **~24-25K ≈ 12-12.5% of 200K**, roughly half of
+today's measured 24.4% and a third of the observed worst case.
+
 <!-- EOF: s202-refactor-proposals.md -->
