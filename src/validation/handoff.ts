@@ -2,7 +2,7 @@
  * Handoff-specific validation rules for handoff.md.
  */
 
-import { HANDOFF_CRITICAL_SIZE, HANDOFF_WARNING_SIZE } from "../config.js";
+import { HANDOFF_CRITICAL_SIZE, HANDOFF_ITEM_BUDGET_BYTES, HANDOFF_WARNING_SIZE } from "../config.js";
 import { extractSection, parseNumberedList } from "../utils/summarizer.js";
 import type { ValidationResult } from "./common.js";
 
@@ -56,6 +56,20 @@ export function validateHandoff(content: string): ValidationResult {
     const items = parseNumberedList(criticalContext);
     if (items.length === 0) {
       errors.push("Critical Context section must contain at least 1 numbered item.");
+    }
+
+    // brief-s202b T5 (P-3/P-7): advisory per-item budget — WARNING ONLY,
+    // never an error. Items measured 708 B average on the S202 baseline;
+    // the template intent is 3-5 single-fact items. The boot-side twin is
+    // the HANDOFF_ITEM_OVERSIZE diagnostic in prism_bootstrap.
+    const encoder = new TextEncoder();
+    const oversize = items
+      .map((item, idx) => ({ index: idx + 1, bytes: encoder.encode(item).length }))
+      .filter(entry => entry.bytes > HANDOFF_ITEM_BUDGET_BYTES);
+    if (oversize.length > 0) {
+      warnings.push(
+        `${oversize.length} Critical Context item(s) exceed the ${HANDOFF_ITEM_BUDGET_BYTES}B item budget (${oversize.map(e => `#${e.index}: ${e.bytes}B`).join(", ")}) — trim items to single facts (advisory, HANDOFF_ITEM_OVERSIZE).`,
+      );
     }
   }
 

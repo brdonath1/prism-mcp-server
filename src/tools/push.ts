@@ -23,6 +23,7 @@ import {
 import { guardPushPath } from "../utils/doc-guard.js";
 import { DiagnosticsCollector } from "../utils/diagnostics.js";
 import { detectZwsHeaders } from "../utils/sanitize-content.js";
+import { ingestRulesHint } from "../utils/rules-hint.js";
 
 /** Sentinel used to signal that the tool-level deadline fired (S40 C4). */
 const PUSH_DEADLINE_SENTINEL = Symbol("push.deadline");
@@ -74,6 +75,13 @@ export function registerPush(server: McpServer): void {
         deadlineTimer = setTimeout(() => resolve(PUSH_DEADLINE_SENTINEL), PUSH_WALL_CLOCK_DEADLINE_MS);
       });
 
+      // brief-s202b T2: stateless module nudge — any write under
+      // `.prism/ingest/` carries a ≤120B hint to load the document-ingest
+      // module. Emitted on every matching call (success or validation
+      // failure — a failed ingest push needs the module MORE); harmless if
+      // the module is already loaded.
+      const rulesHint = ingestRulesHint(files.map((f) => f.path));
+
       const workPromise = (async () => {
         try {
         // 1. Validate ALL files first
@@ -116,6 +124,7 @@ export function registerPush(server: McpServer): void {
                     files_pushed: 0,
                     files_failed: files.length,
                     total_bytes: 0,
+                    ...(rulesHint ? { rules_hint: rulesHint } : {}), // brief-s202b T2
                     diagnostics: diagnostics.list(),
                   },
                   null,
@@ -235,6 +244,7 @@ export function registerPush(server: McpServer): void {
           files_failed: files.length - succeeded.length,
           total_bytes: totalBytes,
           commit_sha: safeMutationResult.ok ? safeMutationResult.commitSha : undefined,
+          ...(rulesHint ? { rules_hint: rulesHint } : {}), // brief-s202b T2
           diagnostics: diagnostics.list(),
         };
 

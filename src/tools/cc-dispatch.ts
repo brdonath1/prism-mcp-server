@@ -42,6 +42,7 @@ import {
   SERVER_VERSION,
 } from "../config.js";
 import { logger } from "../utils/logger.js";
+import { CC_DISPATCH_RULES_HINT } from "../utils/rules-hint.js";
 import { dispatchTask } from "../claude-code/client.js";
 import { fetchWithRetry } from "../github/client.js";
 import { cloneRepo, commitAndPushBranch } from "../claude-code/repo.js";
@@ -117,6 +118,10 @@ interface DispatchResponse {
   duration_ms: number;
   pr_url: string | null;
   error: string | null;
+  /** brief-s202b T2: stateless module nudge — CC-channel discipline pointer
+   *  (≤120B), emitted on every dispatch response. Harmless when
+   *  reference/trigger-channel.md is already loaded. */
+  rules_hint: string;
 }
 
 export function registerCCDispatch(server: McpServer): void {
@@ -213,6 +218,7 @@ export function registerCCDispatch(server: McpServer): void {
           duration_ms: Date.now() - start,
           pr_url: null,
           error: null,
+          rules_hint: CC_DISPATCH_RULES_HINT, // brief-s202b T2
         };
 
         return {
@@ -263,6 +269,7 @@ export function registerCCDispatch(server: McpServer): void {
         duration_ms: Date.now() - start,
         pr_url: result.pr_url,
         error: result.error,
+        rules_hint: CC_DISPATCH_RULES_HINT, // brief-s202b T2
       };
 
       // Only set isError when the dispatch actually failed — MCP spec says

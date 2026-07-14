@@ -113,7 +113,11 @@ describe("S41 C5 — finalize draft timeout + deadline + no-retry", () => {
     expect(synthesizeSpy).toHaveBeenCalledTimes(1);
     const callArgs = synthesizeSpy.mock.calls[0];
     // synthesize(systemPrompt, userContent, maxTokens, timeoutMs, maxRetries, thinking, callSite, projectSlug)
-    expect(callArgs[2]).toBe(4096);
+    // brief-s202b T8: FINALIZE_COMPOSE_MODE defaults to `files`, which emits a
+    // complete ≤10KB handoff on top of the legacy keys — output budget is the
+    // synthesis-wide 8192 ceiling (legacy mode keeps 4096; see the
+    // compose-offload suite for the matrix).
+    expect(callArgs[2]).toBe(8192);
     expect(callArgs[3]).toBe(5000);
     expect(callArgs[4]).toBe(0);
     // Phase 3b: draft (CS-1) enables adaptive thinking. Flag flipped after

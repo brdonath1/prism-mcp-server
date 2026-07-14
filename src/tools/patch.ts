@@ -17,6 +17,7 @@ import {
   detectZwsHeaders,
   type NeutralizedLine,
 } from "../utils/sanitize-content.js";
+import { ingestRulesHint } from "../utils/rules-hint.js";
 
 interface PatchOpResult {
   operation: string;
@@ -112,6 +113,11 @@ export function registerPatch(server: McpServer): void {
         if (resolvedPath !== file) {
           diagnostics.warn("PATCH_REDIRECTED", `Path redirected: "${file}" → "${resolvedPath}"`, { original: file, resolved: resolvedPath });
         }
+
+        // brief-s202b T2: stateless module nudge for `.prism/ingest/` writes
+        // (checked against both the requested and resolved path). Emitted on
+        // every matching call; harmless if the module is already loaded.
+        const rulesHint = ingestRulesHint([file, resolvedPath]);
 
         // brief-460 / SRV-78: incoming patch content that ALREADY carries the
         // ZWS-neutralized-header signature was corrupted upstream (usually
@@ -215,6 +221,7 @@ export function registerPatch(server: McpServer): void {
                   success: false,
                   error: safeMutationResult.error,
                   code: safeMutationResult.code,
+                  ...(rulesHint ? { rules_hint: rulesHint } : {}), // brief-s202b T2
                   diagnostics: diagnostics.list(),
                 }),
               },
@@ -271,6 +278,7 @@ export function registerPatch(server: McpServer): void {
               integrity_check: lastIntegrityIssues.length > 0
                 ? { warnings: lastIntegrityIssues }
                 : { clean: true },
+              ...(rulesHint ? { rules_hint: rulesHint } : {}), // brief-s202b T2
               diagnostics: diagnostics.list(),
             }),
           }],

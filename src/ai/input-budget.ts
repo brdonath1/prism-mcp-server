@@ -31,7 +31,12 @@ import {
 } from "../config.js";
 import { detectSessionLogOrientation } from "../utils/archive.js";
 
-/** Doc entry shape shared with resolveDocFiles / the prompt builders. */
+/** Doc entry shape shared with resolveDocFiles / the prompt builders.
+ *  brief-s202b T9: `size` is the TRUE ORIGINAL source size and is preserved
+ *  through trimming — the prompt builders print it in each `### FILE:` header,
+ *  so the synthesis model must never see a post-trim size it could cite as a
+ *  file fact (the INS-363-adjacent hazard that blocked the operator's
+ *  `synthesis_brief` → GLM re-flip). */
 export interface SynthesisDocEntry {
   content: string;
   size: number;
@@ -168,9 +173,15 @@ const TRIM_TAKE_PAD_TOKENS = 16;
 
 /** Deterministic truncation notice embedded at the cut point so both the
  *  synthesis model and any human reading the prompt can see the doc was
- *  bounded. Derives only from path + sizes — never timestamps. */
-function trimNotice(path: string, preTokens: number, detail: string): string {
-  return `> [synthesis input bound — brief-445/R3-dur] ${path} trimmed from ~${preTokens} estimated tokens to fit the synthesis input budget; ${detail}.`;
+ *  bounded. Derives only from path + sizes — never timestamps.
+ *
+ *  brief-s202b T9 (INS-363-adjacent): the annotation leads with the TRUE
+ *  pre-trim size and an explicit do-not-cite instruction. Pre-s202b the
+ *  notice named only estimated tokens, and a trimmed doc's shrunken content
+ *  could be described by the synthesized brief as if it were the file's real
+ *  size — a fabricated quantitative claim (INS-40 class). */
+function trimNotice(path: string, preBytes: number, preTokens: number, detail: string): string {
+  return `> [trimmed from ${(preBytes / 1024).toFixed(1)} KB — do not cite truncated size as a file fact] ${path}: ${detail}; ~${preTokens} estimated tokens pre-trim (synthesis input budget, brief-445/R3-dur).`;
 }
 
 const encoder = new TextEncoder();
@@ -205,9 +216,13 @@ function retainWithinBudget(
   path: string,
   content: string,
   keepTokens: number,
+  trueSourceBytes?: number,
 ): string {
   const keepChars = Math.max(0, Math.floor(keepTokens * SYNTHESIS_CHARS_PER_TOKEN));
   const preTokens = estimateSynthesisTokens(content);
+  // brief-s202b T9: cite the TRUE source size (the same number the FILE
+  // header prints), falling back to the current content's byte length.
+  const preBytes = trueSourceBytes ?? byteLength(content);
 
   if (retainsTail(path, content)) {
     // Newest content at the bottom — drop the oldest (leading) content. Keep
@@ -220,6 +235,7 @@ function retainWithinBudget(
         : "";
     const notice = trimNotice(
       path,
+      preBytes,
       preTokens,
       "oldest (leading) content dropped, most recent entries retained",
     );
@@ -237,6 +253,7 @@ function retainWithinBudget(
   // docs").
   const notice = trimNotice(
     path,
+    preBytes,
     preTokens,
     "trailing content dropped, leading (most recent / summary) content retained",
   );
@@ -308,8 +325,11 @@ export function boundSynthesisInput(
     const reducible = entryTokens - TRIM_DOC_FLOOR_TOKENS;
     if (reducible <= 0) continue; // already at/under the per-doc floor
     const take = Math.min(total - goal + TRIM_TAKE_PAD_TOKENS, reducible);
-    const newContent = retainWithinBudget(path, entry.content, entryTokens - take);
-    working.set(path, { content: newContent, size: byteLength(newContent) });
+    const newContent = retainWithinBudget(path, entry.content, entryTokens - take, entry.size);
+    // brief-s202b T9: `size` stays the TRUE original source size (metadata),
+    // never the trimmed byte count — the prompt's `### FILE:` header cites
+    // it, and the model must not see a post-trim size as a file fact.
+    working.set(path, { content: newContent, size: entry.size });
     trimmedDocs.push({
       path,
       pre_tokens: entryTokens,
@@ -327,9 +347,10 @@ export function boundSynthesisInput(
       const entry = working.get(path);
       if (!entry) continue;
       const entryTokens = estimateSynthesisTokens(entry.content);
-      const stub = `${trimNotice(path, entryTokens, "entire document elided to honor the synthesis input ceiling")}\n`;
+      const stub = `${trimNotice(path, entry.size, entryTokens, "entire document elided to honor the synthesis input ceiling")}\n`;
       if (stub.length >= entry.content.length) continue; // stub wouldn't shrink it
-      working.set(path, { content: stub, size: byteLength(stub) });
+      // brief-s202b T9: original size preserved (see pass-1 note).
+      working.set(path, { content: stub, size: entry.size });
       const existing = trimmedDocs.find((t) => t.path === path);
       const stubTokens = estimateSynthesisTokens(stub);
       if (existing) {
