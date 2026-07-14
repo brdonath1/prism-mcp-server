@@ -391,4 +391,29 @@ First exchange ≈ 11.6-12.4K + ~5K platform + ~0.9K single boot search + ~4.3K 
 PRISMA-owned) + ~0.7K Rule 2 + ~1.5K opening ≈ **~24-25K ≈ 12-12.5% of 200K**, roughly half of
 today's measured 24.4% and a third of the observed worst case.
 
+### §3.1 Execution record (2026-07-14, verified per the D-278 daemon-state protocol)
+
+| Run | PR | Verdict | Daemon git fields |
+|---|---|---|---|
+| s202b v1 (server bundle) | prism-mcp-server **#109 MERGED** | **VALID** — T1-T8/T10/T11 landed; server 4.13.0; knobs documented in CLAUDE.md | `merged`, pr 109, merge `b956f7c`, post_merge `[archive]` |
+| s202b v2 delta (re-dispatch off the updated queue file after the v1 worker's self-dequeue raced) | prism-mcp-server **#110 OPEN, CI green** | **VALID** — exactly T9 a–d (direction-aware trim annotations, INPUT MANIFEST at all 3 sites, server-stamped `> Synthesized from:` footer, `SYNTHESIS_INPUT_TRUNCATED`); **merge next** | second run not separately row'd in daemon history; verified directly on GitHub |
+| s202c (kernel split) | prism-framework **#38 MERGED — kernel v3.0.0 is fleet-live** | **VALID** — kernel **17,996 B** (≤18,000 gate), `Kernel-Manifest` present, constraint-3 irreducibles verified in the merged kernel (Rule 9 block, Guardrails-are-sacred/eliminated, brevity, Critical Context), v2 monolith archived `cmp`-identical, bonus Band-2 `codex-sidecar.md`; **gap: T5 gate module (ran v1 text)** → brief-s202e queued | `merged`, pr 38, merge `beb8f86` |
+| s202d (registry curation — raced my dequeue and ran anyway) | prism **#338 MERGED** | **VALID** — parser round-trip on merged registry: 117 active, **A=11** (10 planned + new chat-minted INS-372), B=90, C=16; INS-319/230/354 archived; 178/187/324/340 → Tier B; Tier-A bodies **24,378 → 13,283 B** | `merged`, pr 338, merge `4863333` |
+
+**Follow-ups queued (both `parallel: true`):** `brief-s202e-synthesis-quality-gate-module`
+(prism-framework `briefs` — constraint 2's module + kernel trigger row, kernel budget held) and
+`brief-s202f-tier4-retirements` (prism `main` — retire INS-291/302/318 per the s202d worker's
+recommendation, now justified by kernel v3 carrying each behavior; expect A=8, ~−2.2KB).
+
+**Checkpoint arithmetic (next boots):** with #38 + #338 live and #110 pending, the next prism boot
+is projected ≈ **~80KB ≈ ~23K tok** (`BOOT_INDEX_MODE=full`); the compact flip takes it to
+≈ **~65KB ≈ ~19K tok**; s202f + SVG-off reach the ~17-18K band, with the remaining distance to the
+12-15K target carried by the §3 handoff-hygiene effects as handoffs re-form under the new item
+budget. Ordered next steps: (1) merge #110; (2) s202e/s202f auto-run + merge; (3) one soak boot →
+`BOOT_INDEX_MODE=compact`; (4) harness gate B/C/D/F/G/H over ≥5 sessions (S157/S177 anchors) —
+same-day template revert on regression; (5) first fresh brief after #110 deploys gets the
+INS-370 drift-vs-artifact pass using the new provenance footer; (6) merge PR #108 as the D-278
+design of record. Note: daemon state migrated out of the trigger repo (S151 cutover) — the
+authoritative files are local `~/.trigger/state/<slug>.json`; the CLAUDE.md pointer is stale.
+
 <!-- EOF: s202-refactor-proposals.md -->
