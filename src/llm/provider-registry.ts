@@ -74,6 +74,23 @@ const PROVIDER_REGISTRY: readonly ProviderMetadata[] = [
     activationStatus: "active_when_configured",
     qualityPolicy: "quality-before-cost",
   },
+  {
+    // D-275 mechanical tier (brief-s196c): GLM-5.2 via OpenRouter's
+    // OpenAI-compatible chat endpoint. Serves ONLY the three mechanical
+    // synthesis sites — never recommendation (NON-LLM) or cc_dispatch
+    // (protected Claude judgment tier). Activated per-site via
+    // LLM_ROUTING_OPENROUTER_SITES (src/llm/openrouter.ts), not via
+    // LLM_ROUTING_ALLOWED_PROVIDERS.
+    id: "openrouter",
+    displayName: "OpenRouter",
+    authEnvVar: "OPENROUTER_API_KEY",
+    modelEnvVar: "LLM_ROUTING_OPENROUTER_MODEL",
+    defaultModel: "z-ai/glm-5.2",
+    transport: "openai_compatible_chat",
+    supportedSurfaces: ["synthesis_brief", "synthesis_draft", "synthesis_pdu"],
+    activationStatus: "active_when_configured",
+    qualityPolicy: "quality-before-cost",
+  },
 ];
 
 export function getProviderRegistry(): ProviderMetadata[] {

@@ -3,6 +3,10 @@ import {
   RECOMMENDATION_MODELS,
   SYNTHESIS_MODEL_ID,
 } from "../models.js";
+import {
+  openrouterSiteSelected,
+  resolveOpenrouterReasoningLevel,
+} from "./openrouter.js";
 import { getProviderRegistry } from "./provider-registry.js";
 import type {
   LlmProviderId,
@@ -44,6 +48,18 @@ export function resolveRoute(
     return currentAnthropicFallback(input, "routing-disabled");
   }
 
+  // D-275 (brief-s196c): LLM_ROUTING_OPENROUTER_SITES — the mechanical-tier
+  // activation surface. Resolved after the master-switch/protected checks and
+  // BEFORE requestedProvider (design doc §3.5 precedence + §4.7): when a
+  // mechanical synthesis surface is listed in SITES and OPENROUTER_API_KEY is
+  // present, openrouter serves as hop 0 in front of the site's existing chain.
+  // SITES unset/empty, or key absent → this branch is inert and resolution is
+  // bit-identical to the pre-D-275 router. Dry-run retains row-7 precedence.
+  const openrouterRoute = resolveOpenrouterSiteRoute(input, env);
+  if (openrouterRoute) {
+    return openrouterRoute;
+  }
+
   const selectedProvider = requestedProvider(input.surface, env);
   if (!selectedProvider || selectedProvider === "anthropic") {
     return currentAnthropicFallback(
@@ -66,7 +82,7 @@ export function resolveRoute(
   let reason: RouteDecision["reason"] = liveCandidate
     ? "live-provider-route"
     : "routing-dry-run";
-  if (liveCandidate && !providerAllowed(provider.id, env)) {
+  if (liveCandidate && !providerAllowed(provider.id, input.surface, env)) {
     liveInvocationAllowed = false;
     reason = "provider-not-allowed";
   }
@@ -86,6 +102,45 @@ export function resolveRoute(
     qualityTier: qualityTierFor(input.surface, provider.id),
     liveInvocationAllowed,
     reason,
+    fallbackChain: [provider.id, "anthropic"],
+  };
+}
+
+/**
+ * D-275 mechanical-tier route (brief-s196c). Returns an openrouter decision
+ * when the surface is activated via LLM_ROUTING_OPENROUTER_SITES, or null to
+ * fall through to the pre-existing resolution untouched.
+ *
+ * Null (fall-through) whenever: the surface is not a mechanical synthesis
+ * site, SITES does not list it, or OPENROUTER_API_KEY is absent — in the
+ * key-absent case the site's existing chain (live provider route or
+ * transport chain) keeps serving rather than being pinned to a dead provider.
+ * Dry-run (§3.5 row 7) demotes the decision to observation-only, exactly like
+ * every other provider route.
+ */
+function resolveOpenrouterSiteRoute(
+  input: RouteInput,
+  env: RoutingEnv,
+): RouteDecision | null {
+  if (!openrouterSiteSelected(input.surface, env)) return null;
+  const provider = getProviderRegistry().find((entry) => entry.id === "openrouter");
+  if (!provider?.supportedSurfaces.includes(input.surface)) return null;
+  if (!authConfigured(provider.authEnvVar, env)) return null;
+
+  const live = !dryRunEnabled(env);
+  return {
+    surface: input.surface,
+    taskClass: input.taskClass,
+    provider: provider.id,
+    model: providerModel(provider, env),
+    transport: provider.transport,
+    authEnvVar: provider.authEnvVar,
+    // The openrouter reasoning setting (default "off" — GLM thinking control,
+    // design §4.2), NOT the caller's Anthropic thinking flag.
+    reasoningSetting: resolveOpenrouterReasoningLevel(input.surface, env),
+    qualityTier: "mechanical-cost",
+    liveInvocationAllowed: live,
+    reason: live ? "live-provider-route" : "routing-dry-run",
     fallbackChain: [provider.id, "anthropic"],
   };
 }
@@ -120,7 +175,17 @@ function requestedProvider(
   return provider?.id ?? null;
 }
 
-function providerAllowed(provider: LlmProviderId, env: RoutingEnv): boolean {
+function providerAllowed(
+  provider: LlmProviderId,
+  surface: RouteInput["surface"],
+  env: RoutingEnv,
+): boolean {
+  // D-275 (design §4.7): openrouter is allowed INTERNALLY when the surface is
+  // listed in LLM_ROUTING_OPENROUTER_SITES — activation must not require
+  // mutating the pre-existing shared LLM_ROUTING_ALLOWED_PROVIDERS var.
+  if (provider === "openrouter" && openrouterSiteSelected(surface, env)) {
+    return true;
+  }
   const raw = env.LLM_ROUTING_ALLOWED_PROVIDERS;
   if (!raw || raw.trim().length === 0) return false;
   return raw
@@ -207,6 +272,9 @@ function qualityTierFor(
   provider: LlmProviderId,
 ): LlmQualityTier {
   if (provider === "perplexity") return "research-citation";
+  // D-275: GLM-5.2 via openrouter is the mechanical/cost tier, not a frontier
+  // peer — keep the tier label honest wherever the decision is displayed.
+  if (provider === "openrouter") return "mechanical-cost";
   if (surface === "cc_dispatch") return "frontier-code";
   if (surface === "synthesis_pdu") return "frontier-long-context";
   return "frontier";

@@ -79,6 +79,7 @@ describe("provider adapters", () => {
       success: false,
       error: "provider response incomplete (status=incomplete, reason=max_output_tokens)",
       error_code: "API_ERROR",
+      failure_class: "validation",
     });
   });
 
@@ -143,6 +144,7 @@ describe("provider adapters", () => {
       success: false,
       error: "provider response did not stop cleanly (length)",
       error_code: "API_ERROR",
+      failure_class: "validation",
     });
   });
 
@@ -304,6 +306,7 @@ describe("provider adapters", () => {
       success: false,
       error: "provider response did not stop cleanly (MAX_TOKENS)",
       error_code: "API_ERROR",
+      failure_class: "validation",
     });
   });
 
@@ -343,6 +346,7 @@ describe("provider adapters", () => {
       success: false,
       error: "provider HTTP 401",
       error_code: "AUTH",
+      failure_class: "http",
     });
     expect(JSON.stringify(outcome)).not.toContain("openai-test-secret");
     expect(JSON.stringify(outcome)).not.toContain("bad auth");

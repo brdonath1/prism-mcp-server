@@ -12,6 +12,7 @@ describe("provider registry", () => {
       "deepseek",
       "xai",
       "perplexity",
+      "openrouter",
     ]);
     expect(registry.map((provider) => provider.authEnvVar)).toEqual([
       "ANTHROPIC_API_KEY",
@@ -20,6 +21,27 @@ describe("provider registry", () => {
       "DEEPSEEK_API_KEY",
       "XAI_API_KEY",
       "PERPLEXITY_API_KEY",
+      "OPENROUTER_API_KEY",
+    ]);
+  });
+
+  it("scopes openrouter to the three mechanical synthesis surfaces (D-275)", () => {
+    const openrouter = getProviderRegistry().find((provider) => provider.id === "openrouter");
+
+    expect(openrouter).toMatchObject({
+      displayName: "OpenRouter",
+      authEnvVar: "OPENROUTER_API_KEY",
+      modelEnvVar: "LLM_ROUTING_OPENROUTER_MODEL",
+      defaultModel: "z-ai/glm-5.2",
+      transport: "openai_compatible_chat",
+      activationStatus: "active_when_configured",
+    });
+    // Exactly the migrate-to-GLM-5.2 sites from d275-callsite-inventory.json —
+    // never recommendation (NON-LLM) and never cc_dispatch (protected tier).
+    expect(openrouter?.supportedSurfaces).toEqual([
+      "synthesis_brief",
+      "synthesis_draft",
+      "synthesis_pdu",
     ]);
   });
 

@@ -51,6 +51,7 @@ import { registerGhDeleteTag } from "./tools/gh-delete-tag.js";
 import { registerGhGetBranchProtection } from "./tools/gh-get-branch-protection.js";
 import { registerGhSetBranchProtection } from "./tools/gh-set-branch-protection.js";
 import { hydrateStore } from "./dispatch-store.js";
+import { logResolvedRoutingTable } from "./llm/route-table.js";
 import { registerShutdownHandlers } from "./shutdown.js";
 
 const app = express();
@@ -210,6 +211,11 @@ const httpServer = app.listen(PORT, () => {
     cc_dispatch_enabled: CC_DISPATCH_ENABLED,
     github_enabled: !!GITHUB_PAT,
   });
+
+  // D-275 (brief-s196c) §4.8: print the resolved LLM routing table once per
+  // boot — call_site→provider→model→transport for every surface, no secrets.
+  // Any configured-but-inert routing knob is visible here at every deploy.
+  logResolvedRoutingTable();
 
   // Hydrate dispatch store from GitHub (non-blocking).
   // Loads recent dispatch records into memory so cc_status works across

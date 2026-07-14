@@ -13,8 +13,15 @@ import {
   MCP_SAFE_TIMEOUT,
 } from "../config.js";
 import {
+  emitLlmCall,
+  estimateTokensFromChars,
+  type LlmFallbackReason,
+} from "../llm/llm-call-telemetry.js";
+import { validateOpenrouterSynthesisOutput } from "../llm/openrouter.js";
+import {
   isLiveProviderSynthesisDecision,
   synthesizeViaProvider,
+  type ProviderSynthesisError,
 } from "../llm/provider-adapters.js";
 import { observeRoute } from "../llm/route-observer.js";
 import type { LlmSurface, LlmTransport } from "../llm/route-types.js";
@@ -53,6 +60,9 @@ export interface SynthesisResult {
    *  Absent on the cc_subprocess transport (the Agent SDK has its own
    *  zero-token/empty-text guards). */
   stop_reason?: string | null;
+  /** D-275: provider-measured cost in USD when the serving provider returned
+   *  one (OpenRouter usage.cost). Feeds the LLM_CALL telemetry line. */
+  cost_usd?: number | null;
 }
 
 export interface SynthesisError {
@@ -183,6 +193,110 @@ export async function synthesize(
   callSite?: SynthesisCallSite,
   projectSlug?: string,
 ): Promise<SynthesisOutcome> {
+  // D-275 (brief-s196c) §4.8: LLM_CALL telemetry wrapper. The chain state
+  // records which hop was last attempted/served and whether/why the primary
+  // route fell back; the single LLM_CALL line is emitted here so EVERY
+  // synthesis transport (provider adapters, cc_subprocess, messages_api)
+  // passes through one emission point.
+  const startedAt = Date.now();
+  const chain: SynthesisChainState = {
+    provider: "anthropic",
+    model: SYNTHESIS_MODEL,
+    transport: "messages_api",
+    fallback_used: false,
+    fallback_reason: null,
+    measured_cost_usd: null,
+  };
+
+  const outcome = await synthesizeChain(
+    systemPrompt,
+    userContent,
+    maxTokens,
+    timeoutMs,
+    maxRetries,
+    thinking,
+    callSite,
+    projectSlug,
+    chain,
+  );
+
+  const transport = outcome.success ? (outcome.transport ?? chain.transport) : chain.transport;
+  const usageInput = outcome.success ? outcome.input_tokens : 0;
+  const usageOutput = outcome.success ? outcome.output_tokens : 0;
+  const haveUsage = usageInput > 0 || usageOutput > 0;
+  emitLlmCall({
+    call_site: callSite ? SYNTHESIS_ROUTE_SURFACE[callSite] : "synthesis_uncategorized",
+    provider: providerForTransport(transport, chain.provider),
+    model: outcome.success ? outcome.model : chain.model,
+    transport,
+    success: outcome.success,
+    input_tokens: haveUsage
+      ? usageInput
+      : estimateTokensFromChars(systemPrompt.length + userContent.length),
+    output_tokens: haveUsage
+      ? usageOutput
+      : outcome.success
+        ? estimateTokensFromChars(outcome.content.length)
+        : 0,
+    token_source: haveUsage ? "usage" : "chars_estimate",
+    measured_cost_usd: chain.measured_cost_usd,
+    latency_ms: Date.now() - startedAt,
+    fallback_used: chain.fallback_used,
+    fallback_reason: chain.fallback_reason,
+    project_slug: projectSlug,
+  });
+
+  return outcome;
+}
+
+/** Mutable per-call record of the serving chain, for the LLM_CALL line. */
+interface SynthesisChainState {
+  /** Last attempted hop — on total failure this is what the line reports. */
+  provider: string;
+  model: string;
+  transport: string;
+  fallback_used: boolean;
+  /** Why the PRIMARY route fell back (first failure wins — design §4.6). */
+  fallback_reason: LlmFallbackReason | null;
+  /** Provider-measured cost captured when the serving hop returned one. */
+  measured_cost_usd: number | null;
+}
+
+/** Provider label for a serving transport: non-Anthropic transports carry the
+ *  provider recorded at the provider hop; every Anthropic transport
+ *  (messages_api, cc_subprocess, messages_api_fallback) is anthropic. */
+function providerForTransport(transport: string, chainProvider: string): string {
+  switch (transport) {
+    case "openai_responses":
+    case "openai_compatible_chat":
+    case "gemini_generate_content":
+    case "xai_responses":
+      return chainProvider;
+    default:
+      return "anthropic";
+  }
+}
+
+/** Map a provider-adapter failure to the LLM_CALL/fallback-warn reason enum.
+ *  finish_reason≠stop and empty-content failures are classed "validation" by
+ *  the adapter (the GLM thinking-starvation signature) → validation_failed. */
+function fallbackReasonFromProviderError(err: ProviderSynthesisError): LlmFallbackReason {
+  if (err.failure_class === "validation") return "validation_failed";
+  if (err.failure_class === "timeout" || err.error_code === "TIMEOUT") return "timeout";
+  return "provider_error";
+}
+
+async function synthesizeChain(
+  systemPrompt: string,
+  userContent: string,
+  maxTokens: number | undefined,
+  timeoutMs: number | undefined,
+  maxRetries: number | undefined,
+  thinking: boolean | undefined,
+  callSite: SynthesisCallSite | undefined,
+  projectSlug: string | undefined,
+  chain: SynthesisChainState,
+): Promise<SynthesisOutcome> {
   // Resolve routing once if a call-site is supplied; legacy callers (no
   // call-site) bypass env-var reads entirely so their behavior is bit-for-bit
   // unchanged.
@@ -204,6 +318,9 @@ export async function synthesize(
   }
 
   if (routeDecision && isLiveProviderSynthesisDecision(routeDecision)) {
+    chain.provider = routeDecision.provider;
+    chain.model = routeDecision.model;
+    chain.transport = routeDecision.transport;
     const providerOutcome = await synthesizeViaProvider({
       decision: routeDecision,
       systemPrompt,
@@ -212,27 +329,57 @@ export async function synthesize(
       timeoutMs,
     });
     if (providerOutcome.success) {
-      logger.info("Synthesis provider call complete", {
+      // D-275 §4.5: openrouter results must pass the per-site quality gate
+      // BEFORE counting as success — a gate failure is treated exactly like a
+      // provider failure and falls through to the site's existing Anthropic
+      // chain. Anthropic/frontier legs keep today's lenient warn-level checks.
+      const gate =
+        routeDecision.provider === "openrouter"
+          ? validateOpenrouterSynthesisOutput(routeDecision.surface, providerOutcome.content)
+          : ({ ok: true } as const);
+      if (gate.ok) {
+        chain.measured_cost_usd = providerOutcome.cost_usd ?? null;
+        logger.info("Synthesis provider call complete", {
+          provider: routeDecision.provider,
+          model: providerOutcome.model,
+          transport: providerOutcome.transport,
+          input_tokens: providerOutcome.input_tokens,
+          output_tokens: providerOutcome.output_tokens,
+          projectSlug,
+        });
+        return providerOutcome;
+      }
+      chain.fallback_used = true;
+      chain.fallback_reason = "validation_failed";
+      logger.warn("SYNTHESIS_PROVIDER_FALLBACK — provider route failed, retrying Anthropic path", {
         provider: routeDecision.provider,
-        model: providerOutcome.model,
-        transport: providerOutcome.transport,
-        input_tokens: providerOutcome.input_tokens,
-        output_tokens: providerOutcome.output_tokens,
+        model: routeDecision.model,
+        transport: routeDecision.transport,
+        original_error: `provider output failed quality gate: ${gate.reason}`,
+        original_error_code: "VALIDATION",
+        fallback_reason: "validation_failed",
+        validation_failure: gate.reason,
         projectSlug,
       });
-      return providerOutcome;
+    } else {
+      chain.fallback_used = true;
+      chain.fallback_reason = fallbackReasonFromProviderError(providerOutcome);
+      logger.warn("SYNTHESIS_PROVIDER_FALLBACK — provider route failed, retrying Anthropic path", {
+        provider: routeDecision.provider,
+        model: routeDecision.model,
+        transport: routeDecision.transport,
+        original_error: providerOutcome.error,
+        original_error_code: providerOutcome.error_code,
+        fallback_reason: chain.fallback_reason,
+        projectSlug,
+      });
     }
-    logger.warn("SYNTHESIS_PROVIDER_FALLBACK — provider route failed, retrying Anthropic path", {
-      provider: routeDecision.provider,
-      model: routeDecision.model,
-      transport: routeDecision.transport,
-      original_error: providerOutcome.error,
-      original_error_code: providerOutcome.error_code,
-      projectSlug,
-    });
   }
 
   if (routing && routing.transport === "cc_subprocess") {
+    chain.provider = "anthropic";
+    chain.model = routing.model;
+    chain.transport = "cc_subprocess";
     const subprocessOutcome = await synthesizeViaCcSubprocess(
       systemPrompt,
       userContent,
@@ -244,6 +391,11 @@ export async function synthesize(
     if (subprocessOutcome.success) {
       return { ...subprocessOutcome, transport: "cc_subprocess" };
     }
+    chain.fallback_used = true;
+    // First failure wins: when a provider hop already set the reason, the
+    // LLM_CALL line keeps reporting why the PRIMARY route was left.
+    chain.fallback_reason ??=
+      subprocessOutcome.error_code === "TIMEOUT" ? "timeout" : "provider_error";
     logger.warn("SYNTHESIS_TRANSPORT_FALLBACK — cc_subprocess failed, retrying via messages_api", {
       callSite,
       attempted_model: routing.model,
@@ -253,6 +405,8 @@ export async function synthesize(
     });
     // Fall through to messages_api with the default model — the env override
     // is what failed, so we deliberately ignore it on the retry path.
+    chain.model = SYNTHESIS_MODEL;
+    chain.transport = "messages_api_fallback";
     const fallback = await callMessagesApi({
       systemPrompt,
       userContent,
@@ -272,6 +426,9 @@ export async function synthesize(
   // messages_api path — either legacy (no call-site) or call-site that
   // explicitly routes here. Honor the per-call-site model override when
   // provided.
+  chain.provider = "anthropic";
+  chain.model = routing?.modelOverridden ? routing.model : SYNTHESIS_MODEL;
+  chain.transport = "messages_api";
   const direct = await callMessagesApi({
     systemPrompt,
     userContent,
