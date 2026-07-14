@@ -478,6 +478,25 @@ describe("brief-s202b T7 — Kernel-Manifest handshake (KERNEL_SPLIT_DRIFT)", ()
     ]);
   });
 
+  it("parseKernelManifestHeader: tolerant of the LIVE v3.0.0 kernel format — blockquote + bold + pipe delimiters (S202 false-positive fix)", () => {
+    // Exact shape shipped by prism-framework PR #38; the comma-only,
+    // decoration-blind parse warn-fired KERNEL_SPLIT_DRIFT on every boot.
+    const live = `# PRISM Core Template v3.0.0\n> **Template Version:** 3.0.0\n> **Kernel-Manifest:** Operating Posture | Interaction Rules | CC Channel Discipline | Session Lifecycle | Module Triggers | Design Constraints\n\n## Operating Posture\nx\n`;
+    expect(parseKernelManifestHeader(live)).toEqual([
+      "Operating Posture",
+      "Interaction Rules",
+      "CC Channel Discipline",
+      "Session Lifecycle",
+      "Module Triggers",
+      "Design Constraints",
+    ]);
+    // Decorated comma form parses identically; per-entry emphasis stripped.
+    expect(parseKernelManifestHeader("Kernel-Manifest: **Operating Posture**, `Module Triggers`")).toEqual([
+      "Operating Posture",
+      "Module Triggers",
+    ]);
+  });
+
   it("findMissingKernelSections tolerates entries with or without the ## marker, case-insensitively", () => {
     expect(findMissingKernelSections(TEMPLATE_WITH_MANIFEST_OK, ["## Operating Posture", "interaction rules"])).toEqual([]);
     expect(findMissingKernelSections(TEMPLATE_WITH_MANIFEST_OK, ["## Rule 9"])).toEqual(["## Rule 9"]);

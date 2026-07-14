@@ -390,18 +390,28 @@ export function buildSessionStateManifest(inputs: {
 
 /**
  * brief-s202b T7 (P-2 server guard): parse the optional `Kernel-Manifest:`
- * header line from the behavioral-rules template — a comma list of the H2
- * section titles the kernel template MUST deliver. Returns the trimmed list,
- * or null when the template declares no manifest (pre-kernel template — not
- * drift, no diagnostic). Entries may be written with or without their
- * leading `## ` marker.
+ * header line from the behavioral-rules template — the list of H2 section
+ * titles the kernel template MUST deliver. Returns the trimmed list, or null
+ * when the template declares no manifest (pre-kernel template — not drift,
+ * no diagnostic). Entries may be written with or without their leading
+ * `## ` marker.
+ *
+ * Tolerant reader (S202 live fix): the shipped kernel writes the header as
+ * blockquote markdown — `> **Kernel-Manifest:** A | B | C` — while the
+ * original T7 spec said "comma list". The comma-only, decoration-blind parse
+ * treated the whole pipe-joined string (with the trailing `**` of the bold
+ * marker) as ONE section name, so KERNEL_SPLIT_DRIFT warn-fired on EVERY
+ * boot of a healthy kernel — the exact permanently-firing-diagnostic class
+ * SRV-39 retired. Accept `|` and `,` delimiters and strip markdown
+ * emphasis/backtick decoration from the captured list and each entry.
  */
 export function parseKernelManifestHeader(content: string): string[] | null {
   const match = content.match(/^.*Kernel-Manifest:\s*(.+)$/m);
   if (!match) return null;
-  const entries = match[1]
-    .split(",")
-    .map(e => e.trim())
+  const rawList = match[1].replace(/^[*_`\s]+/, "");
+  const entries = rawList
+    .split(/[|,]/)
+    .map(e => e.trim().replace(/^[*_`]+|[*_`]+$/g, "").trim())
     .filter(e => e.length > 0);
   return entries.length > 0 ? entries : null;
 }
