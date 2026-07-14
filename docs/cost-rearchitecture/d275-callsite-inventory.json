@@ -1,0 +1,380 @@
+{
+  "meta": {
+    "brief": "brief-s196a-d275-cost-audit",
+    "decision": "D-275",
+    "analyzed_main_head_sha": "0b5d31b6fed989a6e8de6ea7bdd04da2d56051b1",
+    "generated_session": "S196",
+    "generated_date": "2026-07-13",
+    "test_baseline": {
+      "tests_passed": 1662,
+      "tests_skipped": 5,
+      "tests_total": 1667,
+      "test_files_passed": 139,
+      "test_files_skipped": 1,
+      "tsc": "clean",
+      "lint": "clean (96 files)"
+    },
+    "row_counts": {
+      "llm_call_sites": 5,
+      "non_llm_surfaces": 4,
+      "total_rows": 9
+    },
+    "token_estimator": "chars / 3.5 (src/ai/input-budget.ts:71-73, src/config.ts:232-235); provider-billed tokens may run 1.0-1.35x these estimates",
+    "verified_env_facts_source": "S196 operator-verified Railway env (brief-s196a Verified facts #3-#5); env VALUES never read by this audit"
+  },
+  "llm_call_sites": [
+    {
+      "call_site_id": "CS-1",
+      "name": "synthesis_draft",
+      "description": "prism_finalize draft phase - AI-generated finalization file drafts (session_log_entry, handoff_where_we_are, handoff_next_steps, handoff_session_history, task_queue_completed, task_queue_new)",
+      "citations": {
+        "invocation": "src/tools/finalize.ts:505-514",
+        "function": "src/tools/finalize.ts:429-544 (draftPhase)",
+        "input_docs": "src/tools/finalize.ts:141-148 (DRAFT_RELEVANT_DOCS)",
+        "input_bound": "src/tools/finalize.ts:463-465 (boundSynthesisInput)",
+        "prompt": "src/ai/prompts.ts:167-186 (FINALIZATION_DRAFT_PROMPT), src/ai/prompts.ts:191-212 (buildFinalizationDraftMessage)",
+        "callers": "src/tools/finalize.ts:2396-2409 (action=draft), src/tools/finalize.ts:2051 (fullPhase action=full)"
+      },
+      "invoking_flows": ["prism_finalize action=draft", "prism_finalize action=full"],
+      "frequency": "1 per finalize that uses draft or full; observed ~21 prism finalizes / 30 days (git log, prism repo); modeled 25-30 finalize-equivalents/month fleet-wide",
+      "resolved_transport_chain_live_env": [
+        {
+          "hop": 1,
+          "provider": "gemini",
+          "model_env": "LLM_ROUTING_GEMINI_MODEL",
+          "transport": "gemini_generate_content",
+          "billing_surface": "GEMINI_API_KEY",
+          "selected_by": "LLM_ROUTING_SYNTHESIS_DRAFT_PROVIDER=gemini via src/llm/routing-policy.ts:47,112-121; live because ENABLED=true, DRY_RUN=false, gemini in ALLOWED_PROVIDERS, GEMINI_API_KEY set (routing-policy.ts:64-90); executed FIRST at src/ai/client.ts:206-233 (isLiveProviderSynthesisDecision, src/llm/provider-adapters.ts:38-49); adapter src/llm/provider-adapters.ts:236-284"
+        },
+        {
+          "hop": 2,
+          "provider": "anthropic",
+          "model_env": "SYNTHESIS_DRAFT_MODEL",
+          "transport": "cc_subprocess",
+          "billing_surface": "CLAUDE_CODE_OAUTH_TOKEN (CloudShift Max subscription)",
+          "selected_by": "SYNTHESIS_DRAFT_TRANSPORT=cc_subprocess via src/ai/client.ts:89-134,235-270 after SYNTHESIS_PROVIDER_FALLBACK warn (client.ts:225-233); wrapper src/ai/cc-subprocess.ts:111-296"
+        },
+        {
+          "hop": 3,
+          "provider": "anthropic",
+          "model_env": "SYNTHESIS_MODEL (default SYNTHESIS_MODEL_ID=claude-opus-4-8, src/models.ts:82)",
+          "transport": "messages_api",
+          "billing_surface": "ANTHROPIC_API_KEY",
+          "selected_by": "cc_subprocess failure fallback, src/ai/client.ts:256-269; API call src/ai/client.ts:351"
+        }
+      ],
+      "input_assembly": "7 living docs (LIVING_DOCUMENT_NAMES minus architecture.md, glossary.md, intelligence-brief.md) + up to 50 session commit messages; prism repo measured at origin/main 7f445b5e: handoff 5673B + decisions/_INDEX 32652B + session-log 18817B + task-queue 29440B + eliminated 1973B + known-issues 37876B + insights 34886B = 161317B",
+      "est_input_tokens": 46000,
+      "output_contract": "strict JSON object, 6 keys (prompts.ts:171-178)",
+      "typical_output_tokens": 2500,
+      "max_output_tokens": 4096,
+      "max_tokens_citation": "src/tools/finalize.ts:508",
+      "thinking": "hardcoded true (src/tools/finalize.ts:511); no SYNTHESIS_DRAFT_THINKING switch exists (computeSynthesisThinkingEnabled only accepts brief|pdu, src/config.ts:154-163)",
+      "validators": [
+        "extractJSON parse (src/tools/finalize.ts:526)",
+        "GAP: parse failure still returns success:true with raw_content + parse_warning (src/tools/finalize.ts:535-543) - not a hard failure today",
+        "provider-side finish_reason STOP guard (src/llm/provider-adapters.ts:261-264 gemini; :216-219 openai-compatible)",
+        "provider-side empty-content guard (src/llm/provider-adapters.ts:272,323-329)"
+      ],
+      "classification": "MECHANICAL",
+      "classification_reason": "structured extraction/drafting from documents into a fixed JSON contract; chat-side Claude reviews and edits before commit, so a human-equivalent reviewer is always in the loop",
+      "migration_verdict": "migrate-to-GLM-5.2",
+      "verdict_reason": "fixed-contract JSON drafting with a downstream reviewer; staged tonight in LLM_ROUTING_OPENROUTER_SITES (stage 1)",
+      "continuity_criticality": "low (rank 3 of 3 among synthesis sites - chat reviews output before anything persists)",
+      "rollout_stage": 1
+    },
+    {
+      "call_site_id": "CS-2",
+      "name": "synthesis_brief",
+      "description": "intelligence-brief.md generation - the session-to-session continuity carrier (D-44)",
+      "citations": {
+        "invocation": "src/ai/synthesize.ts:254-263",
+        "function": "src/ai/synthesize.ts:212-408 (generateIntelligenceBrief)",
+        "bundle": "src/ai/synthesize.ts:164-201 (assembleSynthesisBundle; domain files :140-148)",
+        "prompt": "src/ai/prompts.ts:5-42 (FINALIZATION_SYNTHESIS_PROMPT)",
+        "callers": "src/tools/finalize.ts:1454 (background after commit/full), src/tools/synthesize.ts:139 (prism_synthesize mode=generate)"
+      },
+      "invoking_flows": ["prism_finalize action=commit|full (fire-and-forget, finalize.ts:1437-1457)", "prism_synthesize mode=generate (fire-and-forget, tools/synthesize.ts:138-176)"],
+      "frequency": "1 per finalize + occasional manual regenerations; 34 auto-synthesized pushes (brief+pdu pairs) observed in prism repo over 30 days",
+      "resolved_transport_chain_live_env": [
+        {
+          "hop": 1,
+          "provider": "openai",
+          "model_env": "LLM_ROUTING_OPENAI_MODEL (registry default gpt-5.5, src/llm/provider-registry.ts:28)",
+          "transport": "openai_responses",
+          "billing_surface": "OPENAI_API_KEY",
+          "selected_by": "LLM_ROUTING_SYNTHESIS_BRIEF_PROVIDER=openai via src/llm/routing-policy.ts:47,112-121; live per routing-policy.ts:64-90; executed FIRST at src/ai/client.ts:206-233; adapter src/llm/provider-adapters.ts:143-185, url :341"
+        },
+        {
+          "hop": 2,
+          "provider": "anthropic",
+          "model_env": "SYNTHESIS_BRIEF_MODEL",
+          "transport": "cc_subprocess",
+          "billing_surface": "CLAUDE_CODE_OAUTH_TOKEN (CloudShift Max subscription)",
+          "selected_by": "SYNTHESIS_BRIEF_TRANSPORT=cc_subprocess via src/ai/client.ts:235-270"
+        },
+        {
+          "hop": 3,
+          "provider": "anthropic",
+          "model_env": "SYNTHESIS_MODEL (default claude-opus-4-8)",
+          "transport": "messages_api",
+          "billing_surface": "ANTHROPIC_API_KEY",
+          "selected_by": "src/ai/client.ts:256-269; API call src/ai/client.ts:351"
+        }
+      ],
+      "input_assembly": "shared bundle (SRV-73): 9 living docs (minus intelligence-brief.md) + 7 decision-domain files (synthesize.ts:140-148); prism repo measured pre-trim ~739KB (~211K est tokens) - EXCEEDS SYNTHESIS_INPUT_MAX_TOKENS=120000 (config.ts:204-205), deterministically trimmed to SYNTHESIS_INPUT_TARGET_TOKENS=60000 (config.ts:220-221) by src/ai/input-budget.ts on every prism finalize",
+      "est_input_tokens": 60000,
+      "output_contract": "markdown, exactly 3 H2 sections (Project State / Risk Flags / Quality Audit), 1500-3000 token target (prompts.ts:34), EOF sentinel",
+      "typical_output_tokens": 2500,
+      "max_output_tokens": 8192,
+      "max_tokens_citation": "SYNTHESIS_MAX_OUTPUT_TOKENS, src/config.ts:169, applied at src/ai/client.ts:334 and src/llm/provider-adapters.ts:81",
+      "thinking": "computeSynthesisThinkingEnabled('brief'), default true, env SYNTHESIS_BRIEF_THINKING (src/config.ts:154-163; passed at synthesize.ts:260)",
+      "validators": [
+        "INTELLIGENCE_BRIEF_SPEC_SECTIONS required-section check (src/ai/synthesize.ts:281, src/utils/intelligence-brief-spec.ts)",
+        "stop_reason=max_tokens + missing sections -> refuse to overwrite (src/ai/synthesize.ts:286-305)",
+        "EOF sentinel enforcement (src/ai/synthesize.ts:312-314)",
+        "server-stamped Last-synthesized + provenance headers (src/ai/synthesize.ts:319-320)",
+        "messages_api refusal/empty guards (src/ai/client.ts:362-387); provider finish_reason/empty guards (src/llm/provider-adapters.ts:169-173,216-222)"
+      ],
+      "classification": "MECHANICAL",
+      "classification_reason": "non-interactive document synthesis against a fixed 3-section contract with deterministic server-side validators; the judgment component (summary quality) is measurable by morning artifact diff",
+      "migration_verdict": "migrate-to-GLM-5.2",
+      "verdict_reason": "GLM-5.2 capability profile (1M ctx, top-decile agentic/summarization benchmarks) covers structured synthesis; highest continuity criticality so flip is stage 2, gated on operator morning-diff of intelligence-brief.md quality",
+      "continuity_criticality": "highest (rank 1 of 3 - the continuity carrier; a bad brief degrades every subsequent session boot)",
+      "rollout_stage": 2
+    },
+    {
+      "call_site_id": "CS-3",
+      "name": "synthesis_pdu",
+      "description": "pending-doc-updates.md generation - machine-applied proposals for architecture/glossary/insights (D-155/D-156)",
+      "citations": {
+        "invocation": "src/ai/synthesize.ts:466-475",
+        "function": "src/ai/synthesize.ts:421-645 (generatePendingDocUpdates)",
+        "prompt": "src/ai/prompts.ts:85-148 (PENDING_DOC_UPDATES_PROMPT)",
+        "callers": "src/tools/finalize.ts:1455, src/tools/synthesize.ts:140"
+      },
+      "invoking_flows": ["prism_finalize action=commit|full (fire-and-forget)", "prism_synthesize mode=generate"],
+      "frequency": "1 per finalize + occasional manual; same cadence as CS-2 (shared bundle, fired together via Promise.allSettled finalize.ts:1453-1456)",
+      "resolved_transport_chain_live_env": [
+        {
+          "hop": 1,
+          "provider": "anthropic",
+          "model_env": "SYNTHESIS_PDU_MODEL",
+          "transport": "cc_subprocess",
+          "billing_surface": "CLAUDE_CODE_OAUTH_TOKEN (CloudShift Max subscription)",
+          "selected_by": "LLM_ROUTING_SYNTHESIS_PDU_PROVIDER=anthropic -> currentAnthropicFallback (src/llm/routing-policy.ts:48-53,167-174) -> NOT a live provider decision -> SYNTHESIS_PDU_TRANSPORT=cc_subprocess serves (src/ai/client.ts:235-270)"
+        },
+        {
+          "hop": 2,
+          "provider": "anthropic",
+          "model_env": "SYNTHESIS_MODEL (default claude-opus-4-8)",
+          "transport": "messages_api",
+          "billing_surface": "ANTHROPIC_API_KEY",
+          "selected_by": "cc_subprocess failure fallback (INS-332), src/ai/client.ts:256-269"
+        }
+      ],
+      "input_assembly": "identical shared bundle to CS-2 (byte-identical, SRV-73; synthesize.ts:435-441); post-trim ~60K est tokens on prism",
+      "est_input_tokens": 60000,
+      "output_contract": "markdown, exactly 4 H2 sections (architecture.md / glossary.md / insights.md / No Updates Needed) in the apply-pdu machine grammar (prompts.ts:78-84 contract note), 1500-3500 token target (prompts.ts:139), EOF sentinel",
+      "typical_output_tokens": 2800,
+      "max_output_tokens": 8192,
+      "max_tokens_citation": "SYNTHESIS_MAX_OUTPUT_TOKENS, src/config.ts:169",
+      "thinking": "computeSynthesisThinkingEnabled('pdu'), default true, env SYNTHESIS_PDU_THINKING (src/config.ts:154-163; passed at synthesize.ts:472)",
+      "validators": [
+        "4 required-section warn check (src/ai/synthesize.ts:492-501)",
+        "CS3_QUALITY_BYTE_COUNT_WARNING baseline +-50% vs last 5 successes (src/ai/synthesize.ts:511-531)",
+        "CS3_QUALITY_PREAMBLE_WARNING first-line shape check (src/ai/synthesize.ts:536-544)",
+        "EOF sentinel (src/ai/synthesize.ts:547-549)",
+        "downstream parseProposals grammar gate in apply-pdu (prompts.ts:78-84; tests/pdu-prompt-parser-contract.test.ts) - malformed proposals are archived as rejected, never applied"
+      ],
+      "classification": "MECHANICAL",
+      "classification_reason": "output is machine-parsed by a strict grammar with automatic rejection of non-conforming proposals; insights proposals are operator-review-only by design",
+      "migration_verdict": "migrate-to-GLM-5.2",
+      "verdict_reason": "grammar-gated machine output with rejection-safe downstream; staged tonight in LLM_ROUTING_OPENROUTER_SITES (stage 1); also frees CloudShift Max capacity currently consumed by the cc_subprocess PDU leg",
+      "continuity_criticality": "medium (rank 2 of 3 - auto-applied at next finalize but grammar-gated and operator-visible)",
+      "rollout_stage": 1
+    },
+    {
+      "call_site_id": "CS-4",
+      "name": "x_sentiment",
+      "description": "prism_x_sentiment - aggregate public X sentiment via xAI x_search server-side tool",
+      "citations": {
+        "invocation": "src/tools/x-sentiment.ts:131-160",
+        "function": "src/tools/x-sentiment.ts:81-208 (analyzeXSentiment)",
+        "auth_gates": "src/tools/x-sentiment.ts:377-393 (5-gate chain)",
+        "url": "src/tools/x-sentiment.ts:12"
+      },
+      "invoking_flows": ["prism_x_sentiment tool (on-demand, operator-initiated)"],
+      "frequency": "on-demand only; not part of any automated flow",
+      "resolved_transport_chain_live_env": [
+        {
+          "hop": 1,
+          "provider": "xai",
+          "model_env": "LLM_ROUTING_XAI_MODEL (default grok-4.3, x-sentiment.ts:13,90)",
+          "transport": "xai_responses + x_search tool",
+          "billing_surface": "XAI_API_KEY",
+          "selected_by": "requires LLM_ROUTING_X_SENTIMENT_ENABLED=true AND LLM_ROUTING_ENABLED=true AND LLM_ROUTING_DRY_RUN=false AND xai in ALLOWED_PROVIDERS AND XAI_API_KEY (x-sentiment.ts:377-393,89-111); no fallback chain - unavailable/error result on failure"
+        }
+      ],
+      "input_assembly": "fixed short system prompt + topic string (x-sentiment.ts:140-155); trivial input",
+      "est_input_tokens": 200,
+      "output_contract": "compact JSON with enum-validated sentiment/confidence/caveats + handle-free /i/status/ source URLs only (x-sentiment.ts:174-201,305-332)",
+      "typical_output_tokens": 800,
+      "max_output_tokens": 1200,
+      "max_tokens_citation": "src/tools/x-sentiment.ts:157",
+      "thinking": "n/a (Responses API with x_search; no thinking parameter sent)",
+      "validators": [
+        "enum whitelists for sentiment/confidence/caveats (x-sentiment.ts:174-179,414-422)",
+        "strict X status URL validation + handle stripping (x-sentiment.ts:305-332)",
+        "zero-source -> insufficient-evidence downgrade (x-sentiment.ts:170-171,186)"
+      ],
+      "classification": "MECHANICAL",
+      "classification_reason": "aggregate labeling into fixed enums; the capability is the xAI-exclusive x_search tool, not the LLM per se",
+      "migration_verdict": "keep-other-provider",
+      "verdict_reason": "x_search is an xAI Responses-API exclusive server-side tool; GLM-5.2 via OpenRouter has no X search access, so migration is impossible without losing the tool that defines the call site",
+      "continuity_criticality": "none (no living-document writes)",
+      "rollout_stage": null
+    },
+    {
+      "call_site_id": "CS-5",
+      "name": "cc_dispatch",
+      "description": "Claude Code dispatch - Agent SDK subprocess executing repo tasks (query/execute modes, sync/async)",
+      "citations": {
+        "invocation": "src/claude-code/client.ts:306-323 (query())",
+        "function": "src/claude-code/client.ts:234-417 (dispatchTask)",
+        "route_observation": "src/claude-code/client.ts:261-268 (observeRoute, log-only)",
+        "tool": "src/tools/cc-dispatch.ts:123-134,351",
+        "env_build": "src/claude-code/client.ts:168-186 (buildDispatchEnv; ANTHROPIC_API_KEY scrubbed :176-178)"
+      },
+      "invoking_flows": ["cc_dispatch tool (operator/chat-initiated)", "Trigger daemon brief execution (spawns claude CLI directly with the same OAuth credential; trigger repo has no direct LLM API calls - verified via git grep of origin/main src/)"],
+      "frequency": "per dispatched brief/task; Trigger-driven, bursty",
+      "resolved_transport_chain_live_env": [
+        {
+          "hop": 1,
+          "provider": "anthropic",
+          "model_env": "CC_DISPATCH_MODEL (default CC_DISPATCH_MODEL_ID=claude-opus-4-8, src/models.ts:92, src/config.ts:536)",
+          "transport": "claude_code_oauth (Agent SDK subprocess)",
+          "billing_surface": "CLAUDE_CODE_OAUTH_TOKEN (CloudShift Max subscription)",
+          "selected_by": "hard-walled: resolveRoute returns anthropic fallback for surface=cc_dispatch regardless of LLM_ROUTING_CC_DISPATCH_PROVIDER (src/llm/routing-policy.ts:55-57); isLiveProviderSynthesisDecision excludes the surface (src/llm/provider-adapters.ts:46)"
+        }
+      ],
+      "input_assembly": "task prompt + cloned repo context; agent-managed (multi-turn, maxTurns default 50, src/config.ts:539-542)",
+      "est_input_tokens": null,
+      "output_contract": "DispatchResult {success, result, turns, usage, cost_usd} (claude-code/client.ts:67-88); PR/commits in execute mode",
+      "typical_output_tokens": null,
+      "max_output_tokens": null,
+      "max_tokens_citation": "n/a - agentic loop bounded by maxTurns and timeout, not max_tokens",
+      "thinking": "effort=CC_DISPATCH_EFFORT default max (src/config.ts:550; claude-code/client.ts:320)",
+      "validators": [
+        "OAuth rejection detection (claude-code/client.ts:203-224)",
+        "timeout abort + formatTimeoutError (claude-code/client.ts:193-201,293-303)",
+        "Trigger quality gates on output (tests/tsc/lint before PR - CLAUDE.md Trigger workflow)"
+      ],
+      "classification": "JUDGMENT",
+      "classification_reason": "autonomous multi-turn coding with repo mutation and PR authorship - the judgment tier by definition (D-275: Claude remains the judgment tier)",
+      "migration_verdict": "keep-anthropic",
+      "verdict_reason": "protected boundary in code (routing-policy.ts:55-57) and in CLAUDE.md; a non-Claude provider name in LLM_ROUTING_CC_DISPATCH_PROVIDER must not redirect code dispatch - a GLM code-runner would be a separate subsystem, explicitly out of D-275 scope; billing is CloudShift subscription, not per-token API",
+      "continuity_criticality": "n/a (writes gated by PR review + Trigger quality gates)",
+      "rollout_stage": null
+    }
+  ],
+  "non_llm_surfaces": [
+    {
+      "call_site_id": "N-1",
+      "name": "recommendation (session classifier)",
+      "description": "boot/finalize banner model recommendation",
+      "citations": {
+        "classifier": "src/utils/session-classifier.ts:394 (classifySession); deterministic keyword score per header comment :2-4; keyword lists :77-119",
+        "env_overrides": "src/utils/session-classifier.ts:308-310 (RECOMMENDATION_MODEL_REASONING/_EXECUTIONAL/_MIXED), resolveRecommendationModel :365",
+        "callers": "src/tools/bootstrap.ts:1293, src/tools/finalize.ts:968, src/tools/finalize.ts:1623",
+        "registry": "src/models.ts:68-72 (RECOMMENDATION_MODELS)"
+      },
+      "classification": "NON-LLM",
+      "classification_reason": "deterministic keyword scoring - zero network calls, zero tokens",
+      "migration_verdict": "not-migratable (no LLM invocation exists)",
+      "note": "LLM_ROUTING_RECOMMENDATION_PROVIDER is structurally inert: no production code resolves surface=recommendation (grep: zero non-test callers), and isLiveProviderSynthesisDecision excludes the surface (src/llm/provider-adapters.ts:45)"
+    },
+    {
+      "call_site_id": "N-2",
+      "name": "route observation + routing status",
+      "description": "LLM_ROUTE_OBSERVATION logs and prism_status.llm_routing summary",
+      "citations": {
+        "observer": "src/llm/route-observer.ts:5-24 (logs a resolveRoute decision, makes no call)",
+        "status": "src/llm/route-status.ts:38-65 (buildRouteReadinessStatus), consumed at src/tools/status.ts:282,300,370",
+        "profile_display_only": "LLM_ROUTING_PROFILE read ONLY at src/llm/route-status.ts:15,56 - absent from src/llm/routing-policy.ts entirely"
+      },
+      "classification": "NON-LLM",
+      "classification_reason": "sanitized logging/status of routing decisions; never invokes a provider",
+      "migration_verdict": "not-migratable (no LLM invocation exists)",
+      "note": "extend in s196b: this is where the startup routing-table log and openrouter status rows land"
+    },
+    {
+      "call_site_id": "N-3",
+      "name": "deterministic document pipeline",
+      "description": "summarization, PDU apply, archival, handoff scaling - all string-mechanical",
+      "citations": {
+        "summarizer": "src/utils/summarizer.ts:17-44 (summarizeMarkdown = slice + header extraction; no LLM)",
+        "apply_pdu": "src/utils/apply-pdu.ts (parseProposals grammar parser, applied via prism_patch; invoked src/tools/finalize.ts:1384)",
+        "input_budget": "src/ai/input-budget.ts (deterministic trim, :71-73 estimator, :98-110 keep-priority)"
+      },
+      "classification": "NON-LLM",
+      "classification_reason": "pure string manipulation and deterministic transforms",
+      "migration_verdict": "not-migratable (no LLM invocation exists)"
+    },
+    {
+      "call_site_id": "N-4",
+      "name": "synthesis observability",
+      "description": "in-memory synthesis event tracking + boot-time Railway log surfacing",
+      "citations": {
+        "tracker": "src/ai/synthesis-tracker.ts:1-6 (in-memory, process-lifetime)",
+        "fallback_check": "src/utils/synthesis-fallback-check.ts (Railway GraphQL warn-log query; non-LLM)",
+        "lookback": "src/config.ts:644-646 (SYNTHESIS_LOG_LOOKBACK_MS)"
+      },
+      "classification": "NON-LLM",
+      "classification_reason": "telemetry aggregation and log queries only",
+      "migration_verdict": "not-migratable (no LLM invocation exists)"
+    }
+  ],
+  "configured_but_inert_env": [
+    {
+      "env_var": "DEEPSEEK_API_KEY + LLM_ROUTING_DEEPSEEK_MODEL",
+      "state": "configured-but-never-serving",
+      "mechanism": "double-gated: (1) no surface selects deepseek (requestedProvider reads only LLM_ROUTING_*_PROVIDER / LLM_ROUTING_DEFAULT_PROVIDER, routing-policy.ts:112-121; none names deepseek in live env), and (2) deepseek absent from LLM_ROUTING_ALLOWED_PROVIDERS so providerAllowed returns false (routing-policy.ts:123-130) -> liveInvocationAllowed=false (:69-72) -> isLiveProviderSynthesisDecision false (provider-adapters.ts:38-49) -> synthesizeViaProvider never invoked (client.ts:206). Registry entry exists since 8cdc489 (2026-06-25, dormant resolver PR #94); no commit ever wired a selector."
+    },
+    {
+      "env_var": "PERPLEXITY_API_KEY",
+      "state": "configured-but-never-serving",
+      "mechanism": "same double gate as deepseek: no surface selector, not in ALLOWED_PROVIDERS"
+    },
+    {
+      "env_var": "LLM_ROUTING_PROFILE=frontier-quality",
+      "state": "cosmetic",
+      "mechanism": "read only for sanitized status display (route-status.ts:15,56); zero effect on route resolution (absent from routing-policy.ts)"
+    },
+    {
+      "env_var": "LLM_ROUTING_RECOMMENDATION_PROVIDER",
+      "state": "inert",
+      "mechanism": "surface never resolved in production code; excluded from live synthesis (provider-adapters.ts:45)"
+    },
+    {
+      "env_var": "LLM_ROUTING_CC_DISPATCH_PROVIDER",
+      "state": "inert",
+      "mechanism": "hard wall at routing-policy.ts:55-57; observeRoute in dispatchTask is log-only (claude-code/client.ts:261-268)"
+    },
+    {
+      "env_var": "SYNTHESIS_BRIEF_TRANSPORT / SYNTHESIS_DRAFT_TRANSPORT (cc_subprocess)",
+      "state": "demoted-to-fallback",
+      "mechanism": "live openai/gemini provider routes execute FIRST (client.ts:206-233); the configured cc_subprocess transport serves only when the provider hop fails"
+    },
+    {
+      "env_var": "SYNTHESIS_BRIEF_MODEL / SYNTHESIS_DRAFT_MODEL",
+      "state": "fallback-leg-only",
+      "mechanism": "govern only the cc_subprocess hop (client.ts:239); on the live provider hop the model comes from LLM_ROUTING_{OPENAI,GEMINI}_MODEL (routing-policy.ts:136-142)"
+    },
+    {
+      "env_var": "OPENROUTER_API_KEY + LLM_ROUTING_OPENROUTER_MODEL + LLM_ROUTING_OPENROUTER_SITES (staged tonight)",
+      "state": "inert-by-design until s196b",
+      "mechanism": "zero references anywhere in src/ at 0b5d31b (grep 'openrouter' returns nothing); s196b implements the adapter + SITES activation"
+    }
+  ]
+}
