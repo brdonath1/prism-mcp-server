@@ -184,9 +184,92 @@ import { boundSynthesisInput } from "../ai/input-budget.js";
 import { synthesize } from "../ai/client.js";
 
 /**
+ * Per-doc entry in the audit's living-document inventory (INS-360).
+ *
+ * Healthy and confirmed-missing entries keep the pre-INS-360 field set
+ * EXACTLY (no new keys), so the serialized audit output is byte-compatible
+ * for every doc whose fetch succeeds or whose absence is confirmed. The
+ * `status` / `fetch_error` fields appear ONLY on `unverified` docs.
+ */
+interface LivingDocumentAuditEntry {
+  file: string;
+  exists: boolean;
+  size_bytes: number;
+  header_line: string;
+  eof_valid: boolean;
+  section_headers: string[];
+  needs_creation: boolean;
+  /** Present only when the doc's state could not be verified (INS-360). */
+  status?: "unverified";
+  /** Underlying fetch/classification error for unverified docs (INS-360). */
+  fetch_error?: string;
+}
+
+/** Classification outcome for a living doc whose content fetch failed (INS-360). */
+type UnfetchedDocClassification =
+  | { classification: "needs_creation" }
+  | { classification: "unverified"; reason: string };
+
+/**
+ * INS-360 (brief-s201c): decide whether a living doc whose content fetch
+ * FAILED is confirmed absent (`needs_creation`) or merely `unverified`.
+ *
+ * A doc may be classified `needs_creation` ONLY when its absence is
+ * CONFIRMED: the content fetch rejected with a definitive GitHub 404
+ * ("Not found" — i.e. BOTH the `.prism/` and legacy-root reads 404'd inside
+ * resolveDocPath) AND a path-filtered commit-history probe
+ * (`GET /repos/{owner}/{repo}/commits?path=<doc-path>&per_page=1`) returns
+ * zero commits for the path at BOTH layouts.
+ *
+ * Every other failure shape — network error, timeout, 5xx, rate limit,
+ * auth blip (INS-311), a 404 for a path that HAS commit history (deletion
+ * or content-API flake), or a failed history probe — yields `unverified`:
+ * the doc counts as neither healthy nor missing, and draft/commit must
+ * never recreate it from scratch. This is the S191/S192 session-log.md
+ * overwrite fix: the old path collapsed every fetch failure into
+ * `needs_creation: true` (see docs/rca/ins-360-finalize-audit-false-negative.md).
+ */
+async function classifyUnfetchedDoc(
+  projectSlug: string,
+  docName: string,
+  fetchError: unknown,
+): Promise<UnfetchedDocClassification> {
+  const fetchMsg = fetchError instanceof Error ? fetchError.message : String(fetchError);
+  if (!/Not found/i.test(fetchMsg)) {
+    return { classification: "unverified", reason: fetchMsg };
+  }
+  try {
+    const [prismHistory, rootHistory] = await Promise.all([
+      listCommits(projectSlug, { path: `${DOC_ROOT}/${docName}`, per_page: 1 }),
+      listCommits(projectSlug, { path: docName, per_page: 1 }),
+    ]);
+    if (prismHistory.length === 0 && rootHistory.length === 0) {
+      return { classification: "needs_creation" };
+    }
+    return {
+      classification: "unverified",
+      reason:
+        "fetch returned 404 but the path has commit history — transient read " +
+        `failure or deletion, not a never-created doc (${fetchMsg})`,
+    };
+  } catch (historyError) {
+    const historyMsg =
+      historyError instanceof Error ? historyError.message : String(historyError);
+    return {
+      classification: "unverified",
+      reason: `absence unconfirmed — commit-history probe failed: ${historyMsg} (content fetch: ${fetchMsg})`,
+    };
+  }
+}
+
+/**
  * Audit phase — fetch all living documents and return structured audit data.
  */
-async function auditPhase(projectSlug: string, sessionNumber: number) {
+async function auditPhase(
+  projectSlug: string,
+  sessionNumber: number,
+  diagnostics: DiagnosticsCollector = new DiagnosticsCollector(),
+) {
   const warnings: string[] = [];
 
   // Cache handoff-history listing — used by both drift detection and backup check
@@ -200,12 +283,72 @@ async function auditPhase(projectSlug: string, sessionNumber: number) {
     return cachedHistoryEntries;
   }
 
-  // 1. Fetch all 10 living documents in parallel with backward-compatible resolution
-  const docMap = await resolveDocFiles(projectSlug, [...LIVING_DOCUMENT_NAMES]);
+  // 1. Fetch all 10 living documents in parallel with backward-compatible
+  //    resolution. Outcome-preserving fan-out (INS-360): resolveDocFiles'
+  //    fulfilled-only loop silently discarded rejections, collapsing every
+  //    operational fetch failure (5xx, timeout, INS-311 auth blip, …) into
+  //    `needs_creation: true` — the S191/S192 session-log.md overwrite.
+  //    Rejections are kept per-doc and classified below instead.
+  const docOutcomes = await Promise.allSettled(
+    LIVING_DOCUMENT_NAMES.map((docName) => resolveDocPath(projectSlug, docName)),
+  );
+  const docMap = new Map<string, { content: string; sha: string; size: number }>();
+  const docFetchErrors = new Map<string, unknown>();
+  LIVING_DOCUMENT_NAMES.forEach((docName, idx) => {
+    const outcome = docOutcomes[idx];
+    if (outcome.status === "fulfilled") {
+      docMap.set(docName, {
+        content: outcome.value.content,
+        sha: outcome.value.sha,
+        size: outcome.value.content.length,
+      });
+    } else {
+      docFetchErrors.set(docName, outcome.reason);
+    }
+  });
 
-  const livingDocuments = LIVING_DOCUMENT_NAMES.map((doc) => {
+  // INS-360: classify every unfetched doc BEFORE building the inventory.
+  // `needs_creation` requires confirmed absence (definitive 404 + zero commit
+  // history); anything else is `unverified` and must never be recreated.
+  const unfetchedClassifications = new Map<string, UnfetchedDocClassification>();
+  await Promise.all(
+    Array.from(docFetchErrors.entries()).map(async ([docName, fetchError]) => {
+      unfetchedClassifications.set(
+        docName,
+        await classifyUnfetchedDoc(projectSlug, docName, fetchError),
+      );
+    }),
+  );
+
+  const livingDocuments: LivingDocumentAuditEntry[] = LIVING_DOCUMENT_NAMES.map((doc) => {
     const fileResult = docMap.get(doc);
     if (!fileResult) {
+      const classification = unfetchedClassifications.get(doc);
+      if (classification?.classification === "unverified") {
+        diagnostics.warn(
+          "FINALIZE_AUDIT_UNVERIFIED_DOC",
+          `${doc}: content fetch failed and absence could not be confirmed — classified unverified (neither healthy nor missing). Do NOT compose or commit a from-scratch replacement. Underlying error: ${classification.reason}`,
+          { doc, error: classification.reason },
+        );
+        logger.warn("finalize audit: living doc unverified (INS-360)", {
+          projectSlug,
+          doc,
+          error: classification.reason,
+        });
+        return {
+          file: doc,
+          exists: false,
+          size_bytes: 0,
+          header_line: "",
+          eof_valid: false,
+          section_headers: [] as string[],
+          needs_creation: false,
+          status: "unverified" as const,
+          fetch_error: classification.reason,
+        };
+      }
+      // Confirmed absent: definitive 404 AND zero commit history at both
+      // layouts (INS-360) — the only state that may be created from scratch.
       return {
         file: doc,
         exists: false,
@@ -1228,9 +1371,83 @@ async function commitPhase(
     };
   }
 
+  // 3e. INS-360 recreate guard (brief-s201c) — before ANY repo write, verify
+  // the current state of every mandatory living document in files[]. A doc
+  // that resolves is a normal update (behavior unchanged). A doc that does
+  // NOT resolve may be created ONLY when its absence is CONFIRMED (definitive
+  // 404 + zero commit history at both layouts, via classifyUnfetchedDoc); any
+  // unverifiable state refuses the whole commit — pushing operator/draft
+  // content over a doc the server cannot currently read is the S191/S192
+  // history-overwrite class. Atomic-only philosophy (S62 Verdict C): refusal
+  // blocks the entire commit rather than tearing the finalize.
+  const recreateBlocks = new Map<string, string>();
+  {
+    const seen = new Set<string>();
+    const guardCandidates: Array<{ suppliedPath: string; bareName: string }> = [];
+    for (const file of files) {
+      const bareName = file.path.startsWith(`${DOC_ROOT}/`)
+        ? file.path.slice(DOC_ROOT.length + 1)
+        : file.path;
+      if (!(LIVING_DOCUMENT_NAMES as readonly string[]).includes(bareName)) continue;
+      if (seen.has(bareName)) continue;
+      seen.add(bareName);
+      guardCandidates.push({ suppliedPath: file.path, bareName });
+    }
+    await Promise.all(
+      guardCandidates.map(async ({ suppliedPath, bareName }) => {
+        try {
+          await resolveDocPath(projectSlug, bareName);
+          return; // Doc exists — this push is an update, not a recreation.
+        } catch (fetchError) {
+          const outcome = await classifyUnfetchedDoc(projectSlug, bareName, fetchError);
+          if (outcome.classification === "needs_creation") {
+            return; // Confirmed absent — creating the missing doc is allowed.
+          }
+          recreateBlocks.set(
+            suppliedPath,
+            `FINALIZE_RECREATE_BLOCKED: ${bareName} is in an unverified state (${outcome.reason}) — refusing to push a from-scratch replacement for a mandatory living document (INS-360).`,
+          );
+          diagnostics.error(
+            "FINALIZE_RECREATE_BLOCKED",
+            `${bareName}: current state could not be verified (${outcome.reason}) — commit refused. Creation is allowed only after a confirmed 404 with zero commit history; retry when GitHub reads recover (INS-360).`,
+            { doc: bareName, path: suppliedPath, error: outcome.reason },
+          );
+          logger.error("finalize commit: recreate guard blocked living-doc push (INS-360)", {
+            projectSlug,
+            doc: bareName,
+            error: outcome.reason,
+          });
+        }
+      }),
+    );
+  }
+  if (recreateBlocks.size > 0) {
+    return {
+      project: projectSlug,
+      session_number: sessionNumber,
+      handoff_version: handoffVersion,
+      // No repo write has happened — the guard sits above writeBackupAndPrune.
+      backup_created: backupPath,
+      results: files.map((file, idx) => ({
+        path: file.path,
+        success: false,
+        size_bytes: 0,
+        verified: false,
+        validation_errors: recreateBlocks.has(file.path)
+          ? [recreateBlocks.get(file.path)!]
+          : [],
+        validation_warnings: validationResults[idx]?.warnings ?? [],
+      })),
+      living_documents_updated: 0,
+      all_succeeded: false,
+      diagnostics: diagnostics.list(),
+      confirmation: `Session ${sessionNumber} finalization REFUSED — ${recreateBlocks.size} living document(s) in an unverified state; nothing was pushed (INS-360 recreate guard).`,
+    };
+  }
+
   // SRV-48: validation passed — perform the deferred backup + prune write now.
-  // Every repo write is below this gate, so a validation-failed finalize never
-  // mutates the repo.
+  // Every repo write is below this gate (and below the INS-360 recreate guard),
+  // so a validation-failed or recreate-refused finalize never mutates the repo.
   await writeBackupAndPrune();
 
   // 4. Guard all paths against root-level duplication (D-67 addendum)
@@ -2012,8 +2229,18 @@ async function fullPhase(
   const diagnostics = new DiagnosticsCollector();
 
   // Step 1 — Audit
-  const auditResult = await auditPhase(projectSlug, sessionNumber);
+  const auditResult = await auditPhase(projectSlug, sessionNumber, diagnostics);
   const auditStatus = auditResult.audit.living_documents.some(d => !d.exists) ? "warn" : "ok";
+
+  // INS-360 recreate guard (audit-coupled half): docs whose state the audit
+  // could not verify must never receive a from-scratch full-file draft — the
+  // `.md` pass-through below would otherwise push a model-generated
+  // replacement over live history (the S192 incident shape).
+  const unverifiedDocs = new Set(
+    auditResult.audit.living_documents
+      .filter((d) => d.status === "unverified")
+      .map((d) => d.file),
+  );
 
   // Step 2 — Draft (CS-1): race with a transport-aware deadline.
   // cc_subprocess drafts run longer (130–240s observed) so use the wider
@@ -2068,6 +2295,19 @@ async function fullPhase(
       if (typeof value !== "string") continue;
       if (key === "handoff.md") continue; // operator-supplied takes precedence
       if (key.endsWith(".md") || (DRAFT_RELEVANT_DOCS as readonly string[]).includes(key)) {
+        // INS-360 recreate guard: never commit a from-scratch draft for a doc
+        // the audit classified `unverified` (fetch failed, absence unconfirmed).
+        const bareKey = key.startsWith(`${DOC_ROOT}/`)
+          ? key.slice(DOC_ROOT.length + 1)
+          : key;
+        if (unverifiedDocs.has(bareKey)) {
+          diagnostics.warn(
+            "FINALIZE_RECREATE_BLOCKED",
+            `draft key ${key} dropped — ${bareKey} is unverified (the audit could not confirm its current state); a from-scratch draft replacement risks overwriting live history (INS-360)`,
+            { key, doc: bareKey },
+          );
+          continue;
+        }
         files.push({ path: key, content: value });
       }
     }
@@ -2315,7 +2555,9 @@ export function registerFinalize(server: McpServer): void {
       try {
         if (action === "audit") {
           const phaseStart = Date.now();
-          const result = await auditPhase(project_slug, session_number);
+          // INS-360: the shared collector carries FINALIZE_AUDIT_UNVERIFIED_DOC
+          // diagnostics from the audit into this action's response.
+          const result = await auditPhase(project_slug, session_number, diagnostics);
           logger.info("prism_finalize audit timing", {
             projectSlug: project_slug,
             ms: Date.now() - phaseStart,
