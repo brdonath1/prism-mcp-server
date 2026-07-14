@@ -40,6 +40,7 @@ import {
   fetchFile,
   fileExists,
   getHeadSha,
+  listCommits,
   listDirectory,
   pushFile,
 } from "../src/github/client.js";
@@ -48,6 +49,7 @@ import { extractReferencedIds, findUnloggedIds } from "../src/utils/unlogged-ids
 
 const mockFetchFile = vi.mocked(fetchFile);
 const mockFileExists = vi.mocked(fileExists);
+const mockListCommits = vi.mocked(listCommits);
 const mockListDirectory = vi.mocked(listDirectory);
 const mockPushFile = vi.mocked(pushFile);
 const mockCreateAtomicCommit = vi.mocked(createAtomicCommit);
@@ -196,6 +198,11 @@ beforeEach(() => {
   });
   mockFileExists.mockResolvedValue(false);
   mockListDirectory.mockResolvedValue([]);
+  // INS-360: session-log.md genuinely does not exist in this mock repo (the
+  // fetch mock 404s both layouts), so the commit is a doc CREATION. The
+  // recreate guard confirms absence via the path-filtered history probe —
+  // zero commits ⇒ creation allowed, keeping these commits flowing.
+  mockListCommits.mockResolvedValue([]);
   mockPushFile.mockResolvedValue({ success: true, sha: "p1", size: 10 });
   mockCreateAtomicCommit.mockResolvedValue({ success: true, sha: "commit1", files_committed: 1 });
   mockGetHeadSha.mockResolvedValue("HEAD_1");

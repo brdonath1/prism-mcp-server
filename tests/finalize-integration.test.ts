@@ -425,6 +425,67 @@ Completed audit remediation.
     expect(backupPushCalls).toHaveLength(0);
   });
 
+  it("INS-360: still creates a living doc whose absence is CONFIRMED (404 + zero commit history at both layouts)", async () => {
+    // insights.md exists nowhere (404 at .prism/ and root); everything else resolves.
+    mockFetchFile.mockImplementation(async (_repo: string, path: string) => {
+      if (path.includes("insights.md")) throw new Error(`Not found: ${path}`);
+      return { content: HANDOFF_CONTENT, sha: "sha", size: HANDOFF_CONTENT.length };
+    });
+    mockListDirectory.mockResolvedValue([]);
+    // Zero commit history for the missing path — absence is confirmed.
+    mockListCommits.mockResolvedValue([]);
+    mockPushFile.mockResolvedValue({ success: true, size: 100, sha: "new_sha" });
+    mockCreateAtomicCommit.mockResolvedValue({ success: true, sha: "atomic_sha", files_committed: 2 });
+    mockGenerateIntelligenceBrief.mockResolvedValue({ success: true, input_tokens: 1000, output_tokens: 500 });
+
+    const validHandoff = `## Meta
+- Handoff Version: 31
+- Session Count: 26
+- Template Version: v2.9.0
+- Status: Active
+
+## Critical Context
+1. Server deployed on Railway
+
+## Where We Are
+Completed audit remediation.
+
+<!-- EOF: handoff.md -->`;
+
+    const result = await callFinalizeTool({
+      project_slug: "test-project",
+      action: "commit",
+      session_number: 26,
+      handoff_version: 31,
+      files: [
+        { path: "handoff.md", content: validHandoff },
+        { path: "insights.md", content: "# Insights\n<!-- EOF: insights.md -->" },
+      ],
+    });
+
+    const data = parseResult(result);
+    expect(data.all_succeeded).toBe(true);
+    expect(
+      (data.diagnostics as Array<{ code: string }>).some((d) => d.code === "FINALIZE_RECREATE_BLOCKED"),
+    ).toBe(false);
+
+    // The guard confirmed absence via the path-filtered history probe at BOTH layouts.
+    expect(mockListCommits).toHaveBeenCalledWith(
+      "test-project",
+      expect.objectContaining({ path: ".prism/insights.md", per_page: 1 }),
+    );
+    expect(mockListCommits).toHaveBeenCalledWith(
+      "test-project",
+      expect.objectContaining({ path: "insights.md", per_page: 1 }),
+    );
+
+    // The confirmed-missing doc rode the atomic commit.
+    const commitWithInsights = mockCreateAtomicCommit.mock.calls.find((c) =>
+      (c[1] as Array<{ path: string }>).some((f) => f.path.includes("insights.md")),
+    );
+    expect(commitWithInsights).toBeDefined();
+  });
+
   it("SRV-69: fires a STANDING_RULES_OVERSIZE warning when the registry exceeds the finalize tripwire", async () => {
     const big = "X".repeat(160_000);
     const oversizeStandingRules = `# Standing Rules\n\n## Active\n\n### INS-1: Big rule — STANDING RULE\n**Standing procedure:** ${big}\n\n<!-- EOF: standing-rules.md -->`;

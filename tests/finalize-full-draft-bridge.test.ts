@@ -354,6 +354,68 @@ describe("SRV-19 — action=full bridges contract-shaped draft keys into real do
   });
 });
 
+describe("INS-360 (brief-s201c) — fullPhase recreate guard for unverified docs", () => {
+  it("drops a from-scratch full-file draft for a doc the audit classified unverified — never committed, visible diagnostic", async () => {
+    setupFullActionMocks();
+    // Audit-time 502 on session-log.md → classified `unverified` (absence not
+    // confirmed); every other doc behaves as in setupFullActionMocks.
+    mockResolveDocPath.mockImplementation(async (_slug: string, doc: string) => {
+      if (doc === "handoff.md") {
+        return { content: HANDOFF_FINALIZE.replace("Version: 31", "Version: 30"), sha: "h30", path: ".prism/handoff.md" } as never;
+      }
+      if (doc === "session-log.md") {
+        throw new Error("GitHub API 502: Bad gateway (fetchFile test-project/.prism/session-log.md)");
+      }
+      if (doc === "task-queue.md") {
+        return { content: TASK_QUEUE, sha: "t", path: ".prism/task-queue.md" } as never;
+      }
+      throw new Error(`Not found: ${doc}`);
+    });
+    // The draft emits a FULL-FILE session-log.md replacement (the S192 shape).
+    mockSynthesize.mockResolvedValue({
+      success: true,
+      content: JSON.stringify({
+        "session-log.md":
+          "# Session Log\n\n### Session 26 (2026-06-11)\nRecreated from scratch.\n\n<!-- EOF: session-log.md -->",
+      }),
+      input_tokens: 2000,
+      output_tokens: 700,
+      model: "test-model",
+      transport: "messages_api",
+    } as never);
+
+    const result = await callFinalize({
+      project_slug: "test-project",
+      action: "full",
+      session_number: 26,
+      handoff_version: 31,
+      skip_synthesis: true,
+      handoff_content: HANDOFF_FINALIZE,
+    });
+
+    const data = parseResult(result);
+
+    // The audit surfaced the unverified classification…
+    const diagCodes = (data.diagnostics as Array<{ code: string }>).map((d) => d.code);
+    expect(diagCodes).toContain("FINALIZE_AUDIT_UNVERIFIED_DOC");
+
+    // …the from-scratch draft key was dropped with a visible diagnostic…
+    const blocked = (data.diagnostics as Array<{ code: string; message: string }>).filter(
+      (d) => d.code === "FINALIZE_RECREATE_BLOCKED",
+    );
+    expect(blocked.length).toBeGreaterThanOrEqual(1);
+    expect(blocked[0].message).toMatch(/session-log\.md/);
+
+    // …and no session-log.md content of any kind reached the atomic commit.
+    const committed = atomicCommitFiles();
+    expect(committed.some((f) => f.path.endsWith("session-log.md"))).toBe(false);
+
+    // The rest of the finalize (handoff.md) still landed.
+    expect(data.all_succeeded).toBe(true);
+    expect(committed.some((f) => f.path.endsWith("handoff.md"))).toBe(true);
+  });
+});
+
 describe("bridgeDraftSections (pure)", () => {
   it("inserts the session-log entry before the EOF sentinel on a newest-last log", () => {
     const out = bridgeDraftSections(
