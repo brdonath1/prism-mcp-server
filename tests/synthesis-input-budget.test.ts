@@ -398,7 +398,7 @@ describe("boundSynthesisInput — signal preservation", () => {
     const sessionLog = result.docs.get("session-log.md")?.content ?? "";
     expect(sessionLog).toContain("### Session 60");
     expect(sessionLog).not.toContain("### Session 1\n");
-    expect(sessionLog).toContain("— do not cite truncated size as a file fact]");
+    expect(sessionLog).toContain("— never cite the truncated size as the file's size]");
 
     // insights.md is newest-LAST → tail retention: the most recent insights
     // survive, the oldest are dropped, and the title line is preserved.
@@ -406,7 +406,7 @@ describe("boundSynthesisInput — signal preservation", () => {
     expect(insights).toContain("### INS-300:");
     expect(insights).not.toContain("### INS-1:");
     expect(insights.startsWith("# Insights — Test Project")).toBe(true);
-    expect(insights).toContain("— do not cite truncated size as a file fact]");
+    expect(insights).toContain("— never cite the truncated size as the file's size]");
     // A meaningful QUANTITY of recent insights survives — not just the single
     // newest entry. With this fixture ~120 of 300 are retained; >=50 leaves
     // wide slack for parameter drift while decisively failing a regression
@@ -423,7 +423,7 @@ describe("boundSynthesisInput — signal preservation", () => {
     const originalInsightsSize = docs.get("insights.md")?.size ?? 0;
     expect(result.docs.get("insights.md")?.size).toBe(originalInsightsSize);
     expect(message).toContain(`### FILE: insights.md (${originalInsightsSize} bytes)`);
-    expect(insights).toContain(`[trimmed from ${(originalInsightsSize / 1024).toFixed(1)} KB`);
+    expect(insights).toMatch(new RegExp(`\\[trimmed: showing last [\\d.]+ KB of ${(originalInsightsSize / 1024).toFixed(1)} KB`));
     // The content itself IS trimmed even though the size metadata is not.
     expect(insights.length).toBeLessThan(docs.get("insights.md")?.content.length ?? 0);
   });
@@ -458,7 +458,7 @@ describe("boundSynthesisInput — signal preservation", () => {
     expect(index).toContain("| D-7000 |");
     expect(index).not.toContain("| D-1 |");
     expect(index.startsWith("# Decision Registry")).toBe(true);
-    expect(index).toContain("— do not cite truncated size as a file fact]");
+    expect(index).toContain("— never cite the truncated size as the file's size]");
     // The highest-priority doc (handoff) is still untouched even when the
     // registry itself is the doc being cut.
     expect(result.docs.get("handoff.md")?.content).toBe(HANDOFF_CONTENT);
@@ -548,7 +548,7 @@ describe("generateIntelligenceBrief — input bound integration", () => {
     for (const [, doc] of living) {
       expect(userContent).toContain(doc.content);
     }
-    expect(userContent).not.toContain("do not cite truncated size");
+    expect(userContent).not.toContain("never cite the truncated size");
 
     const logPayload = findAssembledLog("Synthesis input assembled");
     expect(logPayload?.input_trimmed).toBe(false);
@@ -636,7 +636,7 @@ describe("brief-459 / SRV-04: chronological session-log retention", () => {
     const sessionLog = result.docs.get("session-log.md")?.content ?? "";
     expect(sessionLog).toContain("### Session 60");
     expect(sessionLog).not.toContain("### Session 1\n");
-    expect(sessionLog).toContain("— do not cite truncated size as a file fact]");
+    expect(sessionLog).toContain("— never cite the truncated size as the file's size]");
     // The title line stays anchored on tail retention.
     expect(sessionLog.startsWith("# Session Log — Test Project")).toBe(true);
   });
@@ -649,5 +649,103 @@ describe("brief-459 / SRV-04: chronological session-log retention", () => {
     const sessionLog = result.docs.get("session-log.md")?.content ?? "";
     expect(sessionLog).toContain("### Session 60");
     expect(sessionLog).not.toContain("### Session 1\n");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// brief-s202b T9 (D-278 constraint 1) — truncation fidelity: input manifest
+// (b), provenance footer (c), SYNTHESIS_INPUT_TRUNCATED telemetry (d). The
+// annotation format (a) is pinned by the Part A assertions above.
+// ---------------------------------------------------------------------------
+
+describe("brief-s202b T9 — synthesis truncation fidelity", () => {
+  it("T9b: the assembled input leads with a per-doc INPUT MANIFEST carrying TRUE sizes for ALL docs", async () => {
+    const living = makeOversizedDocs();
+    living.delete("decisions/operations.md");
+    wireResolver(living);
+    mockSynthesize.mockResolvedValue(SUCCESS_RESULT);
+
+    await generateIntelligenceBrief("test-project", 99);
+
+    const userContent = mockSynthesize.mock.calls[0][1] as string;
+    expect(userContent.startsWith("INPUT MANIFEST")).toBe(true);
+    expect(userContent).toContain("cite ONLY true_bytes as a file's size");
+    // Every doc gets a row — truncated or not.
+    for (const [path] of living) {
+      expect(userContent).toContain(`- ${path}: true_bytes=`);
+    }
+    // A trimmed doc's row carries the TRUE size with truncated=true and a
+    // smaller included_bytes.
+    const insightsRow = userContent.match(/- insights\.md: true_bytes=(\d+), included_bytes=(\d+), truncated=(\w+)/);
+    expect(insightsRow).not.toBeNull();
+    const trueBytes = Number(insightsRow![1]);
+    const includedBytes = Number(insightsRow![2]);
+    expect(insightsRow![3]).toBe("true");
+    expect(includedBytes).toBeLessThan(trueBytes);
+  });
+
+  it("T9c: the pushed brief carries a server-stamped truncation provenance footer above the EOF sentinel", async () => {
+    const living = makeOversizedDocs();
+    living.delete("decisions/operations.md");
+    wireResolver(living);
+    mockSynthesize.mockResolvedValue(SUCCESS_RESULT);
+
+    await generateIntelligenceBrief("test-project", 99);
+
+    const pushed = mockPushFile.mock.calls[0][2] as string;
+    const footerMatch = pushed.match(/^> Synthesized from: (.+)$/m);
+    expect(footerMatch).not.toBeNull();
+    expect(footerMatch![1]).toMatch(/insights\.md \[trimmed [\d.]+KB→[\d.]+KB\]/);
+    // Footer sits ABOVE the EOF sentinel and the sentinel stays last.
+    const footerIdx = pushed.indexOf("> Synthesized from:");
+    const eofIdx = pushed.indexOf("<!-- EOF: intelligence-brief.md -->");
+    expect(footerIdx).toBeGreaterThan(-1);
+    expect(eofIdx).toBeGreaterThan(footerIdx);
+    expect(pushed.trimEnd().endsWith("<!-- EOF: intelligence-brief.md -->")).toBe(true);
+  });
+
+  it("T9c: no truncated inputs → no footer (and a model-echoed footer is stripped)", async () => {
+    const living = makeNormalDocs();
+    wireResolver(living);
+    mockSynthesize.mockResolvedValue({
+      ...SUCCESS_RESULT,
+      content:
+        "## Project State\nok\n\n> Synthesized from: stale.md [trimmed 9.9KB→1.0KB]\n\n<!-- EOF: intelligence-brief.md -->",
+    });
+
+    await generateIntelligenceBrief("test-project", 99);
+
+    const pushed = mockPushFile.mock.calls[0][2] as string;
+    expect(pushed).not.toContain("> Synthesized from:");
+  });
+
+  it("T9d: one SYNTHESIS_INPUT_TRUNCATED info line per truncated doc with call_site + true/included bytes", async () => {
+    const living = makeOversizedDocs();
+    living.delete("decisions/operations.md");
+    wireResolver(living);
+    mockSynthesize.mockResolvedValue(SUCCESS_RESULT);
+
+    await generateIntelligenceBrief("test-project", 99);
+
+    const truncatedLogs = mockLoggerInfo.mock.calls.filter((c) => c[0] === "SYNTHESIS_INPUT_TRUNCATED");
+    expect(truncatedLogs.length).toBeGreaterThan(0);
+    for (const [, payload] of truncatedLogs) {
+      const p = payload as Record<string, unknown>;
+      expect(p.call_site).toBe("synthesis_bundle");
+      expect(typeof p.path).toBe("string");
+      expect((p.true_bytes as number) > (p.included_bytes as number)).toBe(true);
+    }
+    const paths = truncatedLogs.map((c) => (c[1] as Record<string, unknown>).path);
+    expect(paths).toContain("insights.md");
+  });
+
+  it("T9d: no SYNTHESIS_INPUT_TRUNCATED lines when nothing was trimmed", async () => {
+    const living = makeNormalDocs();
+    wireResolver(living);
+    mockSynthesize.mockResolvedValue(SUCCESS_RESULT);
+
+    await generateIntelligenceBrief("test-project", 99);
+
+    expect(mockLoggerInfo.mock.calls.some((c) => c[0] === "SYNTHESIS_INPUT_TRUNCATED")).toBe(false);
   });
 });
