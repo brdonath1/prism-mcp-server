@@ -311,12 +311,29 @@ fully realized in Phase 0a — the two must not be conflated in savings claims.
 
 ---
 
-## §3 v2 consolidation — operator-approved execution plan (S202 chat follow-up)
+## §3 v3 consolidation — D-278 final execution plan (sole-owner mandate, S202)
 
-Adopted in the S202 operator session after review of §1/§2. **This section supersedes the §2 phase
-table as the execution vehicle** — the five phases collapse into THREE parallel briefs (one per repo,
-the daemon's hard boundary), with the phase gates preserved as merge/flip gates. Two design upgrades
-were approved beyond §1:
+Adopted in the S202 operator session; boot-context ownership is handed to this workstream
+end-to-end as **D-278**. **This section supersedes the §2 phase table as the execution vehicle** —
+consolidated into TWO parallel briefs (one per repo touched: prism-mcp-server, prism-framework —
+the daemon's hard boundary), with the phase gates preserved as merge/flip gates.
+
+**Operator-pinned constraints (fleet-wide per INS-340, zero fidelity loss):**
+1. **GLM-5.2 offload is LIVE on all three synthesis sites** (`LLM_ROUTING_OPENROUTER_SITES=
+   synthesis_draft,synthesis_pdu,synthesis_brief`). The input-truncation fidelity fix ships as
+   first-class server work (s202b T9 a–d): trimmed inputs annotated in-prompt, true sizes passed as
+   metadata, a server-stamped trim-provenance footer on generated artifacts, and a
+   `SYNTHESIS_INPUT_TRUNCATED` diagnostic — the S202 incident (a brief citing a truncated ~21KB
+   glossary view as the real 82KB file) becomes classifiable on every provider.
+2. **Refined D-277/INS-370 gate** (s202c T5, new `modules/synthesis-quality-gate.md`, fleet-wide):
+   only genuine model drift (invented facts contradicting merged reality) trips the
+   `synthesis_brief` kill-switch; input-truncation artifacts (faithful synthesis of an incomplete
+   input) are logged and fed to fix #1 — never treated as drift.
+3. **Irreducible interrupt-class rules stay kernel-resident:** Rule 9, the INS-40/INS-304 verify
+   posture, Rule 4 guardrails/eliminated-check, brevity/posture — pinned as Band 1 in the kernel
+   spec and enforced by the mandate-preservation table (module placement = spec violation).
+
+Two design upgrades carried from the S202 review:
 
 **(a) Three-band rule classification (P-2 taken to its end-state).** Band 1 — always-loaded kernel:
 every-response behaviors (Rule 9, posture/brevity, interaction rules) AND interrupt-class rules that
@@ -333,25 +350,40 @@ the ingest module first"; `cc_dispatch` → channel-discipline pointer). This co
 unknown-unknown risk into a known prompt delivered exactly at the moment of relevance, for bytes paid
 only when relevant — the prevention-side complement to the harness's detection-side Probe H.
 
-**The three briefs (queued on the respective queue branches, `parallel: true`, no execution-time
+**The two briefs (queued on the respective `briefs` branches, `parallel: true`, no execution-time
 coupling — s202c is written server-generation-tolerant per the template's existing "if absent, skip"
 pattern):**
 
 | Brief | Repo | Scope | Boot effect (est) |
 |---|---|---|---|
-| `brief-s202b-boot-lean-server-bundle` | prism-mcp-server | P-1 manifest + `BOOT_INDEX_MODE`; `rules_hint`; P-3 digest-dedup + item-budget warn; P-4 `PREFETCH_MODE`; P-6a SVG knob; P-2 kernel handshake guard; **F-1 finalize compose-offload** (GLM composes complete validated finalization files; chat approves a ≤1.5KB digest — supersedes the INS-178 wall on the happy path); CS-2 size contract; input-trim annotation (unblocks the `synthesis_brief`→GLM env re-flip) | −6.5 to −7.5K tok/boot at full flip, plus ~1.5K chat-output tok saved per finalize (F-1: 75–150K tok/mo) |
-| `brief-s202c-kernel-split-v3` | prism-framework | Template v3.0.0: ≤18KB Band-1 kernel + `modules/document-ingest.md` + CC-discipline body merged into `reference/trigger-channel.md` + deferred category tool-searches + `Kernel-Manifest` handshake + monolith archived for rollback | −7.0 to −7.5K tok/boot (+~1.6K post-boot on non-dispatch boots) |
-| `brief-s202d-standing-rules-curation` | prism | INS-363 pass from audit §B.2: retire INS-319/230/354 (archive, never delete), demote INS-178/187/324/340 to Tier B with topics, trim INS-226/193/260 to procedure-only, flag INS-291/302/318 for operator decision | −3.4 to −3.7K tok/boot |
+| `brief-s202b-boot-lean-server-bundle` | prism-mcp-server | P-1 manifest + `BOOT_INDEX_MODE`; `rules_hint`; P-3 digest-dedup + item-budget warn; P-4 `PREFETCH_MODE`; P-6a SVG knob; P-2 kernel handshake guard; **F-1 finalize compose-offload** (GLM composes complete validated finalization files; chat approves a ≤1.5KB digest — supersedes the INS-178 wall on the happy path); CS-2 size contract; **T9 truncation-fidelity fix a–d** (constraint 1: annotations + true-size metadata + server-stamped trim-provenance footer + `SYNTHESIS_INPUT_TRUNCATED` diagnostic) | −6.5 to −7.5K tok/boot at full flip, plus ~1.5K chat-output tok saved per finalize (F-1: 75–150K tok/mo) |
+| `brief-s202c-kernel-split-v3` | prism-framework | Template v3.0.0: ≤18KB Band-1 kernel + `modules/document-ingest.md` + CC-discipline body merged into `reference/trigger-channel.md` + deferred category tool-searches + `Kernel-Manifest` handshake + monolith archived for rollback + **T5 `modules/synthesis-quality-gate.md`** (constraint 2: drift-vs-artifact classification; only drift trips the kill-switch) | −7.0 to −7.5K tok/boot (+~1.6K post-boot on non-dispatch boots) |
 
-**Merge/flip sequence (the surviving phase gates):** s202b and s202d merge on green CI + PR review
-(additive/env-defaulted and data-only respectively). s202c merges after its mandate-preservation
-table review; its fidelity gate is the §0.6 harness run (Probes B/C/D/F/G + new Probe H, S157/S177
-anchors) over the following sessions, with same-day `git revert` (template-only, 5-min cache) as
-rollback. `BOOT_INDEX_MODE=compact` flips after s202c is live + one soak session;
-`synthesis_brief` re-joins `LLM_ROUTING_OPENROUTER_SITES` only after the T9 trim-annotation fix is
-deployed AND an INS-370 zero-drift pass on a fresh brief.
+**Registry curation (former brief-s202d) — returned to chat-session ownership (INS-69: living
+documents are updated by exactly one actor; the claude.ai session owns the prism project's docs).
+Dequeued from the prism queue before dispatch. The measured curation checklist from audit §B.2, for
+chat-side execution via `prism_patch`/registry edit (worth −3.4 to −3.7K tok/boot):** retire
+INS-319 (superseded by D-267) / INS-230 (superseded by the template CC mandate) / INS-354
+(template-ingest duplicate) — archive with full bodies, never delete; demote INS-178→B(finalize),
+INS-187→B(credentials), INS-324→B(trigger), INS-340→B(framework, protocol); trim INS-226/193/260
+to procedure-only (D-47 contract); operator-decide: INS-291/302/318 (template duplicates).
+Verification: parser round-trip via the server's `extractStandingRules` — expect A=10, B=90, C=16,
+zero ids lost.
 
-**v2 end-state arithmetic (revises the §2 table):** kernel ~5.1K tok (18KB) + Tier-A 10 trimmed
+**Merge/flip sequence (the surviving phase gates):** s202b merges on green CI + PR review
+(additive/env-defaulted). s202c merges after its mandate-preservation table review; its fidelity
+gate is the §0.6 harness run (Probes B/C/D/F/G + new Probe H, S157/S177 anchors) over the following
+sessions, with same-day `git revert` (template-only, 5-min cache) as rollback.
+`BOOT_INDEX_MODE=compact` flips after s202c is live + one soak session. `synthesis_brief` is
+ALREADY live on GLM (operator flip, S202); the first fresh brief after s202b deploys gets the
+refined INS-370 pass using the new trim-provenance footer (drift → kill-switch; artifact → log +
+pipeline fix, per the s202c gate module). **PR/merge verification protocol (D-278):** each brief is
+confirmed via the Trigger daemon state file's git fields — `state/<repo>.json` `pr_number`,
+`branch`, `merge_commit`, and `post_merge.actions_completed`; `status: merged` alone is not
+accepted as proof.
+
+**End-state arithmetic (revises the §2 table; the Tier-A line assumes the chat-owned curation
+checklist above is executed):** kernel ~5.1K tok (18KB) + Tier-A 10 trimmed
 rules ~3.3K + manifest ~1.3K + brief (RF+QA, digest-deduped) ~1.9K + handoff fields (item-budgeted)
 ~2.3K + work loop 0.9K + banner 1.1K (0.35K SVG-off) + prefetch ~0.25K + misc/envelope ~1.4K ≈
 **bootstrap ~11.6-12.4K tok** (vs 33.9K measured) — at or below the 12–15K target band's floor.
