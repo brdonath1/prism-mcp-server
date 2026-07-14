@@ -17,7 +17,13 @@ import { modelDisplayFromId } from "../models.js";
 import { resolveDocFiles, resolveDocPushPath } from "../utils/doc-resolver.js";
 import { logger } from "../utils/logger.js";
 import { resolveCallSiteTimeout, synthesize } from "./client.js";
-import { boundSynthesisInput, type SynthesisInputBudgetReport } from "./input-budget.js";
+import {
+  boundSynthesisInput,
+  buildSynthesisDocManifest,
+  renderSynthesisInputManifest,
+  type SynthesisDocManifestRow,
+  type SynthesisInputBudgetReport,
+} from "./input-budget.js";
 import {
   FINALIZATION_SYNTHESIS_PROMPT,
   PENDING_DOC_UPDATES_PROMPT,
@@ -134,6 +140,11 @@ export interface SynthesisBundle {
   inputBudget: SynthesisInputBudgetReport;
   timestamp: string;
   docCount: number;
+  /** brief-s202b T9b: per-doc {path, true_bytes, included_bytes, truncated}
+   *  rows — the machine-readable size fact source prepended to the input and
+   *  the driver of the truncation provenance footer (T9c). Optional for
+   *  hand-built test bundles. */
+  docManifest?: SynthesisDocManifestRow[];
 }
 
 /** Decision-domain files folded into the synthesis input (D-67 backward-compat). */
@@ -186,7 +197,26 @@ export async function assembleSynthesisBundle(
   const bounded = boundSynthesisInput(allDocs, (docs) =>
     buildSynthesisUserMessage(projectSlug, sessionNumber, timestamp, docs),
   );
-  const userMessage = buildSynthesisUserMessage(projectSlug, sessionNumber, timestamp, bounded.docs);
+
+  // brief-s202b T9b (D-278): per-doc size manifest — TRUE sizes as the fact
+  // source — prepended to the assembled input for ALL docs. T9d: one
+  // SYNTHESIS_INPUT_TRUNCATED info line per truncated doc (the transcript-
+  // auditable record that a size claim traceable to a trim is a pipeline
+  // artifact, never kill-switch-tripping drift — D-277/INS-370).
+  const docManifest = buildSynthesisDocManifest(allDocs, bounded.docs);
+  for (const row of docManifest) {
+    if (!row.truncated) continue;
+    logger.info("SYNTHESIS_INPUT_TRUNCATED", {
+      call_site: "synthesis_bundle", // shared CS-2 (brief) + CS-3 (pdu) input
+      projectSlug,
+      sessionNumber,
+      path: row.path,
+      true_bytes: row.true_bytes,
+      included_bytes: row.included_bytes,
+    });
+  }
+
+  const userMessage = `${renderSynthesisInputManifest(docManifest)}\n\n${buildSynthesisUserMessage(projectSlug, sessionNumber, timestamp, bounded.docs)}`;
   return {
     userMessage,
     inputBudget: {
@@ -197,7 +227,42 @@ export async function assembleSynthesisBundle(
     },
     timestamp,
     docCount: bounded.docs.size,
+    docManifest,
   };
+}
+
+/**
+ * brief-s202b T9c (D-278): server-stamped truncation provenance footer.
+ * When any synthesis input doc was truncated, append
+ * `> Synthesized from: glossary.md [trimmed 82.0KB→21.0KB], …` immediately
+ * above the EOF sentinel — same deterministic server-stamp pattern as the
+ * staleness/provenance headers (never model-authored). Replaces any existing
+ * footer line (re-runs, or a model echoing one). No truncated inputs → the
+ * content is returned unchanged (no footer).
+ */
+export function appendTruncationProvenanceFooter(
+  content: string,
+  docManifest: SynthesisDocManifestRow[] | undefined,
+): string {
+  const footerRe = /^>\s*Synthesized from:.*$\n?/m;
+  const truncated = (docManifest ?? []).filter(r => r.truncated);
+  if (truncated.length === 0) {
+    // Strip a stale/model-echoed footer so an untruncated run never carries one.
+    return footerRe.test(content) ? content.replace(footerRe, "") : content;
+  }
+  const kb = (n: number) => `${(n / 1024).toFixed(1)}KB`;
+  const footer = `> Synthesized from: ${truncated
+    .map(r => `${r.path} [trimmed ${kb(r.true_bytes)}→${kb(r.included_bytes)}]`)
+    .join(", ")}`;
+  const withoutExisting = footerRe.test(content) ? content.replace(footerRe, "") : content;
+  const eofRe = /^<!--\s*EOF:.*-->\s*$/m;
+  const eofMatch = withoutExisting.match(eofRe);
+  if (eofMatch && eofMatch.index !== undefined) {
+    const head = withoutExisting.slice(0, eofMatch.index).replace(/\s+$/, "");
+    const tail = withoutExisting.slice(eofMatch.index);
+    return `${head}\n\n${footer}\n\n${tail}`;
+  }
+  return `${withoutExisting.trimEnd()}\n\n${footer}\n`;
 }
 
 /**
@@ -318,6 +383,9 @@ export async function generateIntelligenceBrief(
     //     the server already holds, so a model bump never leaves stale text.
     content = enforceLastSynthesizedHeader(content, sessionNumber, timestamp);
     content = enforceProvenanceHeader(content, modelDisplayFromId(result.model ?? SYNTHESIS_MODEL));
+    // 5c. brief-s202b T9c (D-278): truncation provenance footer — names every
+    //     truncated input so a size-claim artifact is traceable at a glance.
+    content = appendTruncationProvenanceFooter(content, bundle.docManifest);
 
     // 6. Push to project repo (D-67: resolve path)
     const briefPushPath = await resolveDocPushPath(projectSlug, "intelligence-brief.md");
@@ -552,6 +620,9 @@ export async function generatePendingDocUpdates(
     // 5b. Server-stamp the staleness header (brief-456 / SRV-52) — apply-pdu's
     // parseLastSynthesizedSession reads this line.
     content = enforceLastSynthesizedHeader(content, sessionNumber, timestamp);
+    // 5c. brief-s202b T9c (D-278): truncation provenance footer (mirrors the
+    //     intelligence-brief stamp).
+    content = appendTruncationProvenanceFooter(content, bundle.docManifest);
 
     // 6. Push
     const pushPath = await resolveDocPushPath(projectSlug, "pending-doc-updates.md");

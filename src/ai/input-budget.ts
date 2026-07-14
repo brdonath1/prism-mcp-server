@@ -175,13 +175,26 @@ const TRIM_TAKE_PAD_TOKENS = 16;
  *  synthesis model and any human reading the prompt can see the doc was
  *  bounded. Derives only from path + sizes — never timestamps.
  *
- *  brief-s202b T9 (INS-363-adjacent): the annotation leads with the TRUE
- *  pre-trim size and an explicit do-not-cite instruction. Pre-s202b the
- *  notice named only estimated tokens, and a trimmed doc's shrunken content
- *  could be described by the synthesized brief as if it were the file's real
- *  size — a fabricated quantitative claim (INS-40 class). */
-function trimNotice(path: string, preBytes: number, preTokens: number, detail: string): string {
-  return `> [trimmed from ${(preBytes / 1024).toFixed(1)} KB — do not cite truncated size as a file fact] ${path}: ${detail}; ~${preTokens} estimated tokens pre-trim (synthesis input budget, brief-445/R3-dur).`;
+ *  brief-s202b T9a (D-278 constraint 1): the annotation leads with the shown
+ *  amount, the TRUE size, and an explicit never-cite instruction. Pre-s202b
+ *  the notice named only estimated tokens, and a trimmed doc's shrunken
+ *  content could be described by the synthesized brief as if it were the
+ *  file's real size — the S202 incident (82KB glossary reported as ~21KB),
+ *  an input-truncation ARTIFACT, not model drift. `shownKB` is the retention
+ *  BUDGET in KB (the kept content lands marginally under it after this
+ *  notice and line-boundary rounding); the exact included_bytes travel in
+ *  the input manifest (T9b), which is the machine-readable fact source. */
+function trimNotice(
+  path: string,
+  end: "first" | "last",
+  shownBudgetChars: number,
+  trueBytes: number,
+  preTokens: number,
+  detail: string,
+): string {
+  const shownKb = (Math.max(0, shownBudgetChars) / 1024).toFixed(1);
+  const trueKb = (trueBytes / 1024).toFixed(1);
+  return `> [trimmed: showing ${end} ${shownKb} KB of ${trueKb} KB — never cite the truncated size as the file's size] ${path}: ${detail}; ~${preTokens} estimated tokens pre-trim (synthesis input budget, brief-445/R3-dur).`;
 }
 
 const encoder = new TextEncoder();
@@ -235,6 +248,8 @@ function retainWithinBudget(
         : "";
     const notice = trimNotice(
       path,
+      "last",
+      keepChars,
       preBytes,
       preTokens,
       "oldest (leading) content dropped, most recent entries retained",
@@ -253,6 +268,8 @@ function retainWithinBudget(
   // docs").
   const notice = trimNotice(
     path,
+    "first",
+    keepChars,
     preBytes,
     preTokens,
     "trailing content dropped, leading (most recent / summary) content retained",
@@ -347,7 +364,7 @@ export function boundSynthesisInput(
       const entry = working.get(path);
       if (!entry) continue;
       const entryTokens = estimateSynthesisTokens(entry.content);
-      const stub = `${trimNotice(path, entry.size, entryTokens, "entire document elided to honor the synthesis input ceiling")}\n`;
+      const stub = `${trimNotice(path, "first", 0, entry.size, entryTokens, "entire document elided to honor the synthesis input ceiling")}\n`;
       if (stub.length >= entry.content.length) continue; // stub wouldn't shrink it
       // brief-s202b T9: original size preserved (see pass-1 note).
       working.set(path, { content: stub, size: entry.size });
@@ -369,4 +386,52 @@ export function boundSynthesisInput(
     trimmed: true,
     trimmed_docs: trimmedDocs,
   };
+}
+
+/** brief-s202b T9b (D-278 constraint 1): one per-doc row of the synthesis
+ *  input manifest — TRUE sizes as the machine-readable fact source. */
+export interface SynthesisDocManifestRow {
+  path: string;
+  true_bytes: number;
+  included_bytes: number;
+  truncated: boolean;
+}
+
+/**
+ * Build the per-doc input manifest from the ORIGINAL doc set and the BOUNDED
+ * set actually fed to the model (brief-s202b T9b). Every doc gets a row —
+ * untruncated docs included — so the model has an authoritative size table
+ * and never needs to infer sizes from (possibly trimmed) content.
+ */
+export function buildSynthesisDocManifest(
+  original: Map<string, SynthesisDocEntry>,
+  bounded: Map<string, SynthesisDocEntry>,
+): SynthesisDocManifestRow[] {
+  return [...original.entries()].map(([path, entry]) => {
+    const boundedContent = bounded.get(path)?.content ?? "";
+    return {
+      path,
+      true_bytes: byteLength(entry.content),
+      included_bytes: byteLength(boundedContent),
+      truncated: boundedContent !== entry.content,
+    };
+  });
+}
+
+/**
+ * Render the input manifest as the leading block of the synthesis user
+ * message (brief-s202b T9b). States the fact-source rule explicitly so a
+ * synthesized artifact can only produce a wrong size claim by CONTRADICTING
+ * its input — genuine drift — never as a truncation artifact (the
+ * D-277/INS-370 drift-vs-artifact classification this metadata enables).
+ */
+export function renderSynthesisInputManifest(rows: SynthesisDocManifestRow[]): string {
+  const lines = rows.map(
+    r =>
+      `- ${r.path}: true_bytes=${r.true_bytes}, included_bytes=${r.included_bytes}, truncated=${r.truncated}`,
+  );
+  return [
+    "INPUT MANIFEST (authoritative file sizes — cite ONLY true_bytes as a file's size; a truncated:true doc is partially shown below):",
+    ...lines,
+  ].join("\n");
 }

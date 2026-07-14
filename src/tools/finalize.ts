@@ -180,7 +180,7 @@ import { parseExistingInsightIds } from "./log-insight.js";
 export { extractJSON } from "../utils/extract-json.js";
 import { extractJSON } from "../utils/extract-json.js";
 import { FINALIZATION_DRAFT_PROMPT, buildFinalizationComposePrompt, buildFinalizationDraftMessage } from "../ai/prompts.js";
-import { boundSynthesisInput } from "../ai/input-budget.js";
+import { boundSynthesisInput, buildSynthesisDocManifest, renderSynthesisInputManifest } from "../ai/input-budget.js";
 import { synthesize } from "../ai/client.js";
 import {
   FINALIZE_COMPOSE_HANDOFF_MAX_BYTES,
@@ -782,12 +782,34 @@ async function draftPhase(
   const bounded = boundSynthesisInput(docMap, (docs) =>
     buildFinalizationDraftMessage(projectSlug, sessionNumber, docs, sessionCommits),
   );
-  const userMessage = buildFinalizationDraftMessage(
+
+  // brief-s202b T9b/T9d (D-278): per-doc size manifest prepended to the CS-1
+  // input (true sizes as the fact source) + one SYNTHESIS_INPUT_TRUNCATED
+  // info line/diagnostic per truncated doc.
+  const draftDocManifest = buildSynthesisDocManifest(docMap, bounded.docs);
+  for (const row of draftDocManifest) {
+    if (!row.truncated) continue;
+    logger.info("SYNTHESIS_INPUT_TRUNCATED", {
+      call_site: "synthesis_draft",
+      projectSlug,
+      sessionNumber,
+      path: row.path,
+      true_bytes: row.true_bytes,
+      included_bytes: row.included_bytes,
+    });
+    diagnostics.info(
+      "SYNTHESIS_INPUT_TRUNCATED",
+      `${row.path} trimmed for the draft synthesis input: ${row.included_bytes} of ${row.true_bytes} true bytes included — never cite the truncated size as the file's size`,
+      { call_site: "synthesis_draft", path: row.path, true_bytes: row.true_bytes, included_bytes: row.included_bytes },
+    );
+  }
+
+  const userMessage = `${renderSynthesisInputManifest(draftDocManifest)}\n\n${buildFinalizationDraftMessage(
     projectSlug,
     sessionNumber,
     bounded.docs,
     sessionCommits
-  );
+  )}`;
   if (bounded.trimmed) {
     logger.warn("SYNTHESIS_DRAFT_INPUT_TRIMMED — draft input exceeded the token ceiling and was priority-trimmed before the model call", {
       projectSlug,
