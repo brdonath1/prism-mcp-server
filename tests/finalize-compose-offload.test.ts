@@ -301,6 +301,10 @@ describe("brief-s202b T8 — action=draft compose-offload integration", () => {
     // wider output budget.
     expect(synthesizeSpy.mock.calls[0][0]).toContain("HANDOFF FILE CONTRACT");
     expect(synthesizeSpy.mock.calls[0][2]).toBe(8192);
+    // brief-s202b T9b: the CS-1 input leads with the per-doc size manifest.
+    const draftUserContent = synthesizeSpy.mock.calls[0][1] as string;
+    expect(draftUserContent.startsWith("INPUT MANIFEST")).toBe(true);
+    expect(draftUserContent).toContain("- handoff.md: true_bytes=");
 
     // Persisted state: one pushFile to the draft-state path with the FULL files.
     const persistCall = pushFileSpy.mock.calls.find((c: unknown[]) => c[1] === FINALIZE_DRAFT_STATE_PATH);
