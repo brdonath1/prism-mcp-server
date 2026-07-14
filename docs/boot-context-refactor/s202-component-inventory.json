@@ -1,0 +1,93 @@
+{
+  "meta": {
+    "brief": "brief-s202a-boot-context-audit",
+    "session": "S202",
+    "generated": "2026-07-14",
+    "worked_example_project": "prism",
+    "repos_read": {
+      "prism-mcp-server": "79a4ff43dec4d43611a959f5553f94574122bed0",
+      "prism": "0801b36a92107edd64dc601042a7c11612336ea5",
+      "prism-framework": "4aaade1f5410197cb90268e25a3c8f4e718c5d3d"
+    },
+    "method": "Offline reconstruction of the prism_bootstrap payload from origin/main snapshots through the server's own compiled dist/ code, mirroring src/tools/bootstrap.ts:1358-1400 assembly and :1419-1465 measurement. Same method as s167-server-audit.md:683-705.",
+    "token_estimator": "bytes / 3.5 (src/config.ts:225-237 codebase-standard proxy)",
+    "accuracy": {
+      "reconstructed_bootstrap_tokens": 33879,
+      "live_s202_bootstrap_tokens": 33868,
+      "delta_tokens": 11,
+      "delta_percent": 0.03
+    },
+    "window_divisor_note": "Live percent (20.7% at 41,368 tok) implies a 200,000-token divisor — matches the production env override documented in brief-449 Change 4.5; code default is 500K (src/config.ts:69-70). No env value was read.",
+    "prefetch_scenario": "S202-like: opening message containing a glossary keyword + next_steps keyword matches (glossary.md, task-queue.md) + always-prefetched pending-doc-updates.md",
+    "simulated_fields": ["warnings", "trigger_enrollment", "files_fetched", "session_timestamp", "boot_test_verified"]
+  },
+  "phases": [
+    { "id": "P1", "name": "platform_load", "when": "session start, before any tool call" },
+    { "id": "P2", "name": "bootstrap_response", "when": "first tool result" },
+    { "id": "P3", "name": "post_boot_protocol", "when": "same first exchange, template-mandated" },
+    { "id": "P4", "name": "during_session", "when": "per response / on trigger" },
+    { "id": "P5", "name": "finalization", "when": "session end" }
+  ],
+  "components": [
+    { "id": "behavioral_rules", "phase": "P2", "bytes": 42689, "est_tokens": 12197, "share_of_bootstrap": 0.357, "cadence": "per_session_static", "source": "prism-framework:_templates/core-template-mcp.md v2.29.0 (42,579 B source) delivered verbatim", "citation": "src/tools/bootstrap.ts:711-714,1381", "redundancy": "Rule 2A duplicates autonomous_work_loop field (~2.6KB); Rule 9 restatement ~1.1KB; banner-mandate overlap ~1.6KB; CC discipline ~7.3KB + ingest ~2.4KB consumed only situationally; server-enforced validation rules restated ~1-2KB" },
+    { "id": "standing_rules_tier_a", "phase": "P2", "bytes": 24378, "est_tokens": 6965, "share_of_bootstrap": 0.204, "cadence": "per_session_growing", "source": "union(.prism/standing-rules.md 326,087 B, insights.md 37,376 B) -> 17 Tier-A bodies of 119 active rules (A=17 B=86 C=16)", "citation": "src/tools/bootstrap.ts:1145-1174; src/utils/standing-rules.ts:280-282", "redundancy": "INS-319 superseded by D-267; INS-230 conflicts with template CC section; INS-354 duplicates template ingest section; INS-291/302/318 duplicate template posture/interaction bullets; INS-178/187/324/340 fire only on topic (demotable, 8,061 B)", "per_rule_bytes": { "INS-34": 864, "INS-40": 1366, "INS-178": 2761, "INS-187": 2088, "INS-193": 1956, "INS-226": 2449, "INS-230": 1220, "INS-260": 1735, "INS-291": 714, "INS-292": 967, "INS-302": 712, "INS-304": 1182, "INS-318": 819, "INS-319": 1104, "INS-324": 1671, "INS-340": 1541, "INS-354": 1211 } },
+    { "id": "standing_rules_index", "phase": "P2", "bytes": 19873, "est_tokens": 5678, "share_of_bootstrap": 0.166, "cadence": "per_session_growing", "source": "102 Tier B+C entries {id,title,tier,topics}; composition: titles 12,253 B (62%), topics 2,843 B, ids+tiers 1,206 B, JSON keys 3,571 B; avg 195 B/entry", "citation": "src/tools/bootstrap.ts:1185-1188", "redundancy": "Scales with registry population (102), not session need; consumer contract (core-template-mcp.md:104) needs id+short-title+topics only; titles average 120 B" },
+    { "id": "intelligence_brief_compact", "phase": "P2", "bytes": 7145, "est_tokens": 2041, "share_of_bootstrap": 0.06, "cadence": "per_session", "source": "D-253 3-section digest of 10,592 B source brief (full 10,592 -> 7,145 delivered)", "citation": "src/tools/bootstrap.ts:258-292,1115", "redundancy": "Project State digest restates current_state; Risk Flags overlap critical_context; ~2.5-4KB restated vs handoff-derived fields (audit B.4)" },
+    { "id": "prefetched_documents", "phase": "P2", "bytes": 4005, "est_tokens": 1144, "share_of_bootstrap": 0.033, "cadence": "per_session_keyword_dependent", "source": "glossary summary 560 B (of 81,986 B source), task-queue summary 2,009 B (of 32,315 B), pending-doc-updates summary 1,162 B (of 8,473 B)", "citation": "src/tools/bootstrap.ts:833-882,1018-1032; src/utils/summarizer.ts:17-34", "redundancy": "No consumption telemetry (hit rate unmeasurable); keyword false positives; duplicates on-demand prism_fetch summary_mode" },
+    { "id": "critical_context", "phase": "P2", "bytes": 3538, "est_tokens": 1011, "share_of_bootstrap": 0.03, "cadence": "per_session", "source": "5 handoff items, 708 B/item avg", "citation": "src/tools/bootstrap.ts:770-772", "redundancy": "item length is handoff-hygiene-controlled; overlaps brief Risk Flags" },
+    { "id": "autonomous_work_loop", "phase": "P2", "bytes": 3305, "est_tokens": 944, "share_of_bootstrap": 0.028, "cadence": "per_session_static", "source": "constant object v1.0.0", "citation": "src/utils/autonomous-work-loop.ts:28-98", "redundancy": "Near-verbatim duplicate of template Rule 2A (~2.6KB) — both ship every boot (~5.9KB for one contract)" },
+    { "id": "recent_decisions", "phase": "P2", "bytes": 3261, "est_tokens": 932, "share_of_bootstrap": 0.027, "cadence": "per_session", "source": "last 15 index rows", "citation": "src/tools/bootstrap.ts:814", "redundancy": "low; brief narrative partially restates" },
+    { "id": "boot_masthead_svg", "phase": "P2", "bytes": 2620, "est_tokens": 749, "share_of_bootstrap": 0.022, "cadence": "per_session", "source": "server-rendered SVG 2,351 B raw (D-249)", "citation": "src/tools/bootstrap.ts:1349-1356", "redundancy": "visual-identity only; every datum also in banner_text; re-emitted verbatim by Rule 2 item 3 (paid twice)" },
+    { "id": "guardrails", "phase": "P2", "bytes": 2541, "est_tokens": 726, "share_of_bootstrap": 0.021, "cadence": "per_session", "source": "20 SETTLED decisions (10 foundational + 10 recent blend, SRV-85)", "citation": "src/tools/bootstrap.ts:799-812", "redundancy": "low" },
+    { "id": "banner_text", "phase": "P2", "bytes": 1240, "est_tokens": 354, "share_of_bootstrap": 0.01, "cadence": "per_session", "source": "unified banner 1,226 B raw", "citation": "src/tools/bootstrap.ts:1334-1343", "redundancy": "re-emitted verbatim in Rule 2 text tail (paid twice)" },
+    { "id": "current_state", "phase": "P2", "bytes": 1151, "est_tokens": 329, "share_of_bootstrap": 0.01, "cadence": "per_session", "source": "handoff Where We Are", "citation": "src/tools/bootstrap.ts:773", "redundancy": "restated by brief Project State digest" },
+    { "id": "next_steps", "phase": "P2", "bytes": 732, "est_tokens": 209, "share_of_bootstrap": 0.006, "cadence": "per_session", "source": "5 handoff items", "citation": "src/tools/bootstrap.ts:777-781", "redundancy": "none — resumption spine; also rendered in banner Next block" },
+    { "id": "expected_tool_surface", "phase": "P2", "bytes": 675, "est_tokens": 193, "share_of_bootstrap": 0.006, "cadence": "per_session_static", "source": "32 tool names by category", "citation": "src/tool-registry.ts:79-93", "redundancy": "none — verification manifest" },
+    { "id": "post_boot_tool_searches", "phase": "P2", "bytes": 300, "est_tokens": 86, "share_of_bootstrap": 0.003, "cadence": "per_session_static", "source": "3 curated queries, limit 20", "citation": "src/tool-registry.ts:117-125", "redundancy": "none" },
+    { "id": "recommended_session_settings", "phase": "P2", "bytes": 204, "est_tokens": 58, "share_of_bootstrap": 0.002, "cadence": "per_session", "source": "persisted block from handoff", "citation": "src/tools/bootstrap.ts:1289-1299", "redundancy": "also rendered in banner Suggested line" },
+    { "id": "scalars_warnings_misc", "phase": "P2", "bytes": 700, "est_tokens": 200, "share_of_bootstrap": 0.006, "cadence": "per_session", "source": "ids, versions, sizes, flags, open_questions, trigger_enrollment, warnings", "citation": "src/tools/bootstrap.ts:1358-1400", "redundancy": "none" },
+    { "id": "post_measurement_attachments", "phase": "P2", "bytes": 253, "est_tokens": 72, "share_of_bootstrap": 0.002, "cadence": "per_session", "source": "context_estimate, response_bytes, bytes_delivered, diagnostics", "citation": "src/tools/bootstrap.ts:1449-1465", "redundancy": "none — meter anchor + diet instrumentation (keep)" },
+    { "id": "json_envelope", "phase": "P2", "bytes": 1576, "est_tokens": 450, "share_of_bootstrap": 0.013, "cadence": "per_session", "source": "keys/quotes/commas beyond field values", "citation": "measured: responseBytes - attribution.total", "redundancy": "structural" },
+    { "id": "platform_overhead", "phase": "P1", "bytes": null, "est_tokens": 5000, "cadence": "per_session", "source": "system prompt + Project Instructions (template 3,521 B ~= 1,006 tok) + initial connector tool defs", "citation": "src/tools/bootstrap.ts:1444 (modeled constant)", "assumption": true, "redundancy": "outside server control" },
+    { "id": "tool_search_redelivery", "phase": "P3", "bytes": 7131, "est_tokens": 2037, "est_tokens_with_framing": [2400, 3100], "cadence": "per_session", "source": "32 tool schemas (name+description+JSON schema) measured by registering all tools on a real McpServer; 3 searches mandated by template", "citation": "core-template-mcp.md:106-111; src/tool-registry.ts:117-125", "assumption": "result-framing multiplier 1.2-1.5x", "redundancy": "loads categories (github 6, railway 10) many sessions never call" },
+    { "id": "codex_sidecar_fetch", "phase": "P3", "bytes": 15000, "est_tokens": 4300, "cadence": "per_session_when_present", "source": ".prism/codex/latest-resume.md 5,259 B + latest-session.json 9,223 B + prism_fetch envelope", "citation": "core-template-mcp.md:113-117; prism@0801b36 .prism/codex/", "redundancy": "untrusted continuity context; overlaps handoff resumption when sidecar is stale" },
+    { "id": "rule2_boot_response_output", "phase": "P3", "bytes": 4000, "est_tokens": 1130, "cadence": "per_session", "source": "session fence + rename line + show_widget re-emitting SVG verbatim (2,351 B) + banner_text tail verbatim (~1.1KB) + opening + Rule 9 line — Claude OUTPUT tokens", "citation": "core-template-mcp.md:127-181", "redundancy": "SVG and banner_text each paid twice (tool result + re-render)" },
+    { "id": "rule9_status_line", "phase": "P4", "bytes": 30, "est_tokens": 9, "cadence": "per_response", "source": "[S · Ex · emoji ~%] closer", "citation": "core-template-mcp.md:220-230,299-309" },
+    { "id": "module_trigger_channel", "phase": "P4", "bytes": 19979, "est_tokens": 5708, "cadence": "amortized_on_dispatch", "source": "_templates/reference/trigger-channel.md", "citation": "core-template-mcp.md:74" },
+    { "id": "module_audit_harness", "phase": "P4", "bytes": 18763, "est_tokens": 5361, "cadence": "amortized_on_audit", "source": "_templates/modules/audit-harness.md v4", "citation": "core-template-mcp.md:336" },
+    { "id": "module_mcp_tool_surface", "phase": "P4", "bytes": 13166, "est_tokens": 3762, "cadence": "amortized_on_demand", "source": "_templates/reference/mcp-tool-surface.md", "citation": "framework _templates/reference/" },
+    { "id": "module_error_recovery", "phase": "P4", "bytes": 3677, "est_tokens": 1051, "cadence": "amortized_on_failure", "source": "_templates/modules/error-recovery.md", "citation": "core-template-mcp.md:335" },
+    { "id": "tier_b_rule_loads", "phase": "P4", "bytes": null, "est_tokens": 1000, "cadence": "amortized_on_topic", "source": "prism_load_rules by topic, typical 2-5KB/topic", "citation": "src/tools/load-rules.ts; D-156/D-253" },
+    { "id": "finalize_audit_response", "phase": "P5", "bytes": 10000, "est_tokens": 2900, "cadence": "per_finalization", "source": "audit checklist + session_end_rules (rules-session-end.md 7,205 B delivered lazily here) + diagnostics", "citation": "src/tools/finalize.ts:2569,2611", "assumption": "checklist magnitude estimated from shape" },
+    { "id": "finalize_draft_response", "phase": "P5", "bytes": null, "est_tokens": [2500, 3500], "cadence": "per_finalization", "source": "6-key draft JSON (CS-1 output ~3K tok) + diagnostics", "citation": "src/tools/finalize.ts:2660-2677; docs/cost-rearchitecture/d275-audit-design.md CS-1", "assumption": true },
+    { "id": "finalize_commit_request", "phase": "P5", "bytes": 6000, "est_tokens": 1700, "cadence": "per_finalization", "source": "files[] content, INS-178-walled to handoff.md only — Claude OUTPUT tokens", "citation": "INS-178 (prism standing-rules registry)", "assumption": "handoff ~6KB typical" },
+    { "id": "finalize_commit_response", "phase": "P5", "bytes": null, "est_tokens": [2000, 3000], "cadence": "per_finalization", "source": "per-file results + banner_text + finalization_banner_html (re-emitted verbatim per Mandatory Banner Rendering) + diagnostics", "citation": "src/tools/finalize.ts:2840-2852; core-template-mcp.md:313-322", "assumption": true }
+  ],
+  "totals": {
+    "bootstrap_response_bytes_wire": 119662,
+    "bootstrap_response_bytes_at_tripwire": 119409,
+    "bootstrap_tokens_est": 33879,
+    "bootstrap_top3_bytes": 86940,
+    "bootstrap_top3_share": 0.727,
+    "first_exchange_all_in_tokens_est": 48800,
+    "first_exchange_percent_of_200k": 24.4,
+    "observed_operator_range_percent": [29, 50],
+    "observed_note": "upper range includes Project-Knowledge attachments, large openings, extra warnings, and follow-on fetches outside the server payload"
+  },
+  "reconciliation": {
+    "live_s202_context_estimate": { "bootstrap_tokens": 33868, "platform_overhead_tokens": 5000, "tool_schema_tokens": 2500, "total_boot_tokens": 41368, "total_boot_percent": 20.7 },
+    "s167_baseline": { "real_response_bytes": 114752, "reconstruction_bytes": 114757, "final_wire_bytes": 115842, "citation": ".prism/audits/s167-server-audit.md:683-705" },
+    "s161_r7b_peak": { "response_bytes": 248016, "standing_rules_bytes": 182992, "citation": "brief-449 header (briefs branch archive)" },
+    "drift_s167_to_s202_bytes": 3820,
+    "d275_f3_row": { "standing_cost_tokens_per_session": 33000, "chat_tokens_per_month": 825000, "risk": "HIGH", "citation": "docs/cost-rearchitecture/d275-audit-design.md section 6 row F-3" }
+  },
+  "prior_art": [
+    { "ref": "D-47 (S25)", "action": "original compaction: brief digest + procedure-only rules", "outcome": "reversed by R7-b" },
+    { "ref": "D-83 (S44) + brief-446", "action": "post_boot_tool_searches + expected_tool_surface", "outcome": "added ~2.4-3.1K tok/boot deliberately (fidelity > size)" },
+    { "ref": "brief-433 / PR #55 (R7-a)", "action": "500K divisor default + full-payload numerator", "outcome": "estimate honesty only; production later re-pinned divisor to 200K" },
+    { "ref": "brief-443 / PR #60 (R7-b)", "action": "enrichment: full brief, Tier A+B bodies, caps raised", "outcome": "234-246KB boots -> platform offload -> zero bytes delivered (D-253 incident)" },
+    { "ref": "brief-449 / PR #69 (D-253)", "action": "Tier-A-only + B/C index + spec-coupled compaction + tripwire", "outcome": "248KB -> ~115KB steady state; introduced the index (now 19.9KB)" },
+    { "ref": "brief-465 / PR #81 (M-012)", "action": "alias removal (SRV-109 2,836 B), summary caps (SRV-74), delivered-byte attribution (SRV-39/68)", "outcome": "~3-4KB + instrumentation; template diet explicitly deferred to unlanded W3-F2/M-021 + W3-F3/M-019" },
+    { "ref": "D-275 audit F-3 (S196)", "action": "flagged ~825K chat tok/mo standing cost, HIGH fidelity risk, D-253-gated", "outcome": "this brief is the follow-up" }
+  ]
+}
