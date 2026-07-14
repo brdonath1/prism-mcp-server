@@ -1,4 +1,9 @@
 import { MCP_SAFE_TIMEOUT, SYNTHESIS_MAX_OUTPUT_TOKENS } from "../config.js";
+import {
+  OPENROUTER_CHAT_COMPLETIONS_URL,
+  openrouterAttributionHeaders,
+  resolveOpenrouterReasoningParam,
+} from "./openrouter.js";
 import { getProviderRegistry } from "./provider-registry.js";
 import type { LlmProviderId, LlmTransport, RouteDecision, RoutingEnv } from "./route-types.js";
 
@@ -25,12 +30,21 @@ export interface ProviderSynthesisResult {
     "openai_responses" | "openai_compatible_chat" | "gemini_generate_content" | "xai_responses"
   >;
   stop_reason?: string | null;
+  /** D-275 telemetry: provider-measured cost in USD when the provider returns
+   *  one (OpenRouter `usage.cost` with `usage: { include: true }`). Absent →
+   *  LLM_CALL falls back to the static price-table estimate. */
+  cost_usd?: number | null;
 }
 
 export interface ProviderSynthesisError {
   success: false;
   error: string;
   error_code: "TIMEOUT" | "AUTH" | "API_ERROR" | "DISABLED";
+  /** D-275 telemetry: coarse failure class for the LLM_CALL / fallback logs.
+   *  "validation" = the provider answered but the output failed a completion
+   *  guard (finish_reason≠stop, empty content) — the GLM thinking-starvation
+   *  signature; "timeout" = abort; "http" = transport/HTTP/config failures. */
+  failure_class?: "validation" | "timeout" | "http";
 }
 
 export type ProviderSynthesisOutcome = ProviderSynthesisResult | ProviderSynthesisError;
@@ -125,7 +139,12 @@ export async function synthesizeViaProvider({
     const message = error instanceof Error ? error.message : String(error);
     const sanitized = sanitizeProviderError(message, env);
     const error_code = classifyProviderException(error);
-    return { success: false, error: sanitized, error_code };
+    return {
+      success: false,
+      error: sanitized,
+      error_code,
+      failure_class: error_code === "TIMEOUT" ? "timeout" : "http",
+    };
   }
 }
 
@@ -187,23 +206,50 @@ async function callResponsesApi(params: ProviderCallParams): Promise<ProviderSyn
 async function callOpenAiCompatibleChat(
   params: ProviderCallParams,
 ): Promise<ProviderSynthesisOutcome> {
+  const isOpenrouter = params.decision.provider === "openrouter";
+
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${params.apiKey}`,
+    "Content-Type": "application/json",
+    // OpenRouter attribution headers (design §4.1) — app identity only.
+    ...(isOpenrouter ? openrouterAttributionHeaders(params.env) : {}),
+  };
+
+  const body: Record<string, unknown> = {
+    model: params.decision.model,
+    messages: [
+      { role: "system", content: params.systemPrompt },
+      { role: "user", content: params.userContent },
+    ],
+    max_tokens: params.maxTokens,
+    stream: false,
+  };
+  if (isOpenrouter) {
+    // D-275 openrouter-only request extensions (design §4.1/§4.2):
+    // - usage.include → provider-computed cost lands in usage.cost, giving the
+    //   LLM_CALL telemetry a MEASURED est_cost_usd instead of an estimate.
+    // - provider.data_collection=deny → request-level data-governance backstop
+    //   on top of the operator's account-level training toggles (§7 risk 1).
+    // - reasoning → GLM-5.2 defaults to thinking mode, and reasoning tokens
+    //   consume max_tokens (live-verified: finish_reason=length with zero
+    //   answer text). Off by default; per-site opt-in via
+    //   LLM_ROUTING_OPENROUTER_REASONING_* with the 16384-floor guard. The
+    //   caller's Anthropic `thinking` flag is deliberately ignored here.
+    body.usage = { include: true };
+    body.provider = { data_collection: "deny" };
+    body.reasoning = resolveOpenrouterReasoningParam(
+      params.decision.surface,
+      params.maxTokens,
+      params.env,
+    );
+  }
+
   const response = await fetchJson(
     openAiCompatibleChatUrl(params.decision.provider),
     {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${params.apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: params.decision.model,
-        messages: [
-          { role: "system", content: params.systemPrompt },
-          { role: "user", content: params.userContent },
-        ],
-        max_tokens: params.maxTokens,
-        stream: false,
-      }),
+      headers,
+      body: JSON.stringify(body),
     },
     params.timeoutMs,
     params.fetchImpl,
@@ -230,6 +276,8 @@ async function callOpenAiCompatibleChat(
     model: params.decision.model,
     transport: params.decision.transport as ProviderSynthesisResult["transport"],
     stop_reason: finishReason ?? null,
+    // OpenRouter returns a measured USD cost when usage.include is set.
+    cost_usd: numericValue(usage, "cost"),
   };
 }
 
@@ -317,6 +365,7 @@ function providerHttpError(
     success: false,
     error: `provider HTTP ${status}`,
     error_code: status === 401 || status === 403 ? "AUTH" : "API_ERROR",
+    failure_class: "http",
   };
 }
 
@@ -325,6 +374,7 @@ function emptyProviderResponse(model: string): ProviderSynthesisError {
     success: false,
     error: `${model} returned empty text content`,
     error_code: "API_ERROR",
+    failure_class: "validation",
   };
 }
 
@@ -333,6 +383,7 @@ function providerCompletionError(message: string): ProviderSynthesisError {
     success: false,
     error: message,
     error_code: "API_ERROR",
+    failure_class: "validation",
   };
 }
 
@@ -344,6 +395,7 @@ function responsesUrl(provider: RouteDecision["provider"]): string {
 function openAiCompatibleChatUrl(provider: RouteDecision["provider"]): string {
   if (provider === "deepseek") return "https://api.deepseek.com/chat/completions";
   if (provider === "perplexity") return "https://api.perplexity.ai/chat/completions";
+  if (provider === "openrouter") return OPENROUTER_CHAT_COMPLETIONS_URL;
   return "https://api.openai.com/v1/chat/completions";
 }
 

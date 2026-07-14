@@ -6,7 +6,7 @@ This is the **PRISM MCP Server** — a custom remote MCP (Model Context Protocol
 
 **Owner:** Brian (brdonath1 on GitHub)
 **Framework:** PRISM — current version pinned by the framework repo's core-template; fetched dynamically at bootstrap.
-**Server Version:** 4.11.0
+**Server Version:** 4.12.0
 **Status:** Production — deployed on Railway, serving all active PRISM projects.
 
 ## What PRISM Is
@@ -25,7 +25,7 @@ The MCP server is the v2 evolution — separating Claude into a pure reasoning a
 └───────────────┬───────────────────────────────┘
                 │ MCP Protocol (HTTPS)
 ┌───────────────▼───────────────────────────────┐
-│  PRISM MCP Server (Railway) — v4.11.0         │
+│  PRISM MCP Server (Railway) — v4.12.0         │
 │  32 MCP tools — stateless proxy               │
 │  ├── 14 PRISM  (bootstrap/fetch/push/X sentiment) │
 │  ├── 10 Railway (logs/deploy/env/status/CRUD) │
@@ -54,7 +54,7 @@ The MCP server is the v2 evolution — separating Claude into a pure reasoning a
 - **HTTP framework:** Express 5.x
 - **Transport:** MCP Streamable HTTP, **stateless mode** (`sessionIdGenerator: undefined`)
 - **Validation:** Zod
-- **AI Synthesis:** `@anthropic-ai/sdk` plus provider adapters for live multi-provider synthesis. Anthropic fallback uses the registry single-switch `SYNTHESIS_MODEL_ID` in `src/models.ts` (D-254); `LLM_ROUTING_*_PROVIDER` can route synthesis through OpenAI, Gemini, DeepSeek, xAI, or Perplexity when enabled.
+- **AI Synthesis:** `@anthropic-ai/sdk` plus provider adapters for live multi-provider synthesis. Anthropic fallback uses the registry single-switch `SYNTHESIS_MODEL_ID` in `src/models.ts` (D-254); `LLM_ROUTING_*_PROVIDER` can route synthesis through OpenAI, Gemini, DeepSeek, xAI, or Perplexity when enabled; `LLM_ROUTING_OPENROUTER_SITES` routes mechanical synthesis sites to GLM-5.2 via OpenRouter (D-275).
 - **Claude Code orchestration:** `@anthropic-ai/claude-agent-sdk` + `@anthropic-ai/claude-code` (subprocess)
 - **GitHub API client:** Plain `fetch` (Node.js 18+ built-in) — no Octokit
 - **Hosting:** Railway (persistent Node.js service)
@@ -88,7 +88,11 @@ The MCP server is the v2 evolution — separating Claude into a pure reasoning a
 | `LLM_ROUTING_ENABLED` / `LLM_ROUTING_DRY_RUN` | optional | Multi-provider synthesis routing switch. Live provider invocation requires enabled=true and dry-run=false. |
 | `LLM_ROUTING_X_SENTIMENT_ENABLED` | optional | Additional explicit switch for `prism_x_sentiment`; live xAI sentiment calls require this true, routing enabled, dry-run false, `xai` allowed, and `XAI_API_KEY` present. |
 | `LLM_ROUTING_*_PROVIDER` | optional | Provider preference names for synthesis route selection and sanitized status. `LLM_ROUTING_CC_DISPATCH_PROVIDER` remains Claude-only unless a future non-Claude code runner exists. |
-| `LLM_ROUTING_{OPENAI,GEMINI,DEEPSEEK,XAI,PERPLEXITY}_MODEL` | optional | Provider model override. Defaults are OpenAI `gpt-5.5`, Gemini `gemini-3.1-pro-preview`, DeepSeek `deepseek-v4-pro`, xAI `grok-4.3`, and Perplexity `sonar-pro`. |
+| `LLM_ROUTING_{OPENAI,GEMINI,DEEPSEEK,XAI,PERPLEXITY,OPENROUTER}_MODEL` | optional | Provider model override. Defaults are OpenAI `gpt-5.5`, Gemini `gemini-3.1-pro-preview`, DeepSeek `deepseek-v4-pro`, xAI `grok-4.3`, Perplexity `sonar-pro`, and OpenRouter `z-ai/glm-5.2`. |
+| `OPENROUTER_API_KEY` | optional | Auth for the D-275 mechanical-tier synthesis routes (GLM-5.2 via OpenRouter). Inert until `LLM_ROUTING_OPENROUTER_SITES` lists a site. |
+| `LLM_ROUTING_OPENROUTER_SITES` | optional | D-275 activation surface: comma list of mechanical call-site ids (`synthesis_draft`, `synthesis_pdu`, `synthesis_brief`). openrouter serves exactly (SITES ∩ mechanical); unset/empty ⇒ routing bit-identical to pre-D-275. **Kill-switch: clear this var** (no deploy needed). Requires `LLM_ROUTING_ENABLED=true`, `LLM_ROUTING_DRY_RUN=false`, and `OPENROUTER_API_KEY`; needs NO change to `LLM_ROUTING_ALLOWED_PROVIDERS` or any other shared var. |
+| `LLM_ROUTING_OPENROUTER_REASONING_{BRIEF,DRAFT,PDU}` | optional | Per-site GLM thinking control: `off` (default) \| `low` \| `medium` \| `high`. GLM-5.2 defaults to thinking mode and reasoning consumes `max_tokens` (S196 live hazard: `finish_reason=length`, zero text), so every openrouter call pins `reasoning: {enabled:false}` unless a site opts in here — and opt-in is guarded to `max_tokens ≥ 16384`. |
+| `OPENROUTER_SITE_URL` / `OPENROUTER_APP_TITLE` | optional | OpenRouter attribution headers (`HTTP-Referer` / `X-Title`); default to this repo's URL and "PRISM MCP Server". |
 
 > This table covers the load-bearing knobs. The complete, authoritative env-var
 > surface (~40 reads, including `SYNTHESIS_*`, `*_TIMEOUT_MS`, oversize/cap
@@ -104,9 +108,31 @@ provider names, model ids, transport names, and auth env-var names only. It must
 not log credential values or live provider payloads. Provider failures fall back
 to the existing Anthropic synthesis path.
 
+The D-275 mechanical tier (brief-s196c): `LLM_ROUTING_OPENROUTER_SITES` routes
+the mechanical synthesis sites (finalization draft, intelligence brief, PDU —
+exactly the migrate-to-GLM-5.2 rows of
+`docs/cost-rearchitecture/d275-callsite-inventory.json`) to GLM-5.2 through
+OpenRouter's OpenAI-compatible chat endpoint as hop 0 in front of each site's
+existing chain. Openrouter results must pass per-site quality gates (brief:
+3 required sections + ≥2000 bytes; PDU: 4 grammar sections + ≥500 bytes;
+draft: parseable JSON with ≥4 of 6 contract keys) before counting as success —
+a gate failure logs `SYNTHESIS_PROVIDER_FALLBACK` with
+`fallback_reason: validation_failed|provider_error|timeout` and transparently
+falls back to the site's existing Anthropic path. Every LLM invocation across
+ALL providers emits one `LLM_CALL` info line ({call_site, provider, model,
+transport, tokens, est_cost_usd, latency_ms, fallback_used, fallback_reason};
+prices in `src/llm/pricing.ts`, measured OpenRouter `usage.cost` preferred),
+and server start prints the resolved `LLM_ROUTING_TABLE`
+(call_site→provider→model→transport, no secrets). Rollout/canary/rollback SOP:
+`docs/cost-rearchitecture/d275-rollout.md`.
+
 `cc_dispatch` remains Claude Code OAuth execution. A non-Claude provider name in
 `LLM_ROUTING_CC_DISPATCH_PROVIDER` must not redirect code dispatch to a generic
-completion API; that would require a separate code-runner subsystem.
+completion API; that would require a separate code-runner subsystem. The
+openrouter tier follows the same wall: it serves only the three mechanical
+synthesis surfaces — never `cc_dispatch`/Trigger execution, never
+`prism_x_sentiment` (xAI `x_search` exclusive), never the NON-LLM
+recommendation classifier.
 
 `prism_x_sentiment` uses xAI `x_search` through the Responses API for aggregate
 public X sentiment. It returns handle-free `/i/status/...` source URLs,

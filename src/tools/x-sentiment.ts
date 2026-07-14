@@ -8,6 +8,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { MCP_SAFE_TIMEOUT } from "../config.js";
+import { emitLlmCall } from "../llm/llm-call-telemetry.js";
 
 const XAI_RESPONSES_URL = "https://api.x.ai/v1/responses";
 const DEFAULT_MODEL = "grok-4.3";
@@ -123,6 +124,30 @@ export async function analyzeXSentiment({
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  // D-275 §4.8 (brief-s196c): CS-4 leg of the per-invocation LLM_CALL
+  // telemetry — emitted for every attempted xAI call (never for the gated
+  // unavailable paths above, where no invocation happens). Aggregate counts
+  // and latency only; no payload content.
+  const invocationStart = Date.now();
+  const emitXSentimentCall = (
+    success: boolean,
+    usage?: { input_tokens: number; output_tokens: number },
+  ): void => {
+    emitLlmCall({
+      call_site: "x_sentiment",
+      provider: "xai",
+      model,
+      transport: "xai_responses",
+      success,
+      input_tokens: usage?.input_tokens ?? 0,
+      output_tokens: usage?.output_tokens ?? 0,
+      token_source: "usage",
+      measured_cost_usd: null,
+      latency_ms: Date.now() - invocationStart,
+      fallback_used: false,
+      fallback_reason: null,
+    });
+  };
   try {
     const tool: Record<string, string> = { type: "x_search" };
     if (fromDate) tool.from_date = fromDate;
@@ -160,6 +185,7 @@ export async function analyzeXSentiment({
     });
     const payload = await safeJson(response);
     if (!response.ok) {
+      emitXSentimentCall(false);
       return providerError(model, `xAI HTTP ${response.status}`);
     }
 
@@ -177,6 +203,11 @@ export async function analyzeXSentiment({
     const caveats = asStringArray(parsed.caveats)
       .map((value) => pickEnum(value, CAVEAT_LABELS, null))
       .filter((value): value is CaveatLabel => value !== null);
+
+    emitXSentimentCall(true, {
+      input_tokens: numericPath(payload, ["usage", "input_tokens"]) ?? 0,
+      output_tokens: numericPath(payload, ["usage", "output_tokens"]) ?? 0,
+    });
 
     return {
       status: "ok",
@@ -201,6 +232,7 @@ export async function analyzeXSentiment({
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    emitXSentimentCall(false);
     return providerError(model, message.includes("abort") ? "xAI request timed out" : "xAI provider request failed");
   } finally {
     clearTimeout(timeout);

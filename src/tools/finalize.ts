@@ -174,30 +174,11 @@ import { findUnloggedIds } from "../utils/unlogged-ids.js";
 import { parseExistingDecisionIds } from "./log-decision.js";
 import { parseExistingInsightIds } from "./log-insight.js";
 
-/**
- * Robust JSON extraction from AI responses (B.8).
- * Tries multiple strategies: direct parse, fence stripping, brace extraction.
- */
-export function extractJSON(text: string): unknown {
-  // Try direct parse first
-  try { return JSON.parse(text.trim()); } catch { /* continue */ }
-  // Strip markdown fences
-  const fenceStripped = text.replace(/```(?:json)?\s*\n?/g, "").trim();
-  try { return JSON.parse(fenceStripped); } catch { /* continue */ }
-  // Find first { and last }
-  const firstBrace = text.indexOf("{");
-  const lastBrace = text.lastIndexOf("}");
-  if (firstBrace !== -1 && lastBrace > firstBrace) {
-    try { return JSON.parse(text.slice(firstBrace, lastBrace + 1)); } catch { /* continue */ }
-  }
-  // Try array extraction
-  const firstBracket = text.indexOf("[");
-  const lastBracket = text.lastIndexOf("]");
-  if (firstBracket !== -1 && lastBracket > firstBracket) {
-    try { return JSON.parse(text.slice(firstBracket, lastBracket + 1)); } catch { /* continue */ }
-  }
-  throw new Error("Failed to extract JSON from AI response");
-}
+// Robust JSON extraction (B.8) — implementation moved to
+// src/utils/extract-json.ts (brief-s196c) so the openrouter quality gates can
+// use it without a module cycle; re-exported here for existing importers.
+export { extractJSON } from "../utils/extract-json.js";
+import { extractJSON } from "../utils/extract-json.js";
 import { FINALIZATION_DRAFT_PROMPT, buildFinalizationDraftMessage } from "../ai/prompts.js";
 import { boundSynthesisInput } from "../ai/input-budget.js";
 import { synthesize } from "../ai/client.js";

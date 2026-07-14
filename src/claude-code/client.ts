@@ -30,6 +30,7 @@ import { execSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { CC_DISPATCH_EFFORT, CC_DISPATCH_MODEL, CLAUDE_CODE_OAUTH_TOKEN } from "../config.js";
+import { emitLlmCall } from "../llm/llm-call-telemetry.js";
 import { observeRoute } from "../llm/route-observer.js";
 import { isSensitiveKey } from "../railway/client.js";
 import { logger } from "../utils/logger.js";
@@ -370,6 +371,25 @@ export async function dispatchTask(
 
     if (timer) clearTimeout(timer);
 
+    // D-275 §4.8 (brief-s196c): CS-5 leg of the per-invocation LLM_CALL
+    // telemetry. Usage/cost are the Agent SDK's own reported numbers; the
+    // dispatch is billed to the Max OAuth surface, never rerouted (CS-5 is
+    // the protected judgment tier).
+    emitLlmCall({
+      call_site: "cc_dispatch",
+      provider: "anthropic",
+      model,
+      transport: "claude_code_oauth",
+      success,
+      input_tokens: usageInput,
+      output_tokens: usageOutput,
+      token_source: "usage",
+      measured_cost_usd: costUsd > 0 ? costUsd : null,
+      latency_ms: Date.now() - start,
+      fallback_used: false,
+      fallback_reason: null,
+    });
+
     return {
       success,
       result: resultText,
@@ -403,6 +423,21 @@ export async function dispatchTask(
       ? formatTimeoutError(timeoutMs ?? 0)
       : oauthErr ??
         `${message} | executable: ${executable.path} (${executable.version ?? "version unknown"})${executable.error ? " | pre-flight: " + executable.error : ""}`;
+    // D-275 §4.8: failed dispatch attempts still emit an LLM_CALL line.
+    emitLlmCall({
+      call_site: "cc_dispatch",
+      provider: "anthropic",
+      model,
+      transport: "claude_code_oauth",
+      success: false,
+      input_tokens: 0,
+      output_tokens: 0,
+      token_source: "usage",
+      measured_cost_usd: null,
+      latency_ms: Date.now() - start,
+      fallback_used: false,
+      fallback_reason: null,
+    });
     return {
       success: false,
       result: "",

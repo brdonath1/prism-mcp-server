@@ -11,7 +11,8 @@ export type LlmProviderId =
   | "gemini"
   | "deepseek"
   | "xai"
-  | "perplexity";
+  | "perplexity"
+  | "openrouter";
 
 export type RouteProviderId = LlmProviderId | "none";
 
@@ -36,6 +37,7 @@ export type LlmQualityTier =
   | "frontier-code"
   | "frontier-long-context"
   | "research-citation"
+  | "mechanical-cost"
   | "blocked";
 
 export type RouteReason =

@@ -47,8 +47,10 @@ export const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
  *  substantive src/** releases so health/status can identify the deployed
  *  runtime. 4.10.0 adds the production prism_x_sentiment tool; 4.11.0 adds the
  *  six Railway provisioning/lifecycle tools (create project/service/volume/
- *  domain, update service settings, delete service). */
-export const SERVER_VERSION = "4.11.0";
+ *  domain, update service settings, delete service); 4.12.0 adds the D-275
+ *  openrouter (GLM-5.2) mechanical-tier synthesis routing, per-invocation
+ *  LLM_CALL cost telemetry, and the LLM_ROUTING_TABLE startup log. */
+export const SERVER_VERSION = "4.12.0";
 
 /** MCP client timeout is ~60s. All server-side operations must complete within 50s
  *  to leave 10s buffer for transport overhead. This constrains synthesis, draft,

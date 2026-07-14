@@ -7,6 +7,58 @@ by `src/utils/banner.ts` (`BANNER_SPEC_VERSION`) plus the prism-framework
 templates; [docs/banner-spec.md](docs/banner-spec.md) is historical reference.
 Banner changes add an entry here.
 
+## [4.12.0] — 2026-07-14 (D-275: OpenRouter GLM-5.2 mechanical-tier routing)
+
+### Added
+- **`openrouter` provider (GLM-5.2) in the existing LLM routing layer**
+  (D-275 / brief-s196c, design: `docs/cost-rearchitecture/d275-audit-design.md`).
+  Registry entry + `openai_compatible_chat` adapter branch targeting
+  `https://openrouter.ai/api/v1/chat/completions`, Bearer auth from
+  `OPENROUTER_API_KEY`, model from `LLM_ROUTING_OPENROUTER_MODEL` (default
+  `z-ai/glm-5.2`), attribution headers (`HTTP-Referer`/`X-Title`), and the
+  openrouter-only request extensions `usage: {include: true}` (measured
+  per-call cost) and `provider: {data_collection: "deny"}` (governance).
+- **`LLM_ROUTING_OPENROUTER_SITES` activation surface** — openrouter serves
+  exactly (SITES ∩ mechanical synthesis sites: `synthesis_draft`,
+  `synthesis_pdu`, `synthesis_brief`), resolved ahead of the per-surface
+  provider vars with no mutation of any pre-existing shared env var.
+  SITES unset/empty ⇒ routing bit-identical to 4.11.0 (regression-tested).
+  Kill-switch: clear the var — env-only, no deploy.
+- **GLM thinking control (correctness-critical)** — every openrouter call
+  pins `reasoning: {enabled: false}` (the S196 live micro-call spent all 16
+  completion tokens on reasoning: `finish_reason=length`, zero answer text).
+  Per-site opt-in via `LLM_ROUTING_OPENROUTER_REASONING_{BRIEF,DRAFT,PDU}`
+  (`off|low|medium|high`), guarded to `max_tokens ≥ 16384`. The callers'
+  Anthropic `thinking` flag is deliberately ignored on this leg.
+- **Per-site quality gates on the openrouter leg** (design §4.5): brief =
+  3 required H2 sections + ≥2000 bytes; PDU = 4 grammar sections + ≥500
+  bytes; draft = parseable JSON with ≥4 of 6 contract keys (closing the
+  `raw_content` success gap on the GLM route only). A gate failure is
+  treated exactly like a provider failure: structured
+  `SYNTHESIS_PROVIDER_FALLBACK` warn now carrying
+  `fallback_reason: validation_failed|provider_error|timeout`, then the
+  site's existing Anthropic chain serves.
+- **`LLM_CALL` per-invocation cost telemetry** across ALL providers/
+  transports (synthesis in `src/ai/client.ts`, `cc_dispatch`,
+  `prism_x_sentiment`): `{call_site, provider, model, transport,
+  input_tokens, output_tokens, est_cost_usd, latency_ms, fallback_used,
+  fallback_reason}` — provider usage preferred, labeled chars/3.5 estimates
+  otherwise; prices in the new `src/llm/pricing.ts` (source-dated table;
+  measured OpenRouter `usage.cost` wins when present).
+- **`LLM_ROUTING_TABLE` startup log** — one line at boot printing the
+  resolved `call_site→provider→model→transport` for every surface (no
+  secrets), permanently killing the "configured but never serving" class.
+- **Rollout SOP** at `docs/cost-rearchitecture/d275-rollout.md` (go-live env
+  end-state, canary steps, stage-2 intelligence-brief flip, rollback).
+
+### Changed
+- `extractJSON` moved to `src/utils/extract-json.ts` (re-exported from
+  `src/tools/finalize.ts` unchanged) so the draft quality gate can consume it
+  without a module cycle.
+- Provider adapter errors now carry a `failure_class`
+  (`validation|timeout|http`) so fallback telemetry can distinguish the GLM
+  length-starvation signature from transport failures.
+
 ## [4.11.0] — 2026-07-08 (Railway provisioning & lifecycle)
 
 ### Added
