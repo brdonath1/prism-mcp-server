@@ -398,7 +398,7 @@ describe("boundSynthesisInput — signal preservation", () => {
     const sessionLog = result.docs.get("session-log.md")?.content ?? "";
     expect(sessionLog).toContain("### Session 60");
     expect(sessionLog).not.toContain("### Session 1\n");
-    expect(sessionLog).toContain("[synthesis input bound — brief-445/R3-dur]");
+    expect(sessionLog).toContain("— do not cite truncated size as a file fact]");
 
     // insights.md is newest-LAST → tail retention: the most recent insights
     // survive, the oldest are dropped, and the title line is preserved.
@@ -406,7 +406,7 @@ describe("boundSynthesisInput — signal preservation", () => {
     expect(insights).toContain("### INS-300:");
     expect(insights).not.toContain("### INS-1:");
     expect(insights.startsWith("# Insights — Test Project")).toBe(true);
-    expect(insights).toContain("[synthesis input bound — brief-445/R3-dur]");
+    expect(insights).toContain("— do not cite truncated size as a file fact]");
     // A meaningful QUANTITY of recent insights survives — not just the single
     // newest entry. With this fixture ~120 of 300 are retained; >=50 leaves
     // wide slack for parameter drift while decisively failing a regression
@@ -415,11 +415,17 @@ describe("boundSynthesisInput — signal preservation", () => {
     expect(retainedInsightHeaders.length).toBeGreaterThanOrEqual(50);
     expect(insights).toContain("### INS-250:");
 
-    // Trimmed docs' header sizes reflect the trimmed content (honest headers).
+    // brief-s202b T9 (INS-363-adjacent): trimmed docs' FILE headers cite the
+    // TRUE original size (metadata preserved through trimming) — the model
+    // must never see a post-trim size it could cite as a file fact. The
+    // trim annotation inside the content states the true size + do-not-cite.
     const message = builderFor(result.docs);
-    const trimmedInsightsSize = result.docs.get("insights.md")?.size ?? 0;
-    expect(message).toContain(`### FILE: insights.md (${trimmedInsightsSize} bytes)`);
-    expect(trimmedInsightsSize).toBeLessThan(docs.get("insights.md")?.content.length ?? 0);
+    const originalInsightsSize = docs.get("insights.md")?.size ?? 0;
+    expect(result.docs.get("insights.md")?.size).toBe(originalInsightsSize);
+    expect(message).toContain(`### FILE: insights.md (${originalInsightsSize} bytes)`);
+    expect(insights).toContain(`[trimmed from ${(originalInsightsSize / 1024).toFixed(1)} KB`);
+    // The content itself IS trimmed even though the size metadata is not.
+    expect(insights.length).toBeLessThan(docs.get("insights.md")?.content.length ?? 0);
   });
 
   it("preserves the RECENT end when a high-signal doc is ITSELF the bloat source", () => {
@@ -452,7 +458,7 @@ describe("boundSynthesisInput — signal preservation", () => {
     expect(index).toContain("| D-7000 |");
     expect(index).not.toContain("| D-1 |");
     expect(index.startsWith("# Decision Registry")).toBe(true);
-    expect(index).toContain("[synthesis input bound — brief-445/R3-dur]");
+    expect(index).toContain("— do not cite truncated size as a file fact]");
     // The highest-priority doc (handoff) is still untouched even when the
     // registry itself is the doc being cut.
     expect(result.docs.get("handoff.md")?.content).toBe(HANDOFF_CONTENT);
@@ -542,7 +548,7 @@ describe("generateIntelligenceBrief — input bound integration", () => {
     for (const [, doc] of living) {
       expect(userContent).toContain(doc.content);
     }
-    expect(userContent).not.toContain("[synthesis input bound");
+    expect(userContent).not.toContain("do not cite truncated size");
 
     const logPayload = findAssembledLog("Synthesis input assembled");
     expect(logPayload?.input_trimmed).toBe(false);
@@ -630,7 +636,7 @@ describe("brief-459 / SRV-04: chronological session-log retention", () => {
     const sessionLog = result.docs.get("session-log.md")?.content ?? "";
     expect(sessionLog).toContain("### Session 60");
     expect(sessionLog).not.toContain("### Session 1\n");
-    expect(sessionLog).toContain("[synthesis input bound — brief-445/R3-dur]");
+    expect(sessionLog).toContain("— do not cite truncated size as a file fact]");
     // The title line stays anchored on tail retention.
     expect(sessionLog.startsWith("# Session Log — Test Project")).toBe(true);
   });

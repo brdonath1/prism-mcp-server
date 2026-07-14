@@ -6,7 +6,7 @@ This is the **PRISM MCP Server** — a custom remote MCP (Model Context Protocol
 
 **Owner:** Brian (brdonath1 on GitHub)
 **Framework:** PRISM — current version pinned by the framework repo's core-template; fetched dynamically at bootstrap.
-**Server Version:** 4.12.0
+**Server Version:** 4.13.0
 **Status:** Production — deployed on Railway, serving all active PRISM projects.
 
 ## What PRISM Is
@@ -25,7 +25,7 @@ The MCP server is the v2 evolution — separating Claude into a pure reasoning a
 └───────────────┬───────────────────────────────┘
                 │ MCP Protocol (HTTPS)
 ┌───────────────▼───────────────────────────────┐
-│  PRISM MCP Server (Railway) — v4.12.0         │
+│  PRISM MCP Server (Railway) — v4.13.0         │
 │  32 MCP tools — stateless proxy               │
 │  ├── 14 PRISM  (bootstrap/fetch/push/X sentiment) │
 │  ├── 10 Railway (logs/deploy/env/status/CRUD) │
@@ -93,6 +93,11 @@ The MCP server is the v2 evolution — separating Claude into a pure reasoning a
 | `LLM_ROUTING_OPENROUTER_SITES` | optional | D-275 activation surface: comma list of mechanical call-site ids (`synthesis_draft`, `synthesis_pdu`, `synthesis_brief`). openrouter serves exactly (SITES ∩ mechanical); unset/empty ⇒ routing bit-identical to pre-D-275. **Kill-switch: clear this var** (no deploy needed). Requires `LLM_ROUTING_ENABLED=true`, `LLM_ROUTING_DRY_RUN=false`, and `OPENROUTER_API_KEY`; needs NO change to `LLM_ROUTING_ALLOWED_PROVIDERS` or any other shared var. |
 | `LLM_ROUTING_OPENROUTER_REASONING_{BRIEF,DRAFT,PDU}` | optional | Per-site GLM thinking control: `off` (default) \| `low` \| `medium` \| `high`. GLM-5.2 defaults to thinking mode and reasoning consumes `max_tokens` (S196 live hazard: `finish_reason=length`, zero text), so every openrouter call pins `reasoning: {enabled:false}` unless a site opts in here — and opt-in is guarded to `max_tokens ≥ 16384`. |
 | `OPENROUTER_SITE_URL` / `OPENROUTER_APP_TITLE` | optional | OpenRouter attribution headers (`HTTP-Referer` / `X-Title`); default to this repo's URL and "PRISM MCP Server". |
+| `BOOT_INDEX_MODE` | optional | S202 boot-lean (brief-s202b T1): `full` (default) ships the legacy `standing_rules_index` PLUS the new `session_state_manifest`; `compact` ships the manifest only (legacy index omitted, ≈ −15.4KB on the prism baseline). **Flip to `compact` only after the s202c template merge + one soak session.** Rollback: `full` (env-only). |
+| `BRIEF_COMPACT_MODE` | optional | brief-s202b T3: `dedup` (default) drops the brief's Project State digest line (measured duplicate of `current_state`); `legacy` restores it. The BRIEF_COMPACT_FALLBACK guard is identical in both modes. |
+| `PREFETCH_MODE` | optional | brief-s202b T4: `opening_only` (default) drops the next_steps-keyword prefetch auto-trigger and caps each summary at `PREFETCH_SUMMARY_CAP_BYTES` (1200); `legacy` restores today's exact trigger behavior. `PREFETCH_DELIVERED` telemetry emits in both modes. |
+| `BOOT_MASTHEAD_SVG` | optional | brief-s202b T6: `on` (default — D-249 operator choice) renders the boot SVG masthead; `off` ships `boot_masthead_svg: null` (template text-banner fallback path is pre-built). |
+| `FINALIZE_COMPOSE_MODE` | optional | brief-s202b T8 (D-275 F-1): `files` (default) — the CS-1 draft emits complete finalization files, server-validated and persisted to `.prism/finalize-draft.json`; chat approves via `prism_finalize action=commit use_draft_files: true`. Gate failures fall back to the legacy 6-key draft response (`FINALIZE_COMPOSE_FALLBACK` warn). `legacy` disables composition. |
 
 > This table covers the load-bearing knobs. The complete, authoritative env-var
 > surface (~40 reads, including `SYNTHESIS_*`, `*_TIMEOUT_MS`, oversize/cap

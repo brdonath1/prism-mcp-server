@@ -49,8 +49,12 @@ export const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
  *  six Railway provisioning/lifecycle tools (create project/service/volume/
  *  domain, update service settings, delete service); 4.12.0 adds the D-275
  *  openrouter (GLM-5.2) mechanical-tier synthesis routing, per-invocation
- *  LLM_CALL cost telemetry, and the LLM_ROUTING_TABLE startup log. */
-export const SERVER_VERSION = "4.12.0";
+ *  LLM_CALL cost telemetry, and the LLM_ROUTING_TABLE startup log; 4.13.0 is
+ *  the S202 boot-lean server bundle (session_state_manifest + BOOT_INDEX_MODE,
+ *  rules_hint, brief digest-dedup, PREFETCH_MODE, handoff item budget,
+ *  masthead knob, kernel handshake, finalize compose-offload, synthesis size
+ *  contracts + trim annotation). */
+export const SERVER_VERSION = "4.13.0";
 
 /** MCP client timeout is ~60s. All server-side operations must complete within 50s
  *  to leave 10s buffer for transport overhead. This constrains synthesis, draft,
@@ -89,6 +93,90 @@ export const BOOTSTRAP_OVERSIZE_WARN_BYTES =
   parseInt(process.env.BOOTSTRAP_OVERSIZE_WARN_BYTES ?? "160000", 10) || 160_000;
 export const BOOTSTRAP_OVERSIZE_ERROR_BYTES =
   parseInt(process.env.BOOTSTRAP_OVERSIZE_ERROR_BYTES ?? "200000", 10) || 200_000;
+
+/* ------------------------------------------------------------------------ *
+ * S202 boot-lean knobs (brief-s202b). Every knob defaults to a value chosen
+ * so a deploy WITHOUT env changes is safe; each resolver reads process.env at
+ * CALL time (computeSynthesisThinkingEnabled pattern) so per-deployment flips
+ * and tests need no re-import. Unknown values fall back to the default —
+ * never a crash.
+ * ------------------------------------------------------------------------ */
+
+/** T1 (P-1): boot rules-index delivery mode.
+ *  `full` (default) ships today's standing_rules_index unchanged PLUS the new
+ *  session_state_manifest (additive release — SRV-109 two-phase);
+ *  `compact` ships the manifest ONLY (legacy index omitted; ≈ −15.4KB on the
+ *  measured prism baseline). Rollback: BOOT_INDEX_MODE=full (env-only). */
+export function resolveBootIndexMode(env: NodeJS.ProcessEnv = process.env): "full" | "compact" {
+  return env.BOOT_INDEX_MODE?.trim().toLowerCase() === "compact" ? "compact" : "full";
+}
+
+/** T3 (P-3): intelligence-brief boot compaction mode.
+ *  `dedup` (default) drops the `**Project State (compact):**` digest line — a
+ *  measured full duplicate of `current_state` in the same payload (audit
+ *  §B.4) — keeping FULL Risk Flags + FULL Quality Audit; `legacy` ships the
+ *  digest again. The BRIEF_COMPACT_FALLBACK spec-coupling guard is identical
+ *  in both modes (D-253 lesson b). Rollback: BRIEF_COMPACT_MODE=legacy. */
+export function resolveBriefCompactMode(env: NodeJS.ProcessEnv = process.env): "dedup" | "legacy" {
+  return env.BRIEF_COMPACT_MODE?.trim().toLowerCase() === "legacy" ? "legacy" : "dedup";
+}
+
+/** T4 (P-4): prefetch trigger policy.
+ *  `opening_only` (default) drops the `next_steps`-keyword auto-trigger (it
+ *  fires on registry-style words like "queue"/"task" in nearly every handoff
+ *  — audit §B.3) and caps any single summary at PREFETCH_SUMMARY_CAP_BYTES;
+ *  opening-message keywords and the always-prefetched pending-doc-updates
+ *  entry are kept. `legacy` restores today's exact behavior (next_steps
+ *  trigger, no per-summary cap). Rollback: PREFETCH_MODE=legacy. */
+export function resolvePrefetchMode(env: NodeJS.ProcessEnv = process.env): "opening_only" | "legacy" {
+  return env.PREFETCH_MODE?.trim().toLowerCase() === "legacy" ? "legacy" : "opening_only";
+}
+
+/** T4: per-summary hard cap (bytes) applied in PREFETCH_MODE=opening_only.
+ *  SRV-74 capped the header COUNT; a header-dense doc still measured 2,009 B
+ *  (task-queue, audit §2.1 row 5). Env-overridable. */
+export const PREFETCH_SUMMARY_CAP_BYTES =
+  parseInt(process.env.PREFETCH_SUMMARY_CAP_BYTES ?? "1200", 10) || 1_200;
+
+/** T5 (P-3/P-7): advisory per-item budget (bytes) for handoff Critical
+ *  Context items. Items average 708 B on the measured baseline vs the
+ *  template intent of 3-5 FACTS; the HANDOFF_ITEM_OVERSIZE diagnostic is
+ *  WARN-ONLY at boot parse and finalize validation — never a rejection. */
+export const HANDOFF_ITEM_BUDGET_BYTES =
+  parseInt(process.env.HANDOFF_ITEM_BUDGET_BYTES ?? "300", 10) || 300;
+
+/** T6 (P-6a): boot masthead SVG knob. Default ON — D-249 restored graphical
+ *  banners as an explicit operator choice; `off` ships
+ *  `boot_masthead_svg: null` (the template's fallback path is pre-built,
+ *  core-template-mcp.md:175-181). Rollback: unset or `on`. */
+export function resolveBootMastheadSvg(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = env.BOOT_MASTHEAD_SVG?.trim().toLowerCase();
+  return !(raw === "off" || raw === "false" || raw === "0" || raw === "no");
+}
+
+/** T8 (F-1): finalize compose-offload mode.
+ *  `files` (default) has the CS-1 draft emit complete finalization files that
+ *  are server-validated, persisted to `.prism/finalize-draft.json`, and
+ *  approvable at commit via `use_draft_files: true`; any validation-gate
+ *  failure transparently falls back to the legacy 6-key draft response
+ *  (FINALIZE_COMPOSE_FALLBACK). `legacy` disables composition entirely.
+ *  Rollback: FINALIZE_COMPOSE_MODE=legacy. */
+export function resolveFinalizeComposeMode(env: NodeJS.ProcessEnv = process.env): "files" | "legacy" {
+  return env.FINALIZE_COMPOSE_MODE?.trim().toLowerCase() === "legacy" ? "legacy" : "files";
+}
+
+/** T8: hard size contract for the composed handoff.md draft (bytes). Aligned
+ *  with HANDOFF_WARNING_SIZE (10KB) — the template's lean-handoff target. A
+ *  composed draft over this is a quality-gate failure (falls back to the
+ *  legacy draft response), NOT a validation rejection of operator content. */
+export const FINALIZE_COMPOSE_HANDOFF_MAX_BYTES = 10_240;
+
+/** T8: path of the persisted compose-offload draft artifact (project repo).
+ *  Stateless-server bridge between action=draft and action=commit
+ *  use_draft_files — the same GitHub-persistence pattern as dispatch state
+ *  (D-123), scoped to the project repo like boot-test.md. Overwritten on
+ *  every files-mode draft; a session_number guard makes stale drafts inert. */
+export const FINALIZE_DRAFT_STATE_PATH = `.prism/finalize-draft.json`;
 
 /** GitHub API base URL */
 export const GITHUB_API_BASE = "https://api.github.com";

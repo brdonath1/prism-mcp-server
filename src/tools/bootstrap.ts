@@ -18,7 +18,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { fetchFile, pushFile, listRepos } from "../github/client.js";
-import { BOOTSTRAP_OVERSIZE_ERROR_BYTES, BOOTSTRAP_OVERSIZE_WARN_BYTES, CC_DISPATCH_ENABLED, DEFAULT_CONTEXT_WINDOW_TOKENS, DOC_ROOT, FRAMEWORK_REPO, GITHUB_PAT, HANDOFF_CRITICAL_SIZE, LIVING_DOCUMENTS, MCP_TEMPLATE_PATH, PREFETCH_KEYWORDS, PROJECT_DISPLAY_NAMES, RAILWAY_API_TOKEN, RAILWAY_ENABLED, STALE_ACTIVE_THRESHOLD_MS, SYNTHESIS_LOG_LOOKBACK_MS, TRIGGER_AUTO_ENROLL, resolveProjectSlug } from "../config.js";
+import { BOOTSTRAP_OVERSIZE_ERROR_BYTES, BOOTSTRAP_OVERSIZE_WARN_BYTES, CC_DISPATCH_ENABLED, DEFAULT_CONTEXT_WINDOW_TOKENS, DOC_ROOT, FRAMEWORK_REPO, GITHUB_PAT, HANDOFF_CRITICAL_SIZE, HANDOFF_ITEM_BUDGET_BYTES, LIVING_DOCUMENTS, MCP_TEMPLATE_PATH, PREFETCH_KEYWORDS, PREFETCH_SUMMARY_CAP_BYTES, PROJECT_DISPLAY_NAMES, RAILWAY_API_TOKEN, RAILWAY_ENABLED, STALE_ACTIVE_THRESHOLD_MS, SYNTHESIS_LOG_LOOKBACK_MS, TRIGGER_AUTO_ENROLL, resolveBootIndexMode, resolveBootMastheadSvg, resolveBriefCompactMode, resolvePrefetchMode, resolveProjectSlug } from "../config.js";
 import { computePayloadAttribution } from "../utils/payload-attribution.js";
 import { getEnvironmentLogs } from "../railway/client.js";
 import { checkStaleActive } from "../utils/stale-active-check.js";
@@ -254,8 +254,21 @@ function extractBriefSection(full: string, header: string): string | null {
  * BRIEF_COMPACT_FALLBACK diagnostic naming the missing section — so a
  * renamed/dropped header surfaces loudly instead of silently shrinking the
  * brief. Returns the brief string to deliver (compacted, or full on fallback).
+ *
+ * brief-s202b T3 (P-3): in `dedup` mode (the BRIEF_COMPACT_MODE default) the
+ * `**Project State (compact):**` digest line is dropped — the S202 audit
+ * (§B.4) measured it as a full duplicate of the handoff-derived
+ * `current_state` field delivered in the same payload. FULL Risk Flags and
+ * FULL Quality Audit are kept whole. The spec-coupling + fallback guard above
+ * is IDENTICAL in both modes (all three sections must still be present, or
+ * the full brief ships with the diagnostic) — D-253 lesson (b) retained.
+ * `legacy` mode ships the digest line again (env rollback, no deploy).
  */
-export function compactIntelligenceBrief(full: string, diagnostics: DiagnosticsCollector): string {
+export function compactIntelligenceBrief(
+  full: string,
+  diagnostics: DiagnosticsCollector,
+  mode: "dedup" | "legacy" = resolveBriefCompactMode(),
+): string {
   const projectState = extractBriefSection(full, BRIEF_COMPACT_SECTIONS.projectState);
   const riskFlags = extractBriefSection(full, BRIEF_COMPACT_SECTIONS.riskFlags);
   const qualityAudit = extractBriefSection(full, BRIEF_COMPACT_SECTIONS.qualityAudit);
@@ -275,7 +288,12 @@ export function compactIntelligenceBrief(full: string, diagnostics: DiagnosticsC
     return full;
   }
 
-  // First 3 sentences of the Project State body (header line stripped).
+  if (mode === "dedup") {
+    return [riskFlags, qualityAudit].join("\n\n");
+  }
+
+  // Legacy mode — first 3 sentences of the Project State body (header line
+  // stripped) as the digest line, then the two full sections.
   const projectStateBody = projectState.split("\n").slice(1).join("\n").trim();
   const projectStateDigest = projectStateBody
     .split(/(?<=[.!?])\s+/)
@@ -289,6 +307,140 @@ export function compactIntelligenceBrief(full: string, diagnostics: DiagnosticsC
     riskFlags,
     qualityAudit,
   ].join("\n\n");
+}
+
+/**
+ * brief-s202b T1 (P-1): title cap for the compact rule index. Titles are 62%
+ * of the legacy standing_rules_index bytes (12,253 of 19,873 B measured);
+ * the consumer contract (core-template-mcp.md:104 — "consults the index to
+ * lazy-load") needs id + short title + topics only. Capped, never dropped:
+ * a truncated title still makes the rule discoverable, and `topics` (the
+ * prism_load_rules match key) is kept whole.
+ */
+export function truncateTitle60(title: string): string {
+  if (title.length <= 60) return title;
+  return `${title.slice(0, 60).trimEnd()}…`;
+}
+
+/** brief-s202b T1: one fetched-doc row of the session-state manifest. */
+export interface ManifestDocRow {
+  path: string;
+  sha: string;
+  bytes: number;
+}
+
+/** brief-s202b T1 (P-1): the machine-readable session-state manifest. */
+export interface SessionStateManifest {
+  docs: ManifestDocRow[];
+  rules: {
+    total: number;
+    tier_counts: { A: number; B: number; C: number };
+    index: Array<{ id: string; t: string; topics: string[]; title60: string }>;
+  };
+  brief: {
+    synthesized_session: number | null;
+    sections: string[];
+  };
+}
+
+/**
+ * Build the `session_state_manifest` bootstrap field (brief-s202b T1 / P-1).
+ *
+ * Replaces the two boot fields whose cost scales with REPOSITORY POPULATION
+ * rather than session need (audit §B.3/§B.7): the B/C rules index (compact
+ * rows here: id + tier + topics + title60) and the prefetch surface (doc
+ * rows: path + sha + bytes, lazy-loadable via prism_fetch). Behavioral rules
+ * and Tier-A bodies are NOT manifest-izable — they sit on the wrong side of
+ * the fidelity wall (proposals §0.1) and are untouched.
+ *
+ * Pure and exported for direct unit testing.
+ */
+export function buildSessionStateManifest(inputs: {
+  docs: ManifestDocRow[];
+  allRules: StandingRule[];
+  indexedRules: StandingRule[];
+  briefSynthesizedSession: number | null;
+  deliveredBrief: string | null;
+}): SessionStateManifest {
+  const tierCount = (tier: string): number =>
+    inputs.allRules.filter(r => r.tier === tier).length;
+  return {
+    docs: inputs.docs,
+    rules: {
+      total: inputs.allRules.length,
+      tier_counts: { A: tierCount("A"), B: tierCount("B"), C: tierCount("C") },
+      index: inputs.indexedRules.map(r => ({
+        id: r.id,
+        t: r.tier,
+        topics: r.topics,
+        title60: truncateTitle60(r.title),
+      })),
+    },
+    brief: {
+      synthesized_session: inputs.briefSynthesizedSession,
+      // Spec-coupled (no string literals): which spec sections actually
+      // appear in the DELIVERED brief — the manifest advertises what the
+      // session holds vs what prism_fetch can pull on demand.
+      sections: inputs.deliveredBrief
+        ? INTELLIGENCE_BRIEF_SPEC_SECTIONS.filter(s => inputs.deliveredBrief!.includes(s))
+        : [],
+    },
+  };
+}
+
+/**
+ * brief-s202b T7 (P-2 server guard): parse the optional `Kernel-Manifest:`
+ * header line from the behavioral-rules template — a comma list of the H2
+ * section titles the kernel template MUST deliver. Returns the trimmed list,
+ * or null when the template declares no manifest (pre-kernel template — not
+ * drift, no diagnostic). Entries may be written with or without their
+ * leading `## ` marker.
+ */
+export function parseKernelManifestHeader(content: string): string[] | null {
+  const match = content.match(/^.*Kernel-Manifest:\s*(.+)$/m);
+  if (!match) return null;
+  const entries = match[1]
+    .split(",")
+    .map(e => e.trim())
+    .filter(e => e.length > 0);
+  return entries.length > 0 ? entries : null;
+}
+
+/**
+ * brief-s202b T7: which Kernel-Manifest-required sections are missing from
+ * the delivered template. Comparison is against the template's H2 lines,
+ * case-insensitive, tolerant of the entry carrying or omitting `##`.
+ */
+export function findMissingKernelSections(templateContent: string, required: string[]): string[] {
+  const h2Titles = new Set(
+    templateContent
+      .split("\n")
+      .map(line => line.trim())
+      .filter(line => /^##\s+/.test(line))
+      .map(line => line.replace(/^##\s+/, "").trim().toLowerCase()),
+  );
+  return required.filter(entry => {
+    const normalized = entry.replace(/^#{1,6}\s*/, "").trim().toLowerCase();
+    return !h2Titles.has(normalized);
+  });
+}
+
+/**
+ * brief-s202b T4: cap a prefetch summary at `capBytes` UTF-8 bytes on a
+ * character boundary, ending with an ellipsis when truncated. SRV-74 capped
+ * the header COUNT; this bounds the whole summary string.
+ */
+export function capSummaryBytes(summary: string, capBytes: number): string {
+  const encoder = new TextEncoder();
+  if (encoder.encode(summary).length <= capBytes) return summary;
+  const ellipsis = "…"; // 3 bytes in UTF-8
+  let keep = summary;
+  // Cut to a fast char-length estimate first, then walk back to fit.
+  if (keep.length > capBytes) keep = keep.slice(0, capBytes);
+  while (keep.length > 0 && encoder.encode(keep).length > capBytes - 3) {
+    keep = keep.slice(0, -1);
+  }
+  return `${keep}${ellipsis}`;
 }
 
 /**
@@ -752,6 +904,34 @@ export function registerBootstrap(server: McpServer): void {
           }
         }
 
+        // brief-s202b T7 (P-2 server guard): Kernel-Manifest handshake. A
+        // kernel-split template (s202c) declares `Kernel-Manifest:` — a comma
+        // list of the H2 sections the delivered kernel MUST contain. When the
+        // header is present and any listed section is missing, warn loudly
+        // (BANNER_DRIFT pattern): a thinned kernel must never ship silently
+        // (the INS-249 silent-drop class, D-253 lesson b). Templates without
+        // the header predate the kernel split — no diagnostic.
+        if (behavioralRules) {
+          const kernelManifest = parseKernelManifestHeader(behavioralRules);
+          if (kernelManifest !== null) {
+            const missingKernelSections = findMissingKernelSections(behavioralRules, kernelManifest);
+            if (missingKernelSections.length > 0) {
+              diagnostics.warn(
+                "KERNEL_SPLIT_DRIFT",
+                `Behavioral-rules template declares Kernel-Manifest section(s) missing from its own delivered content: ${missingKernelSections.join(", ")}. The kernel template at ${MCP_TEMPLATE_PATH} may be split-damaged — verify against the manifest before trusting this boot's rules.`,
+                {
+                  missing_sections: missingKernelSections,
+                  declared_sections: kernelManifest,
+                },
+              );
+              logger.warn("kernel split drift detected", {
+                missing_sections: missingKernelSections,
+                declared_count: kernelManifest.length,
+              });
+            }
+          }
+        }
+
         // 2. Parse handoff into structured sections
         const handoffVersion = parseHandoffVersion(handoff.content) ?? 0;
         const sessionCount = parseSessionCount(handoff.content) ?? 0;
@@ -770,6 +950,26 @@ export function registerBootstrap(server: McpServer): void {
         const criticalContext = parseNumberedList(
           extractSection(handoff.content, "Critical Context") ?? ""
         );
+
+        // brief-s202b T5 (P-3/P-7): advisory Critical Context item budget.
+        // Items measured 708 B average on the S202 baseline — paragraphs, not
+        // the 3-5 FACTS the template intends. WARN-ONLY by design: boot never
+        // rejects a handoff, and the finalize-side twin (validateHandoff) is
+        // a validation WARNING, never an error.
+        {
+          const encoder = new TextEncoder();
+          const oversizeItems = criticalContext
+            .map((item, idx) => ({ index: idx + 1, bytes: encoder.encode(item).length }))
+            .filter(entry => entry.bytes > HANDOFF_ITEM_BUDGET_BYTES);
+          if (oversizeItems.length > 0) {
+            diagnostics.warn(
+              "HANDOFF_ITEM_OVERSIZE",
+              `${oversizeItems.length} Critical Context item(s) exceed the ${HANDOFF_ITEM_BUDGET_BYTES}B item budget (${oversizeItems.map(e => `#${e.index}: ${e.bytes}B`).join(", ")}). Advisory only — trim items to single facts at the next finalize (P-3).`,
+              { items: oversizeItems, budget_bytes: HANDOFF_ITEM_BUDGET_BYTES },
+            );
+          }
+        }
+
         const currentState = extractSection(handoff.content, "Where We Are") ?? "";
         const resumptionPoint = extractSection(handoff.content, "Resumption Point")
           ?? extractSection(handoff.content, "Next Action")
@@ -833,7 +1033,31 @@ export function registerBootstrap(server: McpServer): void {
         const prefetchedDocuments: Array<{ file: string; size_bytes: number; summary: string }> = [];
         let prefetchPromise: Promise<void> = Promise.resolve();
 
-        // Enhanced prefetching: combine opening message keywords + next steps from handoff
+        // brief-s202b T1 (P-1): fetched-doc rows for session_state_manifest —
+        // path + sha + TRUE byte size for every doc the server resolved this
+        // boot, so the session can lazy-load bodies via prism_fetch without a
+        // separate discovery call. Collected opportunistically below.
+        const manifestDocRows: ManifestDocRow[] = [];
+        const utf8Encoder = new TextEncoder();
+        const addManifestDocRow = (path: string, sha: string, content: string): void => {
+          if (manifestDocRows.some(r => r.path === path)) return;
+          manifestDocRows.push({ path, sha, bytes: utf8Encoder.encode(content).length });
+        };
+        addManifestDocRow(handoffResolved.path, handoffResolved.sha, handoffResolved.content);
+        if (coreResults[1].status === "fulfilled" && coreResults[1].value) {
+          const decisionsResolved = coreResults[1].value as { path: string; content: string; sha: string };
+          addManifestDocRow(decisionsResolved.path, decisionsResolved.sha, decisionsResolved.content);
+        }
+
+        // brief-s202b T4 (P-4): prefetch trigger policy. `opening_only` (the
+        // default) drops the next_steps-keyword auto-trigger — it fired on
+        // registry-style words ("queue", "task", "priority") present in nearly
+        // every handoff's next steps, so most boots carried 1-3 summaries
+        // regardless of need (audit §B.3). Opening-message keywords (the
+        // operator's actual ask signal) and the always-prefetched
+        // pending-doc-updates entry are kept. `legacy` restores the old
+        // trigger exactly (env rollback, no deploy).
+        const prefetchMode = resolvePrefetchMode();
         const prefetchSet = new Set<string>();
 
         if (opening_message) {
@@ -842,8 +1066,8 @@ export function registerBootstrap(server: McpServer): void {
           }
         }
 
-        // Also pre-fetch based on next steps content (always available from handoff)
-        if (nextSteps.length > 0) {
+        // Pre-fetch based on next-steps content — legacy mode only (T4).
+        if (prefetchMode === "legacy" && nextSteps.length > 0) {
           for (const f of determinePrefetchFiles(nextSteps.join(" "))) {
             prefetchSet.add(f);
           }
@@ -866,11 +1090,20 @@ export function registerBootstrap(server: McpServer): void {
               const docName = filePath.replace(`${DOC_ROOT}/`, "");
               try {
                 const resolved = await resolveDocPath(resolvedSlug, docName);
+                // brief-s202b T4: per-summary hard cap in opening_only mode.
+                // SRV-74 bounded the header COUNT; a header-dense doc still
+                // measured 2,009 B (task-queue). Legacy mode keeps the
+                // uncapped SRV-74 behavior byte-for-byte.
+                const rawSummary = summarizeMarkdown(resolved.content);
                 prefetchedDocuments.push({
                   file: filePath,
                   size_bytes: resolved.content.length,
-                  summary: summarizeMarkdown(resolved.content),
+                  summary:
+                    prefetchMode === "opening_only"
+                      ? capSummaryBytes(rawSummary, PREFETCH_SUMMARY_CAP_BYTES)
+                      : rawSummary,
                 });
+                addManifestDocRow(resolved.path, resolved.sha, resolved.content);
                 bytesDelivered += resolved.content.length;
                 filesFetched++;
               } catch (prefetchErr) {
@@ -1020,11 +1253,17 @@ export function registerBootstrap(server: McpServer): void {
         let pduAppliedAtBoot: ApplyPduResult | null = null;
         if (pendingUpdatesOutcome.status === "fulfilled") {
           const pendingFile = pendingUpdatesOutcome.value;
+          const rawPduSummary = summarizeMarkdown(pendingFile.content);
           prefetchedDocuments.push({
             file: `${DOC_ROOT}/pending-doc-updates.md`,
             size_bytes: pendingFile.content.length,
-            summary: summarizeMarkdown(pendingFile.content),
+            // brief-s202b T4: same per-summary cap as the keyword prefetch.
+            summary:
+              resolvePrefetchMode() === "opening_only"
+                ? capSummaryBytes(rawPduSummary, PREFETCH_SUMMARY_CAP_BYTES)
+                : rawPduSummary,
           });
+          addManifestDocRow(pendingFile.path, pendingFile.sha, pendingFile.content);
           bytesDelivered += pendingFile.content.length;
           filesFetched++;
           logger.info("pending doc-updates prefetched", {
@@ -1094,6 +1333,19 @@ export function registerBootstrap(server: McpServer): void {
           }
         }
 
+        // brief-s202b T4: PREFETCH_DELIVERED hit-rate telemetry — the audit
+        // (§B.3) found prefetch consumption unmeasurable because nothing
+        // recorded what was delivered. Info-level, emitted whenever at least
+        // one summary shipped (either mode), naming the files so transcript
+        // audits can compute hit rate.
+        if (prefetchedDocuments.length > 0) {
+          diagnostics.info(
+            "PREFETCH_DELIVERED",
+            `Prefetched ${prefetchedDocuments.length} document summar${prefetchedDocuments.length === 1 ? "y" : "ies"}: ${prefetchedDocuments.map(d => d.file).join(", ")}`,
+            { files: prefetchedDocuments.map(d => d.file), mode: prefetchMode },
+          );
+        }
+
         if (briefOutcome.status === "fulfilled") {
           const briefFile = briefOutcome.value;
           filesFetched++;
@@ -1113,10 +1365,12 @@ export function registerBootstrap(server: McpServer): void {
           // retained in briefFullContent for staleness + INTEL_SLO.
           briefFullContent = briefFile.content;
           intelligenceBrief = compactIntelligenceBrief(briefFile.content, diagnostics);
+          addManifestDocRow(briefFile.path, briefFile.sha, briefFile.content);
           bytesDelivered += intelligenceBrief.length;
           logger.info("intelligence brief compacted for delivery (D-253)", {
             fullSize: briefFile.content.length,
             deliveredSize: intelligenceBrief.length,
+            compactMode: resolveBriefCompactMode(), // brief-s202b T3
           });
         }
 
@@ -1125,10 +1379,12 @@ export function registerBootstrap(server: McpServer): void {
         // preamble compaction drops, so staleness reads briefFullContent, not
         // the compacted delivery.
         let briefAgeResult: number | null = null;
+        let briefSynthesizedSession: number | null = null; // brief-s202b T1: manifest brief row
         if (briefFullContent) {
           const briefSessionMatch = briefFullContent.match(/Last synthesized:\s*S(\d+)/);
           if (briefSessionMatch) {
             const briefSession = parseInt(briefSessionMatch[1], 10);
+            briefSynthesizedSession = briefSession;
             const briefAge = sessionCount - briefSession;
             briefAgeResult = briefAge;
             if (briefAge > 2) {
@@ -1140,6 +1396,14 @@ export function registerBootstrap(server: McpServer): void {
 
         if (insightsOutcome.status === "fulfilled") {
           insightsContent = insightsOutcome.value.content;
+          addManifestDocRow(insightsOutcome.value.path, insightsOutcome.value.sha, insightsOutcome.value.content);
+        }
+        if (standingRulesFileOutcome.status === "fulfilled") {
+          addManifestDocRow(
+            standingRulesFileOutcome.value.path,
+            standingRulesFileOutcome.value.sha,
+            standingRulesFileOutcome.value.content,
+          );
         }
 
         // R2-B (D-240 Phase B): standing rules resolve from a UNION of the
@@ -1346,14 +1610,40 @@ export function registerBootstrap(server: McpServer): void {
         // data (Option M). Independent of banner_text — banner_text remains the
         // genuine fallback, so a masthead render failure just omits the field
         // (null) rather than affecting the text banner.
+        // brief-s202b T6 (P-6a): BOOT_MASTHEAD_SVG=off skips the render and
+        // ships null — the template's fallback path (banner_text only) is
+        // pre-built and production-tested by render-failure handling. Default
+        // ON: graphical banners are an explicit operator choice (D-249); the
+        // knob exists for context-pressure pushes, not as a silent removal.
         let bootMastheadSvg: string | null = null;
-        try {
-          bootMastheadSvg = renderBootMastheadSvg(bannerInput);
-          logger.info("boot masthead SVG rendered", { svgLength: bootMastheadSvg.length });
-        } catch (svgError) {
-          const msg = svgError instanceof Error ? svgError.message : String(svgError);
-          logger.warn("boot masthead SVG render failed — omitting (banner_text remains)", { error: msg });
+        if (resolveBootMastheadSvg()) {
+          try {
+            bootMastheadSvg = renderBootMastheadSvg(bannerInput);
+            logger.info("boot masthead SVG rendered", { svgLength: bootMastheadSvg.length });
+          } catch (svgError) {
+            const msg = svgError instanceof Error ? svgError.message : String(svgError);
+            logger.warn("boot masthead SVG render failed — omitting (banner_text remains)", { error: msg });
+          }
+        } else {
+          logger.info("boot masthead SVG disabled via BOOT_MASTHEAD_SVG=off (brief-s202b T6)");
         }
+
+        // brief-s202b T1 (P-1): session_state_manifest + BOOT_INDEX_MODE.
+        // `full` (default) ships the legacy standing_rules_index unchanged PLUS
+        // the manifest — an additive release so the template can learn to
+        // consume the manifest before the legacy index is dropped (SRV-109
+        // two-phase field-removal pattern). `compact` ships the manifest ONLY
+        // (measured legacy index: 19,873 B; compact manifest index ≈ 4.5KB —
+        // titles capped at 60 chars, topics kept whole as the
+        // prism_load_rules match key).
+        const bootIndexMode = resolveBootIndexMode();
+        const sessionStateManifest = buildSessionStateManifest({
+          docs: manifestDocRows,
+          allRules: allStandingRules,
+          indexedRules: [...tierB, ...tierC],
+          briefSynthesizedSession,
+          deliveredBrief: intelligenceBrief,
+        });
 
         const result: Record<string, unknown> = {
           project: resolvedSlug,
@@ -1375,7 +1665,12 @@ export function registerBootstrap(server: McpServer): void {
           open_questions: openQuestions,
           prefetched_documents: prefetchedDocuments,
           standing_rules: standingRules,
-          standing_rules_index: standingRulesIndex, // D-253: Tier B ∪ Tier C entries ({id,title,tier,topics}) — bodies via prism_load_rules
+          // D-253: Tier B ∪ Tier C entries ({id,title,tier,topics}) — bodies
+          // via prism_load_rules. brief-s202b T1: OMITTED (not nulled) in
+          // BOOT_INDEX_MODE=compact — session_state_manifest.rules.index is
+          // the compact replacement.
+          ...(bootIndexMode === "full" ? { standing_rules_index: standingRulesIndex } : {}),
+          session_state_manifest: sessionStateManifest, // brief-s202b T1 (P-1): {docs, rules, brief} — lazy-load map (prism_fetch / prism_load_rules)
           intelligence_brief: intelligenceBrief,
           brief_age_sessions: briefAgeResult,
           behavioral_rules: behavioralRules,
@@ -1481,6 +1776,9 @@ export function registerBootstrap(server: McpServer): void {
           bannerSpecVersion: BANNER_SPEC_VERSION,
           standingRulesCount: standingRules.length,
           standingRulesIndexCount: standingRulesIndex.length,
+          bootIndexMode,                                   // brief-s202b T1
+          prefetchMode,                                    // brief-s202b T4
+          manifestDocRows: manifestDocRows.length,         // brief-s202b T1
           intelligenceBriefDelivered: !!intelligenceBrief, // D-253: compacted at boot (spec-coupled, fallback-guarded)
           intelSlo: {
             completeness: intelSlo.boot_completeness_percent,

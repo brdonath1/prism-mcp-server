@@ -317,7 +317,7 @@ describe("D-253: intelligence_brief delivers the COMPACT brief (Project State di
     );
   });
 
-  it("emits the compact Project State digest plus the full Risk Flags and Quality Audit sections", async () => {
+  it("delivers the full Risk Flags and Quality Audit sections WITHOUT the Project State digest (brief-s202b T3 dedup default)", async () => {
     const handler = await setupBootstrap({
       brief: FULL_BRIEF,
       insights: INSIGHTS_WITH_TIER_A,
@@ -325,9 +325,12 @@ describe("D-253: intelligence_brief delivers the COMPACT brief (Project State di
     });
     const parsed = await boot(handler);
 
-    // Compact digest marker + the Project State sentence it summarizes.
-    expect(parsed.intelligence_brief).toContain("**Project State (compact):**");
-    expect(parsed.intelligence_brief).toContain(
+    // brief-s202b T3 (P-3): BRIEF_COMPACT_MODE defaults to `dedup` — the
+    // digest line was a measured full duplicate of `current_state` in the
+    // same payload (S202 audit §B.4). Legacy-mode digest behavior is pinned
+    // by tests/brief-compact-mode.test.ts.
+    expect(parsed.intelligence_brief).not.toContain("**Project State (compact):**");
+    expect(parsed.intelligence_brief).not.toContain(
       "The project is mid-flight on D-240 Phase B with strong momentum.",
     );
     // The two full-passthrough sections survive intact (header + body).
@@ -354,11 +357,13 @@ describe("D-253: intelligence_brief delivers the COMPACT brief (Project State di
     expect(parsed.intelligence_brief).not.toContain("Operator prefers structured JSON logs");
   });
 
-  it("carries the compaction marker and is shorter than the full brief", async () => {
+  it("is shorter than the full brief and drops the Project State header (dedup default)", async () => {
     const handler = await setupBootstrap({ brief: FULL_BRIEF, insights: null, standingRules: null });
     const parsed = await boot(handler);
 
-    expect(parsed.intelligence_brief).toContain("(compact)");
+    // brief-s202b T3: dedup mode carries no digest marker — delivery is the
+    // two full sections only.
+    expect(parsed.intelligence_brief).not.toContain("## Project State");
     expect(parsed.intelligence_brief.length).toBeLessThan(FULL_BRIEF.length);
   });
 
@@ -683,9 +688,10 @@ describe("R-intel-SLO: INTEL_SLO diagnostic block", () => {
     // No gating: the response is a normal success and the pre-existing
     // BRIEF_STALE warning fires on its own channel. D-253: the brief is still
     // delivered, now compacted — staleness reads the full preamble independent
-    // of compaction, so age is still 4 above.
+    // of compaction, so age is still 4 above. (brief-s202b T3: dedup default
+    // ships the two full sections, no digest marker.)
     expect(diags.find(d => d.code === "BRIEF_STALE")).toBeDefined();
-    expect(parsed.intelligence_brief).toContain("(compact)");
+    expect(parsed.intelligence_brief).toContain("## Risk Flags");
     expect(parsed.intelligence_brief.length).toBeLessThan(staleBrief.length);
   });
 

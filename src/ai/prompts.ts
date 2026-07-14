@@ -31,7 +31,7 @@ FORMATTING RULES:
 - Output valid markdown. Start with the H1 title and metadata block shown below.
 - Be DENSE. Every sentence must carry information. No filler.
 - Risk flags must be concrete and actionable — no vague warnings.
-- Total output: 1500-3000 tokens. If you need more, you're not being dense enough.
+- Total output: 1500-3000 tokens. 3000 tokens is a HARD UPPER BOUND, not a target — never exceed it. If you need more, you're not being dense enough.
 - End with the EOF sentinel: <!-- EOF: intelligence-brief.md -->
 
 OUTPUT FORMAT — start your response with exactly this:
@@ -184,6 +184,65 @@ RULES:
 - Only mark tasks completed if clear evidence exists in commits or document changes.
 - New tasks: only include things explicitly discussed or logically following from session work.
 - Match formatting conventions from existing documents exactly.`;
+
+/**
+ * System prompt for the finalize compose-offload draft (brief-s202b T8 /
+ * D-275 F-1). Extends the legacy 6-key contract with two keys:
+ *
+ *  - `handoff_md` — the COMPLETE next handoff.md file under hard size
+ *    contracts (file ≤10KB; Critical Context ≤5 items, ≤300 bytes each).
+ *    The server validates it with the same validators that gate every
+ *    finalize commit BEFORE it is ever returned; any failure falls back to
+ *    the legacy 6-key response (quality gate = fallback trigger, D-275
+ *    §4.5 pattern).
+ *  - `draft_summary` — a ≤1.5KB diff-style digest for chat review, so the
+ *    session approves the finalize instead of regenerating file content
+ *    (supersedes the INS-178 wall on the happy path).
+ *
+ * The 6 legacy keys are kept VERBATIM: they remain the fallback response,
+ * the fullPhase bridge input, and the openrouter draft quality-gate surface
+ * (OPENROUTER_DRAFT_CONTRACT_KEYS).
+ */
+export function buildFinalizationComposePrompt(opts: {
+  targetHandoffVersion: number;
+  sessionNumber: number;
+  templateVersion: string;
+}): string {
+  return `You are the PRISM Finalization Draft Engine. Read all living documents and session commit history, then produce COMPLETE finalization content for session finalization.
+
+Produce a JSON object with EXACTLY this structure (no preamble, no markdown fences, no explanation — ONLY valid JSON):
+
+{
+  "session_log_entry": "Complete ### Session N entry in markdown. Include **Focus:** line, **Key outcomes:** as bullet list, and **Discussion notes:** as 2-3 sentences of exploration context. Match the exact format of previous entries in session-log.md.",
+  "handoff_where_we_are": "Updated 'Where We Are' section for the handoff. Be specific about what this session accomplished and where things stand now. Include a resumption point specific enough for a fresh Claude to continue.",
+  "handoff_next_steps": ["3-5 specific, actionable next steps. Most important first. Each must be executable without additional context."],
+  "handoff_session_history": "S{N}: One-line summary for the session history section",
+  "task_queue_completed": ["Tasks that appear completed this session based on commit history and document changes. Use exact task descriptions from the existing task queue where possible."],
+  "task_queue_new": ["New tasks identified during the session. Include section target (Up Next or Parking Lot) as a prefix like '[Up Next] task description'."],
+  "handoff_md": "The COMPLETE next handoff.md file content — see HANDOFF FILE CONTRACT below.",
+  "draft_summary": "Compact diff-style digest (max 1.5KB) of everything above for one-glance chat review: handoff deltas, the session-log entry focus line, task-queue completions/additions."
+}
+
+HANDOFF FILE CONTRACT (handoff_md — every requirement below is server-validated; a violation discards your file):
+- COMPLETE handoff.md, modeled on the current handoff.md in the living documents, with this session's outcomes folded in.
+- HARD SIZE LIMIT: 10,240 bytes total. Lean state pointer, not a narrative.
+- '## Meta' section with EXACTLY these values: 'Handoff Version: ${opts.targetHandoffVersion}', 'Session Count: ${opts.sessionNumber}', 'Template Version: ${opts.templateVersion}', and a 'Status' line.
+- '## Critical Context': 3-5 numbered items, EACH a single fact of at most 300 bytes.
+- '## Where We Are': non-empty, current state + a resumption point a fresh session can act on.
+- '## Next Steps': numbered list matching handoff_next_steps.
+- Preserve any other sections the current handoff carries (e.g. Session History — append this session's one-liner).
+- NEVER use the phrases "session chat" or "previous conversation" anywhere in the file (validation rejects them).
+- End with exactly: <!-- EOF: handoff.md -->
+
+RULES:
+- Output ONLY valid JSON. No preamble, no markdown fences, no explanation outside the JSON.
+- Be specific and dense. Every sentence must carry information.
+- Session log Discussion notes: capture explorations, pivots, and reasoning context beyond formal decisions.
+- Only mark tasks completed if clear evidence exists in commits or document changes.
+- New tasks: only include things explicitly discussed or logically following from session work.
+- Match formatting conventions from existing documents exactly.
+- draft_summary is a HARD 1.5KB cap — it is the only thing the operator reads before approving.`;
+}
 
 /**
  * Build the user message for finalization draft generation.
