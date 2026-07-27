@@ -363,6 +363,226 @@ export function renderBootMastheadSvg(data: UnifiedBannerInput): string {
   return parts.join("\n");
 }
 
+// --- Boot HTML masthead (brief-720 / S9) ---
+
+/** Root element id for the boot HTML masthead. Every CSS rule the widget emits
+ *  is scoped under this id, so the block cannot leak into the widget host. */
+const BOOT_MASTHEAD_HTML_ID = "prism-boot-masthead";
+
+/** Role-tint CSS variables for the HTML masthead's status glyphs. Parallel to
+ *  STATUS_ICONS / STATUS_COLOR_CLASS; the variables themselves are aliased to
+ *  the `visualize` design-system `--color-*` set in the widget's style block. */
+const HTML_STATUS_TINT_VAR: Record<BannerStatusEntry["status"], string> = {
+  ok: "--tint-ok",
+  warn: "--tint-warn",
+  critical: "--tint-danger",
+};
+
+/**
+ * Render the boot HTML masthead (brief-720) — an ADDITIVE companion to
+ * {@link renderBootMastheadSvg}, emitted as `boot_masthead_html`.
+ *
+ * Same data contract, same information (wordmark + template version, `boot`
+ * badge, session name, handoff/decisions/docs chips, status checks,
+ * `Suggested:` line) — plus the one thing SVG cannot do: an interactive copy
+ * control for the session name, so the operator copies the chat title from the
+ * masthead itself rather than from a separate code fence + directive line.
+ *
+ * `boot_masthead_svg` is untouched and still emitted; a consumer that does not
+ * know this field exists sees no change at all. That is deliberate — the
+ * framework-kernel half (dropping the standalone session-name fence and rename
+ * directive when this field is present) ships separately, and neither repo
+ * breaks alone.
+ *
+ * Constraints held by construction:
+ *   - No hardcoded color anywhere. Every color resolves through a CSS variable;
+ *     the semantic names (`--surface-1`, `--text-primary`, `--border`, the role
+ *     tints) are aliased to the host design-system `--color-*` variables at the
+ *     root, each with a keyword fallback (`currentColor`/`transparent`) so an
+ *     unstyled host still renders legibly in BOTH light and dark mode. The
+ *     brand purple rides the design-system `c-purple` class (as the SVG does),
+ *     with `currentColor` underneath it.
+ *   - Self-contained: no `<script src>`, no stylesheet/font load, no network.
+ *     The diamond and copy glyphs are inline SVG (no `xmlns` needed inside
+ *     HTML), and the copy handler is a small dependency-free inline script.
+ *   - The copy control never fails silently: `navigator.clipboard.writeText()`,
+ *     then a hidden-textarea `document.execCommand('copy')` fallback, and if
+ *     both fail the caption switches to a persistent failure state.
+ */
+export function renderBootMastheadHtml(data: UnifiedBannerInput): string {
+  const esc = escapeMarkup;
+  const hasSuggested = data.suggested != null;
+  const sessionName = data.sessionNameLine?.trim() ?? "";
+  const decisionChipText = `${data.decisionCount} decisions${
+    data.decisionNote ? ` · ${data.decisionNote}` : ""
+  }`;
+  const docsLabel = `${data.docCount}/${data.docTotal} docs healthy`;
+  const docsHealthy = data.docCount === data.docTotal;
+
+  const srOnly =
+    `PRISM boot banner: template v${data.templateVersion}, session ` +
+    `${data.sessionNumber} at ${data.timestamp} CST. Handoff v${data.handoffVersion} ` +
+    `${data.handoffNote}, ${decisionChipText}, ${docsLabel}, ` +
+    `${data.statusRow.length} status checks` +
+    `${hasSuggested ? `, suggested ${data.suggested!.display}` : ""}.` +
+    `${sessionName ? ` Chat session name: ${sessionName} — use the copy button to copy it and rename this chat to match.` : ""}`;
+
+  // Semantic variables first (aliased to the host design system, keyword
+  // fallbacks underneath), then layout. Every selector is id-scoped.
+  const style =
+    `<style>` +
+    `#${BOOT_MASTHEAD_HTML_ID}{` +
+    `--surface-1:var(--color-background-primary,transparent);` +
+    `--surface-2:var(--color-background-secondary,transparent);` +
+    `--text-primary:var(--color-text-primary,currentColor);` +
+    `--text-secondary:var(--color-text-secondary,currentColor);` +
+    `--border:var(--color-border-tertiary,currentColor);` +
+    `--tint-ok:var(--color-text-success,currentColor);` +
+    `--tint-ok-surface:var(--color-background-success,transparent);` +
+    `--tint-warn:var(--color-text-warning,currentColor);` +
+    `--tint-danger:var(--color-text-danger,currentColor);` +
+    `--font-mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;` +
+    `background:var(--surface-2);border:0.5px solid var(--border);border-radius:12px;` +
+    `padding:1.1rem 1.25rem;color:var(--text-primary);}` +
+    `#${BOOT_MASTHEAD_HTML_ID} .pbm-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;}` +
+    `#${BOOT_MASTHEAD_HTML_ID} .pbm-brand{display:flex;align-items:center;gap:10px;}` +
+    `#${BOOT_MASTHEAD_HTML_ID} .pbm-word{font-size:22px;font-weight:500;letter-spacing:0.5px;}` +
+    `#${BOOT_MASTHEAD_HTML_ID} .pbm-ver{font-size:13px;color:var(--text-secondary);}` +
+    `#${BOOT_MASTHEAD_HTML_ID} .pbm-badge{font-size:12px;font-weight:500;color:var(--tint-ok);background:var(--tint-ok-surface);padding:4px 12px;border-radius:11px;}` +
+    `#${BOOT_MASTHEAD_HTML_ID} .pbm-rule{border-top:0.5px solid var(--border);margin:14px 0;}` +
+    `#${BOOT_MASTHEAD_HTML_ID} .pbm-label{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;font-size:12px;font-weight:500;color:var(--text-secondary);margin-bottom:6px;}` +
+    `#${BOOT_MASTHEAD_HTML_ID} .pbm-time{font-weight:400;}` +
+    `#${BOOT_MASTHEAD_HTML_ID} .pbm-namerow{display:flex;align-items:flex-start;gap:8px;}` +
+    `#${BOOT_MASTHEAD_HTML_ID} .pbm-name{flex:1 1 auto;min-width:0;font-family:var(--font-mono);font-size:13px;line-height:1.45;color:var(--text-primary);background:var(--surface-1);border:0.5px solid var(--border);border-radius:8px;padding:7px 10px;white-space:normal;overflow-wrap:anywhere;}` +
+    `#${BOOT_MASTHEAD_HTML_ID} .pbm-copy{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;width:31px;height:31px;padding:0;line-height:0;background:var(--surface-1);color:var(--text-secondary);border:0.5px solid var(--border);border-radius:8px;cursor:pointer;}` +
+    `#${BOOT_MASTHEAD_HTML_ID} .pbm-copy:hover{color:var(--text-primary);}` +
+    `#${BOOT_MASTHEAD_HTML_ID} .pbm-copy:focus-visible{outline:1.5px solid var(--text-secondary);outline-offset:2px;}` +
+    `#${BOOT_MASTHEAD_HTML_ID} .pbm-caption{margin-top:6px;font-size:12px;color:var(--text-secondary);}` +
+    `#${BOOT_MASTHEAD_HTML_ID} .pbm-caption[data-state="ok"]{color:var(--tint-ok);}` +
+    `#${BOOT_MASTHEAD_HTML_ID} .pbm-caption[data-state="fail"]{color:var(--tint-danger);}` +
+    `#${BOOT_MASTHEAD_HTML_ID} .pbm-chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px;}` +
+    `#${BOOT_MASTHEAD_HTML_ID} .pbm-chip{font-size:12px;color:var(--text-secondary);background:var(--surface-1);border:0.5px solid var(--border);padding:5px 10px;border-radius:6px;}` +
+    `#${BOOT_MASTHEAD_HTML_ID} .pbm-chip-ok{font-size:12px;color:var(--tint-ok);background:var(--tint-ok-surface);padding:5px 10px;border-radius:6px;}` +
+    `#${BOOT_MASTHEAD_HTML_ID} .pbm-status{display:flex;flex-wrap:wrap;gap:18px;margin-top:14px;font-size:12px;color:var(--text-secondary);}` +
+    `#${BOOT_MASTHEAD_HTML_ID} .pbm-glyph{font-weight:500;margin-right:4px;}` +
+    `#${BOOT_MASTHEAD_HTML_ID} .pbm-suggested{font-size:12px;color:var(--text-secondary);}` +
+    `</style>`;
+
+  const lines: string[] = [
+    style,
+    `<h2 style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">${esc(srOnly)}</h2>`,
+    `<div id="${BOOT_MASTHEAD_HTML_ID}">`,
+    `  <div class="pbm-head">`,
+    `    <div class="pbm-brand">`,
+    `      <svg class="c-purple" viewBox="0 0 20 20" width="13" height="13" fill="currentColor" aria-hidden="true" focusable="false"><rect x="3" y="3" width="14" height="14" rx="2" transform="rotate(45 10 10)"/></svg>`,
+    `      <span class="c-purple pbm-word">PRISM</span>`,
+    `      <span class="pbm-ver">v${esc(data.templateVersion)}</span>`,
+    `    </div>`,
+    `    <span class="pbm-badge">boot</span>`,
+    `  </div>`,
+    `  <div class="pbm-rule"></div>`,
+  ];
+
+  if (sessionName) {
+    lines.push(
+      `  <div class="pbm-label"><span>Chat session name</span><span class="pbm-time">${esc(data.timestamp)} CST</span></div>`,
+      `  <div class="pbm-namerow">`,
+      `    <code class="pbm-name" data-prism-session-name>${esc(sessionName)}</code>`,
+      `    <button type="button" class="pbm-copy" data-prism-copy aria-label="Copy the session name to the clipboard"><svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true" focusable="false"><rect x="5.6" y="5.6" width="8.1" height="8.1" rx="2"/><path d="M10.4 5.6V3.3a1 1 0 0 0-1-1H3.3a1 1 0 0 0-1 1v6.1a1 1 0 0 0 1 1h2.3"/></svg></button>`,
+      `  </div>`,
+      `  <div class="pbm-caption" data-prism-copy-status aria-live="polite">Rename this chat to match</div>`,
+    );
+  } else {
+    lines.push(
+      `  <div class="pbm-label"><span>Session ${data.sessionNumber}</span><span class="pbm-time">${esc(data.timestamp)} CST</span></div>`,
+    );
+  }
+
+  lines.push(
+    `  <div class="pbm-chips">`,
+    `    <span class="pbm-chip">Handoff v${data.handoffVersion} · ${esc(data.handoffNote)}</span>`,
+    `    <span class="pbm-chip">${esc(decisionChipText)}</span>`,
+    `    <span class="${docsHealthy ? "pbm-chip-ok" : "pbm-chip"}">${esc(docsLabel)}</span>`,
+    `  </div>`,
+    `  <div class="pbm-status">`,
+  );
+
+  for (const entry of data.statusRow) {
+    lines.push(
+      `    <span><span class="pbm-glyph" style="color:var(${HTML_STATUS_TINT_VAR[entry.status]})">${STATUS_ICONS[entry.status]}</span>${esc(entry.label)}</span>`,
+    );
+  }
+
+  lines.push(`  </div>`);
+
+  if (hasSuggested) {
+    lines.push(
+      `  <div class="pbm-rule"></div>`,
+      `  <div class="pbm-suggested">Suggested: ${esc(data.suggested!.display)} — ${esc(data.suggested!.rationale)}</div>`,
+    );
+  }
+
+  lines.push(`</div>`);
+
+  // Copy handler. Three distinct visible outcomes — "Copied" (async clipboard
+  // API), "Copied via fallback" (execCommand path), and a persistent failure
+  // caption when BOTH fail. A button that looks clickable and quietly does
+  // nothing is worse than no button: the operator would have no way to know
+  // the copy did not happen, so there is no silent branch here.
+  if (sessionName) {
+    lines.push(
+      `<script>`,
+      `(function(){`,
+      `var root=document.getElementById('${BOOT_MASTHEAD_HTML_ID}');`,
+      `if(!root||root.getAttribute('data-wired')==='1'){return;}`,
+      `root.setAttribute('data-wired','1');`,
+      `var btn=root.querySelector('[data-prism-copy]');`,
+      `var field=root.querySelector('[data-prism-session-name]');`,
+      `var note=root.querySelector('[data-prism-copy-status]');`,
+      `if(!btn||!field||!note){return;}`,
+      `var idle=note.textContent,timer=null;`,
+      `function say(msg,state,revert){`,
+      `note.textContent=msg;`,
+      `if(state){note.setAttribute('data-state',state);}else{note.removeAttribute('data-state');}`,
+      `if(timer){clearTimeout(timer);timer=null;}`,
+      `if(revert){timer=setTimeout(function(){note.textContent=idle;note.removeAttribute('data-state');},2400);}`,
+      `}`,
+      `function legacyCopy(text){`,
+      `try{`,
+      `var ta=document.createElement('textarea');`,
+      `ta.value=text;ta.setAttribute('readonly','');`,
+      `ta.style.position='absolute';ta.style.left='-9999px';ta.style.opacity='0';`,
+      `(document.body||root).appendChild(ta);`,
+      `ta.select();`,
+      `if(ta.setSelectionRange){ta.setSelectionRange(0,text.length);}`,
+      `var ok=document.execCommand('copy');`,
+      `ta.parentNode.removeChild(ta);`,
+      `return !!ok;`,
+      `}catch(e){return false;}`,
+      `}`,
+      `function fallback(text){`,
+      `if(legacyCopy(text)){say('Copied via fallback','ok',true);}`,
+      `else{say('Copy failed \\u2014 select the name above and copy it manually','fail',false);}`,
+      `}`,
+      `btn.addEventListener('click',function(){`,
+      `var text=(field.textContent||'').trim();`,
+      `if(!text){say('Copy failed \\u2014 no session name to copy','fail',false);return;}`,
+      `try{`,
+      `if(navigator.clipboard&&navigator.clipboard.writeText){`,
+      `navigator.clipboard.writeText(text).then(function(){say('Copied','ok',true);},function(){fallback(text);});`,
+      `return;`,
+      `}`,
+      `}catch(e){}`,
+      `fallback(text);`,
+      `});`,
+      `})();`,
+      `</script>`,
+    );
+  }
+
+  return lines.join("\n");
+}
+
 // --- Finalization HTML widget (brief-447 / D-249) ---
 
 /**
