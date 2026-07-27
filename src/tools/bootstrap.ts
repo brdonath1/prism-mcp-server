@@ -41,6 +41,7 @@ import {
   parseTemplateBannerSpecVersion,
   renderBannerFallback,
   renderBootMastheadSvg,
+  renderBootMastheadHtml,
   renderUnifiedBanner,
   type UnifiedBannerInput,
 } from "../utils/banner.js";
@@ -1625,7 +1626,14 @@ export function registerBootstrap(server: McpServer): void {
         // pre-built and production-tested by render-failure handling. Default
         // ON: graphical banners are an explicit operator choice (D-249); the
         // knob exists for context-pressure pushes, not as a silent removal.
+        // brief-720: `boot_masthead_html` is an ADDITIVE companion rendered from
+        // the same bannerInput — same information, plus an interactive copy
+        // control for the session name. It has its OWN try/catch so an HTML
+        // render failure can never disturb `boot_masthead_svg`, which must stay
+        // byte-identical for consumers that do not know the new field exists.
+        // Both graphical mastheads ride the one BOOT_MASTHEAD_SVG knob.
         let bootMastheadSvg: string | null = null;
+        let bootMastheadHtml: string | null = null;
         if (resolveBootMastheadSvg()) {
           try {
             bootMastheadSvg = renderBootMastheadSvg(bannerInput);
@@ -1633,6 +1641,13 @@ export function registerBootstrap(server: McpServer): void {
           } catch (svgError) {
             const msg = svgError instanceof Error ? svgError.message : String(svgError);
             logger.warn("boot masthead SVG render failed — omitting (banner_text remains)", { error: msg });
+          }
+          try {
+            bootMastheadHtml = renderBootMastheadHtml(bannerInput);
+            logger.info("boot masthead HTML rendered", { htmlLength: bootMastheadHtml.length });
+          } catch (htmlError) {
+            const msg = htmlError instanceof Error ? htmlError.message : String(htmlError);
+            logger.warn("boot masthead HTML render failed — omitting (boot_masthead_svg/banner_text remain)", { error: msg });
           }
         } else {
           logger.info("boot masthead SVG disabled via BOOT_MASTHEAD_SVG=off (brief-s202b T6)");
@@ -1686,6 +1701,7 @@ export function registerBootstrap(server: McpServer): void {
           behavioral_rules: behavioralRules,
           banner_text: bannerText,                     // brief-439 / R8: unified generator output (single-line fallback on render failure)
           boot_masthead_svg: bootMastheadSvg,          // brief-447 / D-249: SVG masthead for visualize:show_widget (null on render failure — banner_text is the fallback)
+          boot_masthead_html: bootMastheadHtml,        // brief-720: additive HTML masthead — same information + an embedded copy control for the session name (null on render failure; boot_masthead_svg is unaffected)
           banner_spec_version: BANNER_SPEC_VERSION,    // brief-439 / R8: banner contract version this server emits
           template_banner_spec_version: templateBannerSpecVersion, // brief-439 / R8: version the template declares (null = pre-handshake template)
           boot_test_verified: bootTestResult.success,

@@ -466,6 +466,32 @@ describe("brief-s202b T6 — BOOT_MASTHEAD_SVG knob", () => {
   });
 });
 
+// ─── brief-720: additive boot_masthead_html ──────────────────────────────────
+
+describe("brief-720 — boot_masthead_html rides alongside boot_masthead_svg", () => {
+  it("both mastheads ship, and the HTML embeds the same session_name_line", async () => {
+    delete process.env.BOOT_MASTHEAD_SVG;
+    const parsed = await boot();
+    expect(typeof parsed.boot_masthead_svg).toBe("string");
+    expect(typeof parsed.boot_masthead_html).toBe("string");
+    expect(parsed.boot_masthead_svg).toContain(parsed.session_name_line);
+    expect(parsed.boot_masthead_html).toContain(parsed.session_name_line);
+    // The copy control carries the bare title — no "Chat: " prefix to strip.
+    expect(parsed.boot_masthead_html).toContain(
+      `data-prism-session-name>${parsed.session_name_line}</code>`,
+    );
+    expect(parsed.boot_masthead_html).toContain("aria-label=");
+  });
+
+  it("off: the knob nulls BOTH graphical mastheads", async () => {
+    process.env.BOOT_MASTHEAD_SVG = "off";
+    const parsed = await boot();
+    expect(parsed.boot_masthead_svg).toBeNull();
+    expect(parsed.boot_masthead_html).toBeNull();
+    expect(typeof parsed.banner_text).toBe("string");
+  });
+});
+
 // ─── T7: kernel handshake ────────────────────────────────────────────────────
 
 describe("brief-s202b T7 — Kernel-Manifest handshake (KERNEL_SPLIT_DRIFT)", () => {
