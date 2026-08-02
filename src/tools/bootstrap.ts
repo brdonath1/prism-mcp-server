@@ -18,7 +18,9 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { fetchFile, pushFile, listRepos } from "../github/client.js";
-import { BOOTSTRAP_OVERSIZE_ERROR_BYTES, BOOTSTRAP_OVERSIZE_WARN_BYTES, CC_DISPATCH_ENABLED, DEFAULT_CONTEXT_WINDOW_TOKENS, DOC_ROOT, FRAMEWORK_REPO, GITHUB_PAT, HANDOFF_CRITICAL_SIZE, HANDOFF_ITEM_BUDGET_BYTES, LIVING_DOCUMENTS, MCP_TEMPLATE_PATH, PREFETCH_KEYWORDS, PREFETCH_SUMMARY_CAP_BYTES, PROJECT_DISPLAY_NAMES, RAILWAY_API_TOKEN, RAILWAY_ENABLED, STALE_ACTIVE_THRESHOLD_MS, SYNTHESIS_LOG_LOOKBACK_MS, TRIGGER_AUTO_ENROLL, resolveBootIndexMode, resolveBootMastheadSvg, resolveBriefCompactMode, resolvePrefetchMode, resolveProjectSlug } from "../config.js";
+import { BOOTSTRAP_OVERSIZE_ERROR_BYTES, BOOTSTRAP_OVERSIZE_WARN_BYTES, CC_DISPATCH_ENABLED, DEFAULT_CONTEXT_WINDOW_TOKENS, DOC_ROOT, FRAMEWORK_REPO, GITHUB_PAT, HANDOFF_CRITICAL_SIZE, HANDOFF_ITEM_BUDGET_BYTES, LIVING_DOCUMENTS, MCP_TEMPLATE_PATH, PREFETCH_KEYWORDS, PREFETCH_SUMMARY_CAP_BYTES, PROJECT_DISPLAY_NAMES, RAILWAY_API_TOKEN, RAILWAY_ENABLED, STALE_ACTIVE_THRESHOLD_MS, SYNTHESIS_LOG_LOOKBACK_MS, TRIGGER_AUTO_ENROLL, resolveBootIndexMode, resolveBootMastheadSvg, resolveBriefCompactMode, resolveContextWindowOverride, resolvePrefetchMode, resolveProjectSlug } from "../config.js";
+import { STALENESS_THRESHOLD_DAYS, resolveContextWindow } from "../models.js";
+import type { Surface } from "../models.js";
 import { computePayloadAttribution } from "../utils/payload-attribution.js";
 import { getEnvironmentLogs } from "../railway/client.js";
 import { checkStaleActive } from "../utils/stale-active-check.js";
@@ -70,6 +72,11 @@ export type { StandingRule };
 const inputSchema = {
   project_slug: z.string().describe("Project repo name or display name (e.g., 'platformforge-v2', 'PlatformForge v2', 'PRISM Framework', 'prism')"),
   opening_message: z.string().optional().describe("User's opening message. Enables intelligent pre-fetching of relevant living documents."),
+  // brief-s5 §3: the client declares the one fact only it can know — its own
+  // model and surface. The server owns the table. Both OPTIONAL: older clients
+  // that send neither get today's behaviour, tagged `server_fallback`.
+  client_model: z.string().optional().describe("The model this session is running (e.g. 'claude-opus-5', 'opus-4-8', 'Opus 4.8'). Enables a provenance-tagged context_window in the response. Omit if unknown — the server falls back to its configured default rather than guessing."),
+  client_surface: z.enum(["chat", "claude_code", "api"]).optional().describe("Which surface this session runs on. Context windows differ per surface for the SAME model (Opus 4.6 is 500K in chat but 1M on the API), so this is not interchangeable. Defaults to 'chat' — the most conservative column — when client_model is given without it."),
 };
 
 /**
@@ -804,7 +811,7 @@ export function registerBootstrap(server: McpServer): void {
     "prism_bootstrap",
     "Initialize a PRISM session. Returns handoff, decisions, behavioral rules, intelligence brief, standing rules, and pre-fetched docs in one call.",
     inputSchema,
-    async ({ project_slug, opening_message }) => {
+    async ({ project_slug, opening_message, client_model, client_surface }) => {
       const start = Date.now();
       const diagnostics = new DiagnosticsCollector();
 
@@ -1777,6 +1784,91 @@ export function registerBootstrap(server: McpServer): void {
           total_boot_percent: totalBootPercent,
           context_window_tokens: DEFAULT_CONTEXT_WINDOW_TOKENS,
         };
+        // brief-s5 §3/§4/§5: provenance-tagged context window for the DECLARED
+        // (model, surface). Attached POST-measurement alongside context_estimate
+        // and for the same reason — the measured payload, and therefore every
+        // size budget, oversize threshold and boot-cost figure derived from it,
+        // must be bit-identical to before this contract existed.
+        //
+        // context_estimate above is deliberately NOT retargeted: it stays on
+        // DEFAULT_CONTEXT_WINDOW_TOKENS so clients still reading the legacy
+        // field read exactly what they read yesterday (kept for one release).
+        const surfaceDefaulted = !!client_model && client_surface === undefined;
+        const declaredSurface: Surface = client_surface ?? "chat";
+        const contextWindowOverride = resolveContextWindowOverride();
+
+        let contextWindow: Record<string, unknown>;
+        if (client_model) {
+          const resolved = resolveContextWindow(client_model, declaredSurface);
+          contextWindow = {
+            ...resolved,
+            total_boot_percent: Math.round((totalBootTokens / resolved.tokens) * 1000) / 10,
+            declared: { model: client_model, surface: declaredSurface, surface_defaulted: surfaceDefaulted },
+            override_tokens: contextWindowOverride,
+          };
+
+          // §4: an override that DISAGREES with the resolved cell is an alarm.
+          // The resolved figure still wins in this payload — the override is
+          // reported, never silently substituted. Firing on the code default
+          // instead would be permanent ambient noise, so the alarm is scoped to
+          // an explicitly-set env var (resolveContextWindowOverride returns
+          // null otherwise).
+          if (contextWindowOverride !== null && contextWindowOverride !== resolved.tokens) {
+            logger.warn("context window env override disagrees with registry", {
+              project_slug: resolvedSlug, model: client_model, surface: declaredSurface,
+              override_tokens: contextWindowOverride, resolved_tokens: resolved.tokens, resolved_source: resolved.source,
+            });
+            diagnostics.warn(
+              "CONTEXT_WINDOW_OVERRIDE",
+              `DEFAULT_CONTEXT_WINDOW_TOKENS=${contextWindowOverride} disagrees with the registry's ${resolved.tokens} for ${client_model} on ${declaredSurface} (${resolved.source}). The registry value is being reported; clear or correct the env override.`,
+              {
+                override_tokens: contextWindowOverride,
+                resolved_tokens: resolved.tokens,
+                resolved_source: resolved.source,
+                model: client_model,
+                surface: declaredSurface,
+              },
+            );
+          }
+
+          // §5: staleness is a signal, not a silent field. Low-confidence cells
+          // expire ~6x faster than documented ones — models ship monthly, and a
+          // hand-maintained table without an expiry will always drift.
+          if (resolved.stale) {
+            diagnostics.warn(
+              "CONTEXT_WINDOW_STALE",
+              `Context-window cell for ${client_model} on ${declaredSurface} was last verified ${resolved.as_of} (${resolved.stale_days}d ago, ${resolved.source} threshold ${STALENESS_THRESHOLD_DAYS[resolved.source]}d) — re-verify before relying on it.`,
+              {
+                model: client_model,
+                surface: declaredSurface,
+                source: resolved.source,
+                as_of: resolved.as_of,
+                stale_days: resolved.stale_days,
+                threshold_days: STALENESS_THRESHOLD_DAYS[resolved.source],
+              },
+            );
+          }
+        } else {
+          // Params absent → today's behaviour, explicitly labelled so the
+          // client can tell "the server does not know" from "the server
+          // checked". `server_fallback` is deliberately NOT a Provenance value:
+          // no cell was consulted, so no cell's provenance applies.
+          contextWindow = {
+            tokens: DEFAULT_CONTEXT_WINDOW_TOKENS,
+            source: "server_fallback",
+            as_of: null,
+            stale_days: null,
+            stale: false,
+            matched: null,
+            fallback_reason:
+              "client_model not declared — reporting the server's DEFAULT_CONTEXT_WINDOW_TOKENS config value. Declare client_model (and client_surface) to get a provenance-tagged figure from the model capability registry.",
+            total_boot_percent: totalBootPercent,
+            declared: { model: null, surface: null, surface_defaulted: false },
+            override_tokens: contextWindowOverride,
+          };
+        }
+        result.context_window = contextWindow;
+
         result.response_bytes = responseBytes; // D-253: measured response size (undercounts the fields attached after measurement)
         // SRV-28: bytes_delivered is now the TRUE delivered size (the measured
         // response), not the source-content sum the pre-brief-465 field reported.

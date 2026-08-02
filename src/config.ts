@@ -73,6 +73,34 @@ export const MCP_SAFE_TIMEOUT = 50_000;
 export const DEFAULT_CONTEXT_WINDOW_TOKENS =
   Number(process.env.DEFAULT_CONTEXT_WINDOW_TOKENS ?? 500_000) || 500_000;
 
+/**
+ * brief-s5 §4: was the context window EXPLICITLY overridden by env, and to
+ * what? Returns null when the var is unset or unparseable — i.e. when the
+ * value in play is the code default rather than an operator decision.
+ *
+ * DEFAULT_CONTEXT_WINDOW_TOKENS above cannot answer this: it collapses "the
+ * operator set 500000" and "nobody set anything" into the same number. That
+ * collapse is the S5 failure mechanism — a Railway
+ * `DEFAULT_CONTEXT_WINDOW_TOKENS=200000` silently overrode a code default that
+ * had ALREADY been corrected away from 200K, and the override survived three
+ * model generations because nothing ever said it was winning. An override
+ * should remain possible; it should just be impossible to forget. Callers pair
+ * this with resolveContextWindow() and emit CONTEXT_WINDOW_OVERRIDE when the
+ * two disagree.
+ *
+ * Reads process.env at CALL time (the resolveBootIndexMode pattern) so a
+ * per-deployment flip needs no re-import and tests need no module reset.
+ */
+export function resolveContextWindowOverride(
+  env: NodeJS.ProcessEnv = process.env,
+): number | null {
+  const raw = env.DEFAULT_CONTEXT_WINDOW_TOKENS;
+  if (raw === undefined || raw.trim() === "") return null;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return parsed;
+}
+
 /** Bootstrap response-size tripwire thresholds (bytes) — SRV-39 recalibration.
  *  The pre-brief-465 literals (80KB warn / 100KB error) fired the ERROR-level
  *  BOOTSTRAP_OVERSIZE diagnostic on EVERY prism boot: measured steady state is
