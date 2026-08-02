@@ -54,3 +54,27 @@ jobs:
             --title "chore: bump model pins to latest Anthropic releases" \
             --label "model-bump" \
             --body-file /tmp/model-bump-body.md
+
+      # brief-s5 §6: the model-capability registry's `api` column is the one
+      # column with a machine-readable authority (models.retrieve().
+      # max_input_tokens). This job is the only place in CI holding
+      # ANTHROPIC_API_KEY, so the drift check runs HERE rather than in ci.yml,
+      # where the test self-skips for lack of a live key. It fails the job
+      # loudly when Anthropic ships a change, and its failure message flags any
+      # chat cell not re-verified since — chat/claude_code are hand-maintained
+      # and never auto-corrected from API evidence.
+      #
+      # LAST, and `!cancelled()` rather than a plain dependency: a drift failure
+      # must not suppress the freshness check or its bump PR above. Those are
+      # the mechanism that tells the operator a new model shipped, which is
+      # exactly the situation where the api column is most likely to have
+      # drifted. Two independent signals, neither gating the other.
+      - name: Install dependencies
+        if: ${{ !cancelled() }}
+        run: npm ci
+
+      - name: Model capability registry — API column drift check
+        if: ${{ !cancelled() }}
+        run: npx vitest run tests/model-capabilities-api-drift.test.ts
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
