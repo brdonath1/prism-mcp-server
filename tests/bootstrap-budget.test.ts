@@ -153,6 +153,7 @@ describe("T-1: bootstrap response size budget", () => {
     delete measured.context_estimate;
     delete measured.response_bytes;
     delete measured.bytes_delivered; // SRV-28: now a post-measurement attachment (= responseBytes)
+    delete measured.context_window;  // brief-s5: attached post-measurement alongside context_estimate, deliberately so the numerator does not move
     delete measured.diagnostics;
     expect(parsed.context_estimate.bootstrap_tokens).toBe(
       Math.round(JSON.stringify(measured).length / 3.5)
