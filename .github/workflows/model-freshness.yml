@@ -20,6 +20,22 @@ jobs:
         with:
           node-version: 20
 
+      # brief-s5 §6: the model-capability registry's `api` column is the one
+      # column with a machine-readable authority (models.retrieve().
+      # max_input_tokens). This job is the only place in CI holding
+      # ANTHROPIC_API_KEY, so the drift check runs HERE rather than in ci.yml
+      # (where the test self-skips for lack of a live key). It fails the job
+      # loudly when Anthropic ships a change, and its failure message flags any
+      # chat cell that has not been re-verified since — chat/claude_code columns
+      # are hand-maintained and are never auto-corrected from API evidence.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Model capability registry — API column drift check
+        run: npx vitest run tests/model-capabilities-api-drift.test.ts
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
       # MODEL_BUMP_PAT (fine-grained PAT, this repo, contents + pull-requests
       # read/write) makes the bump PR fire pull_request workflows — PRs created
       # with the default GITHUB_TOKEN never trigger CI, leaving each weekly
