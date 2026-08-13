@@ -1,0 +1,610 @@
+{
+  "brief": "s203b",
+  "generated_by": "Claude Fable 5 (lead synthesis)",
+  "note": "Machine-readable mirror of the implementable set in recommendations.md. Effort is S or M only; L items live in recommendations.md 'Deferred' and are excluded here. Priority: P0>P1>P2>P3. See audit-findings.md for evidence and recommendations.md for full contracts.",
+  "head_shas": {
+    "prism-mcp-server": "66b68ee9b23f3016e2f39dad19240aedb3febca1",
+    "prism-framework": "6829ccbb932f491e1d91a5bd2ed085d6ba67751a",
+    "trigger": "83bed9c41749998500cb88612962836481608883",
+    "prism": "b309d566fceb82aeb25b7ff7b45f0e549539f2c6"
+  },
+  "routing_table": [
+    {"axis": "lead-synthesis", "model": "claude-fable-5", "reason": "binding judgment stays apex; final composition never delegated"},
+    {"axis": "A1-rule9", "model": "opus", "reason": "cross-repo causal trace, judgment-bearing"},
+    {"axis": "A2-banner", "model": "opus", "reason": "cross-repo causal trace, judgment-bearing"},
+    {"axis": "B-coherence", "model": "opus", "reason": "intent-vs-shipped adjudication over 8+ PRs"},
+    {"axis": "C1-code-health", "model": "opus", "reason": "code-review class"},
+    {"axis": "C2-inventory", "model": "sonnet", "reason": "grep/tally/byte breadth, no judgment"},
+    {"axis": "D-framework", "model": "opus", "reason": "contract-fidelity judgment"},
+    {"axis": "E-trigger", "model": "opus", "reason": "reliability analysis + incident reconstruction"},
+    {"axis": "F-living-docs", "model": "sonnet", "reason": "mechanical staleness tables"},
+    {"axis": "G-efficiency", "model": "sonnet", "reason": "byte arithmetic, estimates flagged"}
+  ],
+  "recommendations": [
+    {
+      "id": "R1", "priority": "P0", "repo": "prism-mcp-server",
+      "title": "Re-land PR #115 — the model-capability window contract",
+      "files": ["src/config.ts", "src/tools/bootstrap.ts", "tests/bootstrap-context-window.test.ts", "tests/bootstrap-budget.test.ts"],
+      "change": "Re-target the existing remote branch prism-s5-bootstrap-context-window (de46d20) to base main and re-PR, or cherry-pick de46d20 onto a fresh branch off main. Restores client_model/client_surface params, provenance-tagged context_window, resolveContextWindowOverride, CONTEXT_WINDOW_OVERRIDE/CONTEXT_WINDOW_STALE.",
+      "effort": "S", "risk": "low",
+      "verify": "git merge-base --is-ancestor <new-sha> origin/main true; grep client_model src/tools/bootstrap.ts non-empty; tests/bootstrap-context-window.test.ts green; boot with client_model returns context_window{source,as_of}",
+      "rollback": "revert PR (additive field only)",
+      "addresses": ["F-A1-2", "F-C1-4", "F-B1", "F-A1-3"], "lead_verified": true, "depends_on": []
+    },
+    {
+      "id": "R20", "priority": "P1", "repo": "prism-mcp-server",
+      "title": "Fail-closed auth on missing/non-Bearer header",
+      "files": ["src/middleware/auth.ts", "src/config.ts", "tests/auth-middleware.test.ts"],
+      "change": "When MCP_AUTH_TOKEN set, missing/non-Bearer header must 401 immediately (move reject outside the Bearer branch). Derive client IP from rightmost XFF minus trusted-hop count or trust-proxy. Ship reject-on-missing-header alone first.",
+      "effort": "S", "risk": "med",
+      "verify": "new tests: missing Authorization with token set -> 401; forged leftmost XFF -> 403",
+      "rollback": "revert middleware; env unchanged",
+      "addresses": ["F-C1-1", "F-C1-16"], "lead_verified": true, "depends_on": [],
+      "note": "P0 if Railway appends (not replaces) XFF; fix is unconditionally correct either way"
+    },
+    {
+      "id": "R12", "priority": "P1", "repo": "prism-mcp-server",
+      "title": "Attach banner fields to the four bare finalize shapes",
+      "files": ["src/tools/finalize.ts", "tests/finalize-use-draft-files.test.ts"],
+      "change": "Spread assembleFinalizeErrorBannerFields into the four early returns at finalize.ts:3073/3083/3093/3129; table-driven test asserting banner_text non-empty on every action in {commit,full}.",
+      "effort": "S", "risk": "low",
+      "verify": "enumeration test passes over all commit/full return sites",
+      "rollback": "revert", "addresses": ["F-A2-4"], "depends_on": []
+    },
+    {
+      "id": "R11", "priority": "P1", "repo": "prism-mcp-server",
+      "title": "Deliver the finalize render contract on commit+full, not only audit",
+      "files": ["src/tools/finalize.ts"],
+      "change": "Hoist rules-session-end.md fetch (or emit a ~15-line finalize_render_contract string) outside the action=audit branch so commit/full responses carry RENDER+CONFIRM structure and FALLBACK. Measure added bytes vs oversize thresholds.",
+      "effort": "S", "risk": "low",
+      "verify": "action=commit response contains render contract; commit-only finalize with no prior audit renders correctly",
+      "rollback": "drop field (older clients ignore)", "addresses": ["F-A2-3", "F-D3"], "depends_on": []
+    },
+    {
+      "id": "R22", "priority": "P1", "repo": "prism-mcp-server",
+      "title": "Make draft parse/compose failures fail loud",
+      "files": ["src/tools/finalize.ts", "tests/finalize-full-draft-bridge.test.ts", "tests/finalize-compose-offload.test.ts"],
+      "change": "Parse-failure return (:987-995) sets success:false/parse_failed so draftStatus=warn, DRAFT_FAILED fires, raw rides in draft_recovery; narrow draftPhase outer catch so compose/persist throw emits FINALIZE_COMPOSE_FALLBACK(compose_threw).",
+      "effort": "S", "risk": "low",
+      "verify": "unparseable draft -> phases.draft.status warn && draft_recovery non-null; pushFile throws -> FINALIZE_COMPOSE_FALLBACK(compose_threw), no parse_warning",
+      "rollback": "revert", "addresses": ["F-C1-3", "F-C1-6"], "depends_on": []
+    },
+    {
+      "id": "R21", "priority": "P1", "repo": "prism-mcp-server",
+      "title": "Stop log_decision/log_insight overwriting on a transient read error",
+      "files": ["src/tools/log-decision.ts", "src/tools/log-insight.ts"],
+      "change": "Discriminate caught error — only /Not found/i is absent; route rest through classifyUnfetchedDoc; on unverified read return isError + LOG_RECREATE_BLOCKED instead of writing a starter.",
+      "effort": "M", "risk": "low",
+      "verify": "401-shaped reject -> no write, isError; 'Not found' -> starter created",
+      "rollback": "revert both files", "addresses": ["F-C1-2"], "depends_on": []
+    },
+    {
+      "id": "R57", "priority": "P1", "repo": "prism-mcp-server",
+      "title": "Reconcile the DECIDED status (validator/writer/data)",
+      "files": ["src/validation/decisions.ts", "src/tools/log-decision.ts"],
+      "change": "Decide DECIDED joins VALID_STATUSES or 11 rows normalize to SETTLED; make prism_log_decision validate its own output (z.enum(VALID_STATUSES) + validateDecisionIndex before commit).",
+      "effort": "S", "risk": "low",
+      "verify": "validateDecisionIndex(live).errors empty AND prism_log_decision rejects status:BOGUS",
+      "rollback": "revert", "addresses": ["F-B6"], "lead_verified": true, "depends_on": [], "pairs_with": "R57d"
+    },
+    {
+      "id": "R23", "priority": "P1", "repo": "prism-mcp-server",
+      "title": "Give prism_bootstrap a wall-clock deadline",
+      "files": ["src/config.ts", "src/tools/bootstrap.ts", "tests/read-tool-deadlines.test.ts"],
+      "change": "Add BOOTSTRAP_WALL_CLOCK_DEADLINE_MS (default MCP_SAFE_TIMEOUT); wrap the handler in the push.ts sentinel/race/clearTimeout pattern; return partial payload where possible.",
+      "effort": "M", "risk": "low",
+      "verify": "bootstrap block in read-tool-deadlines: core fetch hangs -> structured deadline-exceeded",
+      "rollback": "env-set deadline very high", "addresses": ["F-C1-5"], "depends_on": []
+    },
+    {
+      "id": "R30", "priority": "P2", "repo": "prism-mcp-server",
+      "title": "Read-path degraded signal instead of confident zeros",
+      "files": ["src/tools/status.ts", "src/tools/analytics.ts"],
+      "change": "On non-Not-found error emit DOC_READ_DEGRADED and return null for affected fields rather than 0.",
+      "effort": "S", "risk": "low",
+      "verify": "resolveDocPath rejects 401 -> fields null + DOC_READ_DEGRADED",
+      "rollback": "revert", "addresses": ["F-C1-14"], "depends_on": []
+    },
+    {
+      "id": "R28", "priority": "P2", "repo": "prism-mcp-server",
+      "title": "prism_push must reject empty files[]",
+      "files": ["src/tools/push.ts"],
+      "change": "Add .min(1) to the zod files array.",
+      "effort": "S", "risk": "low", "verify": "files:[] -> isError",
+      "rollback": "revert", "addresses": ["F-C1-12"], "depends_on": []
+    },
+    {
+      "id": "R29", "priority": "P2", "repo": "prism-mcp-server",
+      "title": "Slug resolution must not guess-then-write",
+      "files": ["src/tools/bootstrap.ts"],
+      "change": "On partial match collect all candidates; >1 -> error naming them; require min normalized match length >=6 before accepting a substring match, before any boot-test/enrollment write.",
+      "effort": "S", "risk": "low", "verify": "two repos both substring-match -> error naming both, no write",
+      "rollback": "revert", "addresses": ["F-C1-13"], "depends_on": []
+    },
+    {
+      "id": "R32", "priority": "P2", "repo": "prism-mcp-server",
+      "title": "Bound the interactive draft race at the MCP ceiling",
+      "files": ["src/config.ts", "src/tools/finalize.ts", "tests/finalize-draft-timeout.test.ts"],
+      "change": "Bound action=draft race at MCP_SAFE_TIMEOUT, leave fullPhase race on the longer constant; state background semantics in action=full description.",
+      "effort": "S", "risk": "med", "verify": "draft-action race uses MCP_SAFE_TIMEOUT",
+      "rollback": "env-set FINALIZE_DRAFT_DEADLINE_MS", "addresses": ["F-C1-7"], "depends_on": []
+    },
+    {
+      "id": "R24", "priority": "P2", "repo": "prism-mcp-server",
+      "title": "A retry budget for fetchWithRetry",
+      "files": ["src/github/client.ts", "tests/github-client-timeouts.test.ts"],
+      "change": "Thread a deadline/AbortSignal budget (or cap total elapsed retry at GITHUB_RETRY_BUDGET_MS ~20s) and stop retrying once exceeded.",
+      "effort": "M", "risk": "low", "verify": "Retry-After:60 with 3 retries -> returns within budget not 300s",
+      "rollback": "revert", "addresses": ["F-C1-8"], "depends_on": []
+    },
+    {
+      "id": "R25", "priority": "P2", "repo": "prism-mcp-server",
+      "title": "Structural identity in safeMutation landed-commit detection",
+      "files": ["src/utils/safe-mutation.ts", "tests/safe-mutation.test.ts"],
+      "change": "Verify identity by tree/blob SHA or a per-call nonce trailer instead of message equality.",
+      "effort": "M", "risk": "low", "verify": "409 + HEAD moved to different commit with identical message -> does NOT return ok; retries",
+      "rollback": "revert", "addresses": ["F-C1-9"], "depends_on": []
+    },
+    {
+      "id": "R26", "priority": "P2", "repo": "prism-mcp-server",
+      "title": "Wire the shutdown reaper",
+      "files": ["src/index.ts"],
+      "change": "Pass onDrain that marks running dispatch records interrupted (dispatch-store.ts) and awaits a bounded registry of in-flight background synthesis promises.",
+      "effort": "M", "risk": "low", "verify": "index-level registration supplies onDrain (graceful-shutdown.test.ts)",
+      "rollback": "pass no onDrain", "addresses": ["F-C1-10"], "depends_on": []
+    },
+    {
+      "id": "R27", "priority": "P2", "repo": "prism-mcp-server",
+      "title": "Extract two pure modules from finalize.ts",
+      "files": ["src/tools/finalize.ts", "src/tools/finalize/banner.ts", "src/tools/finalize/audit.ts"],
+      "change": "Move the banner-assembly block (:2098-2362) and audit/unfetched-doc classification (:274-554) to submodules; leave commitPhase in place. Full 6-way split deferred.",
+      "effort": "M", "risk": "low", "verify": "existing finalize*.test.ts passes with re-pointed imports",
+      "rollback": "revert the move", "addresses": ["F-C1-11", "F-A2-13"], "depends_on": []
+    },
+    {
+      "id": "R9", "priority": "P2", "repo": "prism-mcp-server",
+      "title": "Make KERNEL_SPLIT_DRIFT rule-aware",
+      "files": ["src/tools/bootstrap.ts"],
+      "change": "Extend the manifest check with rule-level literal anchors (status-line shape, tier table, the finalize line) vs behavioralRules; ship warn-only.",
+      "effort": "S", "risk": "low", "verify": "Rule-9-stripped fixture fires KERNEL_SPLIT_DRIFT; live kernel does not",
+      "rollback": "revert (diagnostic-only)", "addresses": ["F-A1-8", "F-D17"], "depends_on": []
+    },
+    {
+      "id": "R17", "priority": "P2", "repo": "prism-mcp-server",
+      "title": "Register visualize:show_widget as a render-surface expectation",
+      "files": ["src/tool-registry.ts", "src/tools/bootstrap.ts"],
+      "change": "Add a render category naming visualize:show_widget in expected_tool_surface (documentational, no MCP registration) + extend the Tool Surface line to report render check.",
+      "effort": "M", "risk": "low", "verify": "boot with visualize MCP down emits render-fail",
+      "rollback": "drop fields", "addresses": ["F-A2-9"], "depends_on": []
+    },
+    {
+      "id": "R18", "priority": "P2", "repo": "prism-mcp-server",
+      "title": "Nullable docCount in the error-banner fallback",
+      "files": ["src/utils/banner.ts", "src/tools/finalize.ts"],
+      "change": "Render '?/10 docs (unverified)' on deadline/hard-error shapes instead of 0/10.",
+      "effort": "S", "risk": "low", "verify": "banner-fallback-integration asserts no 0/10 on those shapes",
+      "rollback": "revert", "addresses": ["F-A2-11"], "depends_on": []
+    },
+    {
+      "id": "R19", "priority": "P2", "repo": "prism-mcp-server",
+      "title": "Cap banner_data.deliverables",
+      "files": ["src/tools/finalize.ts"],
+      "change": "Cap the array (12) and each text (160) via normalizeBannerText; emit BANNER_DELIVERABLES_TRUNCATED.",
+      "effort": "S", "risk": "low", "verify": "40-item call yields <=12 rows + diagnostic",
+      "rollback": "revert", "addresses": ["F-A2-12"], "depends_on": []
+    },
+    {
+      "id": "R70", "priority": "P2", "repo": "prism-mcp-server",
+      "title": "Stop HANDOFF_ITEM_OVERSIZE firing 5/5 every boot",
+      "files": ["src/config.ts"],
+      "change": "Raise HANDOFF_ITEM_BUDGET_BYTES toward the measured mean (~800) or aggregate to one diagnostic naming the N worst.",
+      "effort": "S", "risk": "none", "verify": "prism boot emits <=1 HANDOFF_ITEM_OVERSIZE",
+      "rollback": "HANDOFF_ITEM_BUDGET_BYTES env", "addresses": ["F-B11"], "depends_on": []
+    },
+    {
+      "id": "R-DOCS-MS", "priority": "P2", "repo": "prism-mcp-server",
+      "title": "Server doc/config truth-up (batch)",
+      "files": ["docs/model-bump.md", "CLAUDE.md", "docs/cost-rearchitecture/d275-rollout.md", "docs/cost-rearchitecture/d275-callsite-inventory.json", "src/models.ts", "src/llm/pricing.ts", "src/llm/provider-registry.ts", "src/ai/cc-subprocess.ts"],
+      "change": "Model-bump single-switch fix + MODEL_CAPABILITIES/DEFAULT_CONTEXT_WINDOW_TOKENS rows; RECOMMENDATION_MODELS opus-5 or dated hold; d275-rollout §3 -> INS-370 5 steps; CLAUDE.md:323 trigger-state path fix; d275-callsite-inventory SHA refresh; env count/rows; pricing.ts deepseek-v4-pro + sonar-pro rows.",
+      "effort": "S", "risk": "low", "verify": "model-bump.md:25 grep prints nothing; grep -c MODEL_CAPABILITIES docs/model-bump.md >=1; estimateCostUsd non-null for the two providers",
+      "rollback": "revert", "addresses": ["F-B7", "F-B8", "F-B9", "F-B10", "F-B14", "F-B17", "F-B21", "F-G-A11"], "depends_on": []
+    },
+    {
+      "id": "R75", "priority": "P3", "repo": "prism-mcp-server",
+      "title": "Diagnostic on the archived-rule exclusion",
+      "files": ["src/utils/standing-rules.ts"],
+      "change": "Anchor the archived/dormant test to the first body line after the ### header; logger.info on skip.",
+      "effort": "S", "risk": "low", "verify": "mid-body 'archived rule' parses active; each real exclusion logs once",
+      "rollback": "revert", "addresses": ["F-B18"], "depends_on": []
+    },
+    {
+      "id": "R31", "priority": "P3", "repo": "prism-mcp-server",
+      "title": "GitHub client pagination/body hygiene",
+      "files": ["src/github/client.ts"],
+      "change": "Add if(repos.length<100)break + hard page cap; await res.body?.cancel() on both early-return paths.",
+      "effort": "S", "risk": "low", "verify": "a 99-item page issues no second request",
+      "rollback": "revert", "addresses": ["F-C1-15"], "depends_on": []
+    },
+
+    {
+      "id": "R10", "priority": "P0", "repo": "prism-framework",
+      "title": "Make the banner branch render-outcome-aware + inline fallback",
+      "files": ["_templates/core-template-mcp.md", "_templates/rules-session-end.md"],
+      "change": "Add a third branch to boot+finalize render rules: if show_widget fails/errors/times out, render banner_text inline SAME turn (one attempt, never retry), never omit; promote skip-after-first-timeout to protocol. Zero/near-zero kernel bytes.",
+      "effort": "S", "risk": "low",
+      "verify": "with visualize down, boot emits fenced session name + rename line, Probe F next 5 sessions pass via inline fallback while KI-29 active",
+      "rollback": "revert (propagates next boot)", "addresses": ["F-A2-1", "F-A2-2"], "depends_on": [], "immediate_mitigation": "R-ENV-MAST (BOOT_MASTHEAD_SVG=off)"
+    },
+    {
+      "id": "R4", "priority": "P1", "repo": "prism-framework",
+      "title": "Port the corrected Rule 9 window map to the fallback",
+      "files": ["_templates/core-template.md", "_templates/CHANGELOG.md", "tests/rule9-context-meter-stability.test.mjs"],
+      "change": "Replace the fallback window map with the kernel's corrected one (add Opus 5 -> 1M), port the absent-model disclosure clause + cross-surface ban, drop the stale INS-306 clause; bump 2.29.2 -> 2.30.0.",
+      "effort": "S", "risk": "low", "verify": "both templates carry an Opus-5 chat row + disclosure clause; node --test green",
+      "rollback": "revert", "addresses": ["F-A1-4", "F-D1"], "depends_on": []
+    },
+    {
+      "id": "R3", "priority": "P1", "repo": "prism-framework",
+      "title": "Restore the D-85 closer enumeration",
+      "files": ["_templates/core-template-mcp.md", "_templates/reference/context-economy.md", "tests/rule9-context-meter-stability.test.mjs"],
+      "change": "Restore the 'no exceptions for short/tool-call-only/clarification — every response; constant mechanical behavior not conditional' enumeration + the auto-compaction consequence. Prefer Band-3 (zero kernel bytes) with a one-line kernel pointer.",
+      "effort": "S", "risk": "low", "verify": "pinned phrases appear in the delivered chain + asserted in rule9 test; one soak session graded by Probe C",
+      "rollback": "revert", "addresses": ["F-A1-1", "F-D16"], "depends_on": ["R36 (if placed in-kernel)"]
+    },
+    {
+      "id": "R15", "priority": "P1", "repo": "prism-framework",
+      "title": "Restore D-263 rationale + remedial self-check",
+      "files": ["_templates/core-template-mcp.md"],
+      "change": "Restore the one-sentence rationale (unrendered banner is invisible) + remedial clause (add the render before submitting). ~180 B in-kernel -> needs R36, or land in Band-3. Add the D-263 CHANGELOG citation.",
+      "effort": "S", "risk": "low", "verify": "kernel byte gate green; Probe F pass-rate improves over 5 sessions",
+      "rollback": "revert", "addresses": ["F-A2-7", "F-D19"], "depends_on": ["R36 (if in-kernel)"]
+    },
+    {
+      "id": "R13", "priority": "P1", "repo": "prism-framework",
+      "title": "Make audit-harness Probe B branch-aware (v5)",
+      "files": ["_templates/modules/audit-harness.md"],
+      "change": "If boot_masthead_html emitted, B1/B2 are n-a and B3 grades the HTML masthead incl copy control; else grade B1-B4 as today. Bump to v5.",
+      "effort": "S", "risk": "low", "verify": "re-grading S174 (known pass) and one post-3.1.4 session both return pass",
+      "rollback": "filter audit rows by harness_version", "addresses": ["F-A2-5"], "depends_on": []
+    },
+    {
+      "id": "R14", "priority": "P1", "repo": "prism-framework",
+      "title": "Author Probe H + run the harness over S181-S203",
+      "files": ["_templates/modules/audit-harness.md", "prism:.prism/audit-trail.md"],
+      "change": "Author Probe H (module-load compliance), add the R-PROBE-W window grades; run the harness over S181-S203 and append rows.",
+      "effort": "M", "risk": "low", "verify": ">=5 post-S202 rows with non-inconclusive finalize_contract",
+      "rollback": "n/a (additive data)", "addresses": ["F-A2-6"], "depends_on": ["R-PROBE-W"]
+    },
+    {
+      "id": "R-PROBE-W", "priority": "P1", "repo": "prism-framework",
+      "title": "A probe that grades the denominator W",
+      "files": ["_templates/modules/audit-harness.md", "tests/rule9-context-meter-stability.test.mjs"],
+      "change": "Add rule9_window_declared (boot Running: line names a window) and rule9_window_correct (window matches the kernel map for self-reported model+surface; floor_undisclosed when model absent and disclosure missing).",
+      "effort": "S", "risk": "low", "verify": "known-good Opus 5 session -> ok; synthetic 200K-denominator transcript -> mis-scaled",
+      "rollback": "filter by harness_version", "addresses": ["F-A1-5"], "depends_on": []
+    },
+    {
+      "id": "R33", "priority": "P1", "repo": "prism-framework",
+      "title": "Add a compose-mode branch to the finalize rules",
+      "files": ["_templates/rules-session-end.md"],
+      "change": "When the draft response carries draft_files, commit via use_draft_files:true + per-file overrides; keep the existing hard rule as the legacy branch (feature-detected).",
+      "effort": "S", "risk": "low", "verify": "framework text names use_draft_files + draft_files; one live finalize commits without a full files[]",
+      "rollback": "revert", "addresses": ["F-D2"], "depends_on": []
+    },
+    {
+      "id": "R35", "priority": "P1", "repo": "prism-framework",
+      "title": "Teach the kernel to consume session_state_manifest",
+      "files": ["_templates/core-template-mcp.md"],
+      "change": "Replace the bare '(D-156 manifest)' line with a field-named one: session_state_manifest.rules.index = Tier-B/C lookup for prism_load_rules; .docs = prism_fetch map; absent -> standing_rules_index. Swap bytes not add (R36).",
+      "effort": "S", "risk": "low", "verify": "git grep session_state_manifest origin/main non-empty; one soak boot before compact flip",
+      "rollback": "env BOOT_INDEX_MODE=full", "addresses": ["F-B2", "F-D5"], "depends_on": ["R36"], "unblocks_env": "R-ENV-FLIP"
+    },
+    {
+      "id": "R34", "priority": "P1", "repo": "prism-framework",
+      "title": "Reconcile project-instructions with the kernel",
+      "files": ["_templates/core-template-mcp.md", "_templates/project-instructions.md"],
+      "change": "Extend the Running: grammar with an identity segment (or relax PI-13 to fold into source_path); add PI-11's mutation-freeze clause to the kernel Rule 1 null branch.",
+      "effort": "S", "risk": "low", "verify": "both templates + the identity test green; one live boot shows the segment",
+      "rollback": "revert", "addresses": ["F-D4"], "depends_on": ["R36 (for the added segment)"]
+    },
+    {
+      "id": "R16", "priority": "P2", "repo": "prism-framework",
+      "title": "Fix banner-spec.md self-contradiction + versions",
+      "files": ["_templates/banner-spec.md", "README.md"],
+      "change": "Rewrite Note 6 branch-conditional, extend Note 2 to whichever masthead field is present, append the 4.3 history entry, set README to 4.3.",
+      "effort": "S", "risk": "low", "verify": "no sentence asserts the fence is unconditional; every banner version token equals BANNER_SPEC_VERSION",
+      "rollback": "revert", "addresses": ["F-A2-8", "F-D11"], "depends_on": []
+    },
+    {
+      "id": "R38", "priority": "P2", "repo": "prism-framework",
+      "title": "Four-category Tool Surface line",
+      "files": ["_templates/core-template-mcp.md", "_templates/banner-spec.md"],
+      "change": "(core check | railway deferred | cc deferred | gh deferred).",
+      "effort": "S", "risk": "low", "verify": "format segment count equals Object.keys(getExpectedToolSurface) (4)",
+      "rollback": "revert", "addresses": ["F-D10"], "depends_on": []
+    },
+    {
+      "id": "R44", "priority": "P2", "repo": "prism-framework",
+      "title": "Correct the total_boot_percent mechanism in the carriers",
+      "files": ["_templates/reference/context-economy.md", "_templates/core-template.md"],
+      "change": "State the server's DEFAULT_CONTEXT_WINDOW_TOKENS default (500K, env-overridable) not the session window; drop the fixed 200K/5x multiplier.",
+      "effort": "S", "risk": "none", "verify": "grep finds no '200K default' literal in either file",
+      "rollback": "revert", "addresses": ["F-A1-12", "F-D7"], "depends_on": []
+    },
+    {
+      "id": "R7", "priority": "P2", "repo": "prism-framework",
+      "title": "Stop the kernel mismatch-flag firing on every boot",
+      "files": ["_templates/core-template-mcp.md"],
+      "change": "Narrow :120 to 'flag only when the server figure exceeds the map figure' (~0 net bytes).",
+      "effort": "S", "risk": "low", "verify": "one Opus 5 boot with no mismatch flag",
+      "rollback": "revert", "addresses": ["F-D8"], "depends_on": [], "note": "R1+R2 largely subsume this"
+    },
+    {
+      "id": "R8", "priority": "P2", "repo": "prism-framework",
+      "title": "Reconcile D-227 with the declared-model contract",
+      "files": ["_templates/core-template-mcp.md"],
+      "change": "Amend the kernel to distinguish legacy context_estimate.context_window_tokens (not authoritative) from provenance-tagged context_window (authoritative when source != server_fallback).",
+      "effort": "S", "risk": "low", "verify": "the kernel phrase is pinned in the rule9 test",
+      "rollback": "revert", "addresses": ["F-A1-11"], "depends_on": ["R1"]
+    },
+    {
+      "id": "R36", "priority": "P2", "repo": "prism-framework",
+      "title": "Record the kernel byte-gate provenance",
+      "files": ["_templates/reference/context-economy.md"],
+      "change": "Record 18000 (S202, believed 200K window) -> 19000 (D-279 interim), the owed re-derivation, and the recorded-decision requirement. Zero kernel bytes; unblocks the kernel edits.",
+      "effort": "S", "risk": "none", "verify": "byte gate green; grep for 19,000 and D-279 in the file",
+      "rollback": "revert", "addresses": ["F-D6", "F-B13", "F-A1-7"], "depends_on": []
+    },
+    {
+      "id": "R37", "priority": "P2", "repo": "prism-framework",
+      "title": "Regenerate mcp-tool-surface.md (19->32) + add a load trigger",
+      "files": ["_templates/reference/mcp-tool-surface.md", "_templates/core-template-mcp.md"],
+      "change": "Regenerate the tables from src/tool-registry.ts, update counts + Last updated, add a Load trigger header + one Band-3 kernel trigger row.",
+      "effort": "M", "risk": "low", "verify": "doc tool count equals grep -c server.tool src/tools/*.ts (32)",
+      "rollback": "revert", "addresses": ["F-D9"], "depends_on": ["R36 (for the kernel trigger row)"]
+    },
+    {
+      "id": "R39", "priority": "P2", "repo": "prism-framework",
+      "title": "README refresh",
+      "files": ["README.md"],
+      "change": "Auto-derive the tree from git ls-tree, replace the single Template Version pin with the two live pins, add a three-band paragraph.",
+      "effort": "S", "risk": "none", "verify": "module/reference counts match ls-tree | wc -l",
+      "rollback": "revert", "addresses": ["F-D12"], "depends_on": []
+    },
+    {
+      "id": "R40", "priority": "P2", "repo": "prism-framework",
+      "title": "Un-orphan the two module files",
+      "files": ["_templates/core-template-mcp.md"],
+      "change": "Add Module Triggers rows for trigger-retrofit.md and metaswarm-integration.md Mode B (needs R36 headroom or land in core-template.md interim).",
+      "effort": "S", "risk": "low", "verify": "every file under modules/ is named by a trigger row or triggered by another module",
+      "rollback": "revert", "addresses": ["F-D13", "F-B19"], "depends_on": ["R36"]
+    },
+    {
+      "id": "R41", "priority": "P2", "repo": "prism-framework",
+      "title": "Band-3 trigger table for the unreachable reference docs",
+      "files": ["_templates/core-template-mcp.md"],
+      "change": "A 3-4 row Band-3 trigger table (commit composition -> commit-prefixes.md; unfamiliar tool -> mcp-tool-surface.md; CC launch -> claude-code-config.md).",
+      "effort": "S", "risk": "low", "verify": "each named Band-3 file is reachable",
+      "rollback": "revert", "addresses": ["F-D14"], "depends_on": ["R36"]
+    },
+    {
+      "id": "R42", "priority": "P2", "repo": "prism-framework",
+      "title": "Resolve the pre-dispatch-load vs Rule 6 collision",
+      "files": ["_templates/core-template-mcp.md"],
+      "change": "Name the required section in the pre-dispatch mandate (§ Pre-dispatch and § Account selection), or add a Rule 6 exception for hard-mandated loads.",
+      "effort": "S", "risk": "low", "verify": "the mandate names a section, or Rule 6 names the exception",
+      "rollback": "revert", "addresses": ["F-D15"], "depends_on": []
+    },
+    {
+      "id": "R43", "priority": "P2", "repo": "prism-framework",
+      "title": "Add the operator-utterance finalize trigger to the kernel",
+      "files": ["_templates/core-template-mcp.md"],
+      "change": "One line: operator says 'finalize session' (or red) -> prism_finalize(audit) first; Rules 10-15 arrive with it.",
+      "effort": "S", "risk": "low", "verify": "the kernel names the audit-first sequence",
+      "rollback": "revert", "addresses": ["F-D18"], "depends_on": ["R36"], "pairs_with": "R11"
+    },
+
+    {
+      "id": "R45", "priority": "P0", "repo": "trigger",
+      "title": "Add a launch-model pin + preflight verification",
+      "files": ["src/config/schema.ts", "src/types/index.ts", "src/worker/worker.ts", "src/worker/preflight.ts", "src/startup/orchestrator.ts"],
+      "change": "Add default_model to the environment block (+ TRIGGER_DEFAULT_MODEL) and resolve frontmatter.model ?? default so every launch emits --model; add a preflight model gate (assert non-empty, fail closed); stamp resolved pin into execution.model_used.",
+      "effort": "S", "risk": "low",
+      "verify": "a brief with no model: builds a command containing --model <configured default> and journal model_used is non-null",
+      "rollback": "unset default_model (byte-identical to today)", "addresses": ["F-E1"], "depends_on": []
+    },
+    {
+      "id": "R46", "priority": "P1", "repo": "trigger",
+      "title": "Accept xhigh and warn on unknown effort",
+      "files": ["src/types/index.ts", "src/poller/frontmatter.ts"],
+      "change": "Add 'xhigh' to the BriefEffort union + VALID_EFFORT; log a warn (not a silent drop) on any unrecognized effort.",
+      "effort": "S", "risk": "low", "verify": "parseFrontmatter('effort: xhigh') returns 'xhigh' and the built command contains xhigh",
+      "rollback": "revert", "addresses": ["F-E2"], "depends_on": [], "open_question": "confirm CC 2.1.229-231 accepts --effort xhigh"
+    },
+    {
+      "id": "R47", "priority": "P1", "repo": "trigger",
+      "title": "Log the resolved model/effort at dispatch",
+      "files": ["src/worker/worker.ts"],
+      "change": "Log the resolved {model, effort, max_budget_usd, max_turns} on the launch line (fields, never the command string) and thread resolved values into execution.",
+      "effort": "S", "risk": "none", "verify": "a dispatch produces one info line carrying model+effort, journal model_used matches",
+      "rollback": "trivial", "addresses": ["F-E3"], "depends_on": []
+    },
+    {
+      "id": "R48", "priority": "P1", "repo": "trigger",
+      "title": "Gate the retry-eligibility log on file presence",
+      "files": ["src/poller/index.ts"],
+      "change": "Pass the present-on-branch id set into the eligibility check so the 'retrying' line is emitted only for ids whose file is on the brief branch; add a newsyslog/plist rotation note for the launchd sinks.",
+      "effort": "S", "risk": "low", "verify": "after one poll with a history-only terminal record and no queue file, zero 'poller: retrying <id>' lines",
+      "rollback": "revert", "addresses": ["F-E4"], "depends_on": []
+    },
+    {
+      "id": "R49", "priority": "P1", "repo": "trigger",
+      "title": "Name stuck terminal ids once, fix retry-frontmatter model",
+      "files": ["src/poller/index.ts", "src/state/manager.ts"],
+      "change": "Promote the block reason to a deduped info (once per id per lifetime); buildRetryFrontmatter falls back to the R45 default_model rather than propagating undefined.",
+      "effort": "S", "risk": "low", "verify": "one info line naming id+reason per lifetime; retried frontmatter carries a non-empty model",
+      "rollback": "revert", "addresses": ["F-E5"], "depends_on": ["R45"]
+    },
+    {
+      "id": "R51", "priority": "P1", "repo": "trigger",
+      "title": "Re-notify and surface detection-death",
+      "files": ["src/startup/orchestrator.ts", "src/cli/commands/status.ts"],
+      "change": "Re-emit brief_branch_unfetchable ntfy on an interval (24h/slug); clear the slug on first successful poll + emit recovered info; surface a detection_dead count in trigger status.",
+      "effort": "S", "risk": "low", "verify": "a project whose brief branch is removed shows detection-dead in trigger status and re-notifies after the interval",
+      "rollback": "revert", "addresses": ["F-E7"], "depends_on": []
+    },
+    {
+      "id": "R50", "priority": "P1", "repo": "trigger",
+      "title": "Heartbeat + opt-in hard ceiling for the silent no-marker/no-PR leg",
+      "files": ["src/scheduler/index.ts", "src/startup/orchestrator.ts"],
+      "change": "(a) deduped heartbeat on the no-marker/no-PR path with elapsed minutes; (b) opt-in max_execution_hours_hard (default off) terminalizing to a distinct 'stalled' after Nx the warn threshold, keeping the warn-only default.",
+      "effort": "M", "risk": "med", "verify": "a synthetic active with no marker/PR emits an age log each tick and, with the ceiling set, terminalizes once past it",
+      "rollback": "leave max_execution_hours_hard unset", "addresses": ["F-E6"], "depends_on": []
+    },
+    {
+      "id": "R55", "priority": "P2", "repo": "trigger",
+      "title": "Don't check the operator's HEAD off the merged branch",
+      "files": ["src/dispatch/clone-sync.ts"],
+      "change": "Narrow daemonOwnsHead to branch===MAIN_BRANCH only; treat the merged branch as foreign (ref-only ff of main) unless TRIGGER_CLONE_SYNC_CHECKOUT_MERGED=true.",
+      "effort": "S", "risk": "low", "verify": "merging a PR while HEAD sits on that branch leaves HEAD on the branch and main fast-forwarded",
+      "rollback": "revert", "addresses": ["F-E11"], "depends_on": []
+    },
+    {
+      "id": "R52", "priority": "P2", "repo": "trigger",
+      "title": "Bound brief discovery to direct children of brief_dir",
+      "files": ["src/poller/index.ts"],
+      "change": "Require the file to be a direct child of brief_dir (reject any path with a / after the prefix), or add a brief_depth/exclude_dirs knob defaulting to depth 1.",
+      "effort": "S", "risk": "low", "verify": "a fixture with queue/_archived/brief-x.md yields zero newBriefs",
+      "rollback": "revert", "addresses": ["F-E8"], "depends_on": []
+    },
+    {
+      "id": "R54", "priority": "P2", "repo": "trigger",
+      "title": "Drop the retired notify action from generated markers",
+      "files": ["src/github/post-merge.ts", ".prism/trigger.yaml"],
+      "change": "Remove notify from the generated marker template and both live markers.",
+      "effort": "S", "risk": "none", "verify": "a post-merge run records no notify in action_outcomes",
+      "rollback": "re-add", "addresses": ["F-E10"], "depends_on": []
+    },
+    {
+      "id": "R53", "priority": "P2", "repo": "trigger",
+      "title": "True-up the runtime config template",
+      "files": ["machine-setup:home/private_dot_config/trigger/trigger.config.yaml.tmpl", "trigger.config.yaml"],
+      "change": "Delete the retired blocks, correct/delete the false precedence comment, add the four live knobs with in-code defaults. Touches a separate repo — flag the machine-setup file for the operator.",
+      "effort": "S", "risk": "none", "verify": "daemon boots and trigger status reports identical behavior with the retired keys removed",
+      "rollback": "restore the template", "addresses": ["F-E9"], "depends_on": []
+    },
+    {
+      "id": "R56", "priority": "P3", "repo": "trigger",
+      "title": "Log the daemon build identity",
+      "files": ["src/index.ts", "src/cli/commands/status.ts", "package.json"],
+      "change": "Inject GIT_SHA at build time (or read git rev-parse HEAD best-effort at boot), log it once at boot, surface in trigger status.",
+      "effort": "S", "risk": "none", "verify": "boot log and trigger status print the SHA the running dist/ was built from, differs after rebuild",
+      "rollback": "remove", "addresses": ["F-E13"], "depends_on": []
+    },
+    {
+      "id": "R-TRIG-PANE", "priority": "P3", "repo": "trigger",
+      "title": "Periodic orphan-pane reaping",
+      "files": ["src/startup/pane-reaper.ts"],
+      "change": "Run the reaper on a low-frequency timer (hourly) gated on terminal-in-history + pane label match, independent of keepPanesOpen for terminal briefs.",
+      "effort": "S", "risk": "low", "verify": "a pane for a merged brief is closed within one reap interval",
+      "rollback": "remove the timer", "addresses": ["F-E12"], "depends_on": []
+    },
+
+    {
+      "id": "R58", "priority": "P1", "repo": "prism",
+      "title": "Rewrite the handoff against merged reality",
+      "files": [".prism/handoff.md"],
+      "change": "Update Meta (Session Count -> 203, Template Version -> 3.1.6), rewrite Critical Context/Where We Are/Next Steps so no step references an already-merged PR or landed fix; delete the duplicate bare Recommended Session Settings block.",
+      "effort": "S", "risk": "low", "verify": "no Next Step references a merged PR; Template Version equals the live kernel; exactly one settings block",
+      "rollback": ".prism/handoff-history/handoff_v212_*.md", "addresses": ["F-B4", "F-B20"], "depends_on": []
+    },
+    {
+      "id": "R59", "priority": "P1", "repo": "prism",
+      "title": "Backfill the missing session-log entries",
+      "files": [".prism/session-log.md"],
+      "change": "Backfill S190, S192 (partial), S202, S203 entries via full-file write (KI-26 forbids prism_patch here); restore heading order.",
+      "effort": "M", "risk": "low", "verify": "grep -c 'Session 202' session-log.md >=1 and headings monotonically ordered",
+      "rollback": "git revert", "addresses": ["F-B5"], "depends_on": []
+    },
+    {
+      "id": "R57d", "priority": "P1", "repo": "prism",
+      "title": "Normalize the 11 DECIDED rows (if R57 chooses normalize)",
+      "files": [".prism/decisions/_INDEX.md"],
+      "change": "One-column edit D-270..D-280 DECIDED -> SETTLED (or leave if R57 widens the validator).",
+      "effort": "S", "risk": "low", "verify": "validateDecisionIndex errors empty",
+      "rollback": "revert", "addresses": ["F-B6"], "depends_on": ["R57"]
+    },
+    {
+      "id": "R65", "priority": "P1", "repo": "prism",
+      "title": "Reconcile the OpenRouter-sites membership record",
+      "files": [".prism/insights.md", ".prism/task-queue.md", ".prism/decisions/_INDEX.md"],
+      "change": "Operator reads live LLM_ROUTING_OPENROUTER_SITES once via railway_env (INS-370 step 3/4); reconcile all surfaces to one truth — amend INS-371, strike/complete task-queue:79, log a superseding D-281.",
+      "effort": "S", "risk": "none", "verify": "all four surfaces state the same membership and cite the same read-back timestamp",
+      "rollback": "n/a", "addresses": ["F-B3"], "depends_on": [], "requires_operator": true
+    },
+    {
+      "id": "R60", "priority": "P2", "repo": "prism",
+      "title": "Bring standing-rules.md under its tripwire",
+      "files": [".prism/standing-rules.md", ".prism/task-queue.md"],
+      "change": "Move the six retired marker stubs into a compact table and either raise the tripwire with a recorded decision or schedule Tier-B/C body extraction to standing-rules-archive.md; update INS-363.",
+      "effort": "M", "risk": "low", "verify": "wc -c < STANDING_RULES_WARNING_SIZE OR a decision row justifies the ceiling",
+      "rollback": "git revert", "addresses": ["F-B12"], "depends_on": []
+    },
+    {
+      "id": "R61", "priority": "P2", "repo": "prism",
+      "title": "Refresh the glossary against current reality",
+      "files": [".prism/glossary.md"],
+      "change": "Add kernel/band/Kernel-Manifest/session_state_manifest/standing_rules_index/BOOT_INDEX_MODE/FINALIZE_COMPOSE_MODE/context-meter; update the stale Rule 9 'Anchored estimation', 'Smart prefetch', and Core-template version cell.",
+      "effort": "M", "risk": "low", "verify": "the listed terms are present and current",
+      "rollback": "revert", "addresses": ["F-glossary"], "depends_on": []
+    },
+    {
+      "id": "R63", "priority": "P2", "repo": "prism",
+      "title": "Correct KI-26's function name",
+      "files": [".prism/known-issues.md"],
+      "change": "Correct the resolution's sanitizeContentField() to sanitizeContent (the actually-wired function).",
+      "effort": "S", "risk": "none", "verify": "the named function matches the wired function",
+      "rollback": "revert", "addresses": ["F-KI26"], "depends_on": []
+    },
+    {
+      "id": "R64", "priority": "P3", "repo": "prism",
+      "title": "Regenerate the decisions-index domain summary",
+      "files": [".prism/decisions/_INDEX.md"],
+      "change": "Regenerate the domain summary line (123 -> 232, add infrastructure and process) and note the D-91..D-138 gap.",
+      "effort": "S", "risk": "none", "verify": "the summary sums to the row count across the correct domains",
+      "rollback": "revert", "addresses": ["F-index-summary"], "depends_on": []
+    },
+
+    {
+      "id": "R2", "priority": "P1", "repo": "operator-env",
+      "title": "Clear DEFAULT_CONTEXT_WINDOW_TOKENS on Railway",
+      "files": [],
+      "change": "Clear the env override so the 500K code default / resolved cell applies. Pairs with R1.",
+      "effort": "S", "risk": "low", "verify": "a live boot's context_window_tokens equals the code default / resolved cell",
+      "rollback": "re-set the env var", "addresses": ["F-A1-3"], "depends_on": ["R1"]
+    },
+    {
+      "id": "R-ENV-FLIP", "priority": "P2", "repo": "operator-env",
+      "title": "Flip BOOT_INDEX_MODE=compact after R35 + soak",
+      "files": [],
+      "change": "Removes the measured 20,908 B duplicate standing_rules_index once the manifest is consumed.",
+      "effort": "S", "risk": "low", "verify": "compact boot shows session_state_manifest present, standing_rules_index absent, response_bytes down ~15KB",
+      "rollback": "BOOT_INDEX_MODE=full", "addresses": ["F-B2", "F-D5"], "depends_on": ["R35"]
+    },
+    {
+      "id": "R-ENV-MAST", "priority": "P2", "repo": "operator-env",
+      "title": "Immediate KI-29 mitigation: BOOT_MASTHEAD_SVG=off",
+      "files": [],
+      "change": "Both masthead fields null -> the text-banner path with the session-name fence returns, while R10 lands. Also the standing masthead-knob-split evaluation.",
+      "effort": "S", "risk": "low", "verify": "a boot with the visualize channel down emits the fenced session name via the text path",
+      "rollback": "unset", "addresses": ["F-A2-1", "F-A2-10"], "depends_on": []
+    }
+  ],
+  "deferred": [
+    {"id": "D-FINALIZE-SPLIT", "note": "Full 6-way split of finalize.ts (F-C1-11); R27 does the two pure extractions at M, the rest is L"},
+    {"id": "D-KERNEL-REDERIVE", "note": "D-279 KERNEL_BYTE_LIMIT re-derivation against the 1M window (F-D6/F-B13); R36 records provenance now, the re-derivation is L"},
+    {"id": "D-FALLBACK-SPLIT", "note": "s202c three-band split of core-template.md (F-B15, 52KB); S alternative is a decision recording the divergence as permanent"},
+    {"id": "D-STANDING-RULES-LIFECYCLE", "note": "Full Tier-B/C body-extraction lifecycle for standing-rules.md (F-B12); R60 does stub-compaction + tripwire decision at M"},
+    {"id": "D-FINALIZE-SESSIONLOG-GUARD", "note": "Server-side FINALIZE_MISSING_SESSION_LOG guard; small server add sequenced after R59"}
+  ]
+}
