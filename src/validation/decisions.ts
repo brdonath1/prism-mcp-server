@@ -5,8 +5,36 @@
 import { parseMarkdownTable, extractSection } from "../utils/summarizer.js";
 import type { ValidationResult } from "./common.js";
 
-/** Valid decision statuses */
-const VALID_STATUSES = ["SETTLED", "PENDING", "SUPERSEDED", "REVISITED", "ACCEPTED", "OPEN"];
+/**
+ * Canonical decision-status enum — the single source of truth for decision
+ * status values, shared by the `_INDEX.md` full-file push validator
+ * (validateDecisionIndex below) and `prism_log_decision`'s write-time
+ * validation (src/tools/log-decision.ts). Legacy `DECIDED` is deliberately
+ * absent: the write path historically accepted arbitrary strings while this
+ * validator rejected them, which is exactly the drift brief-s204c closes.
+ * Do not fork this list — import it.
+ */
+export const VALID_DECISION_STATUSES: readonly string[] = [
+  "SETTLED",
+  "PENDING",
+  "SUPERSEDED",
+  "REVISITED",
+  "ACCEPTED",
+  "OPEN",
+];
+
+/**
+ * Normalize a decision status to its canonical uppercase form.
+ *
+ * Returns the canonical value when the input matches a canonical status
+ * case-insensitively (surrounding whitespace ignored), or `null` when it does
+ * not. Callers must fail fast on `null` — never substitute a guessed status,
+ * since silent mutation would mask caller intent.
+ */
+export function normalizeDecisionStatus(status: string): string | null {
+  const canonical = status.trim().toUpperCase();
+  return VALID_DECISION_STATUSES.includes(canonical) ? canonical : null;
+}
 
 /**
  * Validate decisions/_INDEX.md structure and content.
@@ -76,9 +104,9 @@ export function validateDecisionIndex(content: string): ValidationResult {
 
     if (statusKey) {
       const status = row[statusKey];
-      if (status && !VALID_STATUSES.includes(status.toUpperCase())) {
+      if (status && normalizeDecisionStatus(status) === null) {
         errors.push(
-          `Decision status "${status}" is invalid. Must be one of: ${VALID_STATUSES.join(", ")}.`
+          `Decision status "${status}" is invalid. Must be one of: ${VALID_DECISION_STATUSES.join(", ")}.`
         );
       }
     }
