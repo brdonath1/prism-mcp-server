@@ -11,6 +11,10 @@ import { guardPushPath } from "../utils/doc-guard.js";
 import { DiagnosticsCollector } from "../utils/diagnostics.js";
 import { safeMutation } from "../utils/safe-mutation.js";
 import { sanitizeContent } from "../utils/sanitize-content.js";
+import {
+  VALID_DECISION_STATUSES,
+  normalizeDecisionStatus,
+} from "../validation/decisions.js";
 
 /**
  * Parse existing decision IDs from a decisions/_INDEX.md content string.
@@ -80,7 +84,7 @@ export function registerLogDecision(server: McpServer): void {
       id: z.string().regex(/^D-\d{1,4}$/, "Decision ID must match D-N format (e.g., 'D-45')").describe("Decision ID (e.g., 'D-45')"),
       title: z.string().min(1).max(200).describe("Decision title"),
       domain: z.string().min(1).max(50).describe("Decision domain (e.g., 'architecture', 'operations', 'optimization')"),
-      status: z.string().describe("Decision status (e.g., 'SETTLED', 'OPEN')"),
+      status: z.string().describe(`Decision status — one of: ${VALID_DECISION_STATUSES.join(", ")} (case-insensitive; stored uppercase)`),
       reasoning: z.string().describe("Full reasoning text for the decision entry"),
       assumptions: z.string().optional().describe("Assumptions (if any)"),
       impact: z.string().optional().describe("Impact description (if any)"),
@@ -92,6 +96,42 @@ export function registerLogDecision(server: McpServer): void {
       logger.info("prism_log_decision", { project_slug, id, domain });
 
       try {
+        // 0. Validate status against the canonical enum BEFORE any GitHub
+        //    I/O (brief-s204c). The `_INDEX.md` push validator has always
+        //    rejected non-enum statuses, but this write path accepted
+        //    arbitrary strings — the divergence that minted the legacy
+        //    `DECIDED` rows. Canonical values are accepted case-
+        //    insensitively and written in canonical uppercase form;
+        //    anything else is rejected outright, never silently mapped to
+        //    a guess (that would mask caller intent).
+        const canonicalStatus = normalizeDecisionStatus(status);
+        if (canonicalStatus === null) {
+          logger.warn("prism_log_decision invalid status rejected", {
+            project_slug,
+            id,
+            status,
+          });
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  error: `Invalid decision status "${status}". Must be one of: ${VALID_DECISION_STATUSES.join(", ")}.`,
+                  invalid_status: status,
+                  valid_statuses: VALID_DECISION_STATUSES,
+                  id,
+                  title,
+                  domain,
+                  index_updated: false,
+                  domain_file_updated: false,
+                  diagnostics: diagnostics.list(),
+                }),
+              },
+            ],
+            isError: true,
+          };
+        }
+
         // 1. Resolve _INDEX.md path. The path is derived from the existing
         //    file; if the index doesn't exist at all, we cannot log a
         //    decision against it.
@@ -159,12 +199,12 @@ export function registerLogDecision(server: McpServer): void {
         const commitMessage = `prism: ${id} ${title}`;
         const domainEof = `<!-- EOF: ${domain}.md -->`;
         const eofSentinel = "<!-- EOF: _INDEX.md -->";
-        const newRow = `| ${id} | ${safeTitle} | ${domain} | ${status} | ${session} |`;
+        const newRow = `| ${id} | ${safeTitle} | ${domain} | ${canonicalStatus} | ${session} |`;
 
         const entryLines = [
           `### ${id}: ${safeTitle}`,
           `- Domain: ${domain}`,
-          `- Status: ${status}`,
+          `- Status: ${canonicalStatus}`,
           `- Reasoning: ${safeReasoning}`,
         ];
         if (safeAssumptions) entryLines.push(`- Assumptions: ${safeAssumptions}`);
@@ -295,7 +335,7 @@ export function registerLogDecision(server: McpServer): void {
               id,
               title,
               domain,
-              status,
+              status: canonicalStatus,
               index_updated: true,
               domain_file_updated: true,
               domain_file: domainResolvedPath,
