@@ -53,6 +53,7 @@ import { registerGhSetBranchProtection } from "./tools/gh-set-branch-protection.
 import { hydrateStore } from "./dispatch-store.js";
 import { logResolvedRoutingTable } from "./llm/route-table.js";
 import { registerShutdownHandlers } from "./shutdown.js";
+import { shutdownReaper } from "./utils/inflight-registry.js";
 
 const app = express();
 app.use(express.json({ limit: "5mb" }));
@@ -234,4 +235,10 @@ const httpServer = app.listen(PORT, () => {
 // deploy; without this the process is killed mid-request, which can strand an
 // in-flight atomic commit. Stop accepting new connections, let in-flight
 // handlers drain (bounded), then exit.
-registerShutdownHandlers(httpServer);
+//
+// R26 (S203 audit / F-C1-10): the handler shipped with no reaper, so the
+// bounded drain covered HTTP connections only — background synthesis was
+// SIGKILLed unlogged and async cc_dispatch records stayed at `running`
+// forever. `shutdownReaper` marks those records interrupted and awaits the
+// in-flight registry, itself bounded so it cannot hold a deploy open.
+registerShutdownHandlers(httpServer, { onDrain: () => shutdownReaper() });

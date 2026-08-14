@@ -3,7 +3,13 @@
  * Thin fetch-based wrapper with parallelized operations, retry logic, and structured logging.
  */
 
-import { GITHUB_PAT, GITHUB_OWNER, GITHUB_API_BASE, SERVER_VERSION } from "../config.js";
+import {
+  GITHUB_PAT,
+  GITHUB_OWNER,
+  GITHUB_API_BASE,
+  GITHUB_RETRY_BUDGET_MS,
+  SERVER_VERSION,
+} from "../config.js";
 import { validateFilePath, validateProjectSlug } from "../validation/slug.js";
 import { logger } from "../utils/logger.js";
 import type {
@@ -156,6 +162,28 @@ function is403RateLimited(res: Response): boolean {
 }
 
 /**
+ * Decide whether a backoff sleep fits inside the remaining retry budget
+ * (R24 / F-C1-8). A sleep that would overshoot `retryDeadline` is never
+ * taken — the caller surfaces the last response instead, exactly as the
+ * exhausted-retries path does.
+ */
+function retryFitsBudget(
+  retryDeadline: number,
+  delay: number,
+  ctx: { url: string; attempt: number; status: number },
+): boolean {
+  const remaining = retryDeadline - Date.now();
+  if (delay <= remaining) return true;
+  logger.warn("github retry budget exhausted — surfacing last response", {
+    ...ctx,
+    delay,
+    remainingMs: remaining,
+    budgetMs: GITHUB_RETRY_BUDGET_MS,
+  });
+  return false;
+}
+
+/**
  * Fetch with retry logic for rate limiting (B.7) and per-request timeouts (S40 C1).
  *
  * Each attempt applies a {@link GITHUB_REQUEST_TIMEOUT_MS} deadline via
@@ -163,8 +191,16 @@ function is403RateLimited(res: Response): boolean {
  * timeout via AbortSignal.any so either source can abort. On timeout we throw
  * a clear error and do NOT retry — retrying a hung socket just wastes wall
  * clock. 429 responses still trigger exponential backoff as before.
+ *
+ * R24 (F-C1-8): every retry chain also runs under a total elapsed budget of
+ * {@link GITHUB_RETRY_BUDGET_MS}, measured from entry. Honored Retry-After
+ * sleeps count against it, so a server asking for 60s three times can no
+ * longer hold one call ~300s — 6x the whole MCP request budget. The budget is
+ * checked BEFORE the response body is cancelled so the surfaced response still
+ * carries a readable body for the caller's error path.
  */
 export async function fetchWithRetry(url: string, options: RequestInit = {}, maxRetries = 3): Promise<Response> {
+  const retryDeadline = Date.now() + GITHUB_RETRY_BUDGET_MS;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const timeoutSignal = AbortSignal.timeout(GITHUB_REQUEST_TIMEOUT_MS);
     const signal = options.signal
@@ -187,12 +223,15 @@ export async function fetchWithRetry(url: string, options: RequestInit = {}, max
       throw error;
     }
     if (res.status === 429) {
-      if (attempt === maxRetries) {
+      const retryAfter = parseInt(res.headers.get("retry-after") ?? "1", 10);
+      const delay = Math.min(retryAfter * 1000 * 2 ** attempt, 120_000);
+      if (
+        attempt === maxRetries ||
+        !retryFitsBudget(retryDeadline, delay, { url, attempt, status: 429 })
+      ) {
         return res; // Let caller handle final 429
       }
       await res.body?.cancel(); // Prevent response body leak on retry
-      const retryAfter = parseInt(res.headers.get("retry-after") ?? "1", 10);
-      const delay = Math.min(retryAfter * 1000 * 2 ** attempt, 120_000);
       logger.warn("Rate limited, retrying", { attempt: attempt + 1, delay, url });
       await sleep(delay);
       continue;
@@ -202,8 +241,11 @@ export async function fetchWithRetry(url: string, options: RequestInit = {}, max
     // credential diagnosis. GETs and the result-shaped mutations whose
     // server-side effect did not occur on a real 401 are safe to re-issue.
     if (res.status === 401 && attempt < MAX_TRANSIENT_401_RETRIES) {
-      await res.body?.cancel();
       const delay = Math.min(500 * 2 ** attempt, 2_000);
+      if (!retryFitsBudget(retryDeadline, delay, { url, attempt, status: 401 })) {
+        return res; // Budget spent — surface the 401 to handleApiError.
+      }
+      await res.body?.cancel();
       logger.warn("Transient 401, retrying before diagnosing PAT death (INS-311)", {
         attempt: attempt + 1,
         delay,
@@ -217,9 +259,12 @@ export async function fetchWithRetry(url: string, options: RequestInit = {}, max
     // with a misleading PAT-scope error. Header-only detection keeps the body
     // intact for the non-rate-limit 403 path.
     if (res.status === 403 && is403RateLimited(res) && attempt < maxRetries) {
-      await res.body?.cancel();
       const retryAfter = parseInt(res.headers.get("retry-after") ?? "1", 10);
       const delay = Math.min(retryAfter * 1000 * 2 ** attempt, 120_000);
+      if (!retryFitsBudget(retryDeadline, delay, { url, attempt, status: 403 })) {
+        return res; // Budget spent — surface the 403 with its body intact.
+      }
+      await res.body?.cancel();
       logger.warn("403 rate limit, retrying", { attempt: attempt + 1, delay, url });
       await sleep(delay);
       continue;
@@ -462,6 +507,15 @@ export async function getFileSize(repo: string, path: string): Promise<number> {
   return data.size;
 }
 
+/** Page size for the repo listing. A page shorter than this is the last page. */
+const REPOS_PER_PAGE = 100;
+
+/** Hard page cap for {@link listRepos} (R31 / F-C1-15). The loop previously
+ *  had no upper bound, so a mispaginating API could hold a 60s MCP request
+ *  until the transport timed out. 20 pages = 2 000 repos, far past any real
+ *  owner account. */
+const MAX_REPO_PAGES = 20;
+
 /**
  * List all repos owned by GITHUB_OWNER.
  */
@@ -473,7 +527,7 @@ export async function listRepos(): Promise<string[]> {
   let page = 1;
 
   while (true) {
-    const url = `${GITHUB_API_BASE}/user/repos?per_page=100&page=${page}&affiliation=owner`;
+    const url = `${GITHUB_API_BASE}/user/repos?per_page=${REPOS_PER_PAGE}&page=${page}&affiliation=owner`;
     const res = await fetchWithRetry(url, { headers: headers() });
 
     if (!res.ok) {
@@ -484,6 +538,19 @@ export async function listRepos(): Promise<string[]> {
     if (repos.length === 0) break;
 
     allRepos.push(...repos.map(r => r.name));
+
+    // R31: a short page IS the last page — the old loop always paid for one
+    // more round trip just to read an empty array.
+    if (repos.length < REPOS_PER_PAGE) break;
+
+    if (page >= MAX_REPO_PAGES) {
+      logger.warn("github.listRepos hit the page cap — result truncated", {
+        pages: page,
+        count: allRepos.length,
+        maxPages: MAX_REPO_PAGES,
+      });
+      break;
+    }
     page++;
   }
 
@@ -502,6 +569,7 @@ export async function listDirectory(repo: string, path: string): Promise<Directo
   const res = await fetchWithRetry(url, { headers: headers() });
 
   if (res.status === 404) {
+    await res.body?.cancel(); // R31: early return must not leak the body
     return []; // Directory doesn't exist
   }
 
@@ -643,6 +711,7 @@ export async function getDefaultBranch(repo: string): Promise<string> {
     const url = `${GITHUB_API_BASE}/repos/${GITHUB_OWNER}/${repo}`;
     const res = await fetchWithRetry(url, { headers: headers() });
     if (!res.ok) {
+      await res.body?.cancel(); // R31: early return must not leak the body
       logger.warn("getDefaultBranch failed, falling back to 'main'", {
         repo,
         status: res.status,

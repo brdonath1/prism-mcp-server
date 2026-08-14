@@ -30,6 +30,10 @@ import {
   pushFile,
 } from "./github/client.js";
 import { logger } from "./utils/logger.js";
+// Import cycle with inflight-registry.ts is deliberate and safe: each module
+// only CALLS the other at runtime (never during module init), so both are
+// fully initialized before any binding is dereferenced.
+import { registerInflight } from "./utils/inflight-registry.js";
 
 /**
  * Shape of a dispatch record. `started_at` is set at dispatch start and
@@ -101,14 +105,20 @@ export async function writeDispatchRecord(
   // Update memory immediately (synchronous, instant)
   store.set(record.dispatch_id, finalRecord);
 
-  // Write-through to GitHub (async, non-blocking, fire-and-forget)
-  void persistToGitHub(finalRecord).catch((err) => {
-    logger.warn("dispatch-store: GitHub persist failed (non-fatal)", {
-      dispatch_id: record.dispatch_id,
-      status: record.status,
-      error: err instanceof Error ? err.message : String(err),
-    });
-  });
+  // Write-through to GitHub (async, non-blocking, fire-and-forget). Tracked
+  // in the in-flight registry so the shutdown drain awaits it (R26): the
+  // reaper's own status flips ride this path, and without tracking they die
+  // in memory when exit(0) lands before the persist round-trips.
+  void registerInflight(
+    persistToGitHub(finalRecord).catch((err) => {
+      logger.warn("dispatch-store: GitHub persist failed (non-fatal)", {
+        dispatch_id: record.dispatch_id,
+        status: record.status,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }),
+    "dispatch_persist",
+  );
 }
 
 /**

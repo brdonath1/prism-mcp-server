@@ -12,10 +12,14 @@
  *     to computeMutation.
  *   - Atomic-commits the returned writes/deletes via createAtomicCommit.
  *   - On ANY atomic-commit failure (not only 409): snapshots HEAD again and,
- *     when HEAD moved, fetches the new HEAD commit and compares its message to
- *     `commitMessage`. If it matches, the "failed" commit actually LANDED
- *     (lost response on a slow/dropped socket) — returns ok with that SHA
- *     instead of retrying, so the mutation is NOT double-applied (SRV-41).
+ *     when HEAD moved, checks whether the "failed" commit actually LANDED
+ *     (lost response on a slow/dropped socket). Identity is STRUCTURAL — the
+ *     tree at the new HEAD must hold exactly the bytes this mutation intended
+ *     (git blob sha1 per write, absence per delete). If it does, returns ok
+ *     with that SHA instead of retrying, so the mutation is NOT double-applied
+ *     (SRV-41). Message equality alone is NOT identity: PRISM commit messages
+ *     are templated, so a concurrent writer's commit can carry the same string
+ *     (S203 audit R25 / F-C1-9).
  *     Otherwise it refuses retry if either SHA is null (HEAD_SHA_UNKNOWN),
  *     and otherwise re-reads files, re-runs computeMutation against fresh
  *     data, and retries. The retry-class diagnostic distinguishes a genuine
@@ -33,6 +37,7 @@
  *   MUTATION_RETRY_EXHAUSTED, HEAD_SHA_UNKNOWN, DEADLINE_EXCEEDED.
  */
 
+import { createHash } from "node:crypto";
 import {
   fetchFile,
   createAtomicCommit,
@@ -121,7 +126,8 @@ async function readAll(
 /**
  * Run a single attempt: snapshot HEAD, read files, compute mutation,
  * atomic-commit. Returns the atomic-commit outcome plus the HEAD SHA captured
- * before the read so the caller can compare on conflict.
+ * before the read so the caller can compare on conflict, and the mutation that
+ * was submitted so the landed-commit check can verify it structurally.
  */
 async function attemptMutation(
   opts: SafeMutationOpts,
@@ -129,6 +135,7 @@ async function attemptMutation(
 ): Promise<{
   headShaBefore: string | undefined;
   atomicResult: Awaited<ReturnType<typeof createAtomicCommit>>;
+  mutation: SafeMutationOutput;
 }> {
   const headShaBefore = await getHeadSha(opts.repo);
   const files =
@@ -145,7 +152,67 @@ async function attemptMutation(
     deletes,
     signal,
   );
-  return { headShaBefore, atomicResult };
+  return { headShaBefore, atomicResult, mutation };
+}
+
+/**
+ * Git object id of a blob holding `content` — sha1("blob <byteLen>\0<bytes>").
+ * Identical to the `sha` GitHub's Contents API returns for that file, so the
+ * intended bytes can be compared against a landed file without downloading a
+ * second copy for a string compare.
+ */
+export function gitBlobSha(content: string): string {
+  const body = Buffer.from(content, "utf-8");
+  return createHash("sha1")
+    .update(`blob ${body.length}\0`)
+    .update(body)
+    .digest("hex");
+}
+
+/**
+ * Structural identity check for the landed-but-unreported path (R25 / F-C1-9).
+ *
+ * The tree at `commitSha` must hold EXACTLY what this mutation intended: every
+ * write's git blob sha1 present at its path, every delete absent. Message
+ * equality cannot carry this — PRISM commit messages are templated, so under
+ * the concurrent-write protocol (INS-69) another actor's commit routinely
+ * carries the same message, and reading that as "our commit landed" silently
+ * drops the mutation while reporting success.
+ *
+ * Fails closed: a mutation with nothing to verify, or any read that cannot be
+ * resolved, returns false — "assume it did not land" costs a retry, the
+ * opposite costs the write.
+ */
+async function landedContentMatches(
+  repo: string,
+  commitSha: string,
+  mutation: SafeMutationOutput,
+): Promise<boolean> {
+  const writes = mutation.writes ?? [];
+  const deletes = mutation.deletes ?? [];
+  if (writes.length === 0 && deletes.length === 0) return false;
+
+  const checks = await Promise.all([
+    ...writes.map(async (write) => {
+      // Read at the landed commit, not the branch tip: a third commit landing
+      // afterwards must not be mistaken for our content.
+      const landed = await fetchFile(repo, write.path, commitSha);
+      return landed.sha === gitBlobSha(write.content);
+    }),
+    ...deletes.map(async (path) => {
+      try {
+        await fetchFile(repo, path, commitSha);
+        return false; // Still present — the delete did not land.
+      } catch (err) {
+        // Only a genuine 404 proves absence; anything else is unverified.
+        const msg = err instanceof Error ? err.message : String(err);
+        if (/not found/i.test(msg)) return true;
+        throw err;
+      }
+    }),
+  ]);
+
+  return checks.every(Boolean);
 }
 
 /**
@@ -175,7 +242,7 @@ async function runMutationLoop(
   let retried = false;
 
   // First attempt
-  let { headShaBefore, atomicResult } = await attemptMutation(opts, signal);
+  let { headShaBefore, atomicResult, mutation } = await attemptMutation(opts, signal);
 
   while (true) {
     if (atomicResult.success) {
@@ -202,17 +269,27 @@ async function runMutationLoop(
     // commit may have actually LANDED — createAtomicCommit's final ref PATCH
     // can succeed server-side while the response is lost to a timeout/socket
     // drop. Re-applying on retry would double-write (e.g. prism_patch appends
-    // the same entry twice). Fetch the new HEAD commit and compare its message
-    // to ours; if it matches, our commit landed — return ok with that SHA
-    // instead of retrying. getCommit failure is non-fatal: fall through to the
-    // normal conflict/retry path (the prior safe behavior).
+    // the same entry twice).
+    //
+    // R25 / F-C1-9: identity is STRUCTURAL, not textual. The message match is
+    // kept only as the cheap necessary pre-filter (our commit always carries
+    // our message, so a mismatch is a definite "not ours" that skips the
+    // reads); the authority is landedContentMatches — the tree at the new HEAD
+    // must hold exactly the bytes we submitted. Without it, a concurrent
+    // writer's identically-templated commit (INS-69) is read as ours and the
+    // mutation is silently dropped while reporting success.
+    // Verification failure is non-fatal: fall through to the normal
+    // conflict/retry path (the prior safe behavior).
     if (headShaBefore && headShaAfter && headShaBefore !== headShaAfter) {
       try {
         const headCommit = await getCommit(opts.repo, headShaAfter);
-        if (headCommit.message === opts.commitMessage) {
+        if (
+          headCommit.message === opts.commitMessage &&
+          (await landedContentMatches(opts.repo, headShaAfter, mutation))
+        ) {
           opts.diagnostics.warn(
             "MUTATION_ALREADY_APPLIED",
-            "Atomic commit reported failure but the commit actually landed (HEAD message matches) — returning success instead of double-applying",
+            "Atomic commit reported failure but the commit actually landed (HEAD tree holds our exact blobs) — returning success instead of double-applying",
             { repo: opts.repo, headShaBefore, headShaAfter, atomicError: atomicResult.error },
           );
           logger.warn("safeMutation: failed commit actually landed — not retrying", {
@@ -223,7 +300,7 @@ async function runMutationLoop(
           return { ok: true, commitSha: headShaAfter, retried };
         }
       } catch (verifyErr) {
-        logger.warn("safeMutation could not verify HEAD commit message — proceeding to retry", {
+        logger.warn("safeMutation could not verify the landed commit — proceeding to retry", {
           repo: opts.repo,
           headShaAfter,
           error: verifyErr instanceof Error ? verifyErr.message : String(verifyErr),
@@ -287,7 +364,7 @@ async function runMutationLoop(
 
     retriesRemaining -= 1;
     retried = true;
-    ({ headShaBefore, atomicResult } = await attemptMutation(opts, signal));
+    ({ headShaBefore, atomicResult, mutation } = await attemptMutation(opts, signal));
   }
 }
 
