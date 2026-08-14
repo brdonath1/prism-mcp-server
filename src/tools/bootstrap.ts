@@ -18,7 +18,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { fetchFile, pushFile, listRepos } from "../github/client.js";
-import { BOOTSTRAP_OVERSIZE_ERROR_BYTES, BOOTSTRAP_OVERSIZE_WARN_BYTES, CC_DISPATCH_ENABLED, DEFAULT_CONTEXT_WINDOW_TOKENS, DOC_ROOT, FRAMEWORK_REPO, GITHUB_PAT, HANDOFF_CRITICAL_SIZE, HANDOFF_ITEM_BUDGET_BYTES, LIVING_DOCUMENTS, MCP_TEMPLATE_PATH, PREFETCH_KEYWORDS, PREFETCH_SUMMARY_CAP_BYTES, PROJECT_DISPLAY_NAMES, RAILWAY_API_TOKEN, RAILWAY_ENABLED, STALE_ACTIVE_THRESHOLD_MS, SYNTHESIS_LOG_LOOKBACK_MS, TRIGGER_AUTO_ENROLL, resolveBootIndexMode, resolveBootMastheadSvg, resolveBriefCompactMode, resolveContextWindowOverride, resolvePrefetchMode, resolveProjectSlug } from "../config.js";
+import { BOOTSTRAP_OVERSIZE_ERROR_BYTES, BOOTSTRAP_OVERSIZE_WARN_BYTES, BOOTSTRAP_WALL_CLOCK_DEADLINE_MS, CC_DISPATCH_ENABLED, DEFAULT_CONTEXT_WINDOW_TOKENS, DOC_ROOT, FRAMEWORK_REPO, GITHUB_PAT, HANDOFF_CRITICAL_SIZE, HANDOFF_ITEM_BUDGET_BYTES, LIVING_DOCUMENTS, MCP_TEMPLATE_PATH, PREFETCH_KEYWORDS, PREFETCH_SUMMARY_CAP_BYTES, PROJECT_DISPLAY_NAMES, RAILWAY_API_TOKEN, RAILWAY_ENABLED, STALE_ACTIVE_THRESHOLD_MS, SYNTHESIS_LOG_LOOKBACK_MS, TRIGGER_AUTO_ENROLL, resolveBootIndexMode, resolveBootMastheadSvg, resolveBriefCompactMode, resolveContextWindowOverride, resolvePrefetchMode, resolveProjectSlug } from "../config.js";
 import { STALENESS_THRESHOLD_DAYS, resolveContextWindow } from "../models.js";
 import type { Surface } from "../models.js";
 import { computePayloadAttribution } from "../utils/payload-attribution.js";
@@ -67,6 +67,28 @@ export {
   selectStandingRulesForBoot,
 };
 export type { StandingRule };
+
+/** R23 (S203 F-C1-5): wall-clock deadline sentinel — mirrors prism_push. */
+const BOOTSTRAP_DEADLINE_SENTINEL = Symbol("bootstrap.deadline");
+
+/**
+ * R23: what the boot fan-out completed before the deadline fired. Tracked
+ * separately from the response payload because the payload only exists once
+ * assembly finishes — this is the partial the deadline branch can still ship.
+ */
+interface BootstrapProgress {
+  stage:
+    | "slug_resolution"
+    | "core_fetch"
+    | "handoff_parse"
+    | "boot_test_and_prefetch"
+    | "payload_assembly";
+  docs_fetched: string[];
+  files_fetched: number;
+  handoff_version: number | null;
+  session_count: number | null;
+  behavioral_rules_delivered: boolean;
+}
 
 /** Input schema for prism_bootstrap */
 const inputSchema = {
@@ -444,6 +466,82 @@ export function findMissingKernelSections(templateContent: string, required: str
 }
 
 /**
+ * R9 (S203 F-A1-8 / F-D17): a rule-level anchor — one load-bearing mandate the
+ * kernel must still carry. The H2-only manifest check has section granularity,
+ * so Rule 9's whole body (status line, tier table) or the ⛔ finalize-render
+ * mandate could be deleted from inside `## Session Lifecycle` with every
+ * manifest section still present and no diagnostic.
+ *
+ * `band` scopes the anchor to the manifest section that carries it: anchors are
+ * checked ONLY when the kernel's Kernel-Manifest declares that band, so
+ * pre-split templates and kernels that never claimed the band stay silent (the
+ * SRV-39 permanently-firing-diagnostic class).
+ */
+export interface KernelRuleAnchor {
+  id: string;
+  label: string;
+  band: string;
+  /** ALL literals must survive in the delivered kernel. */
+  literals: string[];
+}
+
+/**
+ * R9: the fixed anchor list. Literals are copied verbatim from the shipped
+ * kernel (`_templates/core-template-mcp.md`, v3.1.6 § Session Lifecycle) and
+ * compared decoration-tolerantly — markdown emphasis and dash flavor may drift
+ * without meaning, deletion may not.
+ */
+export const KERNEL_RULE_ANCHORS: readonly KernelRuleAnchor[] = [
+  {
+    id: "rule9_status_line",
+    label: "Rule 9 status-line shape",
+    band: "Session Lifecycle",
+    literals: ["[S{session} · Ex {N} ·"],
+  },
+  {
+    id: "rule9_tier_table",
+    label: "Rule 9 tier table",
+    band: "Session Lifecycle",
+    literals: ["🟢 <50%", "🟡 50-70%", "🟠 70-85%", "🔴 85%+"],
+  },
+  {
+    id: "finalize_banner_mandate",
+    label: "⛔ finalize banner-render mandate",
+    band: "Session Lifecycle",
+    literals: ["⛔ Finalize banner render"],
+  },
+] as const;
+
+/**
+ * R9: decoration-blind comparison form — strips markdown emphasis/backticks,
+ * folds en/em dashes to `-`, collapses whitespace, lowercases.
+ */
+function normalizeKernelText(text: string): string {
+  return text
+    .replace(/[*_`]/g, "")
+    .replace(/[–—]/g, "-")
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
+/**
+ * R9: which rule-level anchors the delivered kernel has lost. Only anchors
+ * whose `band` appears in the declared manifest are evaluated (the manifest is
+ * the kernel's own claim about what it delivers). Returns anchor labels, in
+ * declaration order.
+ */
+export function findMissingKernelAnchors(templateContent: string, manifest: string[]): string[] {
+  const declaredBands = new Set(
+    manifest.map(entry => entry.replace(/^#{1,6}\s*/, "").trim().toLowerCase()),
+  );
+  const normalizedTemplate = normalizeKernelText(templateContent);
+  return KERNEL_RULE_ANCHORS.filter(anchor => {
+    if (!declaredBands.has(anchor.band.toLowerCase())) return false;
+    return !anchor.literals.every(lit => normalizedTemplate.includes(normalizeKernelText(lit)));
+  }).map(anchor => anchor.label);
+}
+
+/**
  * brief-s202b T4: cap a prefetch summary at `capBytes` UTF-8 bytes on a
  * character boundary, ending with an ellipsis when truncated. SRV-74 capped
  * the header COUNT; this bounds the whole summary string.
@@ -760,46 +858,77 @@ async function checkSynthesisObservation(
 }
 
 /**
+ * R29 (S203 F-C1-13): minimum normalized overlap before a substring match may
+ * bind a repo. In a containment match the overlap IS the shorter of the two
+ * normalized strings, so this is a floor on that length. Below it, "prism"
+ * inside "prism-mcp-server" (and every other short stem) silently captured an
+ * arbitrary repo — which bootstrap then WROTE to (boot-test, and the
+ * TRIGGER_AUTO_ENROLL marker).
+ */
+const MIN_PARTIAL_SLUG_MATCH_CHARS = 6;
+
+/** R29: outcome of dynamic slug resolution. Ambiguity is a distinct state — never a guess. */
+type SlugResolution =
+  | { status: "matched"; slug: string; via: "exact" | "partial" }
+  | { status: "ambiguous"; candidates: string[] }
+  | { status: "unresolved" };
+
+/**
  * D-68: Dynamic slug resolution — match project_slug against all repos
  * when static PROJECT_DISPLAY_NAMES map doesn't contain a match.
  * Uses normalized string comparison (strip hyphens, underscores, spaces, brackets).
- * Returns the matched repo name or null.
+ *
+ * R29: collects ALL candidates instead of binding the first. Two or more
+ * matches is `ambiguous` — the caller must error out rather than write into a
+ * repo the operator did not name. Both guards run before any write.
  */
-async function resolveSlugDynamic(input: string): Promise<string | null> {
+async function resolveSlugDynamic(input: string): Promise<SlugResolution> {
   const normalize = (s: string) => s.toLowerCase().replace(/[-_\s[\]()]/g, "");
   const normalizedInput = normalize(input);
 
   // Skip obvious placeholders
   if (normalizedInput === "yourprojectslug" || normalizedInput === "") {
-    return null;
+    return { status: "unresolved" };
   }
 
   try {
     const allRepos = await listRepos();
 
-    // Exact normalized match against repo names
-    const match = allRepos.find(r => normalize(r) === normalizedInput);
-    if (match) {
-      logger.info("dynamic slug resolution: matched", { input, resolved: match });
-      return match;
+    // Exact normalized match against repo names. Two repos CAN normalize to the
+    // same string ("foo-bar" / "foobar"), so this collects too.
+    const exactMatches = allRepos.filter(r => normalize(r) === normalizedInput);
+    if (exactMatches.length === 1) {
+      logger.info("dynamic slug resolution: matched", { input, resolved: exactMatches[0] });
+      return { status: "matched", slug: exactMatches[0], via: "exact" };
+    }
+    if (exactMatches.length > 1) {
+      logger.warn("dynamic slug resolution: ambiguous exact match", { input, candidates: exactMatches });
+      return { status: "ambiguous", candidates: exactMatches };
     }
 
-    // Partial match: check if input contains a repo name or vice versa
-    // (e.g., "Metaswarm Autonomous Coding Stack" → "metaswarm-autonomous-coding-stack")
-    const inputWords = normalizedInput;
-    const partialMatch = allRepos.find(r => {
+    // Partial match: input contains a repo name or vice versa
+    // (e.g., "Metaswarm Autonomous Coding Stack" → "metaswarm-autonomous-coding-stack"),
+    // gated on MIN_PARTIAL_SLUG_MATCH_CHARS of overlap.
+    const partialMatches = allRepos.filter(r => {
       const normalizedRepo = normalize(r);
-      return inputWords.includes(normalizedRepo) || normalizedRepo.includes(inputWords);
+      const contains =
+        normalizedInput.includes(normalizedRepo) || normalizedRepo.includes(normalizedInput);
+      if (!contains) return false;
+      return Math.min(normalizedRepo.length, normalizedInput.length) >= MIN_PARTIAL_SLUG_MATCH_CHARS;
     });
-    if (partialMatch) {
-      logger.info("dynamic slug resolution: partial match", { input, resolved: partialMatch });
-      return partialMatch;
+    if (partialMatches.length === 1) {
+      logger.info("dynamic slug resolution: partial match", { input, resolved: partialMatches[0] });
+      return { status: "matched", slug: partialMatches[0], via: "partial" };
+    }
+    if (partialMatches.length > 1) {
+      logger.warn("dynamic slug resolution: ambiguous partial match", { input, candidates: partialMatches });
+      return { status: "ambiguous", candidates: partialMatches };
     }
 
-    return null;
+    return { status: "unresolved" };
   } catch (err) {
     logger.warn("dynamic slug resolution failed", { error: (err as Error).message });
-    return null;
+    return { status: "unresolved" };
   }
 }
 
@@ -818,14 +947,62 @@ export function registerBootstrap(server: McpServer): void {
       // KI-15: Resolve display names, Claude project names, and fuzzy matches to slugs
       let resolvedSlug = resolveProjectSlug(project_slug);
 
+      // R23 (S203 F-C1-5): tool-level wall-clock deadline. prism_bootstrap is
+      // the heaviest tool and was the last I/O-heavy one with no race — slug
+      // resolution + core fan-out + boot-test push + marker write + cross-repo
+      // state read + Railway logs + prefetches, any of which can hang. Same
+      // sentinel / Promise.race / clearTimeout pattern as prism_push (S40 C4).
+      let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+      const deadlinePromise = new Promise<typeof BOOTSTRAP_DEADLINE_SENTINEL>((resolve) => {
+        deadlineTimer = setTimeout(() => resolve(BOOTSTRAP_DEADLINE_SENTINEL), BOOTSTRAP_WALL_CLOCK_DEADLINE_MS);
+      });
+
+      // R23: progress ledger, mutated in place by the work promise. The
+      // deadline branch reads it to ship the partial payload — what WAS
+      // fetched — instead of a bare error.
+      const progress: BootstrapProgress = {
+        stage: "slug_resolution",
+        docs_fetched: [],
+        files_fetched: 0,
+        handoff_version: null,
+        session_count: null,
+        behavioral_rules_delivered: false,
+      };
+
+      const workPromise = (async () => {
       // D-68: If static resolution didn't find a known project, try dynamic matching
       // against all repos. This handles Claude project names, display names not in the
       // static map, and any other input that normalizes to a repo name.
       const knownSlugs = Object.keys(PROJECT_DISPLAY_NAMES);
       if (resolvedSlug === project_slug && !knownSlugs.includes(resolvedSlug)) {
         const dynamicMatch = await resolveSlugDynamic(project_slug);
-        if (dynamicMatch) {
-          resolvedSlug = dynamicMatch;
+        // R29 (S203 F-C1-13): ambiguity is fatal, and it is decided HERE —
+        // before pushBootTest / ensureTriggerMarker can write into a repo the
+        // operator never named.
+        if (dynamicMatch.status === "ambiguous") {
+          const candidates = dynamicMatch.candidates;
+          logger.warn("prism_bootstrap ambiguous slug", { input: project_slug, candidates });
+          diagnostics.error(
+            "SLUG_AMBIGUOUS",
+            `Project slug "${project_slug}" matches ${candidates.length} repos: ${candidates.join(", ")}. Re-run with the exact repo name — nothing was written.`,
+            { input: project_slug, candidates },
+          );
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({
+                project: project_slug,
+                error: `Ambiguous project slug "${project_slug}" — ${candidates.length} repos match: ${candidates.join(", ")}. Re-run prism_bootstrap with the exact repo name.`,
+                candidates,
+                writes_performed: false,
+                diagnostics: diagnostics.list(),
+              }),
+            }],
+            isError: true,
+          };
+        }
+        if (dynamicMatch.status === "matched") {
+          resolvedSlug = dynamicMatch.slug;
         }
       }
 
@@ -845,6 +1022,7 @@ export function registerBootstrap(server: McpServer): void {
         let filesFetched = 0;
 
         // 1. Fetch core files in parallel: handoff, decisions, and cached behavioral rules
+        progress.stage = "core_fetch";
         const coreResults = await Promise.allSettled([
           resolveDocPath(resolvedSlug, "handoff.md"),
           resolveDocPath(resolvedSlug, "decisions/_INDEX.md").catch(() => null),
@@ -860,6 +1038,8 @@ export function registerBootstrap(server: McpServer): void {
         const handoff = { content: handoffResolved.content, sha: handoffResolved.sha, size: handoffResolved.content.length };
         bytesDelivered += handoff.size;
         filesFetched++;
+        progress.docs_fetched.push("handoff.md");
+        progress.files_fetched = filesFetched;
 
         // Decision index is optional. Presence (file fetched, even if the
         // table is empty) feeds the R-intel-SLO continuity-coverage metric.
@@ -871,6 +1051,8 @@ export function registerBootstrap(server: McpServer): void {
           decisions = parseDecisions(decisionResolved.content);
           bytesDelivered += decisionResolved.content.length;
           filesFetched++;
+          progress.docs_fetched.push("decisions/_INDEX.md");
+          progress.files_fetched = filesFetched;
         } else {
           warnings.push("decisions/_INDEX.md not found \u2014 decision tracking not initialized for this project.");
         }
@@ -883,6 +1065,9 @@ export function registerBootstrap(server: McpServer): void {
           behavioralRules = templateData.content;
           bytesDelivered += templateData.size;
           filesFetched++;
+          progress.docs_fetched.push(MCP_TEMPLATE_PATH);
+          progress.files_fetched = filesFetched;
+          progress.behavioral_rules_delivered = true;
           // brief-439 / R8: prefer the explicit "Template Version" declaration \u2014
           // the generic first-"version" match would be polluted by the
           // Banner-Spec-Version handshake line once templates declare it.
@@ -929,21 +1114,34 @@ export function registerBootstrap(server: McpServer): void {
         // (BANNER_DRIFT pattern): a thinned kernel must never ship silently
         // (the INS-249 silent-drop class, D-253 lesson b). Templates without
         // the header predate the kernel split — no diagnostic.
+        //
+        // brief-s205a R9 (F-A1-8/F-D17): section granularity is not enough —
+        // Rule 9's body and the ⛔ finalize-render mandate live INSIDE
+        // `## Session Lifecycle`, so both could vanish with every manifest
+        // section still present. Rule-level anchors close that gap. Warn-only,
+        // same as the section check: boot never rejects a kernel.
         if (behavioralRules) {
           const kernelManifest = parseKernelManifestHeader(behavioralRules);
           if (kernelManifest !== null) {
             const missingKernelSections = findMissingKernelSections(behavioralRules, kernelManifest);
-            if (missingKernelSections.length > 0) {
+            const missingKernelAnchors = findMissingKernelAnchors(behavioralRules, kernelManifest);
+            if (missingKernelSections.length > 0 || missingKernelAnchors.length > 0) {
+              const lostParts = [
+                ...(missingKernelSections.length > 0 ? [`section(s): ${missingKernelSections.join(", ")}`] : []),
+                ...(missingKernelAnchors.length > 0 ? [`rule anchor(s): ${missingKernelAnchors.join(", ")}`] : []),
+              ];
               diagnostics.warn(
                 "KERNEL_SPLIT_DRIFT",
-                `Behavioral-rules template declares Kernel-Manifest section(s) missing from its own delivered content: ${missingKernelSections.join(", ")}. The kernel template at ${MCP_TEMPLATE_PATH} may be split-damaged — verify against the manifest before trusting this boot's rules.`,
+                `Behavioral-rules template declares a Kernel-Manifest whose delivered content is missing ${lostParts.join(" and ")}. The kernel template at ${MCP_TEMPLATE_PATH} may be split-damaged — verify against the manifest before trusting this boot's rules.`,
                 {
                   missing_sections: missingKernelSections,
+                  missing_rule_anchors: missingKernelAnchors,
                   declared_sections: kernelManifest,
                 },
               );
               logger.warn("kernel split drift detected", {
                 missing_sections: missingKernelSections,
+                missing_rule_anchors: missingKernelAnchors,
                 declared_count: kernelManifest.length,
               });
             }
@@ -951,8 +1149,11 @@ export function registerBootstrap(server: McpServer): void {
         }
 
         // 2. Parse handoff into structured sections
+        progress.stage = "handoff_parse";
         const handoffVersion = parseHandoffVersion(handoff.content) ?? 0;
         const sessionCount = parseSessionCount(handoff.content) ?? 0;
+        progress.handoff_version = handoffVersion;
+        progress.session_count = sessionCount;
         const handoffTemplateVersion = templateVersion !== "unknown" ? templateVersion : (parseTemplateVersion(handoff.content) ?? "unknown");
 
         // Size check
@@ -1043,6 +1244,7 @@ export function registerBootstrap(server: McpServer): void {
         // Running them in parallel with the boot-test push keeps wall-clock
         // cost sub-second when the marker is already present and the state
         // file is small (typically <2KB).
+        progress.stage = "boot_test_and_prefetch";
         const bootTestPromise = pushBootTest(resolvedSlug, sessionNumber, sessionTimestamp, handoffVersion);
         const triggerEnrollmentPromise = ensureTriggerMarker(resolvedSlug);
         const staleActivePromise = checkTriggerStaleActive(resolvedSlug);
@@ -1141,6 +1343,7 @@ export function registerBootstrap(server: McpServer): void {
           staleActivePromise,
           observationPromise,
         ]);
+        progress.stage = "payload_assembly";
 
         // brief-416 / D-196 Piece 3: surface a stale Trigger active slot so
         // the operator can recover before queuing more work. The warning
@@ -1719,7 +1922,7 @@ export function registerBootstrap(server: McpServer): void {
           // sources), so it conflated source-fetched with delivered bytes
           // (measured 99,797 vs the real 115,842). See the post-measurement block.
           files_fetched: filesFetched,
-          expected_tool_surface: getExpectedToolSurface(RAILWAY_ENABLED, CC_DISPATCH_ENABLED, !!GITHUB_PAT),  // D-83 (S44); github category added in brief-403
+          expected_tool_surface: getExpectedToolSurface(RAILWAY_ENABLED, CC_DISPATCH_ENABLED, !!GITHUB_PAT),  // D-83 (S44); github category added in brief-403; R17 (F-A2-9) adds the documentational `render` category (visualize:show_widget — client-side, never registered here) so the Rule 1 Tool Surface check can resolve the banner render channel
           post_boot_tool_searches: POST_BOOT_TOOL_SEARCHES,                                     // D-83 (S44)
           recommended_session_settings: recommendedSessionSettings,                             // brief-405 / D-191 — advisory model + thinking suggestion
           autonomous_work_loop: buildAutonomousWorkLoopPayload(),                                // PRISM Autonomous Work Loop v1 — additive post-boot queue autonomy contract
@@ -1924,6 +2127,55 @@ export function registerBootstrap(server: McpServer): void {
           content: [{ type: "text" as const, text: JSON.stringify({ error: message, project: resolvedSlug }) }],
           isError: true,
         };
+      }
+      })();
+
+      // R23: race the boot against the wall-clock deadline. The work promise
+      // keeps running to completion (its own writes are already fenced) — the
+      // deadline only bounds what the CLIENT waits for.
+      try {
+        const raced = await Promise.race([workPromise, deadlinePromise]);
+        if (raced === BOOTSTRAP_DEADLINE_SENTINEL) {
+          const deadlineSec = Math.round(BOOTSTRAP_WALL_CLOCK_DEADLINE_MS / 1000);
+          logger.error("prism_bootstrap deadline exceeded", {
+            project_slug: resolvedSlug,
+            stage: progress.stage,
+            deadlineMs: BOOTSTRAP_WALL_CLOCK_DEADLINE_MS,
+            elapsedMs: Date.now() - start,
+          });
+          diagnostics.error(
+            "BOOTSTRAP_DEADLINE_EXCEEDED",
+            `Boot deadline exceeded (${deadlineSec}s) at stage "${progress.stage}" — partial state only.`,
+            { deadlineMs: BOOTSTRAP_WALL_CLOCK_DEADLINE_MS, stage: progress.stage, files_fetched: progress.files_fetched },
+          );
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({
+                project: resolvedSlug,
+                error: `prism_bootstrap deadline exceeded (${deadlineSec}s)`,
+                stage: progress.stage,
+                // The partial payload: what the fan-out actually landed before
+                // the deadline. A boot that dies at core_fetch has no handoff
+                // to report, so these stay null rather than reporting zeros.
+                partial: {
+                  docs_fetched: progress.docs_fetched,
+                  files_fetched: progress.files_fetched,
+                  handoff_version: progress.handoff_version,
+                  session_count: progress.session_count,
+                  behavioral_rules_delivered: progress.behavioral_rules_delivered,
+                },
+                partial_state_warning:
+                  "Boot did not complete. The boot-test write and Trigger enrollment marker may still land after this response — do NOT treat this session as booted; re-run prism_bootstrap.",
+                diagnostics: diagnostics.list(),
+              }),
+            }],
+            isError: true,
+          };
+        }
+        return raced;
+      } finally {
+        if (deadlineTimer) clearTimeout(deadlineTimer);
       }
     }
   );
