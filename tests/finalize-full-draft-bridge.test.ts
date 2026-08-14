@@ -329,6 +329,52 @@ describe("SRV-19 — action=full bridges contract-shaped draft keys into real do
     expect(diagCodes).toContain("DRAFT_NOT_COMMITTED");
   });
 
+  // ── S203 audit R22 (F-C1-3) ─────────────────────────────────────────────
+  // An unparseable draft used to return success: true, so action=full
+  // reported draft: ok, fired no DRAFT_FAILED, and dropped the model's text
+  // entirely (the bridge and draft_recovery were both gated on `"drafts" in
+  // draftResult`). The commit SUCCEEDS here — that is precisely the case
+  // where the raw output had nowhere else to go.
+  it("R22: unparseable draft → phases.draft.status warn, DRAFT_FAILED, raw text in draft_recovery", async () => {
+    setupFullActionMocks();
+    mockSynthesize.mockResolvedValue({
+      success: true,
+      content: "Here are my thoughts on the finalization: the handoff should be updated…",
+      input_tokens: 1000,
+      output_tokens: 200,
+      model: "test-model",
+      transport: "messages_api",
+    } as never);
+
+    const result = await callFinalize({
+      project_slug: "test-project",
+      action: "full",
+      session_number: 26,
+      handoff_version: 31,
+      skip_synthesis: true,
+      handoff_content: HANDOFF_FINALIZE,
+    });
+
+    const data = parseResult(result);
+    expect(data.all_succeeded).toBe(true);
+    expect(data.phases.draft.status).toBe("warn");
+    expect(data.draft_recovery).not.toBeNull();
+    expect(data.draft_recovery.raw_content).toContain("Here are my thoughts");
+
+    const diagCodes = (data.diagnostics as Array<{ code: string }>).map((d) => d.code);
+    expect(diagCodes).toContain("DRAFT_FAILED");
+    expect(diagCodes).toContain("DRAFT_NOT_COMMITTED");
+    const failed = (data.diagnostics as Array<{ code: string; message: string }>).find(
+      (d) => d.code === "DRAFT_FAILED",
+    );
+    expect(failed!.message).toContain("Could not parse structured JSON");
+
+    // Nothing from the unparsed text may be bridged into a commit.
+    expect(data.draft_bridge).toBeNull();
+    const committed = atomicCommitFiles().map((f) => f.path);
+    expect(committed.some((p) => p.endsWith("session-log.md"))).toBe(false);
+  });
+
   it("session-log/task-queue fetch failure → bridge skips those keys with visible reasons, finalize still commits", async () => {
     setupFullActionMocks();
     mockResolveDocPath.mockImplementation(async (_slug: string, doc: string) => {

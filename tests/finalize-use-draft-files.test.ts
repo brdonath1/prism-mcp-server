@@ -221,3 +221,113 @@ describe("brief-s202b T8 — action=commit use_draft_files", () => {
     expect(mockCreateAtomicCommit).not.toHaveBeenCalled();
   });
 });
+
+// ─── S203 audit R12 (F-A2-4) + R11 (F-A2-3 / F-D3) ──────────────────────────
+//
+// R12: four finalize shapes — all on the use_draft_files approve path, the
+// current default — returned NO banner field at all, because they were added
+// without the shared error-banner helper and no test asserted one. This table
+// drives every commit/full return site reachable from the tool handler.
+//
+// R11: the finalize render obligation used to ship only on action=audit, while
+// the kernel forbids memorizing Rules 10-15 from boot — so a commit-only
+// finalize reached a banner-bearing response with no instructions for it.
+
+describe("R12/R11 — every drivable commit/full return site carries banner + render contract", () => {
+  /** Drive one return site and hand back its parsed payload. */
+  const SITES: Array<{ name: string; args: Record<string, unknown>; setup?: () => void }> = [
+    {
+      name: "commit · use_draft_files · no persisted draft",
+      args: { action: "commit", session_number: 29, use_draft_files: true },
+      setup: () => {
+        mockFetchFile.mockImplementation(async (_repo: string, path: string) => {
+          if (path === FINALIZE_DRAFT_STATE_PATH) throw new Error(`Not found: ${path}`);
+          const content = validHandoff(33, 28);
+          return { content, sha: "cur", size: content.length };
+        });
+      },
+    },
+    {
+      name: "commit · use_draft_files · persisted draft carries no files",
+      args: { action: "commit", session_number: 29, use_draft_files: true },
+      setup: () => {
+        mockFetchFile.mockImplementation(async (_repo: string, path: string) => {
+          if (path === FINALIZE_DRAFT_STATE_PATH) {
+            const content = JSON.stringify({ ...DRAFT_STATE, files: [] });
+            return { content, sha: "draft-sha", size: content.length };
+          }
+          const content = validHandoff(33, 28);
+          return { content, sha: "cur", size: content.length };
+        });
+      },
+    },
+    {
+      name: "commit · use_draft_files · stale draft (session mismatch)",
+      args: { action: "commit", session_number: 30, use_draft_files: true },
+    },
+    {
+      name: "commit · no files and no draft",
+      args: { action: "commit", session_number: 29 },
+    },
+    {
+      name: "commit · happy path",
+      args: { action: "commit", session_number: 29, use_draft_files: true },
+    },
+    {
+      name: "full · missing handoff_content",
+      args: { action: "full", session_number: 29 },
+    },
+    {
+      name: "full · happy path",
+      args: { action: "full", session_number: 29, handoff_content: validHandoff(34, 29) },
+    },
+  ];
+
+  for (const site of SITES) {
+    it(`${site.name} → non-empty banner_text + finalize_render_contract`, async () => {
+      site.setup?.();
+      const handler = captureHandler();
+      const result = await handler({
+        project_slug: "test-project",
+        handoff_version: 34,
+        skip_synthesis: true,
+        ...site.args,
+      });
+      const data = parse(result);
+
+      expect(typeof data.banner_text).toBe("string");
+      expect(data.banner_text.length).toBeGreaterThan(0);
+      expect(data.banner_text).toContain("Session");
+      expect(data.banner_spec_version).toBe("4.3");
+      expect(data).toHaveProperty("finalization_banner_html");
+
+      // R11: the RENDER + FALLBACK + CONFIRM structure rides on every one.
+      expect(typeof data.finalize_render_contract).toBe("string");
+      expect(data.finalize_render_contract).toContain("RENDER");
+      expect(data.finalize_render_contract).toContain("FALLBACK");
+      expect(data.finalize_render_contract).toContain("CONFIRM");
+    });
+  }
+
+  it("R11: a commit-only finalize with NO prior audit still carries the contract, and it is modest in size", async () => {
+    const handler = captureHandler();
+    const result = await handler({
+      project_slug: "test-project",
+      action: "commit",
+      session_number: 29,
+      use_draft_files: true,
+      skip_synthesis: true,
+    });
+    const data = parse(result);
+
+    expect(data.all_succeeded).toBe(true);
+    // No audit ran in this turn — session_end_rules is an audit-only field.
+    expect(data.session_end_rules).toBeUndefined();
+    expect(data.finalize_render_contract).toContain("visualize:show_widget");
+    expect(data.finalize_render_contract).toContain("banner_text");
+    // Budget: well under 2KB against the ~100KB (25K-token) response ceiling.
+    const contractBytes = Buffer.byteLength(data.finalize_render_contract, "utf-8");
+    expect(contractBytes).toBeGreaterThan(400);
+    expect(contractBytes).toBeLessThan(2_000);
+  });
+});

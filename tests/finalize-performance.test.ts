@@ -40,15 +40,11 @@ describe("Draft timeout scaling", () => {
   });
 });
 
+// S203 audit R27: auditPhase moved to src/tools/finalize/audit.ts (the whole
+// module IS the audit section, so no slicing).
 describe("Audit phase performance", () => {
   it("caps commit detail fetches to 5 or fewer", () => {
-    const source = readFileSync("src/tools/finalize.ts", "utf-8");
-
-    // Find the commit detail fetch section
-    const auditSection = source.slice(
-      source.indexOf("async function auditPhase"),
-      source.indexOf("async function draftPhase")
-    );
+    const auditSection = readFileSync("src/tools/finalize/audit.ts", "utf-8");
 
     // Should slice to 5 or fewer, not 20
     expect(auditSection).not.toContain(".slice(0, 20)");
@@ -60,12 +56,7 @@ describe("Audit phase performance", () => {
   });
 
   it("does not duplicate listDirectory calls for handoff-history", () => {
-    const source = readFileSync("src/tools/finalize.ts", "utf-8");
-
-    const auditSection = source.slice(
-      source.indexOf("async function auditPhase"),
-      source.indexOf("async function draftPhase")
-    );
+    const auditSection = readFileSync("src/tools/finalize/audit.ts", "utf-8");
 
     // Should either use a cached helper or only call listDirectory once
     // Count raw listDirectory calls in audit

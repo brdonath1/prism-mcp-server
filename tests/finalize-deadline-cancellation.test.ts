@@ -122,7 +122,11 @@ describe("SRV-42/49 — commit deadline cancels the in-flight commit and reports
     // SRV-49: faithful partial-state description + diagnostics present.
     expect(data.partial_state_warning).toMatch(/atomic|verify the repo HEAD/i);
     expect(Array.isArray(data.diagnostics)).toBe(true);
-    expect(data.banner_text).toBe("PRISM | Session 25 | Handoff v5 | 0/10 docs");
+    // S203 audit R18 (F-A2-11): a deadline shape never read the repo back and
+    // the atomic commit may have landed — the doc count is `?`, not a
+    // confident 0.
+    expect(data.banner_text).toBe("PRISM | Session 25 | Handoff v5 | ?/10 docs (unverified)");
+    expect(data.banner_text).not.toContain("0/10");
     expect(data.banner_spec_version).toBe("4.3");
     expect(data.finalization_banner_html).toBeNull();
     // SRV-42: the in-flight commit was actually signaled to abort.
@@ -162,7 +166,7 @@ describe("SRV-58 — action=full commit step is bounded by the same deadline", (
     expect(data.all_succeeded).toBe(false);
     expect(data.error).toMatch(/deadline exceeded/i);
     expect(data.partial_state_warning).toBeTruthy();
-    expect(data.banner_text).toBe("PRISM | Session 25 | Handoff v5 | 0/10 docs");
+    expect(data.banner_text).toBe("PRISM | Session 25 | Handoff v5 | ?/10 docs (unverified)");
     expect(data.banner_spec_version).toBe("4.3");
     expect(data.finalization_banner_html).toBeNull();
     expect(capturedSignal?.aborted).toBe(true);
@@ -191,7 +195,7 @@ describe("SRV-49 — a mid-turn error still surfaces diagnostics", () => {
     // SRV-49: outer catch no longer drops diagnostics / partial state.
     expect(data).toHaveProperty("diagnostics");
     expect(data).toHaveProperty("partial_state_warning");
-    expect(data.banner_text).toBe("PRISM | Session 25 | Handoff v5 | 0/10 docs");
+    expect(data.banner_text).toBe("PRISM | Session 25 | Handoff v5 | ?/10 docs (unverified)");
     expect(data.banner_spec_version).toBe("4.3");
     expect(data.finalization_banner_html).toBeNull();
   });
@@ -213,7 +217,7 @@ describe("SRV-49 — a mid-turn error still surfaces diagnostics", () => {
     const data = parse(result);
     expect(result.isError).toBe(true);
     expect(data.action).toBe("full");
-    expect(data.banner_text).toBe("PRISM | Session 25 | Handoff v5 | 0/10 docs");
+    expect(data.banner_text).toBe("PRISM | Session 25 | Handoff v5 | ?/10 docs (unverified)");
     expect(data.banner_spec_version).toBe("4.3");
     expect(data.finalization_banner_html).toBeNull();
   });

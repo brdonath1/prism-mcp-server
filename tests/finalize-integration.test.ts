@@ -964,7 +964,11 @@ describe("prism_finalize draft phase", () => {
     expect(data.fallback).toContain("manually");
   });
 
-  it("returns raw content when JSON parsing fails", async () => {
+  // S203 audit R22 (F-C1-3): a parse failure is a FAILED draft. It used to
+  // return success: true, which made action=full report draft: ok, suppressed
+  // DRAFT_FAILED, and dropped the model's text. raw_content stays on the
+  // response — the shape is preserved, only the verdict changed.
+  it("returns raw content and fails loud when JSON parsing fails", async () => {
     const docMap = buildDocMap();
     mockFetchFiles.mockResolvedValue(docMap);
     mockListCommits.mockResolvedValue([]);
@@ -984,7 +988,9 @@ describe("prism_finalize draft phase", () => {
     });
 
     const data = parseResult(result);
-    expect(data.success).toBe(true);
+    expect(data.success).toBe(false);
+    expect(data.parse_failed).toBe(true);
+    expect(data.error).toContain("Could not parse structured JSON");
     expect(data.raw_content).toBeDefined();
     expect(data.parse_warning).toContain("Could not parse");
   });

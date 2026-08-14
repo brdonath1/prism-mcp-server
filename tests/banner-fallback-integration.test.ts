@@ -140,3 +140,67 @@ describe("null-banner_text fallback matches the Rule 2 single-line spec", () => 
     expect(data.finalization_banner_html).toBeNull();
   });
 });
+
+// S203 audit R18 (F-A2-11): the shapes above DID observe the commit, so their
+// counts are facts. The deadline / hard-error shapes did not — they used to
+// hardcode `docCount: 0` and assert "0/10 docs" even when the atomic commit
+// landed. Those render `?/10 docs (unverified)`.
+describe("R18 — deadline / hard-error banners report an unverified doc count, not zero", () => {
+  it("commit that throws mid-flight → ?/10 (unverified), never 0/10", async () => {
+    mockFileExists.mockRejectedValue(new Error("boom: unexpected GitHub 500 during guard"));
+
+    const result = await handlers.prism_finalize({
+      project_slug: "test-project",
+      action: "commit",
+      session_number: 26,
+      handoff_version: 31,
+      skip_synthesis: true,
+      files: [{ path: "handoff.md", content: HANDOFF }],
+    });
+
+    expect(result.isError).toBe(true);
+    const data = JSON.parse(result.content[0].text);
+    expect(data.banner_text).toBe("PRISM | Session 26 | Handoff v31 | ?/10 docs (unverified)");
+    expect(data.banner_text).not.toContain("0/10");
+    expect(data.finalization_banner_html).toBeNull();
+  });
+
+  it("full that throws mid-flight → ?/10 (unverified), never 0/10", async () => {
+    mockFileExists.mockRejectedValue(new Error("boom: unexpected GitHub 500 during full guard"));
+
+    const result = await handlers.prism_finalize({
+      project_slug: "test-project",
+      action: "full",
+      session_number: 26,
+      handoff_version: 31,
+      skip_synthesis: true,
+      handoff_content: HANDOFF,
+    });
+
+    expect(result.isError).toBe(true);
+    const data = JSON.parse(result.content[0].text);
+    expect(data.banner_text).toBe("PRISM | Session 26 | Handoff v31 | ?/10 docs (unverified)");
+    expect(data.banner_text).not.toContain("0/10");
+  });
+
+  it("the missing-draft pre-flight rejection carries the same unverified fallback (R12)", async () => {
+    mockFetchFile.mockImplementation(async (_repo: string, path: string) => {
+      throw new Error(`Not found: ${path}`);
+    });
+
+    const result = await handlers.prism_finalize({
+      project_slug: "test-project",
+      action: "commit",
+      session_number: 26,
+      handoff_version: 31,
+      use_draft_files: true,
+      skip_synthesis: true,
+    });
+
+    expect(result.isError).toBe(true);
+    const data = JSON.parse(result.content[0].text);
+    expect(data.banner_text).toBe("PRISM | Session 26 | Handoff v31 | ?/10 docs (unverified)");
+    expect(data.banner_text).not.toContain("0/10");
+    expect(data.finalize_render_contract).toContain("RENDER");
+  });
+});

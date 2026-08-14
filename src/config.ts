@@ -483,9 +483,30 @@ export const FINALIZE_DRAFT_TIMEOUT_MS =
 /** Tool-level wall-clock deadline for the prism_finalize draft phase (S41).
  *  Hard backstop on top of the per-attempt timeout — prevents any retry logic
  *  or unexpected blocking from holding the MCP client connection
- *  indefinitely. Mirrors FINALIZE_COMMIT_DEADLINE_MS pattern. */
+ *  indefinitely. Mirrors FINALIZE_COMMIT_DEADLINE_MS pattern.
+ *
+ *  Governs the BACKGROUND fullPhase race only; the interactive `action=draft`
+ *  race is bounded by FINALIZE_DRAFT_ACTION_DEADLINE_MS below (S203 audit
+ *  R32 / F-C1-7). */
 export const FINALIZE_DRAFT_DEADLINE_MS =
   parseInt(process.env.FINALIZE_DRAFT_DEADLINE_MS ?? "180000", 10) || 180_000;
+
+/** Wall-clock deadline for the INTERACTIVE `action=draft` race (S203 audit
+ *  R32 / F-C1-7). At 180s the draft deadline was 3x the ~60s MCP client
+ *  ceiling, so the structured timeout response could never be delivered: the
+ *  client gave up first and the operator's retry started a SECOND synthesis.
+ *
+ *  Same SRV-97 lowering PUSH_WALL_CLOCK_DEADLINE_MS took — default
+ *  MCP_SAFE_TIMEOUT so the structured error reaches the client before the
+ *  transport gives up. An EXPLICITLY env-set FINALIZE_DRAFT_DEADLINE_MS still
+ *  wins verbatim (the R32 rollback lever, and the only way back to a >50s
+ *  interactive draft); fullPhase's background race keeps the longer
+ *  FINALIZE_DRAFT_DEADLINE_MS / FINALIZE_DRAFT_DEADLINE_CC_MS constants
+ *  regardless — it is not bounded by a client turn. */
+export const FINALIZE_DRAFT_ACTION_DEADLINE_MS =
+  process.env.FINALIZE_DRAFT_DEADLINE_MS !== undefined
+    ? FINALIZE_DRAFT_DEADLINE_MS
+    : MCP_SAFE_TIMEOUT;
 
 /** Deadline for the fullPhase draft race when the draft transport is
  *  cc_subprocess. cc_subprocess draft runs longer than the messages_api

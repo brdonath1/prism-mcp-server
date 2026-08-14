@@ -50,7 +50,7 @@ const mockServer = {
 
 import { registerBootstrap } from "../src/tools/bootstrap.js";
 
-const LONG_ITEM = `Very long critical context item that keeps going: ${"detail ".repeat(45)}end`; // > 300 B
+const LONG_ITEM = `Very long critical context item that keeps going: ${"detail ".repeat(120)}end`; // > 800 B (R70 raised the budget 300 -> 800)
 
 const HANDOFF = `# Handoff
 

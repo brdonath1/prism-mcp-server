@@ -11,7 +11,11 @@ import {
   buildDraftFilesProjection,
   DRAFT_SUMMARY_MAX_BYTES,
 } from "../src/tools/finalize.js";
-import { FINALIZE_COMPOSE_HANDOFF_MAX_BYTES, FINALIZE_DRAFT_STATE_PATH } from "../src/config.js";
+import {
+  FINALIZE_COMPOSE_HANDOFF_MAX_BYTES,
+  FINALIZE_DRAFT_STATE_PATH,
+  HANDOFF_ITEM_BUDGET_BYTES,
+} from "../src/config.js";
 
 function validHandoffMd(opts: { version?: number; session?: number; itemBytes?: number; items?: number; pad?: number } = {}): string {
   const version = opts.version ?? 34;
@@ -136,9 +140,12 @@ describe("brief-s202b T8 — composeDraftFiles validation-gate matrix", () => {
     expect(outcome.gate_failures!.some(g => g.errors.some(e => e.includes("caps at 5")))).toBe(true);
   });
 
-  it("items over 300B are WARN-only (T5 calibration) — the gate still passes", () => {
+  // Derived from HANDOFF_ITEM_BUDGET_BYTES, not a literal — the budget is a
+  // tunable calibration (S203 audit R70 raised it 300 → 800) and the contract
+  // under test is "over budget warns, never gates".
+  it("items over the item budget are WARN-only (T5 calibration) — the gate still passes", () => {
     const outcome = composeDraftFiles(
-      validDrafts({ handoff_md: validHandoffMd({ itemBytes: 400 }) }),
+      validDrafts({ handoff_md: validHandoffMd({ itemBytes: HANDOFF_ITEM_BUDGET_BYTES + 100 }) }),
       { sessionLog: SESSION_LOG, taskQueue: TASK_QUEUE },
     );
     expect(outcome.ok).toBe(true);
@@ -410,5 +417,78 @@ describe("brief-s202b T8 — action=draft compose-offload integration", () => {
     );
     expect(fallback).toBeDefined();
     expect(fallback!.context!.fallback_reason).toBe("persist_failed");
+  });
+
+  // S203 audit R22 (F-C1-6): the draftPhase outer catch used to wrap the whole
+  // compose/persist block, so a THROWN persist error surfaced to the operator
+  // as "Could not parse structured JSON" with success: true. The parse guard
+  // is now narrowed to extractJSON alone.
+  it("R22: pushFile THROWS → FINALIZE_COMPOSE_FALLBACK(compose_threw), no parse_warning", async () => {
+    delete process.env.FINALIZE_COMPOSE_MODE;
+    vi.resetModules();
+
+    const synthesizeSpy = vi.fn().mockResolvedValue({
+      success: true,
+      content: JSON.stringify(validDrafts({ handoff_md: validHandoffMd({ version: 34, session: 29 }) })),
+      input_tokens: 100,
+      output_tokens: 900,
+      model: "test-model",
+    });
+    const pushFileSpy = vi.fn().mockRejectedValue(new Error("GitHub API 403: rate limited"));
+
+    vi.doMock("../src/ai/client.js", () => ({ synthesize: synthesizeSpy }));
+    vi.doMock("../src/github/client.js", () => ({
+      fetchFile: vi.fn(),
+      fetchFiles: vi.fn(),
+      pushFile: pushFileSpy,
+      listDirectory: vi.fn().mockResolvedValue([]),
+      listCommits: vi.fn().mockResolvedValue([]),
+      getCommit: vi.fn(),
+      deleteFile: vi.fn(),
+      fileExists: vi.fn(),
+      createAtomicCommit: vi.fn(),
+      getHeadSha: vi.fn(),
+      getDefaultBranch: vi.fn(),
+    }));
+    vi.doMock("../src/utils/doc-resolver.js", () => ({
+      resolveDocPath: vi.fn(),
+      resolveDocPushPath: vi.fn(),
+      resolveDocFiles: vi.fn().mockResolvedValue(
+        new Map([
+          ["handoff.md", { content: validHandoffMd({ version: 33, session: 28 }), sha: "h", size: 100 }],
+          ["session-log.md", { content: SESSION_LOG, sha: "s", size: SESSION_LOG.length }],
+          ["task-queue.md", { content: TASK_QUEUE, sha: "t", size: TASK_QUEUE.length }],
+        ]),
+      ),
+    }));
+
+    const { registerFinalize } = await import("../src/tools/finalize.js");
+    const { McpServer } = await import("@modelcontextprotocol/sdk/server/mcp.js");
+    const server = new McpServer({ name: "t", version: "0" }, { capabilities: { tools: {} } });
+    registerFinalize(server);
+    const tool = (server as any)._registeredTools["prism_finalize"];
+    const result = await tool.handler(
+      { project_slug: "test-project", action: "draft", session_number: 29 },
+      buildMockExtra("compose-threw"),
+    );
+    const parsed = JSON.parse(result.content[0].text);
+
+    // Legacy 6-key fallback — a compose throw is recoverable, not a dead draft.
+    expect(parsed.success).toBe(true);
+    expect(parsed.drafts).toBeDefined();
+    expect(parsed.draft_files).toBeUndefined();
+    // The throw is NOT mislabeled as a parse failure.
+    expect(parsed.parse_warning).toBeUndefined();
+    expect(parsed.parse_failed).toBeUndefined();
+
+    const fallback = (
+      parsed.diagnostics as Array<{ code: string; level: string; message: string; context?: { fallback_reason?: string; error?: string } }>
+    ).find(d => d.code === "FINALIZE_COMPOSE_FALLBACK");
+    expect(fallback).toBeDefined();
+    expect(fallback!.level).toBe("warn");
+    expect(fallback!.context!.fallback_reason).toBe("compose_threw");
+    // The REAL error rides out, not a generic parse message.
+    expect(fallback!.context!.error).toContain("403");
+    expect(fallback!.message).not.toContain("parse structured JSON");
   });
 });
