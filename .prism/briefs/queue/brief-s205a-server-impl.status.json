@@ -1,7 +1,21 @@
 {
   "brief": "brief-s205a-server-impl",
-  "status": "executing",
-  "started_at": "2026-08-14T16:01:08Z",
+  "status": "completed",
+  "started_at": "2026-08-14T15:58:00Z",
+  "completed_at": "2026-08-14T16:32:53Z",
   "agent": "claude-code",
-  "dispatch": "trigger-daemon"
+  "dispatch": "trigger-daemon",
+  "pr_url": "https://github.com/brdonath1/prism-mcp-server/pull/118",
+  "pr_state": "draft \u2014 operator review + merge required per brief",
+  "dequeue_commit": "c9eab6b50c615041cd982f90fa6b24230c0b05fd",
+  "commits": [
+    "eda7fee R1 cherry-pick (de46d20 re-land)",
+    "e7aec2b config keel R70/R28 + R23/R24 constants",
+    "c9dc79f infra R24/R25/R31/R26",
+    "ece0079 bootstrap R23/R29/R9/R17",
+    "b43551f read-path/registry R30/R75/R-DOCS-MS-code",
+    "233c68d finalize R27/R22/R12/R11/R32/R19/R18",
+    "c41600e docs R-DOCS-MS",
+    "c605617 R21 recreate guard"
+  ]
 }
