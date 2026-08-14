@@ -1,0 +1,7 @@
+{
+  "brief": "brief-s205a-server-impl",
+  "status": "executing",
+  "started_at": "2026-08-14T16:01:08Z",
+  "agent": "claude-code",
+  "dispatch": "trigger-daemon"
+}
