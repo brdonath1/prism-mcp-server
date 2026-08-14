@@ -169,9 +169,15 @@ export const PREFETCH_SUMMARY_CAP_BYTES =
 /** T5 (P-3/P-7): advisory per-item budget (bytes) for handoff Critical
  *  Context items. Items average 708 B on the measured baseline vs the
  *  template intent of 3-5 FACTS; the HANDOFF_ITEM_OVERSIZE diagnostic is
- *  WARN-ONLY at boot parse and finalize validation — never a rejection. */
+ *  WARN-ONLY at boot parse and finalize validation — never a rejection.
+ *
+ *  S203 audit R70 (F-B11): raised 300 -> 800. At 300 the diagnostic fired
+ *  5/5 on every prism boot — a threshold below the measured mean flags
+ *  everything and therefore nothing. 800 sits just above the ~708 B mean so
+ *  only genuinely outsized items warn. Rollback: HANDOFF_ITEM_BUDGET_BYTES
+ *  env. */
 export const HANDOFF_ITEM_BUDGET_BYTES =
-  parseInt(process.env.HANDOFF_ITEM_BUDGET_BYTES ?? "300", 10) || 300;
+  parseInt(process.env.HANDOFF_ITEM_BUDGET_BYTES ?? "800", 10) || 800;
 
 /** T6 (P-6a): boot masthead SVG knob. Default ON — D-249 restored graphical
  *  banners as an explicit operator choice; `off` ships
@@ -425,6 +431,23 @@ export const STATUS_WALL_CLOCK_DEADLINE_MS =
   parseInt(process.env.STATUS_WALL_CLOCK_DEADLINE_MS ?? `${MCP_SAFE_TIMEOUT}`, 10) || MCP_SAFE_TIMEOUT;
 export const FETCH_WALL_CLOCK_DEADLINE_MS =
   parseInt(process.env.FETCH_WALL_CLOCK_DEADLINE_MS ?? `${MCP_SAFE_TIMEOUT}`, 10) || MCP_SAFE_TIMEOUT;
+
+/** Tool-level wall-clock deadline for prism_bootstrap (S203 audit R23 /
+ *  F-C1-5). Bootstrap was the last fan-out tool with NO hard backstop — a
+ *  hung core fetch held the MCP client connection until the ~60s transport
+ *  timeout with no structured error, on the one tool every session runs
+ *  first. Same sentinel/race pattern as PUSH_WALL_CLOCK_DEADLINE_MS. */
+export const BOOTSTRAP_WALL_CLOCK_DEADLINE_MS =
+  parseInt(process.env.BOOTSTRAP_WALL_CLOCK_DEADLINE_MS ?? `${MCP_SAFE_TIMEOUT}`, 10) ||
+  MCP_SAFE_TIMEOUT;
+
+/** Total elapsed-time budget (ms) across ALL retries inside fetchWithRetry
+ *  (S203 audit R24 / F-C1-8). Bounds worst-case honored Retry-After chains:
+ *  without it, three 60s Retry-After responses could hold a caller ~300s —
+ *  far past every tool deadline. Once the budget is exhausted the client
+ *  stops retrying and surfaces the last response/error. */
+export const GITHUB_RETRY_BUDGET_MS =
+  parseInt(process.env.GITHUB_RETRY_BUDGET_MS ?? "20000", 10) || 20_000;
 
 /** Per-file content cap (bytes) for prism_fetch full-content delivery
  *  (brief-444 R-deadlines, second half). Without a cap, fetching one large

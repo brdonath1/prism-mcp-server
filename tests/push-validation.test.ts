@@ -92,3 +92,34 @@ describe("file content validation", () => {
     expect(result.errors).toHaveLength(0);
   });
 });
+
+// S203 audit R28 (F-C1-12): prism_push must reject an empty files[] at the
+// schema layer — a zero-file call previously validated nothing, pushed
+// nothing, and returned success, reading as a completed push to the client.
+describe("prism_push input schema — empty files[] rejection (R28)", () => {
+  it("rejects files: [] with a clear message and accepts a 1-file call", async () => {
+    const { z } = await import("zod");
+    const { registerPush } = await import("../src/tools/push.js");
+
+    const toolSchemas: Record<string, Record<string, unknown>> = {};
+    const mockServer = {
+      tool: (name: string, _desc: string, schema: unknown, _handler: unknown) => {
+        toolSchemas[name] = schema as Record<string, unknown>;
+      },
+    };
+    registerPush(mockServer as never);
+
+    const schema = z.object(toolSchemas.prism_push as never);
+    const empty = schema.safeParse({ project_slug: "proj", files: [] });
+    expect(empty.success).toBe(false);
+    if (!empty.success) {
+      expect(JSON.stringify(empty.error.issues)).toContain("at least one file required");
+    }
+
+    const one = schema.safeParse({
+      project_slug: "proj",
+      files: [{ path: "handoff.md", content: "x\n<!-- EOF: handoff.md -->", message: "prism: t" }],
+    });
+    expect(one.success).toBe(true);
+  });
+});

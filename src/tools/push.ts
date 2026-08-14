@@ -37,7 +37,7 @@ const inputSchema = {
       content: z.string().describe("File content to push"),
       message: z.string().describe(`Commit message (must start with ${VALID_COMMIT_PREFIXES.join(", ")})`),
     })
-  ).describe("Files to push"),
+  ).min(1, "at least one file required").describe("Files to push"),
   skip_validation: z.boolean().optional().default(false).describe("Skip validation (not recommended)"),
 };
 
