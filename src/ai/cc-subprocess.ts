@@ -82,10 +82,22 @@ import {
   findClaudeExecutable,
 } from "../claude-code/client.js";
 import { logger } from "../utils/logger.js";
+import { RECOMMENDATION_MODELS } from "../models.js";
 import type { SynthesisOutcome } from "./client.js";
 
+/**
+ * Is this an explicit request for the executional-tier model (Sonnet 5 today)?
+ *
+ * F-B7 / R-DOCS-MS: compared against the registry's executional id rather than
+ * a local literal — the model-bump single switch (D-254) owns the id, and a
+ * copy here is the drift the pin audit flags. Semantics are unchanged: strip a
+ * trailing `[1m]` long-context suffix, trim, compare case-insensitively.
+ */
 function isExplicitSonnet5(model: string): boolean {
-  return model.trim().replace(/\[1m\]$/, "").toLowerCase() === "claude-sonnet-5";
+  return (
+    model.trim().replace(/\[1m\]$/, "").toLowerCase() ===
+    RECOMMENDATION_MODELS.executional.id.toLowerCase()
+  );
 }
 
 function ccSubprocessEffortForModel(model: string): "high" | "max" {

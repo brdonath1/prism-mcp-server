@@ -122,13 +122,21 @@ interface ProjectHealth {
   project: string;
   health: HealthLevel;
   handoff_size_bytes: number;
-  handoff_version: number;
-  session_count: number;
+  /** null when the handoff read failed for a non-404 reason (R30 — see
+   *  {@link getProjectHealth}); a number is a VERIFIED read. */
+  handoff_version: number | null;
+  /** null when the handoff read was degraded (R30). */
+  session_count: number | null;
   documents_present: number;
   documents_total: number;
   missing_documents: string[];
-  current_status: string;
+  /** null when the handoff read was degraded (R30); "unknown" means the file
+   *  was read but carries no `## Meta` Status line. */
+  current_status: string | null;
   archives: ArchiveMap;
+  /** True when a document read failed for a reason other than a genuine 404,
+   *  so the null fields above are "unverified", not "zero" (R30 / F-C1-14). */
+  handoff_read_degraded?: boolean;
   archives_summary?: string;
   details?: Array<{ document: string; exists: boolean; size_bytes: number }>;
 }
@@ -174,7 +182,8 @@ async function listLivingDocSizes(projectSlug: string): Promise<Map<string, numb
  */
 async function getProjectHealth(
   projectSlug: string,
-  includeDetails: boolean
+  includeDetails: boolean,
+  diagnostics?: DiagnosticsCollector,
 ): Promise<ProjectHealth> {
   const sizes = await listLivingDocSizes(projectSlug);
 
@@ -195,23 +204,44 @@ async function getProjectHealth(
   // Only handoff.md's CONTENT is consumed (version/session/status). Existence is
   // already known from the listing, so a content-fetch failure degrades to the
   // parse defaults rather than dropping the project.
+  //
+  // R30 (F-C1-14): the failure is DISCRIMINATED. Only a genuine 404
+  // ("Not found") means "absent" — everything else (401/403 auth blip, network
+  // reset, rate limit, timeout) is an UNVERIFIED read, and reporting
+  // `handoff_version: 0, session_count: 0` for one is a confident zero drawn
+  // from no evidence. Same discrimination the doc-resolver already applies to
+  // the legacy-root fallback (SRV-44). Degraded reads report null + a
+  // DOC_READ_DEGRADED diagnostic; the listing-derived fields (sizes, presence,
+  // health) are unaffected because the listing itself succeeded.
   let handoffContent = "";
+  let readDegradedReason: string | null = null;
   if (sizes.has("handoff.md")) {
     try {
       const resolved = await resolveDocPath(projectSlug, "handoff.md");
       handoffContent = resolved.content;
-    } catch {
-      // keep "" — health still computes from the listed sizes
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      // A genuine 404 keeps "" — health still computes from the listed sizes.
+      if (!/Not found/i.test(msg)) readDegradedReason = msg;
     }
   }
 
-  const handoffVersion = parseHandoffVersion(handoffContent) ?? 0;
-  const sessionCount = parseSessionCount(handoffContent) ?? 0;
+  if (readDegradedReason) {
+    logger.warn("prism_status handoff read degraded", { project: projectSlug, reason: readDegradedReason });
+    diagnostics?.warn(
+      "DOC_READ_DEGRADED",
+      `${projectSlug}: handoff.md could not be read (not a 404) — handoff_version, session_count, and current_status are UNVERIFIED (null), not zero`,
+      { project: projectSlug, document: "handoff.md", reason: readDegradedReason },
+    );
+  }
+
+  const handoffVersion = readDegradedReason ? null : parseHandoffVersion(handoffContent) ?? 0;
+  const sessionCount = readDegradedReason ? null : parseSessionCount(handoffContent) ?? 0;
 
   // Extract status from handoff Meta section
   const meta = extractSection(handoffContent, "Meta") ?? "";
   const statusMatch = meta.match(/Status[:\s]*(.+)/i);
-  const currentStatus = statusMatch ? statusMatch[1].trim() : "unknown";
+  const currentStatus = readDegradedReason ? null : statusMatch ? statusMatch[1].trim() : "unknown";
 
   const health = computeHealth(missingDocs.length, handoffSize);
 
@@ -227,6 +257,8 @@ async function getProjectHealth(
     current_status: currentStatus,
     archives,
   };
+
+  if (readDegradedReason) result.handoff_read_degraded = true;
 
   if (includeDetails) {
     result.details = documents.map(d => ({
@@ -282,7 +314,7 @@ export function registerStatus(server: McpServer): void {
         const llmRouting = buildRouteReadinessStatus();
         if (project_slug) {
           // Single project status
-          const health = await getProjectHealth(project_slug, include_details ?? false);
+          const health = await getProjectHealth(project_slug, include_details ?? false, diagnostics);
 
           if (health.health === "needs-attention" || health.health === "critical") {
             diagnostics.warn("HEALTH_NEEDS_ATTENTION", `Project health: ${health.health}`, { health: health.health, missingDocs: health.missing_documents, handoffSizeBytes: health.handoff_size_bytes });
@@ -332,7 +364,7 @@ export function registerStatus(server: McpServer): void {
 
         // Fetch health for all PRISM projects in parallel
         const healthResults = await Promise.allSettled(
-          prismProjects.map(repo => getProjectHealth(repo, include_details ?? false))
+          prismProjects.map(repo => getProjectHealth(repo, include_details ?? false, diagnostics))
         );
 
         const projects = healthResults

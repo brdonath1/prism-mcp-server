@@ -1,4 +1,5 @@
 import type { ProviderMetadata } from "./route-types.js";
+import { SYNTHESIS_MODEL_ID } from "../models.js";
 
 const ROUTABLE_SYNTHESIS_SURFACES = [
   "recommendation",
@@ -13,7 +14,10 @@ const PROVIDER_REGISTRY: readonly ProviderMetadata[] = [
     displayName: "Anthropic",
     authEnvVar: "ANTHROPIC_API_KEY",
     modelEnvVar: "SYNTHESIS_MODEL",
-    defaultModel: "claude-opus-4-8",
+    // D-254 single switch (F-B7 / R-DOCS-MS): the Anthropic row's default IS
+    // the registry's synthesis pin — a literal here drifts silently on the
+    // next model bump, which is exactly what the model-bump pin audit caught.
+    defaultModel: SYNTHESIS_MODEL_ID,
     transport: "messages_api",
     supportedSurfaces: [...ROUTABLE_SYNTHESIS_SURFACES],
     activationStatus: "active_when_present",

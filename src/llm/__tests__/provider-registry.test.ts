@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { getProviderRegistry } from "../provider-registry.js";
+import { SYNTHESIS_MODEL_ID } from "../../models.js";
 
 describe("provider registry", () => {
   it("lists the value-free provider auth contract for routing readiness", () => {
@@ -58,6 +59,16 @@ describe("provider registry", () => {
       expect(provider.defaultModel).toMatch(/\S/);
       expect(provider.modelEnvVar).toMatch(/^LLM_ROUTING_/);
     }
+  });
+
+  // S203 F-B7: the Anthropic row used to carry its own "claude-opus-4-8"
+  // literal, so the model-bump SOP's "single switch" claim was false — a bump
+  // to src/models.ts left this row a generation behind, silently. The row now
+  // reads the registry pin; this test fails the moment anyone re-inlines it.
+  it("keys the Anthropic default off the models.ts single switch, not a literal", () => {
+    const anthropic = getProviderRegistry().find((provider) => provider.id === "anthropic");
+
+    expect(anthropic?.defaultModel).toBe(SYNTHESIS_MODEL_ID);
   });
 
   it("does not contain credential values, account identifiers, or live payload samples", () => {

@@ -71,6 +71,35 @@ const MALFORMED_TRAILING_TIER_TAG = /\[TIER:[^\]]*\]\s*$/i;
  *  sentinel inside a `### `-split section. */
 const RULE_SECTION_TERMINATOR = /^(?:#{1,2}\s|<!--\s*EOF:)/m;
 
+/**
+ * D-48 retirement markers — ARCHIVED RULE / DORMANT RULE and their
+ * `STANDING`-infixed variants. Tested against ONE anchored line, never against
+ * a whole section (R75 / F-B18).
+ */
+const RETIRED_RULE_MARKER = /(?:archived|dormant)\s+(?:standing\s+)?rule/i;
+
+/**
+ * Is this section a retired (archived/dormant) rule per D-48?
+ *
+ * The marker is looked for in exactly two anchored places:
+ *  - the `### ` header's title line — the `— ARCHIVED STANDING RULE`
+ *    title-decoration form D-48 names; and
+ *  - the FIRST non-empty body line after the header — the live retirement
+ *    shape (`**DORMANT RULE (S201).** superseded by …`, prism insights.md).
+ *
+ * Everything below that first line is rule CONTENT: a live rule whose
+ * procedure discusses archival must never disqualify itself by talking about
+ * it (F-B18, the silent-drop class this anchoring closes).
+ */
+function isRetiredRuleSection(section: string, titleLine: string): boolean {
+  if (RETIRED_RULE_MARKER.test(titleLine)) return true;
+  const firstBodyLine = section
+    .split("\n")
+    .slice(1) // drop the `### ` header line itself
+    .find((line) => line.trim().length > 0);
+  return firstBodyLine !== undefined && RETIRED_RULE_MARKER.test(firstBodyLine);
+}
+
 /** Parsed trailing decorations of a standing-rule title line (brief-459). */
 export interface TitleDecorations {
   /** Title with the trailing decoration run removed (mid-title text kept). */
@@ -132,7 +161,9 @@ export const EMPTY_PROCEDURE_FALLBACK_MAX_CHARS = 1_000;
  * Extract standing rules from a rule-source document, keeping only the
  * procedure portion.
  * ME-3 (D-48): Excludes ARCHIVED RULE, DORMANT RULE, ARCHIVED STANDING RULE,
- * and DORMANT STANDING RULE entries from the active set.
+ * and DORMANT STANDING RULE entries from the active set. R75 (F-B18): that
+ * test is ANCHORED to the title line + the first body line (see
+ * {@link isRetiredRuleSection}) and every skip logs.
  *
  * brief-451: qualification is source-aware (see {@link StandingRuleSource}).
  * Defaults to `"insights"` — the function's historical contract — so existing
@@ -159,11 +190,6 @@ export function extractStandingRules(
         ? rawSection.slice(0, terminator.index)
         : rawSection;
 
-    // D-48: Skip archived or dormant entries
-    if (/archived\s+(standing\s+)?rule/i.test(section) || /dormant\s+(standing\s+)?rule/i.test(section)) {
-      continue;
-    }
-
     const headerMatch = section.match(/^### (INS-\d+):?\s*(.+)/);
     if (!headerMatch) continue;
     const id = headerMatch[1];
@@ -177,6 +203,20 @@ export function extractStandingRules(
     // all count (INS-308 ground truth); insights sections qualify only when
     // the trailing run carries the `— STANDING RULE` marker.
     if (source === "insights" && !decor.hasStandingRuleSuffix) {
+      continue;
+    }
+
+    // D-48: skip archived / dormant entries — R75 (F-B18): ANCHORED, not a
+    // whole-section substring test. The old test matched the marker anywhere
+    // in the body, so a future ACTIVE rule whose procedure merely discusses
+    // archival ("...do not re-add an archived rule to live...") would be
+    // silently dropped from the active set. The retirement marker is always
+    // the FIRST body line under the header (live shape: `**DORMANT RULE
+    // (S201).** ...` — prism insights.md INS-x), so the test is anchored
+    // there, plus the title line itself for the `— ARCHIVED STANDING RULE`
+    // title-decoration form named in D-48. Every real skip now logs.
+    if (isRetiredRuleSection(section, titleLine)) {
+      logger.info("standing rule excluded as archived", { id });
       continue;
     }
 

@@ -38,6 +38,42 @@ const METRICS = [
 type Metric = (typeof METRICS)[number];
 
 /**
+ * R30 (F-C1-14): classify a failed document read.
+ *
+ * Only a genuine 404 ("Not found") means the document is ABSENT. Every other
+ * failure — a 401/403 auth blip (INS-311), a network reset, a rate limit, a
+ * timeout — leaves the document's contents UNKNOWN, and a metric parsed from
+ * the resulting empty string is a confident zero drawn from no evidence
+ * ("0 sessions", "v0"). Mirrors the discrimination the doc-resolver already
+ * applies to its legacy-root fallback (SRV-44).
+ *
+ * @returns the degradation reason, or null when the error is a genuine absence.
+ */
+function readDegradationReason(error: unknown): string | null {
+  const msg = error instanceof Error ? error.message : String(error);
+  return /Not found/i.test(msg) ? null : msg;
+}
+
+/**
+ * Record a degraded document read: one structured log line plus a
+ * `DOC_READ_DEGRADED` diagnostic on the tool response, so the chat operator
+ * sees WHY a field came back null instead of reading a zero as fact.
+ */
+function noteDegradedRead(
+  diagnostics: DiagnosticsCollector | undefined,
+  project: string,
+  document: string,
+  reason: string,
+): void {
+  logger.warn("prism_analytics document read degraded", { project, document, reason });
+  diagnostics?.warn(
+    "DOC_READ_DEGRADED",
+    `${project}: ${document} could not be read (not a 404) — the fields derived from it are UNVERIFIED (null), not zero`,
+    { project, document, reason },
+  );
+}
+
+/**
  * Parse the Decision Summary rows from a `decisions/_INDEX.md`. Production
  * indexes lead with a Domain Files reference table (File/Decisions/Scope)
  * before the Decision Summary table (ID/Title/Domain/Status/Session); feeding
@@ -329,7 +365,7 @@ export function parseHandoffFilename(name: string): { version: number; date: str
 /**
  * Compute handoff size history from handoff-history/ directory.
  */
-async function handoffSizeHistory(projectSlug: string) {
+async function handoffSizeHistory(projectSlug: string, diagnostics?: DiagnosticsCollector) {
   let historyEntries = await listDirectory(projectSlug, ".prism/handoff-history");
   if (historyEntries.length === 0) {
     historyEntries = await listDirectory(projectSlug, "handoff-history");
@@ -349,15 +385,25 @@ async function handoffSizeHistory(projectSlug: string) {
     };
   });
 
-  // Get current handoff size
-  let currentSize = 0;
-  let currentVersion = 0;
+  // Get current handoff size. R30: a genuine 404 keeps the 0/0 defaults (the
+  // handoff really is absent); any other failure reports null — an unverified
+  // read must not masquerade as a measured "0 bytes, v0".
+  let currentSize: number | null = 0;
+  let currentVersion: number | null = 0;
+  let degraded = false;
   try {
     const resolved = await resolveDocPath(projectSlug, "handoff.md");
     currentSize = resolved.content.length;
     currentVersion = parseHandoffVersion(resolved.content) ?? 0;
-  } catch {
-    // Current handoff might not exist
+  } catch (error) {
+    const reason = readDegradationReason(error);
+    if (reason !== null) {
+      currentSize = null;
+      currentVersion = null;
+      degraded = true;
+      noteDegradedRead(diagnostics, projectSlug, "handoff.md", reason);
+    }
+    // else: current handoff genuinely does not exist — keep the 0 defaults.
   }
 
   // Compute trend from most-recent delta (versions[-1] vs versions[-2]).
@@ -375,16 +421,21 @@ async function handoffSizeHistory(projectSlug: string) {
     else trend = "stable";
   }
 
+  const currentLine = degraded
+    ? "Current handoff UNREAD (fetch degraded — size/version unverified)."
+    : `Handoff currently at ${((currentSize ?? 0) / 1024).toFixed(1)}KB (v${currentVersion}).`;
+
   return {
     data: {
       current_size_bytes: currentSize,
-      current_size_kb: Math.round((currentSize / 1024) * 10) / 10,
+      current_size_kb: currentSize === null ? null : Math.round((currentSize / 1024) * 10) / 10,
       current_version: currentVersion,
+      current_read_degraded: degraded,
       history: versions,
       trend,
       version_count: versions.length,
     },
-    summary: `Handoff currently at ${(currentSize / 1024).toFixed(1)}KB (v${currentVersion}). ${versions.length} historical versions tracked. Trend: ${trend}.`,
+    summary: `${currentLine} ${versions.length} historical versions tracked. Trend: ${trend}.`,
   };
 }
 
@@ -700,7 +751,7 @@ async function healthSummary(projectSlug?: string) {
 /**
  * Compute fresh-eyes check — which projects are overdue for fresh-eyes review.
  */
-async function freshEyesCheck(projectSlug?: string) {
+async function freshEyesCheck(projectSlug?: string, diagnostics?: DiagnosticsCollector) {
   const projectsToCheck: string[] = [];
 
   if (projectSlug) {
@@ -730,7 +781,20 @@ async function freshEyesCheck(projectSlug?: string) {
       try {
         const resolved = await resolveDocPath(repo, "handoff.md");
         sessionCount = parseSessionCount(resolved.content) ?? 0;
-      } catch {
+      } catch (error) {
+        // R30: an unverified handoff read must not report "0 sessions" — the
+        // count is unknown, and every downstream field derived from it with it.
+        const reason = readDegradationReason(error);
+        if (reason !== null) {
+          noteDegradedRead(diagnostics, repo, "handoff.md", reason);
+          return {
+            project: repo,
+            session_count: null,
+            sessions_since_fresh_eyes: null,
+            overdue: false,
+            read_degraded: true,
+          };
+        }
         return { project: repo, session_count: 0, sessions_since_fresh_eyes: 0, overdue: false };
       }
 
@@ -744,8 +808,23 @@ async function freshEyesCheck(projectSlug?: string) {
         lastFreshEyesSession = resolveLastFreshEyesSession(
           resolved.content.toLowerCase()
         );
-      } catch {
-        // session-log might not exist
+      } catch (error) {
+        // R30: an absent session-log legitimately means "no review ever
+        // recorded" (lastFreshEyesSession stays 0). A degraded read does NOT —
+        // it would manufacture an overdue verdict out of an auth blip.
+        const reason = readDegradationReason(error);
+        if (reason !== null) {
+          noteDegradedRead(diagnostics, repo, "session-log.md", reason);
+          return {
+            project: repo,
+            session_count: sessionCount,
+            last_fresh_eyes_session: null,
+            sessions_since_fresh_eyes: null,
+            overdue: false,
+            read_degraded: true,
+          };
+        }
+        // else: session-log genuinely does not exist.
       }
 
       const sessionsSince = sessionCount - lastFreshEyesSession;
@@ -873,7 +952,7 @@ export function registerAnalytics(server: McpServer): void {
                 isError: true,
               };
             }
-            const result = await handoffSizeHistory(project_slug);
+            const result = await handoffSizeHistory(project_slug, diagnostics);
             data = result.data;
             summary = result.summary;
             break;
@@ -927,7 +1006,7 @@ export function registerAnalytics(server: McpServer): void {
           }
 
           case "fresh_eyes_check": {
-            const result = await freshEyesCheck(project_slug);
+            const result = await freshEyesCheck(project_slug, diagnostics);
             data = result.data;
             summary = result.summary;
             break;

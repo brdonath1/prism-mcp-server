@@ -18,6 +18,22 @@
  *  - GLM-5.2 via OpenRouter: S196-pinned marketplace midpoints $1.15/$3.70
  *    (range $0.93–1.40 / $3.00–4.40; per-call telemetry uses the measured
  *    usage.cost instead whenever OpenRouter returns it).
+ *
+ * Added 2026-08-14 (brief-s205a, S203 F-G-A11 — the registry configures these
+ * two providers but the table priced neither, so any call they served logged
+ * est_cost_usd: null). F-G-A11 names the GAP, not the numbers; these are
+ * gpt-5.5-style UNVERIFIED estimates in the same list-price class the rows
+ * above use, NOT vendor-console-confirmed figures. Re-derive from each
+ * provider's price page before using them for a budget decision:
+ *  - DeepSeek deepseek-v4-pro: UNVERIFIED midpoint $0.65/$2.15 (assumed range
+ *    $0.30–1.00 / $1.10–3.20). Cheap-tier class, consistent with
+ *    d275-audit-design §3.5's classification of DeepSeek as the genuinely
+ *    cheap lane. Never reachable in prod today (double-gated — no surface
+ *    selects it, absent from LLM_ROUTING_ALLOWED_PROVIDERS).
+ *  - Perplexity sonar-pro: UNVERIFIED $3.00/$15.00 TOKEN pricing. Sonar also
+ *    bills PER-REQUEST search fees that a per-token table cannot model, so
+ *    this row is a FLOOR — a served sonar call costs at least this, plausibly
+ *    more. Same double gate as deepseek in prod today.
  * Models without a sourced price (e.g. grok-4.3) intentionally have NO entry:
  * estimateCostUsd returns null rather than inventing a number.
  */
@@ -41,6 +57,9 @@ const MODEL_PRICE_TABLE: Record<string, ModelPrice> = {
   "gpt-5.5": { input_per_mtok: 1.75, output_per_mtok: 15 },
   "gemini-3.1-pro": { input_per_mtok: 3, output_per_mtok: 15 },
   "z-ai/glm-5.2": { input_per_mtok: 1.15, output_per_mtok: 3.7 },
+  // F-G-A11 (2026-08-14) — UNVERIFIED, see the header block.
+  "deepseek-v4-pro": { input_per_mtok: 0.65, output_per_mtok: 2.15 },
+  "sonar-pro": { input_per_mtok: 3, output_per_mtok: 15 },
 };
 
 /**
