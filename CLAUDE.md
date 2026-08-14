@@ -98,10 +98,19 @@ The MCP server is the v2 evolution — separating Claude into a pure reasoning a
 | `PREFETCH_MODE` | optional | brief-s202b T4: `opening_only` (default) drops the next_steps-keyword prefetch auto-trigger and caps each summary at `PREFETCH_SUMMARY_CAP_BYTES` (1200); `legacy` restores today's exact trigger behavior. `PREFETCH_DELIVERED` telemetry emits in both modes. |
 | `BOOT_MASTHEAD_SVG` | optional | brief-s202b T6: `on` (default — D-249 operator choice) renders the boot graphical mastheads; `off` ships `boot_masthead_svg: null` AND `boot_masthead_html: null` (brief-720 — one knob for both; template text-banner fallback path is pre-built). |
 | `FINALIZE_COMPOSE_MODE` | optional | brief-s202b T8 (D-275 F-1): `files` (default) — the CS-1 draft emits complete finalization files, server-validated and persisted to `.prism/finalize-draft.json`; chat approves via `prism_finalize action=commit use_draft_files: true`. Gate failures fall back to the legacy 6-key draft response (`FINALIZE_COMPOSE_FALLBACK` warn). `legacy` disables composition. |
+| `SYNTHESIS_INPUT_{MAX,TARGET}_TOKENS` | optional | Synthesis input-budget ceiling/trim-target, estimated tokens (default `120000`/`60000`). Over MAX, `src/ai/input-budget.ts` deterministically priority-trims the assembled brief/PDU input down to TARGET before the call; at-or-under MAX the input is never trimmed (S203 audit F-B21). |
+| `DEFAULT_CONTEXT_WINDOW_TOKENS` | optional | Server-side boot-estimate context window, default `500000` (`src/config.ts`). Feeds only the banner's boot-cost percentage — not the client's own Rule 9 meter, which the server cannot see directly. Superseded per-request by the `MODEL_CAPABILITIES` resolved cell (`docs/model-bump.md` §1) once the client declares `client_model`/`client_surface`. See `docs/model-bump.md` §2 for the pending R2 operator env action. |
+| `CC_DISPATCH_EFFORT` | optional | Reasoning-depth effort for `cc_dispatch` (Anthropic API `effort` parameter). Accepts `low\|medium\|high\|xhigh\|max`; defaults to `max`. |
+| `ENABLE_IP_ALLOWLIST` | optional | Activates the CIDR-based IP allowlist referenced in the `MCP_AUTH_TOKEN` row above (Anthropic's published range plus `ALLOWED_CIDRS`). Defaults to `true`; set `false` to disable (e.g. local development). |
 
-> This table covers the load-bearing knobs. The complete, authoritative env-var
-> surface (~40 reads, including `SYNTHESIS_*`, `*_TIMEOUT_MS`, oversize/cap
-> thresholds) lives in `src/config.ts`; treat it as the source of truth.
+> This table covers the load-bearing knobs. `src/config.ts` reads 56 distinct
+> env vars directly (verified 2026-08-14 by exhaustive grep — `SYNTHESIS_*`,
+> `*_TIMEOUT_MS`/`*_DEADLINE_MS`, oversize/cap thresholds, and more), but it is
+> NOT the complete env-var surface: every `SYNTHESIS_{BRIEF,DRAFT,PDU}_{MODEL,TRANSPORT}`
+> per-call-site override, every `LLM_ROUTING_*` var, and the provider API keys
+> are read directly in `src/ai/`, `src/llm/`, and `src/tools/x-sentiment.ts` —
+> never in `src/config.ts` (S203 audit F-B21/C2). Treat this table, not any
+> single file, as the source of truth for what's load-bearing.
 
 ### Multi-provider synthesis routing boundary
 
@@ -320,6 +329,6 @@ This repo is enrolled in the Trigger daemon (`brdonath1/trigger`) via the marker
 - PR exists on `brdonath1/prism-mcp-server` targeting `main`
 - All CI checks green
 - Operator merges; Trigger fires `notify` ntfy event on merge
-- State recorded in trigger repo at `state/prism-mcp-server.json` (not in this repo)
+- State recorded at `~/.trigger/state/prism-mcp-server.json` — the daemon's local state directory on the operator's machine, not a path inside any repo (migrated off the trigger repo's `state/` at the S151 cutover)
 
 <!-- EOF: CLAUDE.md -->

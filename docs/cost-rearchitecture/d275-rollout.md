@@ -59,19 +59,70 @@ New optional knobs (all default-off / default-sane, set only if needed):
    `output_tokens` far above content size (bytes/3.5) means reasoning crept
    back in — check the reasoning envs and OpenRouter route.
 
-## 3. Stage 2 — intelligence-brief flip (morning-diff gated)
+## 3. Intelligence-brief flip — the INS-370 gate (standing procedure, F-B10)
 
-The brief (CS-2) is the continuity carrier — highest criticality, so it flips
-only after operator review:
+**Current state (INS-371, read-back verified 2026-08-13):** Stage 2 has
+already flipped. The kill-switch is REVERTED and
+`LLM_ROUTING_OPENROUTER_SITES` is live at
+`synthesis_draft,synthesis_pdu,synthesis_brief` — all three mechanical sites
+route through GLM-5.2. This section is the STANDING gate procedure (INS-370)
+that governed that flip and governs any future one (a re-flip after a
+kill-switch trim, or a new mechanical site added later) — not a one-time
+morning-diff check gating a still-pending decision.
 
-1. Compare the latest frontier-produced `intelligence-brief.md` against a GLM
-   candidate: append `synthesis_brief` to `LLM_ROUTING_OPENROUTER_SITES`,
-   run a one-off `prism_synthesize mode=generate` (or side-by-side in a
-   scratch project), and diff.
-2. **Pass →** keep `LLM_ROUTING_OPENROUTER_SITES=synthesis_draft,synthesis_pdu,synthesis_brief`.
-3. **Fail →** first lever is `LLM_ROUTING_OPENROUTER_REASONING_BRIEF=low`
-   (~$0.01–0.03/call); re-diff. Still failing → remove `synthesis_brief`
-   from SITES and leave the brief on its openai route.
+### The INS-370 gate (5 steps)
+
+1. **Ground truth first, never the brief.** Identify the merged facts the
+   target artifact class must reproduce — commit SHAs, PR numbers/timings,
+   file paths, feature scope — from `handoff.md` / `session-log.md` / merged
+   PRs. The authoring brief describes intent, not what actually landed.
+2. **Fetch + compare.** Pull the freshest GLM-produced artifact of the target
+   site class (full content, not a summary) and compare it claim-by-claim
+   against those merged facts.
+3. **Gate on drift.** Zero factual drift → append the site key to
+   `LLM_ROUTING_OPENROUTER_SITES` on `prism-mcp-server`/production via
+   `railway_env` (get the current value first, set the appended value, get
+   again to verify the write landed). Any factual drift → HOLD — keep the
+   site on the frontier model — and log the drift instance.
+4. **Verify the redeploy.** A `railway_env` set auto-triggers a Railway
+   redeploy; confirm it reaches `SUCCESS` before relying on the new routing —
+   a site appended to SITES with a still-deploying build is not yet live.
+5. **The kill-switch is the only rollback.** Clearing or trimming the env var
+   is the entire rollback mechanism for this gate — never a code rollback
+   (§4).
+
+**Distinguishing model drift from a pipeline artifact is the gate's job —
+only the former indicts the model.** The S202 glossary-size error initially
+read as model drift in step 2 but was root-caused to input truncation
+upstream of the model call, not a GLM quality regression. PR #110 (
+`SYNTHESIS_INPUT_TRUNCATED` telemetry + an INPUT MANIFEST + a provenance
+footer on every synthesis input) closed that gap and is what satisfied the
+re-flip gate for `synthesis_brief` — D-281 supersedes D-277 on this point.
+Re-running step 2 without first checking for an active
+`SYNTHESIS_INPUT_TRUNCATED` diagnostic on the candidate artifact risks the
+same misdiagnosis in either direction: crediting the model for a pass the
+input pipeline actually delivered, or blaming the model for a truncation the
+pipeline caused.
+
+### Failure ladder (corrected — F-B10)
+
+The prior version of this section conflated the one-time flip decision with
+ongoing production failure handling. The actual ladder, in order:
+
+1. **Gate failure** — a live per-call quality gate rejects an openrouter
+   output (brief: 3 required sections + ≥2000 bytes; PDU: 4 grammar sections
+   + ≥500 bytes; draft: parseable JSON with ≥4 of 6 contract keys) →
+   the existing per-site fallback fires automatically
+   (`SYNTHESIS_PROVIDER_FALLBACK`, `fallback_reason: validation_failed |
+   provider_error | timeout`) and the site's existing Anthropic chain serves
+   that call. No operator action for a single occurrence.
+2. **Kill-switch** — when fallback is sustained rather than a one-off
+   (`fallback_used: true` recurring in `LLM_CALL` lines for one site),
+   clear or trim the regressing site key out of
+   `LLM_ROUTING_OPENROUTER_SITES` (env-only, instant, no deploy beyond the
+   env-set itself). **This is the rollback — there is no code-rollback
+   step**; a code revert is strictly slower and buys nothing the env trim
+   doesn't already provide (§4).
 
 ## 4. Rollback (any point — env-only, no deploy)
 
