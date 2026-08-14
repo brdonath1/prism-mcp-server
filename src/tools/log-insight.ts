@@ -17,6 +17,7 @@ import { DiagnosticsCollector } from "../utils/diagnostics.js";
 import { safeMutation } from "../utils/safe-mutation.js";
 import { sanitizeContent } from "../utils/sanitize-content.js";
 import { parseTitleDecorations } from "../utils/standing-rules.js";
+import { classifyUnfetchedDoc } from "./finalize/audit.js";
 
 /** Legal shape for a single topic keyword — matches what prism_load_rules'
  *  comma-split topic parser can round-trip (hyphens/underscores legal,
@@ -48,6 +49,39 @@ export function parseExistingInsightIds(content: string): Map<string, string> {
     }
   }
   return ids;
+}
+
+/**
+ * R21 (S203 audit / F-C1-2): classify a FAILED rule-source read as "confirmed
+ * absent" (safe to answer with a from-scratch starter file) or "unverified"
+ * (a transient failure that must never be answered with one).
+ *
+ * `resolveDocPath` deliberately rethrows every operational error (SRV-44) —
+ * only a definitive GitHub 404 surfaces as "Not found", and it surfaces only
+ * after BOTH the `.prism/` and legacy-root reads 404'd. Everything else
+ * (401/403 auth blip per INS-311, timeout, 5xx, rate limit, network) is routed
+ * through the INS-360 classifier so the log tools and the finalize audit share
+ * ONE definition of confirmed-absent. `classifyUnfetchedDoc` short-circuits to
+ * `unverified` for every non-404 shape, so this guard adds ZERO GitHub
+ * round-trips on the paths it protects.
+ *
+ * @returns `null` when the absence is confirmed (creation may proceed), or the
+ *   classifier's reason string when the read could not be verified.
+ *
+ * Mirrored verbatim in log-decision.ts — the two tools stay independent, and
+ * the classification logic itself lives in exactly one place (finalize/audit.ts).
+ */
+async function unverifiedReadReason(
+  projectSlug: string,
+  docName: string,
+  error: unknown,
+): Promise<string | null> {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/Not found/i.test(message)) {
+    return null;
+  }
+  const outcome = await classifyUnfetchedDoc(projectSlug, docName, error);
+  return outcome.classification === "needs_creation" ? null : outcome.reason;
 }
 
 /**
@@ -124,7 +158,8 @@ export function registerLogInsight(server: McpServer): void {
         // 1. Resolve both rule-source paths in parallel. R2-B: INS-N is ONE
         //    shared sequence across insights.md and standing-rules.md, so the
         //    dedup guard must scan both regardless of which file this entry
-        //    targets. A rejected resolution means the file doesn't exist.
+        //    targets. A rejected resolution means the file is either absent or
+        //    unreadable — R21 (below) decides which before anything acts on it.
         const [insightsResolution, standingRulesResolution] = await Promise.allSettled([
           resolveDocPath(project_slug, "insights.md"),
           resolveDocPath(project_slug, "standing-rules.md"),
@@ -134,12 +169,89 @@ export function registerLogInsight(server: McpServer): void {
         const standingRulesResolvedPath =
           standingRulesResolution.status === "fulfilled" ? standingRulesResolution.value.path : null;
 
+        // R21 (S203 audit / F-C1-2): a rejection above is NOT automatically
+        // "the file does not exist". resolveDocPath rethrows every operational
+        // error (SRV-44), and collapsing those into `null` made a transient
+        // 401/timeout/5xx read as "target absent" → a one-entry starter file
+        // that OVERWRITES the real insights.md / standing-rules.md history on
+        // commit, reported as success. Classify each rejection before either
+        // path may act on it. Both classify calls short-circuit without any
+        // GitHub I/O (see unverifiedReadReason), and a genuine 404 still
+        // yields `null` — the fresh-file behavior is unchanged.
+        const [insightsUnverified, standingRulesUnverified] = await Promise.all([
+          insightsResolution.status === "rejected"
+            ? unverifiedReadReason(project_slug, "insights.md", insightsResolution.reason)
+            : Promise.resolve(null),
+          standingRulesResolution.status === "rejected"
+            ? unverifiedReadReason(project_slug, "standing-rules.md", standingRulesResolution.reason)
+            : Promise.resolve(null),
+        ]);
+
         // 2. Pick the target file: standing rules land in the registry
         //    (.prism/standing-rules.md per R2-B); everything else stays in
         //    insights.md. If the target doesn't exist yet we use the
         //    doc-resolver's push-path resolution and create it from a fresh
         //    starter inside computeMutation.
         const targetDocName = standing_rule ? "standing-rules.md" : "insights.md";
+        const targetUnverified = standing_rule ? standingRulesUnverified : insightsUnverified;
+        if (targetUnverified !== null) {
+          // The starter-file branch is the ONLY thing an unreadable target
+          // could feed, so refuse the whole call rather than write over a
+          // document the server cannot currently read.
+          const message =
+            `${targetDocName}: read failed and its current state could not be verified (${targetUnverified}). ` +
+            `No write was performed — retry when the GitHub read path recovers. ` +
+            `(R21/INS-360: a from-scratch file is never written over a document the server cannot read.)`;
+          diagnostics.error("LOG_RECREATE_BLOCKED", message, {
+            doc: targetDocName,
+            error: targetUnverified,
+          });
+          logger.error("prism_log_insight recreate guard blocked (R21)", {
+            project_slug,
+            id,
+            doc: targetDocName,
+            error: targetUnverified,
+          });
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  error: message,
+                  code: "LOG_RECREATE_BLOCKED",
+                  doc: targetDocName,
+                  id,
+                  title,
+                  category,
+                  standing_rule: !!standing_rule,
+                  success: false,
+                  diagnostics: diagnostics.list(),
+                }),
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        // The OTHER rule source being unverified writes nothing and creates
+        // nothing, so it does not block — but it silently removes half of the
+        // shared INS-N dedup sweep, so it is surfaced rather than dropped.
+        const otherDocName = standing_rule ? "insights.md" : "standing-rules.md";
+        const otherUnverified = standing_rule ? insightsUnverified : standingRulesUnverified;
+        if (otherUnverified !== null) {
+          diagnostics.warn(
+            "DEDUP_SOURCE_UNVERIFIED",
+            `${otherDocName}: read failed and could not be verified (${otherUnverified}) — the shared INS-N dedup sweep could not scan it, so a duplicate ID held there would not be caught. The ${targetDocName} write itself is unaffected.`,
+            { doc: otherDocName, error: otherUnverified },
+          );
+          logger.warn("prism_log_insight dedup source unverified (R21)", {
+            project_slug,
+            id,
+            doc: otherDocName,
+            error: otherUnverified,
+          });
+        }
+
         const resolvedTargetPath = standing_rule ? standingRulesResolvedPath : insightsResolvedPath;
         const targetExisted = resolvedTargetPath !== null;
         let targetPath: string;

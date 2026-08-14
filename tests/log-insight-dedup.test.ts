@@ -24,6 +24,12 @@ vi.mock("../src/github/client.js", () => ({
   listDirectory: vi.fn(),
   createAtomicCommit: vi.fn(),
   getHeadSha: vi.fn(),
+  // R21: log-insight now imports classifyUnfetchedDoc (finalize/audit.ts),
+  // which pulls these two names into the mocked module surface. The guard
+  // short-circuits before the commit-history probe, so they must exist but
+  // must never be called on the paths under test.
+  listCommits: vi.fn(),
+  getCommit: vi.fn(),
 }));
 
 vi.mock("../src/utils/doc-resolver.js", () => ({
@@ -40,6 +46,7 @@ import {
   pushFile,
   createAtomicCommit,
   getHeadSha,
+  listCommits,
 } from "../src/github/client.js";
 import { resolveDocPath, resolveDocPushPath } from "../src/utils/doc-resolver.js";
 import { guardPushPath } from "../src/utils/doc-guard.js";
@@ -48,6 +55,7 @@ const mockFetchFile = vi.mocked(fetchFile);
 const mockPushFile = vi.mocked(pushFile);
 const mockCreateAtomicCommit = vi.mocked(createAtomicCommit);
 const mockGetHeadSha = vi.mocked(getHeadSha);
+const mockListCommits = vi.mocked(listCommits);
 const mockResolveDocPath = vi.mocked(resolveDocPath);
 const mockResolveDocPushPath = vi.mocked(resolveDocPushPath);
 const mockGuardPushPath = vi.mocked(guardPushPath);
@@ -575,6 +583,37 @@ describe("prism_log_insight — R2-B standing-rule registry write path (D-240 Ph
     expect(registryFetches).toBe(2);
   });
 
+  it("R21-adjacent: a genuinely absent target still yields the fresh starter (see the recreate-guard block below)", async () => {
+    // Pinned here so the "Not found ⇒ starter" half of the R21 contract is
+    // asserted in the same suite that owns the registry write path.
+    setupDocs({}); // neither rule source exists
+    mockGetHeadSha.mockResolvedValue("head-before");
+    mockCreateAtomicCommit.mockResolvedValue({
+      success: true,
+      sha: "atomic-sha",
+      files_committed: 1,
+    });
+
+    const handler = getHandler();
+    const result = await handler({
+      project_slug: "test-project",
+      id: "INS-1",
+      title: "First-ever insight",
+      category: "pattern",
+      description: "Confirmed-absent target may be created from the starter.",
+      session: 1,
+    });
+
+    expect(result.isError).toBeUndefined();
+    const writes = committedFiles();
+    expect(writes.map((w) => w.path)).toEqual([".prism/insights.md"]);
+    expect(writes[0].content).toContain("# Insights — test-project");
+    expect(writes[0].content).toContain("### INS-1: First-ever insight");
+    expect(writes[0].content).toContain("<!-- EOF: insights.md -->");
+    // A 404 is decided without the classifier's commit-history probe.
+    expect(mockListCommits).not.toHaveBeenCalled();
+  });
+
   it("non-standing insights still land in insights.md when the registry exists", async () => {
     setupDocs({
       insights: INSIGHTS_WITH_9999,
@@ -603,5 +642,235 @@ describe("prism_log_insight — R2-B standing-rule registry write path (D-240 Ph
     expect(writes[0].content).toContain("### INS-10003: Ordinary insight");
     // The registry file is read for dedup but never written for non-rules.
     expect(writes[0].content).not.toContain("INS-30000");
+  });
+});
+
+/**
+ * R21 (S203 audit / F-C1-2) — the recreate guard.
+ *
+ * `Promise.allSettled` above turns BOTH rule-source resolutions into
+ * `path | null`, and the old code read `null` as "the file does not exist".
+ * `resolveDocPath` rethrows operational errors on purpose (SRV-44), so a
+ * transient 401/timeout/5xx made `targetExisted` false and the tool composed
+ * a ONE-ENTRY starter that overwrote the whole document on commit — reported
+ * as `success: true`. Only a definitive 404 may reach the starter branch.
+ */
+describe("prism_log_insight recreate guard (R21 / F-C1-2)", () => {
+  /** The real 401 message shape from github/client.ts handleApiError. */
+  function transient401(context: string): Error {
+    return new Error(
+      "GitHub returned 401 after bounded retries — this may be transient " +
+        "(INS-311); retry before rotating the PAT. If it persists, the PAT " +
+        `may be invalid or expired. (fetchFile ${context})`,
+    );
+  }
+
+  /**
+   * Per-source wiring: a string means the doc resolves with that content, an
+   * Error means the resolution rejects with it. Push-path + commit mocks are
+   * wired to SUCCEED so that a regression (falling through to the starter
+   * branch) would land a write — the assertions are what stop it.
+   */
+  function setupRuleSources(opts: {
+    insights: string | Error;
+    standingRules: string | Error;
+  }) {
+    const resolveOne = (docName: string, spec: string | Error) => {
+      if (spec instanceof Error) throw spec;
+      return {
+        path: `.prism/${docName}`,
+        content: spec,
+        sha: `${docName}-sha`,
+        legacy: false,
+      };
+    };
+    mockResolveDocPath.mockImplementation(async (_slug: string, docName: string) => {
+      if (docName === "insights.md") return resolveOne("insights.md", opts.insights);
+      if (docName === "standing-rules.md") {
+        return resolveOne("standing-rules.md", opts.standingRules);
+      }
+      throw new Error(`Not found: ${docName}`);
+    });
+    mockFetchFile.mockImplementation(async (_repo: string, path: string) => {
+      if (path === ".prism/insights.md" && typeof opts.insights === "string") {
+        return { content: opts.insights, sha: "ins-sha", size: opts.insights.length };
+      }
+      if (path === ".prism/standing-rules.md" && typeof opts.standingRules === "string") {
+        return {
+          content: opts.standingRules,
+          sha: "sr-sha",
+          size: opts.standingRules.length,
+        };
+      }
+      throw new Error(`Not found: fetchFile ${path}`);
+    });
+    mockResolveDocPushPath.mockImplementation(
+      async (_slug: string, docName: string) => `.prism/${docName}`,
+    );
+    mockGuardPushPath.mockImplementation(async (_slug: string, path: string) => ({
+      path,
+      redirected: false,
+    }));
+    mockGetHeadSha.mockResolvedValue("head-before");
+    mockCreateAtomicCommit.mockResolvedValue({
+      success: true,
+      sha: "atomic-sha",
+      files_committed: 1,
+    });
+  }
+
+  function getHandler() {
+    const { server, handlers } = createServerStub();
+    registerLogInsight(server as any);
+    return handlers.prism_log_insight;
+  }
+
+  function expectBlocked(result: any, doc: string) {
+    expect(result.isError).toBe(true);
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.code).toBe("LOG_RECREATE_BLOCKED");
+    expect(payload.doc).toBe(doc);
+    expect(payload.success).toBe(false);
+    // Operator-facing text: what happened, that nothing was written, what to do.
+    expect(payload.error).toContain("could not be verified");
+    expect(payload.error).toContain("No write was performed");
+    expect(payload.error).toContain("retry when the GitHub read path recovers");
+    // The underlying cause is carried through, not swallowed.
+    expect(payload.error).toContain("401");
+    const diag = payload.diagnostics.find(
+      (d: { code: string }) => d.code === "LOG_RECREATE_BLOCKED",
+    );
+    expect(diag).toBeDefined();
+    expect(diag.level).toBe("error");
+    expect(diag.context.doc).toBe(doc);
+    // THE predicate: nothing was written anywhere.
+    expect(mockCreateAtomicCommit).not.toHaveBeenCalled();
+    expect(mockPushFile).not.toHaveBeenCalled();
+    expect(mockGetHeadSha).not.toHaveBeenCalled();
+    // The 404-only classifier short-circuits — no commit-history probe needed.
+    expect(mockListCommits).not.toHaveBeenCalled();
+    return payload;
+  }
+
+  it("blocks with LOG_RECREATE_BLOCKED when the insights.md read fails 401-shaped (no commit, no starter)", async () => {
+    setupRuleSources({
+      insights: transient401("test-project/.prism/insights.md"),
+      standingRules: new Error("Not found: standing-rules.md"),
+    });
+
+    const result = await getHandler()({
+      project_slug: "test-project",
+      id: "INS-500",
+      title: "Guarded insight",
+      category: "pattern",
+      description: "A transient read failure must never mint a starter insights.md.",
+      session: 205,
+    });
+
+    expectBlocked(result, "insights.md");
+  });
+
+  it("blocks a standing rule when the standing-rules.md read fails 401-shaped", async () => {
+    setupRuleSources({
+      insights: INSIGHTS_WITH_9999,
+      standingRules: transient401("test-project/.prism/standing-rules.md"),
+    });
+
+    const result = await getHandler()({
+      project_slug: "test-project",
+      id: "INS-501",
+      title: "Guarded standing rule",
+      category: "operations",
+      description: "The registry must not be recreated from a starter on a blip.",
+      session: 205,
+      standing_rule: true,
+      procedure: "1. Never lands.",
+    });
+
+    const payload = expectBlocked(result, "standing-rules.md");
+    expect(payload.standing_rule).toBe(true);
+  });
+
+  it("still creates the starter when the target read rejects with 'Not found' (existing behavior preserved)", async () => {
+    setupRuleSources({
+      insights: INSIGHTS_WITH_9999,
+      standingRules: new Error("Not found: standing-rules.md"),
+    });
+
+    const result = await getHandler()({
+      project_slug: "test-project",
+      id: "INS-502",
+      title: "First registry rule",
+      category: "operations",
+      description: "Confirmed-absent registry may be created from the starter.",
+      session: 205,
+      standing_rule: true,
+      procedure: "1. Do the thing.",
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(mockCreateAtomicCommit).toHaveBeenCalledTimes(1);
+    const writes = committedFiles();
+    expect(writes.map((w) => w.path)).toEqual([".prism/standing-rules.md"]);
+    expect(writes[0].content).toContain("# Standing Rules — test-project");
+    expect(writes[0].content).toContain("### INS-502: First registry rule — STANDING RULE");
+    expect(writes[0].content).toContain("<!-- EOF: standing-rules.md -->");
+    expect(mockListCommits).not.toHaveBeenCalled();
+  });
+
+  it("does not block on a NON-target rule source, but flags the half-blind dedup sweep", async () => {
+    // insights.md (the target) is readable; the registry is not. Nothing is
+    // recreated, so the write proceeds — but the shared INS-N dedup sweep
+    // could only scan one of the two sources, and that must be visible.
+    setupRuleSources({
+      insights: INSIGHTS_WITH_9999,
+      standingRules: transient401("test-project/.prism/standing-rules.md"),
+    });
+
+    const result = await getHandler()({
+      project_slug: "test-project",
+      id: "INS-503",
+      title: "Ordinary insight",
+      category: "pattern",
+      description: "Target is readable — the write is allowed to land.",
+      session: 205,
+    });
+
+    expect(result.isError).toBeUndefined();
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.success).toBe(true);
+    const diag = payload.diagnostics.find(
+      (d: { code: string }) => d.code === "DEDUP_SOURCE_UNVERIFIED",
+    );
+    expect(diag).toBeDefined();
+    expect(diag.level).toBe("warn");
+    expect(diag.context.doc).toBe("standing-rules.md");
+    // The write still lands, in the right file.
+    expect(mockCreateAtomicCommit).toHaveBeenCalledTimes(1);
+    expect(committedFiles().map((w) => w.path)).toEqual([".prism/insights.md"]);
+  });
+
+  it("stays silent when a NON-target rule source is genuinely absent (no false alarm)", async () => {
+    setupRuleSources({
+      insights: INSIGHTS_WITH_9999,
+      standingRules: new Error("Not found: standing-rules.md"),
+    });
+
+    const result = await getHandler()({
+      project_slug: "test-project",
+      id: "INS-504",
+      title: "Ordinary insight",
+      category: "pattern",
+      description: "A registry that never existed is not a degraded read.",
+      session: 205,
+    });
+
+    expect(result.isError).toBeUndefined();
+    const payload = JSON.parse(result.content[0].text);
+    expect(
+      payload.diagnostics.some(
+        (d: { code: string }) => d.code === "DEDUP_SOURCE_UNVERIFIED",
+      ),
+    ).toBe(false);
   });
 });
