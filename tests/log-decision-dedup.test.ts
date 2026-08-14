@@ -23,6 +23,12 @@ vi.mock("../src/github/client.js", () => ({
   listDirectory: vi.fn(),
   createAtomicCommit: vi.fn(),
   getHeadSha: vi.fn(),
+  // R21: log-decision now imports classifyUnfetchedDoc (finalize/audit.ts),
+  // which pulls these two names into the mocked module surface. The guard
+  // short-circuits before the commit-history probe, so they must exist but
+  // must never be called on the paths under test.
+  listCommits: vi.fn(),
+  getCommit: vi.fn(),
 }));
 
 vi.mock("../src/utils/doc-resolver.js", () => ({
@@ -39,6 +45,7 @@ import {
   pushFile,
   createAtomicCommit,
   getHeadSha,
+  listCommits,
 } from "../src/github/client.js";
 import { resolveDocPath, resolveDocPushPath } from "../src/utils/doc-resolver.js";
 import { guardPushPath } from "../src/utils/doc-guard.js";
@@ -47,6 +54,7 @@ const mockFetchFile = vi.mocked(fetchFile);
 const mockPushFile = vi.mocked(pushFile);
 const mockCreateAtomicCommit = vi.mocked(createAtomicCommit);
 const mockGetHeadSha = vi.mocked(getHeadSha);
+const mockListCommits = vi.mocked(listCommits);
 const mockResolveDocPath = vi.mocked(resolveDocPath);
 const mockResolveDocPushPath = vi.mocked(resolveDocPushPath);
 const mockGuardPushPath = vi.mocked(guardPushPath);
@@ -436,6 +444,181 @@ describe("prism_log_decision concurrent-write recovery (S62 Phase 1 Brief 1)", (
     expect(indexFile?.content).toContain("| D-117 |");
   });
 });
+
+/**
+ * R21 (S203 audit / F-C1-2) — the recreate guard.
+ *
+ * Before this guard, BOTH `resolveDocPath` catches in log-decision.ts were
+ * bare `catch {}` blocks that read every failure as "the file does not exist".
+ * `resolveDocPath` rethrows operational errors on purpose (SRV-44), so a
+ * transient 401/timeout/5xx on `decisions/{domain}.md` was misread as "domain
+ * absent" and the tool composed a ONE-ENTRY starter file that overwrote every
+ * decision entry the real domain file held — and reported success.
+ *
+ * The guard must therefore split the two cases: a definitive 404 keeps the
+ * starter-file behavior exactly as-is, anything else refuses to write.
+ */
+describe("prism_log_decision recreate guard (R21 / F-C1-2)", () => {
+  /** The real 401 message shape from github/client.ts handleApiError. */
+  function transient401(context: string): Error {
+    return new Error(
+      "GitHub returned 401 after bounded retries — this may be transient " +
+        "(INS-311); retry before rotating the PAT. If it persists, the PAT " +
+        `may be invalid or expired. (fetchFile ${context})`,
+    );
+  }
+
+  /**
+   * _INDEX.md resolves normally; the domain file's resolution rejects with
+   * whatever `domainError` is. Push-path + guard mocks are wired so that a
+   * regression (falling through to the starter branch) would SUCCEED — the
+   * assertions below are what stop it, not a missing mock.
+   */
+  function setupDomainReadFailure(domainError: Error) {
+    mockResolveDocPath.mockImplementation(async (_repo, doc) => {
+      if (doc === "decisions/_INDEX.md") {
+        return {
+          path: ".prism/decisions/_INDEX.md",
+          content: INDEX_WITH_D116,
+          sha: "idx-sha",
+          legacy: false,
+        };
+      }
+      if (doc === "decisions/operations.md") {
+        throw domainError;
+      }
+      throw new Error(`Unexpected resolveDocPath: ${doc}`);
+    });
+    mockFetchFile.mockImplementation(async (_repo, path) => {
+      if (path === ".prism/decisions/_INDEX.md") {
+        return { content: INDEX_WITH_D116, sha: "idx-sha", size: INDEX_WITH_D116.length };
+      }
+      throw new Error(`Not found: fetchFile ${path}`);
+    });
+    mockResolveDocPushPath.mockResolvedValue(".prism/decisions/operations.md");
+    mockGuardPushPath.mockResolvedValue({
+      path: ".prism/decisions/operations.md",
+      redirected: false,
+    });
+    mockGetHeadSha.mockResolvedValue("head-before");
+    mockCreateAtomicCommit.mockResolvedValue({
+      success: true,
+      sha: "atomic-sha",
+      files_committed: 2,
+    });
+  }
+
+  const BASE_ARGS = {
+    project_slug: "platformforge-v2",
+    id: "D-117",
+    title: "Guarded decision",
+    domain: "operations",
+    status: "SETTLED",
+    reasoning: "Read-path failure must never mint a starter domain file.",
+    session: 205,
+  };
+
+  it("blocks the write with LOG_RECREATE_BLOCKED when the domain-file read fails 401-shaped (no commit, no starter)", async () => {
+    setupDomainReadFailure(transient401("platformforge-v2/.prism/decisions/operations.md"));
+
+    const result = await handler_ok(handlers_for(), BASE_ARGS);
+
+    expect(result.isError).toBe(true);
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.code).toBe("LOG_RECREATE_BLOCKED");
+    expect(payload.doc).toBe("decisions/operations.md");
+    expect(payload.index_updated).toBe(false);
+    expect(payload.domain_file_updated).toBe(false);
+    // Operator-facing text: what happened, that nothing was written, what to do.
+    expect(payload.error).toContain("could not be verified");
+    expect(payload.error).toContain("No write was performed");
+    expect(payload.error).toContain("retry when the GitHub read path recovers");
+    // The underlying cause is carried through, not swallowed.
+    expect(payload.error).toContain("401");
+    // Machine-readable diagnostic at error level.
+    const diag = payload.diagnostics.find(
+      (d: { code: string }) => d.code === "LOG_RECREATE_BLOCKED",
+    );
+    expect(diag).toBeDefined();
+    expect(diag.level).toBe("error");
+    expect(diag.context.doc).toBe("decisions/operations.md");
+
+    // THE predicate: nothing was written anywhere.
+    expect(mockCreateAtomicCommit).not.toHaveBeenCalled();
+    expect(mockPushFile).not.toHaveBeenCalled();
+    expect(mockGetHeadSha).not.toHaveBeenCalled();
+    // We bail before even resolving a push path for the unreadable doc.
+    expect(mockResolveDocPushPath).not.toHaveBeenCalled();
+    expect(mockGuardPushPath).not.toHaveBeenCalled();
+    // The 404-only classifier short-circuits — no commit-history probe needed.
+    expect(mockListCommits).not.toHaveBeenCalled();
+  });
+
+  it("still creates the starter domain file when the read rejects with 'Not found' (existing behavior preserved)", async () => {
+    setupDomainReadFailure(new Error("Not found: fetchFile platformforge-v2/decisions/operations.md"));
+
+    const result = await handler_ok(handlers_for(), BASE_ARGS);
+
+    expect(result.isError).toBeUndefined();
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.index_updated).toBe(true);
+    expect(payload.domain_file_updated).toBe(true);
+
+    expect(mockCreateAtomicCommit).toHaveBeenCalledTimes(1);
+    const writes = mockCreateAtomicCommit.mock.calls[0][1] as Array<{
+      path: string;
+      content: string;
+    }>;
+    const domainWrite = writes.find((w) => w.path === ".prism/decisions/operations.md");
+    // The fresh starter, with the new entry already attached.
+    expect(domainWrite?.content).toContain("# Decisions — operations");
+    expect(domainWrite?.content).toContain("### D-117: Guarded decision");
+    expect(domainWrite?.content).toContain("<!-- EOF: operations.md -->");
+    // Confirmed absence needs no classifier probe either.
+    expect(mockListCommits).not.toHaveBeenCalled();
+  });
+
+  it("blocks with LOG_RECREATE_BLOCKED instead of a misleading 'not found' when the _INDEX.md read fails 401-shaped", async () => {
+    mockResolveDocPath.mockRejectedValue(
+      transient401("platformforge-v2/.prism/decisions/_INDEX.md"),
+    );
+    mockGetHeadSha.mockResolvedValue("head-before");
+
+    const result = await handler_ok(handlers_for(), BASE_ARGS);
+
+    expect(result.isError).toBe(true);
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.code).toBe("LOG_RECREATE_BLOCKED");
+    expect(payload.doc).toBe("decisions/_INDEX.md");
+    // A transient auth blip must NOT be reported as a missing index.
+    expect(payload.error).not.toContain("decisions/_INDEX.md not found");
+    expect(payload.error).toContain("No write was performed");
+    expect(mockCreateAtomicCommit).not.toHaveBeenCalled();
+    expect(mockPushFile).not.toHaveBeenCalled();
+    expect(mockGetHeadSha).not.toHaveBeenCalled();
+  });
+
+  it("still reports a genuinely missing _INDEX.md as not found (existing behavior preserved)", async () => {
+    mockResolveDocPath.mockRejectedValue(
+      new Error("Not found: fetchFile platformforge-v2/decisions/_INDEX.md"),
+    );
+
+    const result = await handler_ok(handlers_for(), BASE_ARGS);
+
+    expect(result.isError).toBe(true);
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.error).toBe("decisions/_INDEX.md not found");
+    expect(payload.code).toBeUndefined();
+    expect(mockCreateAtomicCommit).not.toHaveBeenCalled();
+  });
+});
+
+/** Register the tool on a fresh stub and hand back the handler table. */
+function handlers_for(): Record<string, Function> {
+  const { server, handlers } = createServerStub();
+  registerLogDecision(server as any);
+  return handlers;
+}
 
 /** Small helper that fetches the registered prism_log_decision handler. */
 async function handler_ok(

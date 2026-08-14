@@ -64,6 +64,17 @@
  * availability evidence said it is unavailable for the foreseeable future.
  * Opus 4.8 is the current Claude fallback target for reasoning_heavy and
  * mixed. executional stays on Sonnet 5.
+ *
+ * ── HOLD as of 2026-08-14 (S203 F-B9) ─────────────────────────────────────
+ * Opus 5 is GA and MODEL_CAPABILITIES below documents its 1M chat window, so
+ * this registry knowingly recommends a generation behind its own capability
+ * table. That is DELIBERATE, not drift: the recommendation surface pins what
+ * the operator should SELECT in the claude.ai picker, and per the model-bump
+ * SOP (docs/model-bump.md §1) that bump is auto-detected but HUMAN-MERGED —
+ * it lands only on explicit operator adoption. Until the operator flips it,
+ * the recommendation stays opus-4-8. Do not "fix" this to opus-5 as part of
+ * an unrelated change; re-raise it as its own bump decision.
+ * ──────────────────────────────────────────────────────────────────────────
  */
 export const RECOMMENDATION_MODELS = {
   reasoning_heavy: { code: "opus-4-8", display: "Opus 4.8", id: "claude-opus-4-8" },

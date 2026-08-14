@@ -5,7 +5,7 @@
 
 process.env.GITHUB_PAT = process.env.GITHUB_PAT || "test-dummy-pat";
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   extractStandingRules,
   matchesExplicitTopic,
@@ -14,6 +14,7 @@ import {
   selectStandingRulesForBoot,
   type StandingRule,
 } from "../src/utils/standing-rules.js";
+import { logger } from "../src/utils/logger.js";
 
 describe("normalizeTopic", () => {
   it("trims surrounding whitespace and lowercases", () => {
@@ -226,6 +227,110 @@ describe("brief-451: standing-rules.md registry qualification (INS-308 ground tr
   it("D-48 archived/dormant exclusion still applies in registry mode", () => {
     expect(extractStandingRules(section("### INS-906: Old — ARCHIVED STANDING RULE [TIER:B]"), "registry")).toEqual([]);
     expect(extractStandingRules(section("### INS-907: Paused — DORMANT RULE"), "registry")).toEqual([]);
+  });
+});
+
+// ── R75 / S203 F-B18: anchored archived-rule exclusion + a diagnostic ────────
+//
+// The old test matched ARCHIVED/DORMANT RULE anywhere in a section, so any
+// future ACTIVE rule whose procedure merely discusses archival would be
+// silently dropped from the boot payload with no log line to explain it. The
+// test is now anchored to the title line + the FIRST body line, and every real
+// skip logs "standing rule excluded as archived" with the rule id.
+
+describe("R75 (F-B18): archived/dormant exclusion is anchored, and every skip logs", () => {
+  let infoSpy: ReturnType<typeof vi.spyOn>;
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    infoSpy = vi.spyOn(logger, "info").mockImplementation(() => {});
+    // The body-fallback path (SRV-13) warns; silence it so the log assertions
+    // below read cleanly.
+    warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    infoSpy.mockRestore();
+    warnSpy.mockRestore();
+  });
+
+  /** A live rule whose PROCEDURE talks about archival — the F-B18 victim. */
+  const MID_BODY_MENTION = [
+    "### INS-910: Retire rules by marker, never by deletion — STANDING RULE [TIER:A]",
+    "**Standing procedure:** 1. Mark the retiring entry in place; never delete it.",
+    "2. An archived rule stays in the registry forever; a dormant rule likewise.",
+    "3. The census excludes both, but the record survives.",
+    "",
+  ].join("\n");
+
+  it("a rule that mentions an archived rule MID-BODY parses as ACTIVE (insights)", () => {
+    const rules = extractStandingRules(MID_BODY_MENTION, "insights");
+    expect(rules).toHaveLength(1);
+    expect(rules[0].id).toBe("INS-910");
+    expect(rules[0].tier).toBe("A");
+    expect(rules[0].procedure).toContain("An archived rule stays in the registry");
+  });
+
+  it("a rule that mentions an archived rule MID-BODY parses as ACTIVE (registry)", () => {
+    const rules = extractStandingRules(MID_BODY_MENTION, "registry");
+    expect(rules.map((r) => r.id)).toEqual(["INS-910"]);
+  });
+
+  it("no exclusion is logged for an active rule", () => {
+    extractStandingRules(MID_BODY_MENTION, "registry");
+    expect(infoSpy).not.toHaveBeenCalledWith(
+      "standing rule excluded as archived",
+      expect.anything(),
+    );
+  });
+
+  // The live retirement shape (prism .prism/insights.md INS-344): the marker
+  // is the FIRST body line under the header.
+  const FIRST_BODY_LINE_MARKER = [
+    "### INS-911: Superseded finding — STANDING RULE [TIER:B]",
+    "**DORMANT RULE (S201).** Superseded by INS-337; record retained per the never-delete policy.",
+    "**Standing procedure:** Historical only.",
+    "",
+  ].join("\n");
+
+  it("the live first-body-line retirement marker still excludes the rule", () => {
+    expect(extractStandingRules(FIRST_BODY_LINE_MARKER, "insights")).toEqual([]);
+    expect(extractStandingRules(FIRST_BODY_LINE_MARKER, "registry")).toEqual([]);
+  });
+
+  it("a blank line between header and marker does not defeat the anchor", () => {
+    const withBlank = FIRST_BODY_LINE_MARKER.replace("\n**DORMANT RULE", "\n\n**DORMANT RULE");
+    expect(extractStandingRules(withBlank, "registry")).toEqual([]);
+  });
+
+  it("each real exclusion logs exactly once, naming the rule id", () => {
+    extractStandingRules(FIRST_BODY_LINE_MARKER, "registry");
+    const calls = infoSpy.mock.calls.filter((c) => c[0] === "standing rule excluded as archived");
+    expect(calls).toHaveLength(1);
+    expect(calls[0][1]).toEqual({ id: "INS-911" });
+  });
+
+  it("two retired rules in one document log one exclusion each", () => {
+    const doc = [
+      FIRST_BODY_LINE_MARKER,
+      "### INS-912: Old approach — STANDING RULE",
+      "**ARCHIVED RULE (S180).** Replaced wholesale.",
+      "",
+      MID_BODY_MENTION,
+    ].join("\n");
+
+    const rules = extractStandingRules(doc, "registry");
+    expect(rules.map((r) => r.id)).toEqual(["INS-910"]);
+
+    const excluded = infoSpy.mock.calls
+      .filter((c) => c[0] === "standing rule excluded as archived")
+      .map((c) => (c[1] as { id: string }).id);
+    expect(excluded).toEqual(["INS-911", "INS-912"]);
+  });
+
+  it("the D-48 title-decoration form is still excluded and still logs", () => {
+    expect(extractStandingRules(section("### INS-913: Old — ARCHIVED STANDING RULE [TIER:B]"), "registry")).toEqual([]);
+    expect(infoSpy).toHaveBeenCalledWith("standing rule excluded as archived", { id: "INS-913" });
   });
 });
 

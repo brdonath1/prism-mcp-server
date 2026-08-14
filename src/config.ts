@@ -73,6 +73,34 @@ export const MCP_SAFE_TIMEOUT = 50_000;
 export const DEFAULT_CONTEXT_WINDOW_TOKENS =
   Number(process.env.DEFAULT_CONTEXT_WINDOW_TOKENS ?? 500_000) || 500_000;
 
+/**
+ * brief-s5 §4: was the context window EXPLICITLY overridden by env, and to
+ * what? Returns null when the var is unset or unparseable — i.e. when the
+ * value in play is the code default rather than an operator decision.
+ *
+ * DEFAULT_CONTEXT_WINDOW_TOKENS above cannot answer this: it collapses "the
+ * operator set 500000" and "nobody set anything" into the same number. That
+ * collapse is the S5 failure mechanism — a Railway
+ * `DEFAULT_CONTEXT_WINDOW_TOKENS=200000` silently overrode a code default that
+ * had ALREADY been corrected away from 200K, and the override survived three
+ * model generations because nothing ever said it was winning. An override
+ * should remain possible; it should just be impossible to forget. Callers pair
+ * this with resolveContextWindow() and emit CONTEXT_WINDOW_OVERRIDE when the
+ * two disagree.
+ *
+ * Reads process.env at CALL time (the resolveBootIndexMode pattern) so a
+ * per-deployment flip needs no re-import and tests need no module reset.
+ */
+export function resolveContextWindowOverride(
+  env: NodeJS.ProcessEnv = process.env,
+): number | null {
+  const raw = env.DEFAULT_CONTEXT_WINDOW_TOKENS;
+  if (raw === undefined || raw.trim() === "") return null;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return parsed;
+}
+
 /** Bootstrap response-size tripwire thresholds (bytes) — SRV-39 recalibration.
  *  The pre-brief-465 literals (80KB warn / 100KB error) fired the ERROR-level
  *  BOOTSTRAP_OVERSIZE diagnostic on EVERY prism boot: measured steady state is
@@ -141,9 +169,15 @@ export const PREFETCH_SUMMARY_CAP_BYTES =
 /** T5 (P-3/P-7): advisory per-item budget (bytes) for handoff Critical
  *  Context items. Items average 708 B on the measured baseline vs the
  *  template intent of 3-5 FACTS; the HANDOFF_ITEM_OVERSIZE diagnostic is
- *  WARN-ONLY at boot parse and finalize validation — never a rejection. */
+ *  WARN-ONLY at boot parse and finalize validation — never a rejection.
+ *
+ *  S203 audit R70 (F-B11): raised 300 -> 800. At 300 the diagnostic fired
+ *  5/5 on every prism boot — a threshold below the measured mean flags
+ *  everything and therefore nothing. 800 sits just above the ~708 B mean so
+ *  only genuinely outsized items warn. Rollback: HANDOFF_ITEM_BUDGET_BYTES
+ *  env. */
 export const HANDOFF_ITEM_BUDGET_BYTES =
-  parseInt(process.env.HANDOFF_ITEM_BUDGET_BYTES ?? "300", 10) || 300;
+  parseInt(process.env.HANDOFF_ITEM_BUDGET_BYTES ?? "800", 10) || 800;
 
 /** T6 (P-6a): boot masthead SVG knob. Default ON — D-249 restored graphical
  *  banners as an explicit operator choice; `off` ships
@@ -398,6 +432,23 @@ export const STATUS_WALL_CLOCK_DEADLINE_MS =
 export const FETCH_WALL_CLOCK_DEADLINE_MS =
   parseInt(process.env.FETCH_WALL_CLOCK_DEADLINE_MS ?? `${MCP_SAFE_TIMEOUT}`, 10) || MCP_SAFE_TIMEOUT;
 
+/** Tool-level wall-clock deadline for prism_bootstrap (S203 audit R23 /
+ *  F-C1-5). Bootstrap was the last fan-out tool with NO hard backstop — a
+ *  hung core fetch held the MCP client connection until the ~60s transport
+ *  timeout with no structured error, on the one tool every session runs
+ *  first. Same sentinel/race pattern as PUSH_WALL_CLOCK_DEADLINE_MS. */
+export const BOOTSTRAP_WALL_CLOCK_DEADLINE_MS =
+  parseInt(process.env.BOOTSTRAP_WALL_CLOCK_DEADLINE_MS ?? `${MCP_SAFE_TIMEOUT}`, 10) ||
+  MCP_SAFE_TIMEOUT;
+
+/** Total elapsed-time budget (ms) across ALL retries inside fetchWithRetry
+ *  (S203 audit R24 / F-C1-8). Bounds worst-case honored Retry-After chains:
+ *  without it, three 60s Retry-After responses could hold a caller ~300s —
+ *  far past every tool deadline. Once the budget is exhausted the client
+ *  stops retrying and surfaces the last response/error. */
+export const GITHUB_RETRY_BUDGET_MS =
+  parseInt(process.env.GITHUB_RETRY_BUDGET_MS ?? "20000", 10) || 20_000;
+
 /** Per-file content cap (bytes) for prism_fetch full-content delivery
  *  (brief-444 R-deadlines, second half). Without a cap, fetching one large
  *  file (oversize session log, JSON artifact, generated report) could blow
@@ -432,9 +483,30 @@ export const FINALIZE_DRAFT_TIMEOUT_MS =
 /** Tool-level wall-clock deadline for the prism_finalize draft phase (S41).
  *  Hard backstop on top of the per-attempt timeout — prevents any retry logic
  *  or unexpected blocking from holding the MCP client connection
- *  indefinitely. Mirrors FINALIZE_COMMIT_DEADLINE_MS pattern. */
+ *  indefinitely. Mirrors FINALIZE_COMMIT_DEADLINE_MS pattern.
+ *
+ *  Governs the BACKGROUND fullPhase race only; the interactive `action=draft`
+ *  race is bounded by FINALIZE_DRAFT_ACTION_DEADLINE_MS below (S203 audit
+ *  R32 / F-C1-7). */
 export const FINALIZE_DRAFT_DEADLINE_MS =
   parseInt(process.env.FINALIZE_DRAFT_DEADLINE_MS ?? "180000", 10) || 180_000;
+
+/** Wall-clock deadline for the INTERACTIVE `action=draft` race (S203 audit
+ *  R32 / F-C1-7). At 180s the draft deadline was 3x the ~60s MCP client
+ *  ceiling, so the structured timeout response could never be delivered: the
+ *  client gave up first and the operator's retry started a SECOND synthesis.
+ *
+ *  Same SRV-97 lowering PUSH_WALL_CLOCK_DEADLINE_MS took — default
+ *  MCP_SAFE_TIMEOUT so the structured error reaches the client before the
+ *  transport gives up. An EXPLICITLY env-set FINALIZE_DRAFT_DEADLINE_MS still
+ *  wins verbatim (the R32 rollback lever, and the only way back to a >50s
+ *  interactive draft); fullPhase's background race keeps the longer
+ *  FINALIZE_DRAFT_DEADLINE_MS / FINALIZE_DRAFT_DEADLINE_CC_MS constants
+ *  regardless — it is not bounded by a client turn. */
+export const FINALIZE_DRAFT_ACTION_DEADLINE_MS =
+  process.env.FINALIZE_DRAFT_DEADLINE_MS !== undefined
+    ? FINALIZE_DRAFT_DEADLINE_MS
+    : MCP_SAFE_TIMEOUT;
 
 /** Deadline for the fullPhase draft race when the draft transport is
  *  cc_subprocess. cc_subprocess draft runs longer than the messages_api

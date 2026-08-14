@@ -301,8 +301,8 @@ interface ResolvedRecommendationModel {
 }
 
 /**
- * Env var per category (each value is an Anthropic model id, e.g.
- * "claude-opus-4-8").
+ * Env var per category (each value is an Anthropic model id, e.g. a
+ * claude-opus-N-N form).
  */
 const ENV_VAR_BY_CATEGORY: Record<SessionCategory, string> = {
   reasoning_heavy: "RECOMMENDATION_MODEL_REASONING",
@@ -323,7 +323,7 @@ function looksLikeModelId(value: string): boolean {
 function resolvedFromId(id: string): ResolvedRecommendationModel {
   const trimmed = id.trim();
   return {
-    // "claude-opus-4-8" → "opus-4-8"; "claude-sonnet-5" → "sonnet-5"
+    // Strip the family prefix: claude-opus-4-8 → opus-4-8; claude-sonnet-5 → sonnet-5
     code: trimmed.replace(/\[1m\]$/, "").replace(/^claude-/, ""),
     display: modelDisplayFromId(trimmed),
   };

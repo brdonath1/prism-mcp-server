@@ -26,6 +26,7 @@ vi.mock("../src/config.js", async (importOriginal) => {
     SEARCH_WALL_CLOCK_DEADLINE_MS: 400,
     STATUS_WALL_CLOCK_DEADLINE_MS: 400,
     FETCH_WALL_CLOCK_DEADLINE_MS: 400,
+    BOOTSTRAP_WALL_CLOCK_DEADLINE_MS: 400, // brief-s205a R23
   };
 });
 
@@ -55,6 +56,7 @@ import { registerAnalytics } from "../src/tools/analytics.js";
 import { registerSearch } from "../src/tools/search.js";
 import { registerStatus } from "../src/tools/status.js";
 import { registerFetch } from "../src/tools/fetch.js";
+import { registerBootstrap } from "../src/tools/bootstrap.js";
 
 const mockFetchFile = vi.mocked(fetchFile);
 const mockFileExists = vi.mocked(fileExists);
@@ -216,4 +218,41 @@ describe("brief-444 — prism_fetch wall-clock deadline", () => {
   // Suppress unused-variable lint for mocks reserved by the shared factory.
   void mockListDirectory;
   void mockListCommits;
+});
+
+/**
+ * brief-s205a R23 (S203 F-C1-5) — prism_bootstrap was the last I/O-heavy tool
+ * with no wall-clock race, so a hung core fetch returned a bare transport
+ * timeout. The response must be structured AND partial: it names the stage the
+ * fan-out died at and what it had already fetched.
+ */
+describe("brief-s205a R23 — prism_bootstrap wall-clock deadline", () => {
+  it("returns a structured deadline-exceeded response when the core fetch hangs", async () => {
+    mockFetchFile.mockImplementation(HANGING as never);
+    mockFileExists.mockImplementation(HANGING as never);
+    mockListRepos.mockResolvedValue([]); // slug resolution must not be the hang under test
+    const handler = captureHandler(registerBootstrap, "prism_bootstrap");
+
+    const t0 = Date.now();
+    const result = await handler({ project_slug: "test-project" });
+    const elapsed = Date.now() - t0;
+
+    expect(elapsed).toBeGreaterThanOrEqual(350);
+    expect(elapsed).toBeLessThan(3_000);
+    expect(result.isError).toBe(true);
+    const data = parseResult(result);
+    expect(data.error).toMatch(/prism_bootstrap deadline exceeded/);
+    expect(data.project).toBe("test-project");
+    // Partial payload, not a bare error: the stage + what landed before the race.
+    expect(data.stage).toBe("core_fetch");
+    expect(data.partial).toMatchObject({
+      docs_fetched: [],
+      files_fetched: 0,
+      handoff_version: null,
+      behavioral_rules_delivered: false,
+    });
+    expect(data.partial_state_warning).toMatch(/re-run prism_bootstrap/i);
+    const codes = (data.diagnostics as Array<{ code: string }>).map((d) => d.code);
+    expect(codes).toContain("BOOTSTRAP_DEADLINE_EXCEEDED");
+  });
 });

@@ -25,6 +25,28 @@ describe("pricing — static list-price estimates", () => {
     expect(estimateCostUsd("grok-4.3", 1_000, 1_000)).toBeNull();
     expect(estimateCostUsd("some-unknown-model", 1_000, 1_000)).toBeNull();
   });
+
+  // S203 F-G-A11: both providers are configured in the registry but neither
+  // was priced, so any call they served logged est_cost_usd: null — the exact
+  // blind spot the LLM_CALL line exists to close. Figures are UNVERIFIED
+  // estimates (see the pricing.ts header block), so the assertions pin the
+  // contract (non-null, prefix-matched) and the current numbers together.
+  it("prices the two previously-unpriced configured providers (F-G-A11)", () => {
+    // deepseek-v4-pro — UNVERIFIED midpoint $0.65/$2.15 per MTok.
+    expect(estimateCostUsd("deepseek-v4-pro", 1_000_000, 1_000_000)).toBe(2.8);
+    // sonar-pro — UNVERIFIED $3/$15 token pricing (a floor: Sonar also bills
+    // per-request search fees this table cannot model).
+    expect(estimateCostUsd("sonar-pro", 1_000_000, 1_000_000)).toBe(18);
+
+    for (const model of ["deepseek-v4-pro", "sonar-pro"]) {
+      expect(estimateCostUsd(model, 60_000, 3_000)).not.toBeNull();
+    }
+  });
+
+  it("prefix-matches dated variants of the F-G-A11 rows", () => {
+    expect(estimateCostUsd("deepseek-v4-pro-20260801", 1_000_000, 0)).toBe(0.65);
+    expect(estimateCostUsd("sonar-pro-online", 1_000_000, 0)).toBe(3);
+  });
 });
 
 describe("estimateTokensFromChars — the labeled chars/3.5 fallback", () => {

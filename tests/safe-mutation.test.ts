@@ -37,7 +37,7 @@ import {
   getCommit,
 } from "../src/github/client.js";
 import { DiagnosticsCollector } from "../src/utils/diagnostics.js";
-import { safeMutation } from "../src/utils/safe-mutation.js";
+import { safeMutation, gitBlobSha } from "../src/utils/safe-mutation.js";
 
 const mockFetchFile = vi.mocked(fetchFile);
 const mockCreateAtomicCommit = vi.mocked(createAtomicCommit);
@@ -324,21 +324,27 @@ describe("safeMutation — delete support (createAtomicCommit pass-through)", ()
 });
 
 describe("SRV-41 — landed-but-unreported commit is not double-applied on retry", () => {
-  it("returns ok (no retry) when the 'failed' commit actually landed (HEAD moved to OUR message)", async () => {
+  it("returns ok (no retry) when the 'failed' commit actually landed (new HEAD holds OUR blobs)", async () => {
     // Simulate: createAtomicCommit's ref PATCH succeeded server-side but the
     // response was lost (timeout/socket drop) -> reported failure while HEAD
     // moved to the commit we just made.
     mockGetHeadSha
       .mockResolvedValueOnce("head-before") // pre-atomic
       .mockResolvedValueOnce("head-after"); // post-failure check (HEAD moved)
-    mockFetchFile.mockResolvedValue({ content: "v1", sha: "blob-1", size: 2 });
+    // Two-arg call = the attempt's read; three-arg call = the R25 structural
+    // verification read at the landed commit.
+    mockFetchFile.mockImplementation(async (_repo, _path, ref) =>
+      ref === "head-after"
+        ? { content: "appended", sha: gitBlobSha("appended"), size: 8 }
+        : { content: "v1", sha: "blob-1", size: 2 },
+    );
     mockCreateAtomicCommit.mockResolvedValue({
       success: false,
       sha: "",
       files_committed: 0,
       error: "GitHub API request timed out after 15000ms",
     });
-    // The new HEAD commit carries OUR exact commit message -> it landed.
+    // The new HEAD commit carries OUR exact commit message -> pre-filter passes.
     mockGetCommit.mockResolvedValue({
       sha: "head-after",
       message: "prism: patch session-log",
@@ -364,6 +370,152 @@ describe("SRV-41 — landed-but-unreported commit is not double-applied on retry
     // CRITICAL: the mutation was NOT re-applied — only the first attempt ran.
     expect(mockCreateAtomicCommit).toHaveBeenCalledTimes(1);
     expect(computeMutation).toHaveBeenCalledTimes(1);
+    // Verification read the blob at the landed commit, not at the branch tip.
+    expect(mockFetchFile).toHaveBeenCalledWith("test-repo", "session-log.md", "head-after");
+    const codes = diagnostics.list().map((d) => d.code);
+    expect(codes).toContain("MUTATION_ALREADY_APPLIED");
+  });
+});
+
+describe("S203 R25 (F-C1-9) — structural identity, not commit-message equality", () => {
+  it("409, HEAD moved to a different commit with an identical message → does NOT return ok; retries", async () => {
+    // The concurrent-write hazard (INS-69): PRISM commit messages are
+    // templated, so the other actor's commit can carry byte-identical text.
+    // Pre-R25 that was read as "our commit landed" and THIS mutation was
+    // silently dropped while reporting success.
+    mockGetHeadSha
+      .mockResolvedValueOnce("head-before") // pre-atomic, attempt 1
+      .mockResolvedValueOnce("head-other") // post-failure check (HEAD moved)
+      .mockResolvedValueOnce("head-other"); // pre-atomic, attempt 2
+
+    mockFetchFile.mockImplementation(async (_repo, _path, ref) =>
+      ref === "head-other"
+        ? // The landed tree holds the OTHER writer's bytes, not ours.
+          { content: "theirs", sha: gitBlobSha("theirs"), size: 6 }
+        : { content: "v1", sha: "blob-1", size: 2 },
+    );
+
+    // Same message, different author — the pre-R25 sole criterion.
+    mockGetCommit.mockResolvedValue({
+      sha: "head-other",
+      message: "prism: finalize session 42 [2026-08-14]",
+      date: "2026-08-14T00:00:00Z",
+      files: [],
+    });
+
+    mockCreateAtomicCommit
+      .mockResolvedValueOnce({
+        success: false,
+        sha: "",
+        files_committed: 0,
+        error: "GitHub API 409: Update is not a fast forward (updateRef)",
+      })
+      .mockResolvedValueOnce({ success: true, sha: "commit-ours", files_committed: 1 });
+
+    const computeMutation = vi.fn(() => ({
+      writes: [{ path: "handoff.md", content: "ours" }],
+    }));
+
+    const diagnostics = new DiagnosticsCollector();
+    const result = await safeMutation({
+      repo: "test-repo",
+      commitMessage: "prism: finalize session 42 [2026-08-14]",
+      readPaths: ["handoff.md"],
+      computeMutation,
+      diagnostics,
+    });
+
+    // The mutation was RETRIED and landed for real — not reported as already
+    // applied off the back of a matching message.
+    expect(mockCreateAtomicCommit).toHaveBeenCalledTimes(2);
+    expect(computeMutation).toHaveBeenCalledTimes(2);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.commitSha).toBe("commit-ours");
+      expect(result.retried).toBe(true);
+    }
+    const codes = diagnostics.list().map((d) => d.code);
+    expect(codes).not.toContain("MUTATION_ALREADY_APPLIED");
+    expect(codes).toContain("MUTATION_CONFLICT");
+  });
+
+  it("does not claim 'already applied' when the verification read fails (fails closed)", async () => {
+    mockGetHeadSha
+      .mockResolvedValueOnce("head-before")
+      .mockResolvedValueOnce("head-after")
+      .mockResolvedValueOnce("head-after");
+    mockFetchFile.mockImplementation(async (_repo, _path, ref) => {
+      if (ref === "head-after") throw new Error("GitHub API 500: upstream blip");
+      return { content: "v1", sha: "blob-1", size: 2 };
+    });
+    mockGetCommit.mockResolvedValue({
+      sha: "head-after",
+      message: "prism: checkpoint [2026-08-14]",
+      date: "2026-08-14T00:00:00Z",
+      files: [],
+    });
+    mockCreateAtomicCommit
+      .mockResolvedValueOnce({
+        success: false,
+        sha: "",
+        files_committed: 0,
+        error: "GitHub API 409: Update is not a fast forward (updateRef)",
+      })
+      .mockResolvedValueOnce({ success: true, sha: "commit-2", files_committed: 1 });
+
+    const diagnostics = new DiagnosticsCollector();
+    const result = await safeMutation({
+      repo: "test-repo",
+      commitMessage: "prism: checkpoint [2026-08-14]",
+      readPaths: ["a.md"],
+      computeMutation: () => ({ writes: [{ path: "a.md", content: "new" }] }),
+      diagnostics,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(mockCreateAtomicCommit).toHaveBeenCalledTimes(2);
+    const codes = diagnostics.list().map((d) => d.code);
+    expect(codes).not.toContain("MUTATION_ALREADY_APPLIED");
+  });
+
+  it("verifies a delete-only mutation by absence at the landed commit", async () => {
+    mockGetHeadSha
+      .mockResolvedValueOnce("head-before")
+      .mockResolvedValueOnce("head-after");
+    // fetchFile at the landed commit 404s -> the delete is confirmed landed.
+    mockFetchFile.mockRejectedValue(new Error("Not found: fetchFile test-repo/old.md"));
+    mockGetCommit.mockResolvedValue({
+      sha: "head-after",
+      message: "prism: supersede old.md",
+      date: "2026-08-14T00:00:00Z",
+      files: [],
+    });
+    mockCreateAtomicCommit.mockResolvedValue({
+      success: false,
+      sha: "",
+      files_committed: 0,
+      error: "GitHub API request timed out after 15000ms",
+    });
+
+    const diagnostics = new DiagnosticsCollector();
+    const result = await safeMutation({
+      repo: "test-repo",
+      commitMessage: "prism: supersede old.md",
+      readPaths: [],
+      computeMutation: () => ({ writes: [], deletes: ["old.md"] }),
+      diagnostics,
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.commitSha).toBe("head-after");
+    expect(mockCreateAtomicCommit).toHaveBeenCalledTimes(1);
+  });
+
+  it("gitBlobSha matches git's own object id for a known blob", () => {
+    // `printf '' | git hash-object --stdin` -> the empty-blob sha.
+    expect(gitBlobSha("")).toBe("e69de29bb2d1d6434b8b29ae775ad8c2e48c5391");
+    // `printf 'hello\n' | git hash-object --stdin`
+    expect(gitBlobSha("hello\n")).toBe("ce013625030ba8dba906f756967f9e9ca394464a");
   });
 });
 

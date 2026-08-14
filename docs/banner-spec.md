@@ -225,10 +225,17 @@ module (`renderBannerFallback`):
 
 ```
 PRISM | Session {N} | Handoff v{V} | {C}/{T} docs
+PRISM | Session {N} | Handoff v{V} | ?/{T} docs (unverified)
 ```
 
 - Boot: `{C}/{T}` = living-doc count (10/10).
 - Finalize: `{C}` = successfully pushed file count (capped at `{T}` = 10).
+- Deadline/hard-error shapes (S203 audit R18 / F-A2-11): when the failure
+  means NO doc state was verified — commit deadline, outer-catch, pre-flight
+  rejection — `{C}` renders as `?` with the `(unverified)` suffix rather than
+  a confident `0`. `renderBannerFallback` takes `docCount: number | null`;
+  `null` selects this form. The in-band render-failure fallback (renderer
+  failed but the commit outcome IS known) keeps its real count.
 - A `BANNER_RENDER_FALLBACK` warn diagnostic accompanies the boot fallback.
 
 Client templates keep their own last-resort behavior for a genuinely null
@@ -249,7 +256,8 @@ place, `banner_text: null` should not occur in practice.
 | `banner_html` (bootstrap) | **Removed** (brief-466 / SRV-114) | Was a permanently-`null` back-compat field; the live SVG widget uses `boot_masthead_svg`. |
 | `synthesis_banner_html` (finalize commit) | **Removed** (brief-466 / SRV-114) | Was a permanently-`null` back-compat field. |
 | `banner_data` (bootstrap) | **Removed** (brief-439) | The single-line fallback in `banner_text` replaces it. `project_display_name` is now a top-level bootstrap response field. |
-| `banner_data` (finalize **input** param) | **Retained** | Optional banner customization input (`deliverables`, `decisions_note`, `step_statuses`, `llm_usage`) — still honored by the unified generator/widget path. Per-item deliverable `status` is accepted but not rendered. |
+| `banner_data` (finalize **input** param) | **Retained** | Optional banner customization input (`deliverables`, `decisions_note`, `step_statuses`, `llm_usage`) — still honored by the unified generator/widget path. Per-item deliverable `status` is accepted but not rendered. `deliverables` is capped at 12 rows / 160 chars per text (S203 audit R19); a `BANNER_DELIVERABLES_TRUNCATED` warn diagnostic reports what was dropped. |
+| `finalize_render_contract` (finalize commit/full) | **Live, additive** (S203 audit R11 / F-A2-3) | ~880 B RENDER / FALLBACK / CONFIRM directive string attached to every commit/full return site — the render contract previously arrived only with `action=audit`'s `session_end_rules`, so a commit-only finalize had none. Older clients ignore the extra field. |
 
 The text generator is the single source for `banner_text`; the graphical
 widgets are produced by `renderBootMastheadSvg` / `renderFinalizationBannerHtml`

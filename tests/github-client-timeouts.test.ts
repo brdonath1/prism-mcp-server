@@ -10,7 +10,8 @@ process.env.GITHUB_PAT = process.env.GITHUB_PAT || "test-dummy-pat";
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { readFileSync } from "fs";
-import { fetchFile, GITHUB_REQUEST_TIMEOUT_MS } from "../src/github/client.js";
+import { fetchFile, listRepos, GITHUB_REQUEST_TIMEOUT_MS } from "../src/github/client.js";
+import { GITHUB_RETRY_BUDGET_MS } from "../src/config.js";
 
 // Shrink the test timeout so we don't wait 15s in CI.
 // We assert the error message pattern, not the actual elapsed time.
@@ -133,6 +134,153 @@ describe("S40 C1 — fetchWithRetry still retries on 429 (regression)", () => {
     expect(result.content).toBe("hello");
     expect(calls).toBe(2);
   }, 5_000);
+});
+
+describe("S203 R24 (F-C1-8) — fetchWithRetry total retry budget", () => {
+  let originalFetch: typeof fetch;
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  it("exports a retry budget defaulting to 20s", () => {
+    expect(GITHUB_RETRY_BUDGET_MS).toBe(20_000);
+  });
+
+  it("Retry-After: 60 with 3 retries returns within the budget, not 300s", async () => {
+    // Pre-R24 this chain slept min(60s * 2^attempt, 120s) three times — ~360s
+    // of wall clock for one call, 6x the whole MCP request budget. The first
+    // sleep alone (60s) overshoots the 20s budget, so none is taken.
+    let calls = 0;
+    globalThis.fetch = vi.fn(async () => {
+      calls += 1;
+      return new Response("rate limited", {
+        status: 429,
+        headers: { "retry-after": "60" },
+      });
+    }) as unknown as typeof fetch;
+
+    const start = Date.now();
+    await expect(fetchFile("repo", "path.md")).rejects.toThrow(/rate limit/i);
+    const elapsed = Date.now() - start;
+
+    expect(elapsed).toBeLessThan(GITHUB_RETRY_BUDGET_MS);
+    expect(elapsed).toBeLessThan(1_000); // No sleep was taken at all.
+    // Budget refused the backoff on the FIRST 429 — one request, no retries.
+    expect(calls).toBe(1);
+  }, 10_000);
+
+  it("still honors a Retry-After that fits inside the budget", async () => {
+    // Regression guard: the budget must gate only the overshooting sleeps.
+    let calls = 0;
+    globalThis.fetch = vi.fn(async () => {
+      calls += 1;
+      if (calls < 3) {
+        return new Response("rate limited", {
+          status: 429,
+          headers: { "retry-after": "0" },
+        });
+      }
+      return new Response(
+        JSON.stringify({
+          content: Buffer.from("ok", "utf-8").toString("base64"),
+          sha: "sha-1",
+          size: 2,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }) as unknown as typeof fetch;
+
+    const result = await fetchFile("repo", "path.md");
+    expect(result.content).toBe("ok");
+    expect(calls).toBe(3);
+  }, 10_000);
+
+  it("surfaces the budget-exhausted 429 with its body still readable", async () => {
+    // The budget check runs BEFORE res.body.cancel(), so the response handed
+    // back still has a body for handleApiError's `await res.text()`.
+    globalThis.fetch = vi.fn(async () =>
+      new Response("secondary rate limit hit", {
+        status: 429,
+        headers: { "retry-after": "60" },
+      }),
+    ) as unknown as typeof fetch;
+
+    await expect(fetchFile("repo", "path.md")).rejects.toThrow(/rate limit/i);
+  }, 10_000);
+});
+
+describe("S203 R31 (F-C1-15) — listRepos pagination + body hygiene", () => {
+  let originalFetch: typeof fetch;
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  const page = (n: number) =>
+    new Response(
+      JSON.stringify(Array.from({ length: n }, (_, i) => ({ name: `repo-${i}` }))),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+
+  it("a 99-item page issues no second request", async () => {
+    const fetchSpy = vi.fn(async () => page(99)) as unknown as typeof fetch;
+    globalThis.fetch = fetchSpy;
+
+    const repos = await listRepos();
+
+    expect(repos).toHaveLength(99);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  }, 10_000);
+
+  it("still paginates past a full 100-item page", async () => {
+    let calls = 0;
+    const fetchSpy = vi.fn(async () => {
+      calls += 1;
+      return calls === 1 ? page(100) : page(7);
+    }) as unknown as typeof fetch;
+    globalThis.fetch = fetchSpy;
+
+    const repos = await listRepos();
+
+    expect(repos).toHaveLength(107);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  }, 10_000);
+
+  it("caps pagination so a mispaginating API cannot loop unbounded", async () => {
+    // Every page full — without the cap this never terminates.
+    const fetchSpy = vi.fn(async () => page(100)) as unknown as typeof fetch;
+    globalThis.fetch = fetchSpy;
+
+    const repos = await listRepos();
+
+    expect(fetchSpy.mock.calls.length).toBeLessThanOrEqual(20);
+    expect(repos.length).toBeLessThanOrEqual(2_000);
+  }, 20_000);
+
+  it("cancels the response body on both early-return paths", () => {
+    const source = readFileSync("src/github/client.ts", "utf-8");
+    const bodyOf = (marker: string) => {
+      const start = source.indexOf(marker);
+      expect(start).toBeGreaterThan(-1);
+      const nextExport = source.indexOf("\nexport ", start + 1);
+      return source.slice(start, nextExport === -1 ? source.length : nextExport);
+    };
+    // listDirectory's 404 -> [] and getDefaultBranch's !ok -> "main" were the
+    // two paths that dropped an unread body (F-C1-15).
+    expect(bodyOf("export async function listDirectory")).toContain("res.body?.cancel()");
+    expect(bodyOf("export async function getDefaultBranch")).toContain("res.body?.cancel()");
+  });
 });
 
 describe("S40 C1/C3 — finalize.ts HEAD-sha checks route through getHeadSha (which uses fetchWithRetry)", () => {

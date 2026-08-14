@@ -11,9 +11,9 @@ import {
   pushFile,
   listDirectory,
   listCommits,
-  getCommit,
 } from "../github/client.js";
 import { safeMutation } from "../utils/safe-mutation.js";
+import { registerInflight } from "../utils/inflight-registry.js";
 import {
   LIVING_DOCUMENTS,
   LIVING_DOCUMENT_NAMES,
@@ -23,9 +23,9 @@ import {
   FINALIZE_DRAFT_TIMEOUT_MS,
   FINALIZE_DRAFT_DEADLINE_MS,
   FINALIZE_DRAFT_DEADLINE_CC_MS,
+  FINALIZE_DRAFT_ACTION_DEADLINE_MS,
   CC_SUBPROCESS_SYNTHESIS_TIMEOUT_MS,
   DOC_ROOT,
-  PROJECT_DISPLAY_NAMES,
   STANDING_RULES_WARNING_SIZE,
 } from "../config.js";
 import { detectSessionLogOrientation, splitForArchive, utf8ByteLength, type ArchiveConfig } from "../utils/archive.js";
@@ -35,19 +35,6 @@ const FINALIZE_COMMIT_DEADLINE_SENTINEL = Symbol("finalize.commit.deadline");
 
 /** Sentinel used to signal that the finalize-draft deadline fired (S41). */
 const FINALIZE_DRAFT_DEADLINE_SENTINEL = Symbol("finalize.draft.deadline");
-
-/**
- * Derive the human-readable project name used in chat session titles.
- * Mirrors bootstrap's display-name fallback so finalization can name the next
- * chat without depending on bootstrap-local helpers.
- */
-function getProjectDisplayName(slug: string): string {
-  if (PROJECT_DISPLAY_NAMES[slug]) return PROJECT_DISPLAY_NAMES[slug];
-  return slug
-    .split("-")
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(" ");
-}
 
 /** Resolve the per-attempt timeout for draftPhase based on transport.
  *  cc_subprocess runs through the Agent SDK subprocess which has higher
@@ -105,26 +92,6 @@ const INSIGHTS_ARCHIVE_CONFIG: ArchiveConfig = {
   mostRecentAt: "bottom",
 };
 
-/**
- * Numeric-aware newest-first comparator for `handoff_v{N}_{date}.md` backup
- * names (brief-459 / SRV-05). Plain `localeCompare` is lexicographic — v100+
- * sorted BELOW v9x, so the prune deleted the previous session's backup while
- * pinning 6-week-old v97-v99 snapshots, and the drift baseline read a stale
- * handoff for ~70 sessions. Ties (same version) fall back to name order.
- */
-function compareHandoffBackupsNewestFirst(
-  a: { name: string },
-  b: { name: string },
-): number {
-  const versionOf = (name: string): number => {
-    const m = name.match(/^handoff_v(\d+)/);
-    return m ? parseInt(m[1], 10) : -1;
-  };
-  const delta = versionOf(b.name) - versionOf(a.name);
-  if (delta !== 0) return delta;
-  return b.name.localeCompare(a.name);
-}
-
 /** Default cap for the `## Recently Completed` section in task-queue.md (brief-422 Piece 4). */
 export const TASK_QUEUE_RECENTLY_COMPLETED_CAP = 15;
 
@@ -148,26 +115,33 @@ export const DRAFT_RELEVANT_DOCS = LIVING_DOCUMENT_NAMES.filter(
 import { resolveDocPath, resolveDocFiles, resolveDocPushPath } from "../utils/doc-resolver.js";
 import { guardPushPath } from "../utils/doc-guard.js";
 import { logger } from "../utils/logger.js";
-import { extractHeaders, extractSection, parseNumberedList } from "../utils/summarizer.js";
+import { extractSection, parseNumberedList } from "../utils/summarizer.js";
 import { parseHandoffVersion, parseSessionCount, parseTemplateVersion } from "../validation/handoff.js";
 import { validateFile } from "../validation/index.js";
-import { parseMarkdownTable } from "../utils/summarizer.js";
 import { assembleSynthesisBundle, generateIntelligenceBrief, generatePendingDocUpdates, type SynthesisBundle } from "../ai/synthesize.js";
-import { computeCurrencyWarning, type CurrencyWarning } from "../utils/doc-currency.js";
 import {
   BANNER_SPEC_VERSION,
-  generateCstTimestamp,
   parseTemplateBannerSpecVersion,
-  renderBannerFallback,
   renderFinalizationBannerHtml,
-  renderUnifiedBanner,
-  stripMarkdown,
-  type BannerStatusEntry,
-  type FinalizationBannerHtmlInput,
-  type FinalizationBannerLlmUsageEntry,
 } from "../utils/banner.js";
 import { DiagnosticsCollector } from "../utils/diagnostics.js";
-import { classifySession, injectPersistedRecommendation, type SessionRecommendation } from "../utils/session-classifier.js";
+import { classifySession, injectPersistedRecommendation } from "../utils/session-classifier.js";
+// S203 audit R27 (F-C1-11 / F-A2-13): the audit + banner seams now live in
+// src/tools/finalize/. commitPhase deliberately stays here.
+import {
+  auditPhase,
+  classifyUnfetchedDoc,
+  compareHandoffBackupsNewestFirst,
+} from "./finalize/audit.js";
+import {
+  FINALIZE_RENDER_CONTRACT,
+  assembleFinalizeBanner,
+  assembleFinalizeErrorBannerFields,
+  countLivingDocumentsUpdated,
+  type FinalizeBannerData,
+} from "./finalize/banner.js";
+
+export { countLivingDocumentsUpdated };
 import { applyPendingDocUpdates, type ApplyPduResult } from "../utils/apply-pdu.js";
 import { detectZwsHeaders } from "../utils/sanitize-content.js";
 import { findUnloggedIds } from "../utils/unlogged-ids.js";
@@ -188,368 +162,6 @@ import {
   SYNTHESIS_MAX_OUTPUT_TOKENS,
   resolveFinalizeComposeMode,
 } from "../config.js";
-
-/**
- * Per-doc entry in the audit's living-document inventory (INS-360).
- *
- * Healthy and confirmed-missing entries keep the pre-INS-360 field set
- * EXACTLY (no new keys), so the serialized audit output is byte-compatible
- * for every doc whose fetch succeeds or whose absence is confirmed. The
- * `status` / `fetch_error` fields appear ONLY on `unverified` docs.
- */
-interface LivingDocumentAuditEntry {
-  file: string;
-  exists: boolean;
-  size_bytes: number;
-  header_line: string;
-  eof_valid: boolean;
-  section_headers: string[];
-  needs_creation: boolean;
-  /** Present only when the doc's state could not be verified (INS-360). */
-  status?: "unverified";
-  /** Underlying fetch/classification error for unverified docs (INS-360). */
-  fetch_error?: string;
-}
-
-/** Classification outcome for a living doc whose content fetch failed (INS-360). */
-type UnfetchedDocClassification =
-  | { classification: "needs_creation" }
-  | { classification: "unverified"; reason: string };
-
-/**
- * INS-360 (brief-s201c): decide whether a living doc whose content fetch
- * FAILED is confirmed absent (`needs_creation`) or merely `unverified`.
- *
- * A doc may be classified `needs_creation` ONLY when its absence is
- * CONFIRMED: the content fetch rejected with a definitive GitHub 404
- * ("Not found" — i.e. BOTH the `.prism/` and legacy-root reads 404'd inside
- * resolveDocPath) AND a path-filtered commit-history probe
- * (`GET /repos/{owner}/{repo}/commits?path=<doc-path>&per_page=1`) returns
- * zero commits for the path at BOTH layouts.
- *
- * Every other failure shape — network error, timeout, 5xx, rate limit,
- * auth blip (INS-311), a 404 for a path that HAS commit history (deletion
- * or content-API flake), or a failed history probe — yields `unverified`:
- * the doc counts as neither healthy nor missing, and draft/commit must
- * never recreate it from scratch. This is the S191/S192 session-log.md
- * overwrite fix: the old path collapsed every fetch failure into
- * `needs_creation: true` (see docs/rca/ins-360-finalize-audit-false-negative.md).
- */
-async function classifyUnfetchedDoc(
-  projectSlug: string,
-  docName: string,
-  fetchError: unknown,
-): Promise<UnfetchedDocClassification> {
-  const fetchMsg = fetchError instanceof Error ? fetchError.message : String(fetchError);
-  if (!/Not found/i.test(fetchMsg)) {
-    return { classification: "unverified", reason: fetchMsg };
-  }
-  try {
-    const [prismHistory, rootHistory] = await Promise.all([
-      listCommits(projectSlug, { path: `${DOC_ROOT}/${docName}`, per_page: 1 }),
-      listCommits(projectSlug, { path: docName, per_page: 1 }),
-    ]);
-    if (prismHistory.length === 0 && rootHistory.length === 0) {
-      return { classification: "needs_creation" };
-    }
-    return {
-      classification: "unverified",
-      reason:
-        "fetch returned 404 but the path has commit history — transient read " +
-        `failure or deletion, not a never-created doc (${fetchMsg})`,
-    };
-  } catch (historyError) {
-    const historyMsg =
-      historyError instanceof Error ? historyError.message : String(historyError);
-    return {
-      classification: "unverified",
-      reason: `absence unconfirmed — commit-history probe failed: ${historyMsg} (content fetch: ${fetchMsg})`,
-    };
-  }
-}
-
-/**
- * Audit phase — fetch all living documents and return structured audit data.
- */
-async function auditPhase(
-  projectSlug: string,
-  sessionNumber: number,
-  diagnostics: DiagnosticsCollector = new DiagnosticsCollector(),
-) {
-  const warnings: string[] = [];
-
-  // Cache handoff-history listing — used by both drift detection and backup check
-  let cachedHistoryEntries: Awaited<ReturnType<typeof listDirectory>> | null = null;
-  async function getHistoryEntries(): Promise<Awaited<ReturnType<typeof listDirectory>>> {
-    if (cachedHistoryEntries !== null) return cachedHistoryEntries;
-    cachedHistoryEntries = await listDirectory(projectSlug, ".prism/handoff-history");
-    if (cachedHistoryEntries.length === 0) {
-      cachedHistoryEntries = await listDirectory(projectSlug, "handoff-history");
-    }
-    return cachedHistoryEntries;
-  }
-
-  // 1. Fetch all 10 living documents in parallel with backward-compatible
-  //    resolution. Outcome-preserving fan-out (INS-360): resolveDocFiles'
-  //    fulfilled-only loop silently discarded rejections, collapsing every
-  //    operational fetch failure (5xx, timeout, INS-311 auth blip, …) into
-  //    `needs_creation: true` — the S191/S192 session-log.md overwrite.
-  //    Rejections are kept per-doc and classified below instead.
-  const docOutcomes = await Promise.allSettled(
-    LIVING_DOCUMENT_NAMES.map((docName) => resolveDocPath(projectSlug, docName)),
-  );
-  const docMap = new Map<string, { content: string; sha: string; size: number }>();
-  const docFetchErrors = new Map<string, unknown>();
-  LIVING_DOCUMENT_NAMES.forEach((docName, idx) => {
-    const outcome = docOutcomes[idx];
-    if (outcome.status === "fulfilled") {
-      docMap.set(docName, {
-        content: outcome.value.content,
-        sha: outcome.value.sha,
-        size: outcome.value.content.length,
-      });
-    } else {
-      docFetchErrors.set(docName, outcome.reason);
-    }
-  });
-
-  // INS-360: classify every unfetched doc BEFORE building the inventory.
-  // `needs_creation` requires confirmed absence (definitive 404 + zero commit
-  // history); anything else is `unverified` and must never be recreated.
-  const unfetchedClassifications = new Map<string, UnfetchedDocClassification>();
-  await Promise.all(
-    Array.from(docFetchErrors.entries()).map(async ([docName, fetchError]) => {
-      unfetchedClassifications.set(
-        docName,
-        await classifyUnfetchedDoc(projectSlug, docName, fetchError),
-      );
-    }),
-  );
-
-  const livingDocuments: LivingDocumentAuditEntry[] = LIVING_DOCUMENT_NAMES.map((doc) => {
-    const fileResult = docMap.get(doc);
-    if (!fileResult) {
-      const classification = unfetchedClassifications.get(doc);
-      if (classification?.classification === "unverified") {
-        diagnostics.warn(
-          "FINALIZE_AUDIT_UNVERIFIED_DOC",
-          `${doc}: content fetch failed and absence could not be confirmed — classified unverified (neither healthy nor missing). Do NOT compose or commit a from-scratch replacement. Underlying error: ${classification.reason}`,
-          { doc, error: classification.reason },
-        );
-        logger.warn("finalize audit: living doc unverified (INS-360)", {
-          projectSlug,
-          doc,
-          error: classification.reason,
-        });
-        return {
-          file: doc,
-          exists: false,
-          size_bytes: 0,
-          header_line: "",
-          eof_valid: false,
-          section_headers: [] as string[],
-          needs_creation: false,
-          status: "unverified" as const,
-          fetch_error: classification.reason,
-        };
-      }
-      // Confirmed absent: definitive 404 AND zero commit history at both
-      // layouts (INS-360) — the only state that may be created from scratch.
-      return {
-        file: doc,
-        exists: false,
-        size_bytes: 0,
-        header_line: "",
-        eof_valid: false,
-        section_headers: [] as string[],
-        needs_creation: true,
-      };
-    }
-
-    const lines = fileResult.content.split("\n");
-    const headerLine = lines[0] ?? "";
-    // Files ending with trailing newline (standard) produce empty last element.
-    // trimEnd() before splitting ensures we check the actual last content line.
-    const lastLine = fileResult.content.trimEnd().split("\n").pop()?.trim() ?? "";
-    const filename = doc.split("/").pop() ?? doc;
-    const eofValid = lastLine === `<!-- EOF: ${filename} -->`;
-    const sectionHeaders = extractHeaders(fileResult.content);
-
-    return {
-      file: doc,
-      exists: true,
-      size_bytes: fileResult.size,
-      header_line: headerLine,
-      eof_valid: eofValid,
-      section_headers: sectionHeaders,
-      needs_creation: false,
-    };
-  });
-
-  // 2. Drift detection — compare current handoff with previous version
-  const driftDetection = {
-    critical_context_changed: false,
-    changed_items: [] as string[],
-    decision_count_current: 0,
-    decision_count_previous: 0,
-    new_decisions_detected: [] as string[],
-  };
-
-  const handoffResult = docMap.get("handoff.md");
-  const currentCriticalContext = handoffResult
-    ? parseNumberedList(extractSection(handoffResult.content, "Critical Context") ?? "")
-    : [];
-
-  // Count current decisions
-  const decisionResult = docMap.get("decisions/_INDEX.md");
-  if (decisionResult) {
-    const rows = parseMarkdownTable(decisionResult.content);
-    driftDetection.decision_count_current = rows.length;
-  }
-
-  // Try to fetch previous handoff from handoff-history/ (D-67: check .prism/ first)
-  try {
-    const historyEntries = await getHistoryEntries();
-    const handoffFiles = historyEntries
-      .filter((e) => e.name.startsWith("handoff_v") && e.name.endsWith(".md"))
-      .sort(compareHandoffBackupsNewestFirst);
-
-    if (handoffFiles.length > 0) {
-      const previousHandoff = await fetchFile(projectSlug, handoffFiles[0].path);
-      const previousCriticalContext = parseNumberedList(
-        extractSection(previousHandoff.content, "Critical Context") ?? ""
-      );
-
-      // Compare critical context items
-      const currentSet = new Set(currentCriticalContext);
-      const previousSet = new Set(previousCriticalContext);
-
-      for (const item of previousCriticalContext) {
-        if (!currentSet.has(item)) {
-          driftDetection.changed_items.push(`Removed: ${item}`);
-          driftDetection.critical_context_changed = true;
-        }
-      }
-      for (const item of currentCriticalContext) {
-        if (!previousSet.has(item)) {
-          driftDetection.changed_items.push(`Added: ${item}`);
-          driftDetection.critical_context_changed = true;
-        }
-      }
-
-      // Count previous decisions
-      const previousDecisionSection = extractSection(previousHandoff.content, "Decision");
-      if (previousDecisionSection) {
-        const prevDecisionRefs = previousDecisionSection.match(/D-\d+/g) ?? [];
-        driftDetection.decision_count_previous = new Set(prevDecisionRefs).size;
-      }
-    }
-  } catch {
-    warnings.push("Could not fetch handoff history for drift detection.");
-  }
-
-  // Detect new decisions by comparing counts
-  if (decisionResult && driftDetection.decision_count_previous > 0) {
-    const rows = parseMarkdownTable(decisionResult.content);
-    const idKey = Object.keys(rows[0] ?? {}).find((k) => k.toLowerCase() === "id") ?? "ID";
-    const sessionKey =
-      Object.keys(rows[0] ?? {}).find((k) => k.toLowerCase() === "session") ?? "Session";
-
-    for (const row of rows) {
-      const sessionVal = parseInt(row[sessionKey] ?? "0", 10);
-      if (sessionVal >= sessionNumber) {
-        driftDetection.new_decisions_detected.push(row[idKey] ?? "");
-      }
-    }
-  }
-
-  // 3. Session work products — commits since last finalization
-  let sessionWorkProducts = {
-    files_pushed_this_session: [] as string[],
-    commit_count: 0,
-  };
-
-  try {
-    const commits = await listCommits(projectSlug, { per_page: 50 });
-
-    // Find commits since last finalization
-    const sessionCommits: typeof commits = [];
-    for (const commit of commits) {
-      if (commit.message.startsWith("prism: finalize session")) {
-        break; // Hit the previous finalization
-      }
-      sessionCommits.push(commit);
-    }
-
-    // Need to fetch individual commits for file details since list endpoint doesn't include them
-    const filesSet = new Set<string>();
-    await Promise.allSettled(
-      sessionCommits.slice(0, 5).map(async (c) => {
-        try {
-          const detail = await getCommit(projectSlug, c.sha);
-          for (const f of detail.files) {
-            filesSet.add(f);
-          }
-        } catch {
-          // Skip commits we can't fetch details for
-        }
-      })
-    );
-
-    sessionWorkProducts = {
-      files_pushed_this_session: Array.from(filesSet),
-      commit_count: sessionCommits.length,
-    };
-  } catch {
-    warnings.push("Could not fetch commit history for session work product audit.");
-  }
-
-  // 4. Check if handoff backup exists
-  let handoffBackupExists = false;
-  const currentVersion = handoffResult ? (parseHandoffVersion(handoffResult.content) ?? 0) : 0;
-
-  try {
-    const historyEntries = await getHistoryEntries();
-    // brief-459 / SRV-31: anchored to the `handoff_v{N}_{date}.md` filename
-    // format — the old substring match let handoff_v174 count as a backup
-    // for version 17 (and v97-v99 for version 9).
-    handoffBackupExists = historyEntries.some(
-      (e) => e.name.startsWith(`handoff_v${currentVersion}_`)
-    );
-  } catch {
-    // handoff-history directory may not exist
-  }
-
-  // 5. Doc-currency check (D-156 §3.7 / D-155). Computed from already-fetched
-  //    docs — no extra GitHub round-trips. Narrative docs are architecture.md
-  //    and glossary.md per the brief; missing markers fall back to null
-  //    (warning is non-fatal — operator-side advisory only).
-  const NARRATIVE_DOCS = ["architecture.md", "glossary.md"] as const;
-  const indexBody = decisionResult?.content ?? "";
-  const currencyWarnings: CurrencyWarning[] = NARRATIVE_DOCS.map((docName) => {
-    const docResult = docMap.get(docName);
-    return computeCurrencyWarning({
-      path: docName,
-      docBody: docResult?.content ?? "",
-      indexBody,
-      currentSession: sessionNumber,
-    });
-  });
-
-  return {
-    project: projectSlug,
-    session_number: sessionNumber,
-    audit: {
-      living_documents: livingDocuments,
-      drift_detection: driftDetection,
-      session_work_products: sessionWorkProducts,
-      handoff_backup_exists: handoffBackupExists,
-      current_handoff_version: currentVersion,
-      currency_warnings: currencyWarnings,
-      warnings,
-    },
-  };
-}
 
 /** brief-s202b T8: outcome of composing complete finalization files from a
  *  files-mode draft. `ok: false` carries the fallback reason for the
@@ -884,16 +496,47 @@ async function draftPhase(
     };
   }
 
-  // 4. Parse response — expect JSON (B.8: robust extraction)
+  // 4. Parse response — expect JSON (B.8: robust extraction).
+  //    S203 audit R22 (F-C1-3/F-C1-6): ONLY the parse is guarded here. The
+  //    compose/persist block below carries its own failure contract
+  //    (FINALIZE_COMPOSE_FALLBACK); folding it into this catch reported a
+  //    403 on the state push to the operator as "Could not parse structured
+  //    JSON" with success: true.
+  let drafts: unknown;
   try {
-    const drafts = extractJSON(result.content);
+    drafts = extractJSON(result.content);
+  } catch (parseError) {
+    // A parse failure is a FAILED draft, not a successful one with a note:
+    // success: true made draftStatus "ok", suppressed DRAFT_FAILED, and let
+    // action=full commit handoff.md alone while dropping the model's output.
+    const parseMsg = parseError instanceof Error ? parseError.message : String(parseError);
+    logger.warn("finalize draft: could not parse structured JSON from the model response", {
+      projectSlug,
+      sessionNumber,
+      error: parseMsg,
+      contentBytes: result.content.length,
+    });
+    return {
+      success: false,
+      parse_failed: true as const,
+      error: `Could not parse structured JSON from the draft response: ${parseMsg}`,
+      // Response-shape contract (unchanged): the raw text always rides out so
+      // the operator can extract it by hand.
+      raw_content: result.content,
+      input_tokens: result.input_tokens,
+      output_tokens: result.output_tokens,
+      parse_warning: "Could not parse structured JSON — raw content included for manual extraction.",
+      fallback: "Extract the finalization sections from raw_content manually, or re-run action=draft.",
+    };
+  }
 
-    // brief-s202b T8: compose-offload path. Compose complete files, gate them
-    // with the standard commit validators, persist the validated set, and
-    // return the review projection. ANY failure below falls through to the
-    // legacy 6-key response with a FINALIZE_COMPOSE_FALLBACK warn — the
-    // D-275 §4.5 gate-as-fallback-trigger pattern.
-    if (composeMode === "files") {
+  // brief-s202b T8: compose-offload path. Compose complete files, gate them
+  // with the standard commit validators, persist the validated set, and
+  // return the review projection. ANY failure below falls through to the
+  // legacy 6-key response with a FINALIZE_COMPOSE_FALLBACK warn — the
+  // D-275 §4.5 gate-as-fallback-trigger pattern.
+  if (composeMode === "files") {
+    try {
       const compose = composeDraftFiles(drafts as Record<string, unknown>, {
         sessionLog: docMap.get("session-log.md")?.content,
         taskQueue: docMap.get("task-queue.md")?.content,
@@ -975,24 +618,33 @@ async function draftPhase(
           gate_failures: compose.gate_failures,
         });
       }
+    } catch (composeError) {
+      // A THROW out of compose/persist (transient GitHub failure, unexpected
+      // validator input) is reported as what it is — same fallback surface as
+      // the gate failures above, never as a parse failure (S203 audit R22).
+      const composeMsg =
+        composeError instanceof Error ? composeError.message : String(composeError);
+      diagnostics.warn(
+        "FINALIZE_COMPOSE_FALLBACK",
+        `Compose/persist threw before the draft could be offloaded (${composeMsg}) — returning the legacy 6-key draft response`,
+        { fallback_reason: "compose_threw", error: composeMsg },
+      );
+      logger.warn("FINALIZE_COMPOSE_FALLBACK", {
+        projectSlug,
+        sessionNumber,
+        fallback_reason: "compose_threw",
+        error: composeMsg,
+      });
     }
-
-    return {
-      success: true,
-      drafts,
-      input_tokens: result.input_tokens,
-      output_tokens: result.output_tokens,
-      review_instructions: "Review each draft section. Edit as needed, then include in your commit files. These are drafts — you have full editorial control.",
-    };
-  } catch {
-    return {
-      success: true,
-      raw_content: result.content,
-      input_tokens: result.input_tokens,
-      output_tokens: result.output_tokens,
-      parse_warning: "Could not parse structured JSON — raw content included for manual extraction.",
-    };
   }
+
+  return {
+    success: true,
+    drafts,
+    input_tokens: result.input_tokens,
+    output_tokens: result.output_tokens,
+    review_instructions: "Review each draft section. Edit as needed, then include in your commit files. These are drafts — you have full editorial control.",
+  };
 }
 
 /**
@@ -1960,7 +1612,10 @@ async function commitPhase(
     // slower of the two does not block the other (D-156 §3.6 / D-155). Both
     // remain fire-and-forget per INS-178 — commit response is already built.
     const synthesisLabels = ["intelligence_brief", "pending_updates"] as const;
-    void (async () => {
+    // Registered so the shutdown drain awaits this leg on deploy (R26 /
+    // F-C1-10) — this is the promise a Railway SIGTERM previously killed
+    // mid-flight, unlogged.
+    void registerInflight((async () => {
       // brief-465 / SRV-73: assemble the synthesis input bundle ONCE and share
       // it across BOTH calls — the brief and PDU bundles are byte-identical
       // (~103K tokens), and were previously fetched + assembled + sent twice per
@@ -2012,7 +1667,7 @@ async function commitPhase(
           err: err instanceof Error ? err.message : String(err),
           durationMs: Date.now() - synthStart,
         });
-      });
+      }), "finalize_post_commit_synthesis");
   } else {
     // Commit did not fully succeed, or synthesis is disabled on this server.
     synthesisOutcome = "skipped";
@@ -2050,296 +1705,6 @@ async function commitPhase(
     confirmation: allSucceeded
       ? `Session ${sessionNumber} finalized. Handoff v${handoffVersion} pushed and verified. ${livingDocsUpdated}/${LIVING_DOCUMENTS.length} living documents updated.${synthesisOutcome === "background" ? " Intelligence brief synthesizing in background." : synthesisOutcome === "skipped" ? " Synthesis skipped." : ""}`
       : `Session ${sessionNumber} finalization partially failed. ${succeeded.length}/${files.length} files pushed.`,
-  };
-}
-
-/**
- * Count living documents successfully committed, normalized across both
- * repo layouts (.prism/ and legacy root-level — the pre-R8 counters missed
- * the legacy form and reported 0 for unmigrated repos).
- *
- * Counts ONLY the 10 mandatory living documents: domain decision files
- * (decisions/{domain}.md) are not living documents — decisions/_INDEX.md is
- * the registry entry in the 10-doc list. Distinct paths only, so the result
- * is bounded by LIVING_DOCUMENTS.length by construction. Used by BOTH the
- * commit confirmation (`living_documents_updated`) and the finalization
- * banner so the two never disagree (brief-439 review finding).
- */
-export function countLivingDocumentsUpdated(
-  results: Array<{ path: string; success: boolean }>,
-): number {
-  const matched = new Set<string>();
-  for (const r of results) {
-    if (!r.success) continue;
-    const bare = r.path.startsWith(`${DOC_ROOT}/`)
-      ? r.path.slice(DOC_ROOT.length + 1)
-      : r.path;
-    if ((LIVING_DOCUMENTS as readonly string[]).includes(`${DOC_ROOT}/${bare}`)) {
-      matched.add(bare);
-    }
-  }
-  return matched.size;
-}
-
-/**
- * Assemble the finalization banner via the unified generator (brief-439 / R8;
- * brief-447 / D-249).
- *
- * Returns BOTH the unified `banner_text` (shares the single banner code path
- * with prism_bootstrap — boot and finalize text banners are byte-consistent by
- * construction) AND a structured `htmlInput` for the restored finalization HTML
- * widget (D-249). The caller renders the widget via renderFinalizationBannerHtml
- * and sets `finalization_banner_html`; `banner_text` remains the genuine
- * fallback. Contracts: _templates/banner-spec.md, _templates/finalization-banner-spec.md.
- *
- * Never throws — render failure falls back to the Rule 2 single-line text and a
- * null `htmlInput` (so the caller emits a null widget, not a broken one).
- */
-async function assembleFinalizeBanner(
-  projectSlug: string,
-  sessionNumber: number,
-  handoffVersion: number,
-  files: Array<{ path: string; content: string }>,
-  results: Array<{ path: string; success: boolean; verified: boolean }>,
-  allSucceeded: boolean,
-  bannerData?: FinalizeBannerData,
-): Promise<{ text: string; htmlInput: FinalizationBannerHtmlInput | null }> {
-  const docsTotal = LIVING_DOCUMENTS.length;
-
-  try {
-    // Same normalized count the commit confirmation uses — banner L2 and
-    // the confirmation sentence agree by construction, and {C} ≤ {T}.
-    const docsUpdated = countLivingDocumentsUpdated(results);
-
-    // Extract resumption + next steps from the handoff content in the commit
-    const handoffFile = files.find(
-      (f) => f.path === "handoff.md" || f.path === `${DOC_ROOT}/handoff.md`,
-    );
-    let resumption = "See handoff.md for resumption point.";
-    let nextStepsForRecommendation: string[] = [];
-    if (handoffFile) {
-      const whereWeAre = extractSection(handoffFile.content, "Where We Are")
-        ?? extractSection(handoffFile.content, "Current State")
-        ?? "";
-      if (whereWeAre.trim()) {
-        const firstParagraph = whereWeAre.split("\n\n")[0]?.trim();
-        if (firstParagraph) resumption = firstParagraph;
-      }
-      // brief-405 / D-191: parse next_steps for the classifier. The
-      // finalization banner is the primary pre-boot signal —
-      // handoff_next_steps is the canonical source.
-      nextStepsForRecommendation = parseNumberedList(
-        extractSection(handoffFile.content, "Next Steps")
-          ?? extractSection(handoffFile.content, "Immediate Next")
-          ?? ""
-      );
-    }
-
-    // Banner line 1 version segment: the framework template version the
-    // handoff declares — the same semantic the boot banner renders. Falls
-    // back to "unknown" exactly like boot when unparseable.
-    const templateVersion = handoffFile
-      ? (parseTemplateVersion(handoffFile.content) ?? "unknown")
-      : "unknown";
-
-    // brief-405 / D-191: classify the next session. Pure function, no I/O.
-    // Failure is non-fatal — the banner renders without the Suggested line.
-    let recommendation: SessionRecommendation | null = null;
-    try {
-      recommendation = classifySession({
-        next_steps: nextStepsForRecommendation,
-      });
-    } catch (classifyErr) {
-      logger.warn("session classifier failed (finalize)", {
-        error: classifyErr instanceof Error ? classifyErr.message : String(classifyErr),
-      });
-    }
-
-    // Handoff push status → line 2 parenthetical
-    const handoffResult = results.find(
-      (r) => r.path === "handoff.md" || r.path === `${DOC_ROOT}/handoff.md`,
-    );
-    let handoffNote = "pushed";
-    if (!handoffResult?.success) {
-      handoffNote = "push failed";
-    } else if (handoffResult && !handoffResult.verified) {
-      handoffNote = "unverified";
-    }
-
-    // Count decisions from the repo index, falling back to the commit files
-    // array (handles legacy paths and unmigrated repos).
-    let decisionsCount = 0;
-    try {
-      const indexDoc = await resolveDocPath(projectSlug, "decisions/_INDEX.md");
-      decisionsCount = parseMarkdownTable(indexDoc.content).length;
-    } catch {
-      const indexFile = files.find(
-        (f) =>
-          f.path === "decisions/_INDEX.md" ||
-          f.path === `${DOC_ROOT}/decisions/_INDEX.md`,
-      );
-      if (indexFile) {
-        decisionsCount = parseMarkdownTable(indexFile.content).length;
-      }
-    }
-
-    // Deliverables list — operator-supplied via banner_data, or a default
-    // push-count line. Per-item status is no longer rendered (push failures
-    // already surface as warning lines); the field is still accepted for
-    // backward compatibility.
-    const succeededCount = results.filter((r) => r.success).length;
-    const listItems = (
-      bannerData?.deliverables ?? [
-        { text: `${succeededCount} file${succeededCount === 1 ? "" : "s"} pushed`, status: "ok" as const },
-      ]
-    ).map((d) => d.text);
-
-    // Step row — operator overrides win; otherwise derived from the commit
-    const stepStatuses = bannerData?.step_statuses ?? {};
-    const allVerified = results.every((r) => r.success && r.verified);
-    const statusRow: BannerStatusEntry[] = [
-      { label: "audit", status: stepStatuses.audit ?? "ok" },
-      { label: "draft", status: stepStatuses.draft ?? "ok" },
-      { label: "commit", status: stepStatuses.commit ?? (allSucceeded ? "ok" : "critical") },
-      { label: "verified", status: stepStatuses.verified ?? (allVerified ? "ok" : "warn") },
-    ];
-
-    // One timestamp shared by the text banner, HTML widget, and next-chat
-    // title so the visible finalization contract cannot drift internally.
-    const timestamp = generateCstTimestamp();
-    const nextSessionNameLine =
-      `${getProjectDisplayName(projectSlug)} \u2014 Session ${sessionNumber + 1}: ${timestamp} CST`;
-
-    const bannerText = renderUnifiedBanner({
-      surface: "finalize",
-      templateVersion,
-      sessionNumber,
-      timestamp,
-      handoffVersion,
-      handoffNote,
-      decisionCount: decisionsCount,
-      decisionNote: bannerData?.decisions_note ?? null,
-      docCount: docsUpdated,
-      docTotal: docsTotal,
-      statusRow,
-      suggested: recommendation
-        ? { display: recommendation.display, rationale: recommendation.rationale }
-        : null,
-      resumption,
-      listItems,
-      warnings: results
-        .filter((r) => !r.success)
-        .map((r) => `Push failed: ${r.path}`),
-    });
-
-    // brief-447 / D-249: structured input for the finalization HTML widget,
-    // built from the SAME finalize data so the widget and banner_text agree.
-    // The handoff chip shows the outgoing→incoming version transition; the
-    // `Next:` pointer reuses the first handoff next-step (omitted when none).
-    // decisionDelta has no source on the commit path, so the "(+N)" segment is
-    // dropped (null).
-    const htmlInput: FinalizationBannerHtmlInput = {
-      templateVersion,
-      sessionNumber,
-      timestamp,
-      handoffFromVersion: handoffVersion - 1,
-      handoffToVersion: handoffVersion,
-      handoffStatus: handoffNote,
-      decisionCount: decisionsCount,
-      decisionDelta: null,
-      docCount: docsUpdated,
-      docTotal: docsTotal,
-      statusRow,
-      deliverables: listItems,
-      llmUsage: normalizeFinalizationLlmUsage(bannerData?.llm_usage),
-      next:
-        nextStepsForRecommendation.length > 0
-          ? stripMarkdown(nextStepsForRecommendation[0])
-          : null,
-      nextSessionNameLine,
-    };
-
-    logger.info("finalization banner rendered", { textLength: bannerText.length });
-    return { text: bannerText, htmlInput };
-  } catch (bannerError) {
-    const msg = bannerError instanceof Error ? bannerError.message : String(bannerError);
-    logger.warn("finalization banner render failed — using single-line fallback", { error: msg });
-    const docsUpdatedFallback = results.filter((r) => r.success).length;
-    return {
-      text: renderBannerFallback({
-        sessionNumber,
-        handoffVersion,
-        docCount: Math.min(docsUpdatedFallback, docsTotal),
-        docTotal: docsTotal,
-      }),
-      htmlInput: null,
-    };
-  }
-}
-
-interface FinalizeBannerData {
-  deliverables?: Array<{ text: string; status: "ok" | "warn" }>;
-  decisions_note?: string;
-  step_statuses?: {
-    audit?: "ok" | "warn" | "critical";
-    draft?: "ok" | "warn" | "critical";
-    commit?: "ok" | "warn" | "critical";
-    verified?: "ok" | "warn" | "critical";
-  };
-  llm_usage?: unknown[];
-}
-
-function normalizeBannerText(value: unknown, maxLength: number): string {
-  if (typeof value !== "string") return "";
-  const normalized = stripMarkdown(value).replace(/\s+/g, " ").trim();
-  return normalized.length > maxLength
-    ? normalized.slice(0, maxLength).trim()
-    : normalized;
-}
-
-function normalizeFinalizationLlmUsage(
-  entries: unknown,
-): FinalizationBannerLlmUsageEntry[] {
-  if (!Array.isArray(entries)) return [];
-
-  const rows: FinalizationBannerLlmUsageEntry[] = [];
-  for (const entry of entries) {
-    const record =
-      entry != null && typeof entry === "object"
-        ? (entry as Record<string, unknown>)
-        : {};
-    const aspect = normalizeBannerText(record.aspect, 80);
-    const model = normalizeBannerText(record.model, 80);
-    const settings = normalizeBannerText(record.settings, 120);
-    if (!aspect || !model) continue;
-
-    rows.push({
-      aspect,
-      model,
-      settings: settings || null,
-    });
-    if (rows.length >= 8) break;
-  }
-  return rows;
-}
-
-function assembleFinalizeErrorBannerFields(
-  sessionNumber: number,
-  handoffVersion: number,
-): {
-  banner_text: string;
-  banner_spec_version: typeof BANNER_SPEC_VERSION;
-  finalization_banner_html: null;
-} {
-  return {
-    banner_text: renderBannerFallback({
-      sessionNumber,
-      handoffVersion,
-      docCount: 0,
-      docTotal: LIVING_DOCUMENTS.length,
-    }),
-    banner_spec_version: BANNER_SPEC_VERSION,
-    finalization_banner_html: null,
   };
 }
 
@@ -2749,6 +2114,7 @@ async function fullPhase(
         commit: { all_succeeded: false },
       },
       ...assembleFinalizeErrorBannerFields(sessionNumber, handoffVersion),
+      finalize_render_contract: FINALIZE_RENDER_CONTRACT,
       diagnostics: diagnostics.list(),
     };
   }
@@ -2775,6 +2141,7 @@ async function fullPhase(
         ...bannerData?.step_statuses,
       },
     },
+    diagnostics, // R19: BANNER_DELIVERABLES_TRUNCATED rides out on the response
   );
 
   // brief-447 / D-249: populate finalization_banner_html from the same
@@ -2796,18 +2163,33 @@ async function fullPhase(
   // brief-456 (SRV-19): a generated draft must never be silently discarded
   // on downstream failure — when the commit did not fully succeed, return
   // the raw drafts so the operator can apply them manually.
-  const draftRecovery =
-    !commitResult.all_succeeded &&
+  //
+  // S203 audit R22 (F-C1-3): an UNPARSEABLE draft rides out regardless of the
+  // commit outcome. Nothing bridged from it, so a fully-succeeded commit is
+  // exactly the case where the model's output would otherwise vanish.
+  const parsedDrafts =
     draftResult?.success &&
     "drafts" in draftResult &&
     draftResult.drafts &&
     typeof draftResult.drafts === "object"
       ? (draftResult.drafts as Record<string, unknown>)
       : null;
+  const unparsedDraftText =
+    draftResult && "raw_content" in draftResult && typeof draftResult.raw_content === "string"
+      ? draftResult.raw_content
+      : null;
+  const draftRecovery: Record<string, unknown> | null =
+    unparsedDraftText !== null
+      ? { raw_content: unparsedDraftText }
+      : !commitResult.all_succeeded && parsedDrafts
+        ? parsedDrafts
+        : null;
   if (draftRecovery) {
     diagnostics.warn(
       "DRAFT_NOT_COMMITTED",
-      "commit did not fully succeed — generated draft preserved in draft_recovery for manual application",
+      unparsedDraftText !== null
+        ? "draft output could not be parsed as JSON — raw model text preserved in draft_recovery for manual application"
+        : "commit did not fully succeed — generated draft preserved in draft_recovery for manual application",
       {},
     );
   }
@@ -2835,6 +2217,7 @@ async function fullPhase(
     banner_text: bannerText,                    // brief-439 / R8: unified generator output
     banner_spec_version: BANNER_SPEC_VERSION,   // brief-439 / R8: banner contract version this server emits
     finalization_banner_html,                   // brief-447 / D-249: HTML widget now emitted on the full surface too (matching the commit surface; null on render failure — banner_text is the fallback)
+    finalize_render_contract: FINALIZE_RENDER_CONTRACT, // S203 audit R11 (F-A2-3/F-D3)
     diagnostics: diagnostics.list(),
   };
 }
@@ -2845,7 +2228,7 @@ async function fullPhase(
 export function registerFinalize(server: McpServer): void {
   server.tool(
     "prism_finalize",
-    "PRISM finalization. Actions: audit (document inventory + drift), draft (AI-generated files; in compose mode returns validated draft_files + a review digest and persists them server-side), commit (backup + push + validate; use_draft_files: true commits the persisted draft so chat approves instead of regenerating), full (single call: audit + draft + commit). Phased commit (action=commit with operator-built files): handoff.md content MUST carry the handoff schema — '## Meta' (Handoff Version / Session Count / Template Version / Status), '## Critical Context' (>=1 numbered item), and a non-empty '## Where We Are' — validation rejects it otherwise, and recommendation injection + banner resumption read the same sections (HANDOFF_SCHEMA_MISSING diagnostic names any gap).",
+    "PRISM finalization. Actions: audit (document inventory + drift), draft (AI-generated files; in compose mode returns validated draft_files + a review digest and persists them server-side), commit (backup + push + validate; use_draft_files: true commits the persisted draft so chat approves instead of regenerating), full (single call: audit + draft + commit). Phased commit (action=commit with operator-built files): handoff.md content MUST carry the handoff schema — '## Meta' (Handoff Version / Session Count / Template Version / Status), '## Critical Context' (>=1 numbered item), and a non-empty '## Where We Are' — validation rejects it otherwise, and recommendation injection + banner resumption read the same sections (HANDOFF_SCHEMA_MISSING diagnostic names any gap). Draft deadlines: the INTERACTIVE action=draft race is bounded at the ~50s MCP client ceiling, so a large-project draft that needs longer belongs on action=full — its draft step runs as a background phase on the wider 180s (300s under SYNTHESIS_DRAFT_TRANSPORT=cc_subprocess) deadline and commits without the draft if it overruns. Every commit and full response also carries finalize_render_contract: the RENDER + FALLBACK + CONFIRM obligations for the returned banner, which are NOT to be memorized from boot.",
     {
       project_slug: z.string().describe("Project repo name"),
       action: z.enum(["audit", "draft", "commit", "full"]).describe("Finalization phase: 'audit' for document inventory, 'draft' for AI-generated file drafts, 'commit' to push final files, 'full' (single call: audit + draft + commit)"),
@@ -2955,12 +2338,17 @@ export function registerFinalize(server: McpServer): void {
 
           // The interactive draft action stays bounded by the MCP client
           // response ceiling (~60s) and is not the intended cc_subprocess-draft
-          // consumer; the background `full` action is.
+          // consumer; the background `full` action is. S203 audit R32
+          // (F-C1-7): FINALIZE_DRAFT_DEADLINE_MS (180s) is 3x that ceiling, so
+          // the structured timeout below could never be delivered — the client
+          // gave up first and the retry started a second synthesis. The action
+          // deadline defaults to MCP_SAFE_TIMEOUT; an explicitly env-set
+          // FINALIZE_DRAFT_DEADLINE_MS still wins (the R32 rollback lever).
           let draftDeadlineTimer: ReturnType<typeof setTimeout> | undefined;
           const draftDeadlinePromise = new Promise<typeof FINALIZE_DRAFT_DEADLINE_SENTINEL>((resolve) => {
             draftDeadlineTimer = setTimeout(
               () => resolve(FINALIZE_DRAFT_DEADLINE_SENTINEL),
-              FINALIZE_DRAFT_DEADLINE_MS,
+              FINALIZE_DRAFT_ACTION_DEADLINE_MS,
             );
           });
           const draftWork = draftPhase(project_slug, session_number, { diagnostics });
@@ -2968,13 +2356,13 @@ export function registerFinalize(server: McpServer): void {
           if (draftDeadlineTimer) clearTimeout(draftDeadlineTimer);
 
           if (raced === FINALIZE_DRAFT_DEADLINE_SENTINEL) {
-            const deadlineSec = Math.round(FINALIZE_DRAFT_DEADLINE_MS / 1000);
+            const deadlineSec = Math.round(FINALIZE_DRAFT_ACTION_DEADLINE_MS / 1000);
             logger.error("prism_finalize draft deadline exceeded", {
               project_slug,
-              deadlineMs: FINALIZE_DRAFT_DEADLINE_MS,
+              deadlineMs: FINALIZE_DRAFT_ACTION_DEADLINE_MS,
               elapsedMs: Date.now() - phaseStart,
             });
-            diagnostics.error("SYNTHESIS_TIMEOUT", `Draft deadline exceeded (${deadlineSec}s)`, { deadlineMs: FINALIZE_DRAFT_DEADLINE_MS });
+            diagnostics.error("SYNTHESIS_TIMEOUT", `Draft deadline exceeded (${deadlineSec}s)`, { deadlineMs: FINALIZE_DRAFT_ACTION_DEADLINE_MS });
             return {
               content: [
                 {
@@ -3025,6 +2413,9 @@ export function registerFinalize(server: McpServer): void {
               content: [{ type: "text" as const, text: JSON.stringify({
                 error: "Full action requires handoff_content — the complete handoff.md content for this session.",
                 project: project_slug,
+                action: "full",
+                ...assembleFinalizeErrorBannerFields(session_number, handoff_version ?? 1),
+                finalize_render_contract: FINALIZE_RENDER_CONTRACT,
               })}],
               isError: true,
             };
@@ -3075,6 +2466,8 @@ export function registerFinalize(server: McpServer): void {
                 error: `use_draft_files: no usable persisted draft at ${FINALIZE_DRAFT_STATE_PATH} (${msg}). Run action=draft first (compose mode), or supply files[] without use_draft_files.`,
                 project: project_slug,
                 action: "commit",
+                ...assembleFinalizeErrorBannerFields(session_number, handoff_version ?? 1),
+                finalize_render_contract: FINALIZE_RENDER_CONTRACT,
               }) }],
               isError: true,
             };
@@ -3085,6 +2478,8 @@ export function registerFinalize(server: McpServer): void {
                 error: `use_draft_files: persisted draft at ${FINALIZE_DRAFT_STATE_PATH} carries no files. Run action=draft again.`,
                 project: project_slug,
                 action: "commit",
+                ...assembleFinalizeErrorBannerFields(session_number, handoff_version ?? 1),
+                finalize_render_contract: FINALIZE_RENDER_CONTRACT,
               }) }],
               isError: true,
             };
@@ -3096,6 +2491,8 @@ export function registerFinalize(server: McpServer): void {
                 project: project_slug,
                 action: "commit",
                 draft_session: draftState.session_number,
+                ...assembleFinalizeErrorBannerFields(session_number, handoff_version ?? 1),
+                finalize_render_contract: FINALIZE_RENDER_CONTRACT,
               }) }],
               isError: true,
             };
@@ -3134,6 +2531,9 @@ export function registerFinalize(server: McpServer): void {
                 text: JSON.stringify({
                   error: "Commit phase requires files array with at least one file (or use_draft_files: true after a compose-mode draft).",
                   project: project_slug,
+                  action: "commit",
+                  ...assembleFinalizeErrorBannerFields(session_number, handoff_version ?? 1),
+                  finalize_render_contract: FINALIZE_RENDER_CONTRACT,
                 }),
               },
             ],
@@ -3199,6 +2599,7 @@ export function registerFinalize(server: McpServer): void {
                     "Commit deadline exceeded. The final doc commit is atomic (all-or-nothing) and was signaled to abort — verify the repo HEAD before retrying. Pre-commit steps (handoff backup, history prune) may already have committed; a retry does not duplicate archived entries (SRV-47).",
                   backup_created: "",
                   ...assembleFinalizeErrorBannerFields(session_number, effectiveHandoffVersion ?? 1),
+                  finalize_render_contract: FINALIZE_RENDER_CONTRACT,
                   diagnostics: diagnostics.list(),
                 }),
               },
@@ -3224,6 +2625,7 @@ export function registerFinalize(server: McpServer): void {
           result.results,
           result.all_succeeded,
           banner_data,
+          diagnostics, // R19: BANNER_DELIVERABLES_TRUNCATED rides out on the response
         );
 
         // brief-447 / D-249: populate finalization_banner_html from the same
@@ -3265,6 +2667,7 @@ export function registerFinalize(server: McpServer): void {
             banner_text: bannerText,                    // brief-439 / R8: unified generator output
             banner_spec_version: BANNER_SPEC_VERSION,   // brief-439 / R8: banner contract version this server emits
             finalization_banner_html,                   // brief-447 / D-249: restored HTML widget (null on render failure — banner_text is the fallback)
+            finalize_render_contract: FINALIZE_RENDER_CONTRACT, // S203 audit R11 (F-A2-3/F-D3): the render obligation used to ship only on action=audit
             diagnostics: diagnostics.list(),
           }) }],
         };
@@ -3287,7 +2690,10 @@ export function registerFinalize(server: McpServer): void {
                 partial_state_warning:
                   "Finalize errored mid-turn. Doc commits are atomic, but pre-commit steps (handoff backup, history prune) may already have landed — verify the repo HEAD. A retry does not duplicate archived entries (SRV-47).",
                 ...(action === "commit" || action === "full"
-                  ? assembleFinalizeErrorBannerFields(session_number, handoff_version ?? 1)
+                  ? {
+                      ...assembleFinalizeErrorBannerFields(session_number, handoff_version ?? 1),
+                      finalize_render_contract: FINALIZE_RENDER_CONTRACT,
+                    }
                   : {}),
                 diagnostics: diagnostics.list(),
               }),

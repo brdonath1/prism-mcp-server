@@ -17,10 +17,28 @@
 
 export type ToolCategory = "prism_core" | "railway" | "claude_code" | "github";
 
+/**
+ * R17 (S203 F-A2-9): categories the boot payload declares as EXPECTED, which
+ * is a superset of the categories this server registers. `render` is
+ * documentational only — its tools live in a client-side MCP server, so they
+ * are absent from TOOL_REGISTRY and from every index.ts drift guard.
+ */
+export type ExpectedSurfaceCategory = ToolCategory | "render";
+
 export interface ToolRegistryEntry {
   name: string;
   category: ToolCategory;
 }
+
+/**
+ * R17 (S203 F-A2-9): the render channel. Both PRISM banners — the boot masthead
+ * and the finalization banner — reach the operator through exactly this tool,
+ * and it is NOT one of ours: a dead render channel was invisible to the boot
+ * Tool Surface check because the server's tool-surface contract never named it.
+ * Declaring it here makes the expectation checkable client-side (the kernel's
+ * Rule 1 `render ✓|✗` line); the server never registers it.
+ */
+export const RENDER_SURFACE_TOOLS: readonly string[] = ["visualize:show_widget"] as const;
 
 /**
  * All tools registered by the MCP server, in registration order.
@@ -75,12 +93,17 @@ export const TOOL_REGISTRY: readonly ToolRegistryEntry[] = [
 /**
  * Derive the expected tool surface by category, respecting feature flags.
  * Returned shape is suitable for direct inclusion in the bootstrap response.
+ *
+ * R17: the four registered categories are feature-flag gated; `render` is
+ * unconditional and unregistered — no server-side flag can observe whether the
+ * client's visualize MCP is up, so the server ships the expectation and the
+ * client resolves ✓|✗ against it. Parameter list intentionally unchanged.
  */
 export function getExpectedToolSurface(
   railwayEnabled: boolean,
   ccDispatchEnabled: boolean,
   githubEnabled: boolean,
-): Record<ToolCategory, string[]> {
+): Record<ExpectedSurfaceCategory, string[]> {
   const filterByCategory = (cat: ToolCategory) =>
     TOOL_REGISTRY.filter((t) => t.category === cat).map((t) => t.name);
 
@@ -89,6 +112,7 @@ export function getExpectedToolSurface(
     railway: railwayEnabled ? filterByCategory("railway") : [],
     claude_code: ccDispatchEnabled ? filterByCategory("claude_code") : [],
     github: githubEnabled ? filterByCategory("github") : [],
+    render: [...RENDER_SURFACE_TOOLS],
   };
 }
 

@@ -36,6 +36,7 @@ import {
   generatePendingDocUpdates,
 } from "../ai/synthesize.js";
 import { logger } from "../utils/logger.js";
+import { registerInflight } from "../utils/inflight-registry.js";
 import { DiagnosticsCollector } from "../utils/diagnostics.js";
 
 /**
@@ -135,7 +136,10 @@ export function registerSynthesize(server: McpServer) {
         // the full synthesis duration and outlived the MCP client transport.
         const synthStart = Date.now();
         const synthesisLabels = ["intelligence_brief", "pending_updates"] as const;
-        void Promise.allSettled([
+        // Registered so the shutdown drain awaits this leg on deploy (R26 /
+        // F-C1-10) — a voided promise otherwise dies silently with the process.
+        void registerInflight(
+          Promise.allSettled([
           generateIntelligenceBrief(project_slug, session_number),
           generatePendingDocUpdates(project_slug, session_number),
         ])
@@ -173,7 +177,9 @@ export function registerSynthesize(server: McpServer) {
               trigger: "prism_synthesize",
               durationMs: Date.now() - synthStart,
             });
-          });
+          }),
+          "synthesize_background",
+        );
 
         logger.info("prism_synthesize dispatched background synthesis", {
           project_slug,

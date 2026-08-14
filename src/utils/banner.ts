@@ -781,14 +781,23 @@ export function renderFinalizationBannerHtml(data: FinalizationBannerHtmlInput):
  * fails. Resolves the pre-R8 contradiction where the server fell back to a
  * structured `banner_data` object while the template documented a
  * single-line text fallback.
+ *
+ * `docCount: null` renders `?/{T} docs (unverified)` (S203 audit R18 /
+ * F-A2-11). Deadline and hard-error shapes never read the repo back, and the
+ * atomic commit may well have landed — a numeric `0` there is a confident
+ * assertion the server has no evidence for.
  */
 export function renderBannerFallback(data: {
   sessionNumber: number;
   handoffVersion: number;
-  docCount: number;
+  docCount: number | null;
   docTotal: number;
 }): string {
-  return `PRISM | Session ${data.sessionNumber} | Handoff v${data.handoffVersion} | ${data.docCount}/${data.docTotal} docs`;
+  const docsSegment =
+    data.docCount === null
+      ? `?/${data.docTotal} docs (unverified)`
+      : `${data.docCount}/${data.docTotal} docs`;
+  return `PRISM | Session ${data.sessionNumber} | Handoff v${data.handoffVersion} | ${docsSegment}`;
 }
 
 /**

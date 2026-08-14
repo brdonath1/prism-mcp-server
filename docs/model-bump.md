@@ -17,14 +17,52 @@ Every server-side model default is a named export of `src/models.ts`:
 | `RECOMMENDATION_MODELS` | Operator-facing picker recommendation per session category (`code` + `display` + canonical API `id`) — the **default**, overridable per category via env (§2) | `src/utils/session-classifier.ts` — derives the `RecommendedModel` union (default codes) and feeds `resolveRecommendationModel()`, which applies any `RECOMMENDATION_MODEL_*` env override before falling back to these defaults; nothing re-pins a model literal |
 | `SYNTHESIS_MODEL_ID` | Default model the server calls for synthesis (intelligence-brief + pending-doc-updates) | `src/config.ts:95` → `SYNTHESIS_MODEL` |
 | `CC_DISPATCH_MODEL_ID` | Default model for Claude Code dispatches (`cc_dispatch`) | `src/config.ts:449` → `CC_DISPATCH_MODEL` |
+| `MODEL_CAPABILITIES` | Per-(model × surface) context-window registry (brief-s5) — one row per model, one cell per `chat`/`claude_code`/`api` surface, each cell independently provenanced (`documented`/`inferred`/`observed`/`undocumented_floor`) + an `as_of` staleness date. NOT a single default — a lookup table a model bump must extend, not just edit. | `resolveContextWindow()` (`src/models.ts`) → `src/tools/bootstrap.ts`'s `client_model`/`client_surface` contract, which reports a provenance-tagged `context_window` in the boot response |
 
-To bump inside this repo: edit those constants, run `npm run build && npm test`,
-and confirm the pin audit is clean:
+**`RECOMMENDATION_MODELS` opus-5 bump — HELD (F-B9).** Opus 5 is now a
+current chat model (`MODEL_CAPABILITIES["opus-5"]` above), but
+`reasoning_heavy`/`mixed` remain deliberately pinned to `claude-opus-4-8` —
+the recommendation bump is HELD (dated 2026-08-14) pending explicit operator
+adoption. The capability registry knowing a model exists is not by itself
+authorization to change what the banner recommends the operator select;
+`src/models.ts` carries the dated hold comment inline next to
+`RECOMMENDATION_MODELS`. Do not bump this pin as a side effect of an
+unrelated edit — treat it the same as any other gated bump (§5).
+
+**`MODEL_CAPABILITIES` maintenance guardrail.** A model bump that skips this
+registry silently leaves the new model on the `CONTEXT_WINDOW_FLOOR_TOKENS`
+floor (200K, `undocumented_floor`) on every surface — this is exactly the S5
+failure mode the registry exists to prevent (a session ran a conservation
+posture from ~50% of a phantom budget while actually at ~14% of its true
+window). Provenance is a property of the CELL, not the row: **never promote a
+cell from `undocumented_floor` to a real number on the strength of evidence
+about a DIFFERENT surface** — an API-context announcement does not license a
+chat-surface cell, and vice versa. Only a statement about, or a measurement
+on, THAT surface promotes THAT cell.
+
+To bump inside this repo: edit those constants, add or review the new
+model's `MODEL_CAPABILITIES` row (one cell per surface it actually runs on —
+see the guardrail above), run `npm run build && npm test`, and confirm the
+pin audit is clean:
 
 ```sh
-grep -rnE '"claude-[a-z]+-[0-9]' src --include='*.ts' | grep -v __tests__ | grep -v models.ts
+grep -rnE '"claude-[a-z]+-[0-9]' src --include='*.ts' | grep -v __tests__ | grep -v models.ts | grep -v llm/pricing.ts
 # → must print nothing
 ```
+
+**Exception: `src/llm/pricing.ts`.** Hand-maintained cross-vendor LIST-PRICE
+table (D-275 telemetry — feeds `estimateCostUsd` and the `LLM_CALL` cost
+line), deliberately OUTSIDE the single switch. Its rows are keyed by the
+*full provider model-id string* — `claude-opus-4-8`, `gpt-5.5`,
+`gemini-3.1-pro-preview`, `deepseek-v4-pro`, `grok-4.3`, `sonar-pro`,
+`z-ai/glm-5.2` — across 4+ vendors this repo does not own defaults for
+anywhere else in the registry. Registry-keying it would add a layer of
+indirection without removing the hand-maintenance the table already
+requires (a price row per model any deployment might call, per vendor);
+the pin-audit predicate excludes it rather than pretending it derives from
+`src/models.ts` (lead ruling 2026-08-14). Update `pricing.ts` directly when
+a priced model's rate changes or a new model id enters any
+`LLM_ROUTING_*_MODEL`.
 
 **Detection automation** (Phase 2 / D-235): `scripts/check-model-freshness.mjs`
 runs on a schedule (`.github/workflows/model-freshness.yml`), diffs the
@@ -60,6 +98,17 @@ malformed).**
 | Recommendation — reasoning_heavy | `RECOMMENDATION_MODEL_REASONING` | → `RECOMMENDATION_MODELS.reasoning_heavy` (`src/utils/session-classifier.ts`) |
 | Recommendation — executional | `RECOMMENDATION_MODEL_EXECUTIONAL` | → `RECOMMENDATION_MODELS.executional` |
 | Recommendation — mixed | `RECOMMENDATION_MODEL_MIXED` | → `RECOMMENDATION_MODEL_REASONING` → `RECOMMENDATION_MODELS.mixed` |
+| Boot context-window estimate (`context_estimate` / banner boot-cost %) | `DEFAULT_CONTEXT_WINDOW_TOKENS` | → `500_000` code default (`src/config.ts:73-74`); superseded per-request by the `MODEL_CAPABILITIES` resolved cell when the client declares `client_model`/`client_surface` (§1) |
+
+**R2 (S203 audit F-A1-3, operator env action — pending).** `DEFAULT_CONTEXT_WINDOW_TOKENS`
+was found overridden to `200000` on Railway — a value the 500K code default
+had already superseded — so the override silently re-asserted a stale
+figure across three model generations with no alarm. The recommended action
+is to CLEAR the Railway override so the code default (500K), or the
+resolved `MODEL_CAPABILITIES` cell once `client_model`/`client_surface` are
+declared, applies instead of the stale pin. Not yet actioned as of this
+writing — verify via a live boot's `context_window`/`context_estimate`
+before assuming the override is clear.
 
 Each `RECOMMENDATION_MODEL_*` value is an Anthropic model id (e.g.
 `claude-opus-4-8`); the classifier derives the banner's short `code` and

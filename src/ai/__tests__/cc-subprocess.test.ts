@@ -38,6 +38,7 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
 }));
 
 import { synthesizeViaCcSubprocess } from "../cc-subprocess.js";
+import { RECOMMENDATION_MODELS } from "../../models.js";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -91,6 +92,28 @@ describe("synthesizeViaCcSubprocess — wrapper behavior", () => {
     expect(capturedQueryOptions?.effort).toBe("max");
     const env = capturedQueryOptions?.env as Record<string, string> | undefined;
     expect(env?.CLAUDE_CODE_EFFORT_LEVEL).toBe("max");
+  });
+
+  // F-B7 / R-DOCS-MS: the executional-tier check reads the model registry
+  // instead of a local "claude-sonnet-5" literal (the model-bump pin audit
+  // flagged that copy). Behavior must be identical — same [1m]-strip, trim,
+  // and case-insensitive comparison — while the id now follows the single
+  // switch on the next bump.
+  it("test 2c: the explicit-executional check is registry-keyed, not literal-keyed", async () => {
+    const executionalId = RECOMMENDATION_MODELS.executional.id;
+
+    await synthesizeViaCcSubprocess("sys", "user", executionalId, undefined, undefined, true);
+    expect(capturedQueryOptions?.effort).toBe("max");
+
+    // [1m] suffix, surrounding whitespace, and case are all still tolerated.
+    for (const variant of [`${executionalId}[1m]`, `  ${executionalId}  `, executionalId.toUpperCase()]) {
+      await synthesizeViaCcSubprocess("sys", "user", variant, undefined, undefined, true);
+      expect(capturedQueryOptions?.effort).toBe("max");
+    }
+
+    // A non-executional model keeps the D-206 safety posture.
+    await synthesizeViaCcSubprocess("sys", "user", "claude-sonnet-4-6", undefined, undefined, true);
+    expect(capturedQueryOptions?.effort).toBe("high");
   });
 
   it("test 2b: omits thinking when flag not set", async () => {

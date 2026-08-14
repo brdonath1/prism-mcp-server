@@ -160,6 +160,107 @@ describe("S41 C5 — finalize draft timeout + deadline + no-retry", () => {
     expect(capturedOptions[1]).toHaveProperty("timeout", 10_000);
   });
 
+  // ── S203 audit R32 (F-C1-7) — the interactive draft race sits under the
+  //    MCP client ceiling; only fullPhase keeps the longer background
+  //    deadlines. Rollback lever: an explicitly env-set
+  //    FINALIZE_DRAFT_DEADLINE_MS still wins verbatim.
+  it("R32: FINALIZE_DRAFT_ACTION_DEADLINE_MS defaults to MCP_SAFE_TIMEOUT while fullPhase keeps 180s/300s", async () => {
+    delete process.env.FINALIZE_DRAFT_DEADLINE_MS;
+    delete process.env.FINALIZE_DRAFT_DEADLINE_CC_MS;
+    vi.resetModules();
+
+    const {
+      FINALIZE_DRAFT_ACTION_DEADLINE_MS,
+      FINALIZE_DRAFT_DEADLINE_MS,
+      FINALIZE_DRAFT_DEADLINE_CC_MS,
+      MCP_SAFE_TIMEOUT,
+    } = await import("../src/config.js");
+
+    expect(FINALIZE_DRAFT_ACTION_DEADLINE_MS).toBe(MCP_SAFE_TIMEOUT);
+    expect(FINALIZE_DRAFT_ACTION_DEADLINE_MS).toBe(50_000);
+    // The background fullPhase race is NOT clamped — it is not bounded by a
+    // client turn.
+    expect(FINALIZE_DRAFT_DEADLINE_MS).toBe(180_000);
+    expect(FINALIZE_DRAFT_DEADLINE_CC_MS).toBe(300_000);
+
+    const { resolveDraftDeadline } = await import("../src/tools/finalize.js");
+    expect(resolveDraftDeadline(undefined)).toBe(180_000);
+    expect(resolveDraftDeadline("cc_subprocess")).toBe(300_000);
+  });
+
+  it("R32: an explicitly env-set FINALIZE_DRAFT_DEADLINE_MS still wins over the clamp (rollback lever)", async () => {
+    process.env.FINALIZE_DRAFT_DEADLINE_MS = "240000";
+    vi.resetModules();
+
+    const { FINALIZE_DRAFT_ACTION_DEADLINE_MS, MCP_SAFE_TIMEOUT } = await import("../src/config.js");
+    expect(FINALIZE_DRAFT_ACTION_DEADLINE_MS).toBe(240_000);
+    expect(FINALIZE_DRAFT_ACTION_DEADLINE_MS).toBeGreaterThan(MCP_SAFE_TIMEOUT);
+  });
+
+  it("R32: the action=draft race schedules its deadline at MCP_SAFE_TIMEOUT, not 180s", async () => {
+    delete process.env.FINALIZE_DRAFT_DEADLINE_MS;
+    process.env.ANTHROPIC_API_KEY = "test-dummy-key";
+    vi.resetModules();
+
+    vi.doMock("../src/ai/client.js", () => ({
+      synthesize: vi.fn().mockResolvedValue({
+        success: true,
+        content: '{"session_log_entry": "### Session 1"}',
+        input_tokens: 10,
+        output_tokens: 10,
+        model: "test-model",
+      }),
+    }));
+    vi.doMock("../src/github/client.js", () => ({
+      fetchFile: vi.fn(),
+      fetchFiles: vi.fn(),
+      pushFile: vi.fn().mockResolvedValue({ success: true, sha: "p", size: 1 }),
+      listDirectory: vi.fn().mockResolvedValue([]),
+      listCommits: vi.fn().mockResolvedValue([]),
+      getCommit: vi.fn(),
+      deleteFile: vi.fn(),
+      fileExists: vi.fn(),
+      createAtomicCommit: vi.fn(),
+      getHeadSha: vi.fn(),
+      getDefaultBranch: vi.fn(),
+    }));
+    vi.doMock("../src/utils/doc-resolver.js", () => ({
+      resolveDocPath: vi.fn(),
+      resolveDocPushPath: vi.fn(),
+      resolveDocFiles: vi.fn().mockResolvedValue(
+        new Map([["handoff.md", { content: "stub", sha: "h", size: 4 }]]),
+      ),
+    }));
+
+    const { registerFinalize } = await import("../src/tools/finalize.js");
+    const { MCP_SAFE_TIMEOUT } = await import("../src/config.js");
+    const { McpServer } = await import("@modelcontextprotocol/sdk/server/mcp.js");
+
+    const delays: number[] = [];
+    const realSetTimeout = globalThis.setTimeout;
+    const spy = vi
+      .spyOn(globalThis, "setTimeout")
+      .mockImplementation(((fn: () => void, ms?: number, ...rest: unknown[]) => {
+        if (typeof ms === "number") delays.push(ms);
+        return (realSetTimeout as never as (...a: unknown[]) => unknown)(fn, ms, ...rest);
+      }) as never);
+
+    try {
+      const server = new McpServer({ name: "t", version: "0" }, { capabilities: { tools: {} } });
+      registerFinalize(server);
+      const tool = (server as any)._registeredTools["prism_finalize"];
+      await tool.handler(
+        { project_slug: "test-project", action: "draft", session_number: 1 },
+        buildMockExtra("r32-draft-race"),
+      );
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(delays).toContain(MCP_SAFE_TIMEOUT);
+    expect(delays).not.toContain(180_000);
+  });
+
   it("draft-action deadline wrapper returns structured timeout error on expiry", async () => {
     process.env.FINALIZE_DRAFT_DEADLINE_MS = "50";
     process.env.ANTHROPIC_API_KEY = "test-dummy-key";
