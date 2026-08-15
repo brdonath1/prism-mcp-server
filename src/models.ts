@@ -337,6 +337,15 @@ export const MODEL_CAPABILITIES: Record<string, ModelCapability> = {
   "haiku-4-5": {
     display: "Haiku 4.5",
     chat: { tokens: 200_000, source: "documented", as_of: REGISTRY_AS_OF, ref: PAID_PLANS_REF },
+    // Haiku 4.5 is a 200K-context model with no extended-context (1M) variant,
+    // so its Claude Code window is the same 200K ceiling — NOT the 1M Max window
+    // the Opus/Sonnet rows document (hence no MAX_NO_CREDIT_STEP plan_note, which
+    // is about that 1M window and is inapplicable here). Recorded so the row is
+    // surface-complete like opus-4-8 / sonnet-5 and never degrades to the
+    // undocumented floor on any surface. Haiku 4.5 is now a first-class synthesis
+    // model — the direct-Anthropic mechanical-draft tier (SYNTHESIS_DRAFT_MODEL),
+    // resolving to its documented 200K api window rather than the floor.
+    claude_code: { tokens: 200_000, source: "documented", as_of: REGISTRY_AS_OF, ref: PAID_PLANS_REF },
     api: { tokens: 200_000, source: "documented", as_of: REGISTRY_AS_OF },
   },
   "fable-5": {

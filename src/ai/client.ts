@@ -457,6 +457,61 @@ interface MessagesApiCallParams {
   projectSlug?: string;
 }
 
+/**
+ * Minimum userContent size (characters) at which the messages_api synthesis
+ * transport applies Anthropic prompt caching to the input.
+ *
+ * Prompt caching is a PREFIX match with a per-model minimum cacheable prefix
+ * (~4096 tokens on Opus 4.8 / Haiku 4.5, fewer on Sonnet 5). A breakpoint on a
+ * prefix shorter than that minimum silently no-ops (cache_creation_input_tokens
+ * stays 0). This gate keeps cache_control OFF small / volatile inputs (tiny
+ * bundles, empty-doc finalizes, unit fixtures) and ON only the large living-doc
+ * / context bundle that dominates real synthesis (typically 60K–120K tokens).
+ * ~16K chars ≈ ~4.6K tokens at the codebase-standard 3.5 chars/token proxy —
+ * comfortably above every synthesis model's minimum, so a gated block always
+ * clears the threshold and actually caches.
+ */
+const SYNTHESIS_CACHE_MIN_INPUT_CHARS = 16_000;
+
+/**
+ * Build the messages array for a messages_api synthesis call, placing an
+ * Anthropic prompt-cache breakpoint on the large, STABLE synthesis input (the
+ * living-doc / context bundle) when it is big enough to be worth caching.
+ *
+ * Cache geometry: the input bundle is the large stable block, so the breakpoint
+ * sits at the end of that user content block — the cached prefix is `system`
+ * plus the bundle, and the only per-call-varying instruction (the system prompt
+ * selected per call-site: brief / draft / pdu) is the uncached tail outside the
+ * breakpoint. Repeated invocations that reuse the same bundle — SDK retries, and
+ * re-runs inside the 5-minute ephemeral TTL — read the bundle from cache instead
+ * of re-processing ~100K tokens, which is the speed win this path captures. The
+ * request is byte-identical apart from the cache_control marker, so there is no
+ * intended quality change.
+ *
+ * Small / volatile inputs (below SYNTHESIS_CACHE_MIN_INPUT_CHARS) are returned as
+ * plain string content exactly as before — no cache_control, no behavior change.
+ * This helper runs ONLY on the messages_api transport; the cc_subprocess and
+ * non-Anthropic provider transports never reach callMessagesApi, so caching is a
+ * strict no-op for them.
+ */
+function buildSynthesisUserMessages(userContent: string): Anthropic.MessageParam[] {
+  if (userContent.length < SYNTHESIS_CACHE_MIN_INPUT_CHARS) {
+    return [{ role: "user", content: userContent }];
+  }
+  return [
+    {
+      role: "user",
+      content: [
+        {
+          type: "text",
+          text: userContent,
+          cache_control: { type: "ephemeral" },
+        },
+      ],
+    },
+  ];
+}
+
 async function callMessagesApi(params: MessagesApiCallParams): Promise<SynthesisOutcome> {
   const {
     systemPrompt,
@@ -490,7 +545,9 @@ async function callMessagesApi(params: MessagesApiCallParams): Promise<Synthesis
       model,
       max_tokens: maxTokens ?? SYNTHESIS_MAX_OUTPUT_TOKENS,
       system: systemPrompt,
-      messages: [{ role: "user", content: userContent }],
+      // Prompt caching on the large, stable living-doc/context bundle (no-op for
+      // small/volatile inputs) — see buildSynthesisUserMessages.
+      messages: buildSynthesisUserMessages(userContent),
     };
     if (thinking) {
       // Current Opus-tier models (Opus 4.8) and Sonnet 5 support ONLY the
