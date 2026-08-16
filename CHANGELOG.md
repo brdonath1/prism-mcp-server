@@ -7,6 +7,61 @@ by `src/utils/banner.ts` (`BANNER_SPEC_VERSION`) plus the prism-framework
 templates; [docs/banner-spec.md](docs/banner-spec.md) is historical reference.
 Banner changes add an entry here.
 
+## [4.14.0] - 2026-08-16 (S208 PR-S3: gated auth hardening + ops truth-up)
+
+Nothing about request handling changes on deploy. The one code change ships
+behind a knob that defaults OFF, so 4.14.0 answers every request exactly as
+4.13.2 did until an operator flips it. `BANNER_SPEC_VERSION` is unchanged (4.3).
+
+### Added
+- **`AUTH_REQUIRE_BEARER` (default `false`)** (S203 audit R20). `authMiddleware`
+  rejected a WRONG Bearer token but never noticed a request carrying NO
+  `Authorization` header at all - that case skipped the token check and fell
+  through to the IP allowlist. So a configured `MCP_AUTH_TOKEN` was not
+  actually required of any caller inside the allowlisted CIDR, and the token's
+  real strength was the allowlist's. With the knob ON and a token configured, a
+  missing or non-Bearer `Authorization` header is `401` before the IP check
+  runs. `/health` stays exempt in both modes (Railway's probe sends no
+  credential) and a wrong token keeps its existing `403`. Resolved from
+  `process.env` per call (the `resolveBootIndexMode` pattern), so both the flip
+  and its rollback are env-only with no deploy; any value other than
+  `true`/`1`/`yes`/`on` is the default, because a typo must never silently
+  harden auth.
+  **Shipped OFF deliberately:** the live connector's auth posture is UNKNOWN,
+  and hardening blind would lock out a client that authenticates by source IP
+  today. The flip is an operator action taken after confirming the live client
+  sends Bearer.
+- **`tests/auth-middleware.test.ts`** - the auth middleware had no test file at
+  all. 22 tests pin BOTH gate states: the gate-OFF cases pass against the
+  unmodified 4.13.2 middleware (that is what makes "default is byte-identical"
+  a checked claim rather than an assertion), and the gate-ON cases cover the
+  new 401 path, the untouched 403 path, the `/health` exemption, and the
+  no-token-configured case where there is nothing to require.
+
+### Changed
+- **Backfilled the missing `4.13.0` CHANGELOG entry** (OPS-4). The file jumped
+  4.12.0 -> 4.13.1, so every PR merged under version 4.13.0 - #109 through
+  #119, including the entire S202 boot-lean bundle, `boot_masthead_html`, the
+  model-capability registry and the brief-s205a S203 audit-rec bundle - had no
+  release note. `/health` reports a version; a changelog that skips it cannot
+  answer what that version contains. Backfilled from the merge commits, dated
+  by the merge range rather than guessed.
+- **`docs/banner-spec.md` aligned with the shipped renderer** (S208 PR-S1 fold).
+  The doc still described `decisionCount`/`docCount` as plain numbers and the
+  boot L2 docs label as always `docs healthy`, which 4.13.1 stopped being true:
+  an unverified count now renders `? decisions (unverified[; {note}])` and
+  `?/{T} docs (unverified)`. Reference docs that describe a renderer they no
+  longer match are how the next reader gets misled.
+
+### Not done here (stated residual)
+- **`X-Forwarded-For` trust is unchanged.** `getClientIp` still takes the
+  leftmost XFF value verbatim, so while `AUTH_REQUIRE_BEARER` is off a forged
+  header naming an allowlisted address is served - pinned as a test rather than
+  fixed. The repair (Express `trust proxy`, or counting hops from the right)
+  needs a decision about the live Railway topology that this release does not
+  make. Turning the knob on closes the bypass without touching XFF at all,
+  because the 401 lands before the IP check.
+
 ## [4.13.2] - 2026-08-16 (S208 PR-S2a: boot + load latency, payload-byte-identical)
 
 Latency and robustness only. The DELIVERED `prism_bootstrap` payload is
@@ -163,6 +218,95 @@ is unchanged - only which values the server is willing to assert).
   bounded by a client turn"; the real distinction is the CALLER - `action=full`
   is intended for the Trigger / Claude Code path, and the action enum cannot
   structurally prevent a chat client from calling it (stated residual).
+
+## [4.13.0] - 2026-07-14 .. 2026-08-14 (S202 boot-lean, S9 masthead, S5 model registry, S205 audit recs)
+
+> **Backfilled 2026-08-16 by S208 PR-S3 (OPS-4).** This entry did not exist:
+> the file ran 4.12.0 straight to 4.13.1 while eleven PRs shipped under
+> version 4.13.0. It is reconstructed from the merge commits in the 4.13.0
+> window (`b956f7c` set the version, `f1adb3e` moved off it), so the scope is
+> the version's real contents rather than one session's memory of them. It is a
+> release-level summary, not a re-derivation of each PR's rationale - the
+> commit messages remain the detailed record.
+
+### Added
+- **S202 boot-lean server bundle** (#109, brief-s202b). `session_state_manifest`
+  plus `BOOT_INDEX_MODE=full|compact` (default `full`, additive two-phase);
+  `rules_hint` stateless module nudges on the push/patch/`cc_dispatch` ingest
+  paths; `BRIEF_COMPACT_MODE=dedup|legacy` (default `dedup` - drops the Project
+  State digest line, a measured duplicate of `current_state`);
+  `PREFETCH_MODE=opening_only|legacy` plus `PREFETCH_DELIVERED`; the warn-only
+  `HANDOFF_ITEM_OVERSIZE` item budget; the `BOOT_MASTHEAD_SVG=on|off` knob; and
+  the Kernel-Manifest handshake behind `KERNEL_SPLIT_DRIFT`.
+- **Finalize compose-offload** (#109). `FINALIZE_COMPOSE_MODE=files|legacy`
+  (default `files`): finalize emits complete validated finalization files to
+  `.prism/finalize-draft.json`, `action=commit` accepts `use_draft_files` with
+  per-path override, and any gate failure falls back to the legacy six-key
+  draft under `FINALIZE_COMPOSE_FALLBACK`.
+- **D-278 synthesis truncation fidelity** (#110, brief-s202b v2). Trim
+  annotations that cite the TRUE size and forbid citing the truncated one; a
+  per-doc INPUT MANIFEST (`{path, true_bytes, included_bytes, truncated}`)
+  prepended at every synthesis site; a server-stamped `Synthesized from:`
+  provenance footer on the generated brief and PDU, with stale/model-echoed
+  footers stripped on untruncated runs; and a `SYNTHESIS_INPUT_TRUNCATED`
+  diagnostic per truncated document. This is the metadata that lets a size
+  claim be classified as a pipeline artifact instead of drift.
+- **`boot_masthead_html`** (#112, brief-720). An additive bootstrap field
+  carrying the same information as `boot_masthead_svg` plus the thing SVG
+  cannot do: an interactive copy control for the chat session name.
+  `boot_masthead_svg` stays byte-identical (locked by a frozen render in
+  tests), the HTML renderer has its own try/catch, and `banner_spec_version`
+  deliberately stayed 4.3 so the two repos could not desync.
+- **`MODEL_CAPABILITIES` model-capability registry** (#114, brief-s5 PR A).
+  `src/models.ts`, keyed model x surface, every cell carrying tokens, a
+  provenance tag and an `as_of` date; `resolveContextWindow` degrades to a
+  disclosed 200K floor rather than throwing on the boot path; CI drift check on
+  the `api` column only. Data-only at merge - nothing read it yet.
+- **`prism_bootstrap` context-window contract** (#118, brief-s5 PR B). Optional
+  `client_model` / `client_surface`: the client declares the one fact only it
+  knows, the server owns the table. Absent, behavior is unchanged and tagged
+  `source: "server_fallback"` so a client can tell "the server does not know"
+  from "the server checked". `context_window` attaches POST-measurement, so
+  every size budget and boot-cost figure is bit-identical to before the
+  contract existed. `CONTEXT_WINDOW_OVERRIDE` warns when a
+  `DEFAULT_CONTEXT_WINDOW_TOKENS` disagrees with the resolved cell - the
+  distinction a bare const collapses, and the mechanism by which a stale
+  Railway `200000` beat an already-corrected code default for three model
+  generations.
+- **brief-s205a S203 audit-rec bundle** (#118). Config keel (handoff item
+  budget 300 -> 800, deadline and retry-budget constants, empty `files[]`
+  reject); infra hardening (total retry budget, blob-SHA landed-commit
+  identity, pagination/body hygiene, shutdown reaper + inflight registry);
+  bootstrap guards (wall-clock deadline with partial payload, slug-ambiguity
+  error, rule-aware `KERNEL_SPLIT_DRIFT`); read-path truth (`DOC_READ_DEGRADED`
+  nulls, archived-rule anchors); the finalize contract split into
+  `finalize/audit.ts` + `finalize/banner.ts` (loud draft failures, banner on
+  bare shapes, render contract on commit and full, deliverables cap, unverified
+  `docCount`); and the `LOG_RECREATE_BLOCKED` guard so only a confirmed 404
+  creates a starter document.
+- **Anthropic prompt caching on the `messages_api` synthesis transport** (#119),
+  applied to the large stable living-doc bundle only, size-gated, and a strict
+  no-op for the `cc_subprocess` and non-Anthropic transports. Haiku 4.5 gained
+  its `claude_code` cell so it resolves to a documented 200K window instead of
+  the undocumented floor. Speed only - the per-site quality-gate fallback still
+  protects output.
+- **`prism_log_decision` status validation** (#117, brief-s204c). The tool
+  accepted arbitrary status strings while the `_INDEX.md` push validator
+  enforced the canonical enum - the divergence behind the legacy DECIDED drift.
+  `VALID_DECISION_STATUSES` / `normalizeDecisionStatus` became the single
+  source of truth for both, and a non-enum status is now rejected fail-fast
+  before any GitHub I/O.
+
+### Fixed
+- **Kernel-Manifest parse tolerated pipes and markdown decoration** (#111). The
+  v3.0.0 kernel writes `> **Kernel-Manifest:** A | B | C`; the comma-only,
+  decoration-blind parse read the whole line as one section and warn-fired
+  `KERNEL_SPLIT_DRIFT` on every single boot (live canary evidence).
+
+### Documentation
+- S202 boot-context burn audit and refactor design (#108); brief-s203b
+  framework-wide audit (#116); model-bump / d275-rollout / CLAUDE.md truth-up
+  riding #118.
 
 ## [4.12.0] — 2026-07-14 (D-275: OpenRouter GLM-5.2 mechanical-tier routing)
 
