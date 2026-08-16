@@ -552,42 +552,55 @@ describe("D-253: standing-rules delivery — Tier A bodies only, Tier B+C indexe
   });
 
   it("standing_rules_index lists Tier B then Tier C entries with id+title+tier+topics (no bodies)", async () => {
-    const handler = await setupBootstrap({
-      brief: FULL_BRIEF,
-      insights: INSIGHTS_WITH_TIER_A,
-      standingRules: REGISTRY_B_AND_C,
-    });
-    const parsed = await boot(handler);
+    // S208 PR-S2c: the legacy standing_rules_index shape this test pins is
+    // now the explicit BOOT_INDEX_MODE=full rollback path, not the default.
+    process.env.BOOT_INDEX_MODE = "full";
+    try {
+      const handler = await setupBootstrap({
+        brief: FULL_BRIEF,
+        insights: INSIGHTS_WITH_TIER_A,
+        standingRules: REGISTRY_B_AND_C,
+      });
+      const parsed = await boot(handler);
 
-    // Tier B first (source order), then Tier C — union order from the registry.
-    expect(parsed.standing_rules_index).toEqual([
-      { id: "INS-201", title: "launchd recovery", tier: "B", topics: ["launchd"] },
-      { id: "INS-202", title: "untopiced B rule", tier: "B", topics: [] },
-      { id: "INS-203", title: "deep audit walkthrough", tier: "C", topics: ["audit"] },
-      { id: "INS-204", title: "cost reconciliation", tier: "C", topics: ["cost"] },
-    ]);
-    // The index carries NO rule bodies (B or C).
-    const raw = JSON.stringify(parsed);
-    expect(raw).not.toContain("Reload the plist.");
-    expect(raw).not.toContain("Long reference body that must NOT ship at boot");
+      // Tier B first (source order), then Tier C — union order from the registry.
+      expect(parsed.standing_rules_index).toEqual([
+        { id: "INS-201", title: "launchd recovery", tier: "B", topics: ["launchd"] },
+        { id: "INS-202", title: "untopiced B rule", tier: "B", topics: [] },
+        { id: "INS-203", title: "deep audit walkthrough", tier: "C", topics: ["audit"] },
+        { id: "INS-204", title: "cost reconciliation", tier: "C", topics: ["cost"] },
+      ]);
+      // The index carries NO rule bodies (B or C).
+      const raw = JSON.stringify(parsed);
+      expect(raw).not.toContain("Reload the plist.");
+      expect(raw).not.toContain("Long reference body that must NOT ship at boot");
+    } finally {
+      delete process.env.BOOT_INDEX_MODE;
+    }
   });
 
   it("SRV-109: the deprecated standing_rules_tier_c_index alias is removed; Tier C is reachable via standing_rules_index", async () => {
-    const handler = await setupBootstrap({
-      brief: FULL_BRIEF,
-      insights: INSIGHTS_WITH_TIER_A,
-      standingRules: REGISTRY_B_AND_C,
-    });
-    const parsed = await boot(handler);
+    // S208 PR-S2c: explicit full mode — this test pins the legacy field shape.
+    process.env.BOOT_INDEX_MODE = "full";
+    try {
+      const handler = await setupBootstrap({
+        brief: FULL_BRIEF,
+        insights: INSIGHTS_WITH_TIER_A,
+        standingRules: REGISTRY_B_AND_C,
+      });
+      const parsed = await boot(handler);
 
-    // brief-465 / SRV-109: the alias duplicated ~2.8KB/boot of data already in
-    // standing_rules_index with zero consumers — removed.
-    expect(parsed.standing_rules_tier_c_index).toBeUndefined();
-    // Tier C entries still ship in the canonical index ({id,title,tier,topics}).
-    const tierCInIndex = (parsed.standing_rules_index as Array<{ id: string; tier: string }>).filter(
-      e => e.tier === "C",
-    );
-    expect(tierCInIndex.map(e => e.id)).toEqual(["INS-203", "INS-204"]);
+      // brief-465 / SRV-109: the alias duplicated ~2.8KB/boot of data already in
+      // standing_rules_index with zero consumers — removed.
+      expect(parsed.standing_rules_tier_c_index).toBeUndefined();
+      // Tier C entries still ship in the canonical index ({id,title,tier,topics}).
+      const tierCInIndex = (parsed.standing_rules_index as Array<{ id: string; tier: string }>).filter(
+        e => e.tier === "C",
+      );
+      expect(tierCInIndex.map(e => e.id)).toEqual(["INS-203", "INS-204"]);
+    } finally {
+      delete process.env.BOOT_INDEX_MODE;
+    }
   });
 
   it("SRV-109: the alias stays absent when no Tier C rules exist", async () => {

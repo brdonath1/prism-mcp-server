@@ -7,6 +7,65 @@ by `src/utils/banner.ts` (`BANNER_SPEC_VERSION`) plus the prism-framework
 templates; [docs/banner-spec.md](docs/banner-spec.md) is historical reference.
 Banner changes add an entry here.
 
+## [4.14.2] - 2026-08-16 (S208 PR-S2c: BOOT_INDEX_MODE default → compact, soak-gated merge)
+
+**The D-278 two-phase completion.** Phase one (4.13.0, S202) shipped
+`session_state_manifest` ADDITIVELY, alongside the legacy
+`standing_rules_index`, with `BOOT_INDEX_MODE=full` as the safe default and
+`compact` as an opt-in. Phase two — this release — flips that default:
+`compact` now ships on every boot that doesn't set the env var, dropping the
+legacy `standing_rules_index` field entirely. `session_state_manifest.rules`
+was always a complete replacement (same rules, same topics, same
+reachability — brief-s202b round-trip fidelity, re-pinned by the T1 test
+matrix); the flip stops shipping the duplicate.
+
+Measured with `scripts/measure-boot-payload.mjs` against the live prism
+corpus, same harness, same frozen clock, default env on both sides:
+
+```
+97,361 B → 76,429 B   (−20,932 B, −21.5%)
+  standing_rules_index   20,908 B → (absent)
+```
+
+No other field moved — `session_state_manifest` (11,830 B),
+`boot_masthead_html` (7,692 B), and every other section are byte-identical to
+4.14.1. At roughly 3.5 bytes/token this is ≈ −5,974 tokens off every default
+boot fleet-wide, with zero information loss: everything the legacy index
+carried is still reachable, just from `session_state_manifest.rules.index`
+instead of a second copy of it.
+
+### Changed
+- **`resolveBootIndexMode` default flips `full` → `compact`** (`src/config.ts`).
+  An unset or unrecognized `BOOT_INDEX_MODE` now resolves to `compact`;
+  `BOOT_INDEX_MODE=full` is the env-only rollback, unchanged in behavior and
+  still fully tested (`tests/brief-s202b-boot-lean.test.ts`,
+  `tests/bootstrap-rich-payload.test.ts`). No deploy is required to roll
+  back — flip the env var and the next boot reverts.
+- Boot-payload-shape test pins across `tests/brief-s202b-boot-lean.test.ts`,
+  `tests/bootstrap-budget.test.ts`, `tests/bootstrap-payload-diet.test.ts`,
+  `tests/bootstrap-context-window.test.ts`, and
+  `tests/bootstrap-rich-payload.test.ts` updated to match: under default env
+  the legacy `standing_rules_index` is now asserted ABSENT (not merely
+  empty), with `session_state_manifest.rules.index` as the reachable
+  surface; tests that pin the legacy field's exact shape now set
+  `BOOT_INDEX_MODE=full` explicitly, since that shape is the rollback path,
+  not the default.
+
+### Merge gate (soak-gated, D-278/CLAUDE.md:96)
+This PR is opened, reviewed, and CI-gated in the normal way, but **merge is
+held on one post-4.14.1 (S2b) boot observation** — the payload-contract
+release immediately prior in this chain — before this default flip lands on
+top of it. The R35 kernel consumption path (`prism-framework`
+`core-template-mcp.md`) is already fleet-live and shape-agnostic for the
+compact manifest, so the gate here is operational confidence in 4.14.1's
+delivered shape, not a framework dependency. The orchestrator holds the
+merge decision; this PR does not self-merge.
+
+### Rollback
+Set `BOOT_INDEX_MODE=full` (env-only, no deploy) to restore the legacy
+`standing_rules_index` field on every boot. No code change is required in
+either direction.
+
 ## [4.14.1] - 2026-08-16 (S208 PR-S2b: payload contract — single masthead + compact manifest)
 
 **This release deliberately changes delivered bootstrap bytes.** Every other

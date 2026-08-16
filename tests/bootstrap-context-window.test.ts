@@ -181,7 +181,10 @@ describe("backward compatibility — params absent", () => {
     "handoff_size_bytes", "scaling_required", "critical_context", "current_state",
     "resumption_point", "recent_decisions", "guardrails", "next_steps",
     "open_questions", "prefetched_documents", "standing_rules",
-    "standing_rules_index", "session_state_manifest", "intelligence_brief",
+    // S208 PR-S2c: default BOOT_INDEX_MODE flipped full -> compact, so the
+    // legacy standing_rules_index is absent under the default env this
+    // suite boots with — session_state_manifest.rules.index is the surface.
+    "session_state_manifest", "intelligence_brief",
     "brief_age_sessions", "behavioral_rules", "banner_text", "boot_masthead_svg",
     "boot_masthead_html", "banner_spec_version", "template_banner_spec_version",
     "boot_test_verified", "trigger_enrollment", "files_fetched",

@@ -234,7 +234,10 @@ describe("T-1: bootstrap response size budget", () => {
     const result = await bootstrapHandler({ project_slug: "prism", opening_message: "Begin next session" });
     const parsed = JSON.parse(result.content[0].text);
     expect(parsed.standing_rules.map((r: { id: string }) => r.id)).toEqual(["INS-6"]);
-    expect(parsed.standing_rules_index).toEqual([]);
+    // S208 PR-S2c: default env is now compact — the legacy index field is
+    // absent, not an empty array; the (empty) index lives on the manifest.
+    expect("standing_rules_index" in parsed).toBe(false);
+    expect(parsed.session_state_manifest.rules.index).toEqual([]);
     expect(parsed.standing_rules_tier_c_index).toBeUndefined(); // SRV-109: deprecated alias removed
   });
 

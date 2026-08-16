@@ -235,9 +235,11 @@ afterEach(() => {
 // ─── env resolver defaults (unknown values fall back, never crash) ──────────
 
 describe("brief-s202b env resolvers", () => {
-  it("defaults: full / dedup / opening_only / svg-on / files", () => {
+  it("defaults: compact / dedup / opening_only / svg-on / files", () => {
     const env = {} as NodeJS.ProcessEnv;
-    expect(resolveBootIndexMode(env)).toBe("full");
+    // S208 PR-S2c (D-278 two-phase completion): the boot-lean default flips
+    // full -> compact. Rollback: BOOT_INDEX_MODE=full (env-only).
+    expect(resolveBootIndexMode(env)).toBe("compact");
     expect(resolveBriefCompactMode(env)).toBe("dedup");
     expect(resolvePrefetchMode(env)).toBe("opening_only");
     expect(resolveBootMastheadSvg(env)).toBe(true);
@@ -245,8 +247,11 @@ describe("brief-s202b env resolvers", () => {
   });
 
   it("explicit values select the alternate branch; unknown values fall back to the default", () => {
-    expect(resolveBootIndexMode({ BOOT_INDEX_MODE: "compact" } as NodeJS.ProcessEnv)).toBe("compact");
-    expect(resolveBootIndexMode({ BOOT_INDEX_MODE: "bogus" } as NodeJS.ProcessEnv)).toBe("full");
+    // S208 PR-S2c: the alternate branch relative to the new compact default
+    // is "full" (the rollback path); an unrecognized value falls back to the
+    // new default, compact — never to the old default.
+    expect(resolveBootIndexMode({ BOOT_INDEX_MODE: "full" } as NodeJS.ProcessEnv)).toBe("full");
+    expect(resolveBootIndexMode({ BOOT_INDEX_MODE: "bogus" } as NodeJS.ProcessEnv)).toBe("compact");
     expect(resolveBriefCompactMode({ BRIEF_COMPACT_MODE: "legacy" } as NodeJS.ProcessEnv)).toBe("legacy");
     expect(resolveBriefCompactMode({ BRIEF_COMPACT_MODE: "??" } as NodeJS.ProcessEnv)).toBe("dedup");
     expect(resolvePrefetchMode({ PREFETCH_MODE: "legacy" } as NodeJS.ProcessEnv)).toBe("legacy");
@@ -272,24 +277,36 @@ describe("brief-s202b T1 — session_state_manifest + BOOT_INDEX_MODE", () => {
     expect(truncateTitle40("y".repeat(40))).toBe("y".repeat(40)); // exactly 40 → untouched
   });
 
-  it("full mode (default): legacy standing_rules_index present AND manifest present (additive release)", async () => {
-    delete process.env.BOOT_INDEX_MODE;
+  it("full mode (explicit rollback): legacy standing_rules_index present AND manifest present (additive shape)", async () => {
+    // S208 PR-S2c: full is no longer the default — it is the explicit
+    // BOOT_INDEX_MODE=full rollback path.
+    process.env.BOOT_INDEX_MODE = "full";
     const parsed = await boot();
     expect(parsed.standing_rules_index).toBeDefined();
     expect(Array.isArray(parsed.standing_rules_index)).toBe(true);
     expect(parsed.session_state_manifest).toBeDefined();
   });
 
-  it("compact mode: legacy index OMITTED (absent, not null), manifest present, response byte-smaller", async () => {
-    delete process.env.BOOT_INDEX_MODE;
+  it("compact mode (default): legacy index OMITTED (absent, not null), manifest present, response byte-smaller", async () => {
+    // S208 PR-S2c: compact is now the default (no env needed); full is the
+    // explicit comparison point for the byte-smaller assertion below.
+    process.env.BOOT_INDEX_MODE = "full";
     const fullParsed = await boot();
     const fullBytes = fullParsed.response_bytes as number;
 
-    process.env.BOOT_INDEX_MODE = "compact";
+    delete process.env.BOOT_INDEX_MODE;
     const parsed = await boot();
     expect("standing_rules_index" in parsed).toBe(false);
     expect(parsed.session_state_manifest).toBeDefined();
     expect(parsed.response_bytes).toBeLessThan(fullBytes);
+  });
+
+  it("default env: standing_rules_index ABSENT, session_state_manifest.rules.index present (S208 PR-S2c)", async () => {
+    delete process.env.BOOT_INDEX_MODE;
+    const parsed = await boot();
+    expect("standing_rules_index" in parsed).toBe(false);
+    expect(parsed.session_state_manifest).toBeDefined();
+    expect(Array.isArray(parsed.session_state_manifest.rules.index)).toBe(true);
   });
 
   it("manifest shape: docs rows carry {path, sha, bytes}; rules carry total/tier_counts/compact index; brief carries synthesized_session + delivered sections", async () => {
