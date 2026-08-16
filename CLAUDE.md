@@ -6,7 +6,7 @@ This is the **PRISM MCP Server** — a custom remote MCP (Model Context Protocol
 
 **Owner:** Brian (brdonath1 on GitHub)
 **Framework:** PRISM — current version pinned by the framework repo's core-template; fetched dynamically at bootstrap.
-**Server Version:** 4.14.0
+**Server Version:** 4.14.1
 **Status:** Production — deployed on Railway, serving all active PRISM projects.
 
 ## What PRISM Is
@@ -25,7 +25,7 @@ The MCP server is the v2 evolution — separating Claude into a pure reasoning a
 └───────────────┬───────────────────────────────┘
                 │ MCP Protocol (HTTPS)
 ┌───────────────▼───────────────────────────────┐
-│  PRISM MCP Server (Railway) — v4.14.0         │
+│  PRISM MCP Server (Railway) — v4.14.1         │
 │  32 MCP tools — stateless proxy               │
 │  ├── 14 PRISM  (bootstrap/fetch/push/X sentiment) │
 │  ├── 10 Railway (logs/deploy/env/status/CRUD) │
@@ -93,10 +93,11 @@ The MCP server is the v2 evolution — separating Claude into a pure reasoning a
 | `LLM_ROUTING_OPENROUTER_SITES` | optional | D-275 activation surface: comma list of mechanical call-site ids (`synthesis_draft`, `synthesis_pdu`, `synthesis_brief`). openrouter serves exactly (SITES ∩ mechanical); unset/empty ⇒ routing bit-identical to pre-D-275. **Kill-switch: clear this var** (no deploy needed). Requires `LLM_ROUTING_ENABLED=true`, `LLM_ROUTING_DRY_RUN=false`, and `OPENROUTER_API_KEY`; needs NO change to `LLM_ROUTING_ALLOWED_PROVIDERS` or any other shared var. |
 | `LLM_ROUTING_OPENROUTER_REASONING_{BRIEF,DRAFT,PDU}` | optional | Per-site GLM thinking control: `off` (default) \| `low` \| `medium` \| `high`. GLM-5.2 defaults to thinking mode and reasoning consumes `max_tokens` (S196 live hazard: `finish_reason=length`, zero text), so every openrouter call pins `reasoning: {enabled:false}` unless a site opts in here — and opt-in is guarded to `max_tokens ≥ 16384`. |
 | `OPENROUTER_SITE_URL` / `OPENROUTER_APP_TITLE` | optional | OpenRouter attribution headers (`HTTP-Referer` / `X-Title`); default to this repo's URL and "PRISM MCP Server". |
-| `BOOT_INDEX_MODE` | optional | S202 boot-lean (brief-s202b T1): `full` (default) ships the legacy `standing_rules_index` PLUS the new `session_state_manifest`; `compact` ships the manifest only (legacy index omitted, ≈ −15.4KB on the prism baseline). **Flip to `compact` only after the s202c template merge + one soak session.** Rollback: `full` (env-only). |
+| `BOOT_INDEX_MODE` | optional | S202 boot-lean (brief-s202b T1): `full` (default) ships the legacy `standing_rules_index` PLUS the new `session_state_manifest`; `compact` ships the manifest only (legacy index omitted, ≈ −20.9KB on the S208-measured prism baseline). **Flip to `compact` only after the s202c template merge + one soak session.** Rollback: `full` (env-only). |
 | `BRIEF_COMPACT_MODE` | optional | brief-s202b T3: `dedup` (default) drops the brief's Project State digest line (measured duplicate of `current_state`); `legacy` restores it. The BRIEF_COMPACT_FALLBACK guard is identical in both modes. |
 | `PREFETCH_MODE` | optional | brief-s202b T4: `opening_only` (default) drops the next_steps-keyword prefetch auto-trigger and caps each summary at `PREFETCH_SUMMARY_CAP_BYTES` (1200); `legacy` restores today's exact trigger behavior. `PREFETCH_DELIVERED` telemetry emits in both modes. |
-| `BOOT_MASTHEAD_SVG` | optional | brief-s202b T6: `on` (default — D-249 operator choice) renders the boot graphical mastheads; `off` ships `boot_masthead_svg: null` AND `boot_masthead_html: null` (brief-720 — one knob for both; template text-banner fallback path is pre-built). |
+| `BOOT_MASTHEAD` | optional | S208 MCP-6: which SINGLE graphical masthead the boot populates. `html` (default) ships `boot_masthead_html` and `boot_masthead_svg: null`; `svg` ships the reverse; `off` ships BOTH null and `banner_text` is the render surface (its fallback path is pre-built). Before 4.14.1 both rendered on every boot and the session used one — 2,721 measured bytes of dead payload. Precedence: a recognized value here wins; unset **or unrecognized** falls back to `BOOT_MASTHEAD_SVG`, so a typo can never re-enable a masthead an operator turned off. Rollback: unset (env-only). |
+| `BOOT_MASTHEAD_SVG` | optional | brief-s202b T6, **superseded by `BOOT_MASTHEAD`** and kept as the compatibility alias: `off` still ships `boot_masthead_svg: null` AND `boot_masthead_html: null`, so a deployment that set it stays off across the 4.14.1 upgrade with no operator action. Any other value (or unset) means "a masthead renders", and `BOOT_MASTHEAD` decides which. |
 | `FINALIZE_COMPOSE_MODE` | optional | brief-s202b T8 (D-275 F-1): `files` (default) — the CS-1 draft emits complete finalization files, server-validated and persisted to `.prism/finalize-draft.json`; chat approves via `prism_finalize action=commit use_draft_files: true`. Gate failures fall back to the legacy 6-key draft response (`FINALIZE_COMPOSE_FALLBACK` warn). `legacy` disables composition. |
 | `SYNTHESIS_INPUT_{MAX,TARGET}_TOKENS` | optional | Synthesis input-budget ceiling/trim-target, estimated tokens (default `120000`/`60000`). Over MAX, `src/ai/input-budget.ts` deterministically priority-trims the assembled brief/PDU input down to TARGET before the call; at-or-under MAX the input is never trimmed (S203 audit F-B21). |
 | `DEFAULT_CONTEXT_WINDOW_TOKENS` | optional | Server-side boot-estimate context window, default `500000` (`src/config.ts`). Feeds only the banner's boot-cost percentage — not the client's own Rule 9 meter, which the server cannot see directly. Superseded per-request by the `MODEL_CAPABILITIES` resolved cell (`docs/model-bump.md` §1) once the client declares `client_model`/`client_surface`. See `docs/model-bump.md` §2 for the pending R2 operator env action. |

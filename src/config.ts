@@ -65,8 +65,12 @@ export const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
  *  PR-S3 gated auth-hardening + ops truth-up release (the default-OFF
  *  AUTH_REQUIRE_BEARER knob, its pinned middleware tests, and the backfilled
  *  4.13.0 CHANGELOG entry) -- request handling is byte-identical to 4.13.2
- *  until an operator sets the knob. */
-export const SERVER_VERSION = "4.14.0";
+ *  until an operator sets the knob; 4.14.1 is the S208 PR-S2b payload
+ *  contract (single masthead via BOOT_MASTHEAD, compacted
+ *  session_state_manifest.rules) -- the one release in the S208 server chain
+ *  that deliberately CHANGES delivered bootstrap bytes, by design and by
+ *  measurement (-6,328 B per boot on the prism corpus: 103,690 -> 97,362). */
+export const SERVER_VERSION = "4.14.1";
 
 /** MCP client timeout is ~60s. All server-side operations must complete within 50s
  *  to leave 10s buffer for transport overhead. This constrains synthesis, draft,
@@ -145,8 +149,8 @@ export const BOOTSTRAP_OVERSIZE_ERROR_BYTES =
 /** T1 (P-1): boot rules-index delivery mode.
  *  `full` (default) ships today's standing_rules_index unchanged PLUS the new
  *  session_state_manifest (additive release — SRV-109 two-phase);
- *  `compact` ships the manifest ONLY (legacy index omitted; ≈ −15.4KB on the
- *  measured prism baseline). Rollback: BOOT_INDEX_MODE=full (env-only). */
+ *  `compact` ships the manifest ONLY (legacy index omitted; ≈ −20.9KB on the
+ *  S208-measured prism baseline). Rollback: BOOT_INDEX_MODE=full (env-only). */
 export function resolveBootIndexMode(env: NodeJS.ProcessEnv = process.env): "full" | "compact" {
   return env.BOOT_INDEX_MODE?.trim().toLowerCase() === "compact" ? "compact" : "full";
 }
@@ -191,13 +195,53 @@ export const PREFETCH_SUMMARY_CAP_BYTES =
 export const HANDOFF_ITEM_BUDGET_BYTES =
   parseInt(process.env.HANDOFF_ITEM_BUDGET_BYTES ?? "800", 10) || 800;
 
-/** T6 (P-6a): boot masthead SVG knob. Default ON — D-249 restored graphical
- *  banners as an explicit operator choice; `off` ships
+/** T6 (P-6a): boot masthead SVG knob — LEGACY. Default ON — D-249 restored
+ *  graphical banners as an explicit operator choice; `off` ships
  *  `boot_masthead_svg: null` (the template's fallback path is pre-built,
- *  core-template-mcp.md:175-181). Rollback: unset or `on`. */
+ *  core-template-mcp.md:175-181). Rollback: unset or `on`.
+ *
+ *  Superseded as the primary control by `resolveBootMasthead` (S208 MCP-6),
+ *  which needs a three-way answer rather than a boolean. This function keeps
+ *  its exact semantics because it IS the alias path: a deployment that set
+ *  `BOOT_MASTHEAD_SVG=off` must stay off after the upgrade without an
+ *  operator touching anything. Nothing else should call it. */
 export function resolveBootMastheadSvg(env: NodeJS.ProcessEnv = process.env): boolean {
   const raw = env.BOOT_MASTHEAD_SVG?.trim().toLowerCase();
   return !(raw === "off" || raw === "false" || raw === "0" || raw === "no");
+}
+
+/** MCP-6 (S208 PR-S2b): SINGLE-masthead knob.
+ *
+ *  `html` (default) populates `boot_masthead_html` and ships
+ *  `boot_masthead_svg: null`; `svg` does the reverse; `off` ships BOTH null
+ *  and `banner_text` — always emitted, never gated — is the render surface.
+ *  Exactly one graphical masthead is populated per boot.
+ *
+ *  WHY: brief-720 shipped the HTML masthead ALONGSIDE the SVG one so older
+ *  consumers saw no change. Both have rendered on every boot since, and the
+ *  session renders one — the other is ~2.7KB of measured payload (S208
+ *  `scripts/measure-boot-payload.mjs`) that no client ever reads. The kernel
+ *  already says "render whichever" (core-template-mcp.md Rule 1), so shipping
+ *  one is inside the existing contract.
+ *
+ *  PRECEDENCE (documented because two variables now overlap):
+ *   1. `BOOT_MASTHEAD` naming a known mode (`html`, `svg`, `off`, or the
+ *      falsy spellings `false`/`0`/`no`) wins outright, in both directions —
+ *      `BOOT_MASTHEAD=svg` re-enables a masthead that `BOOT_MASTHEAD_SVG=off`
+ *      disabled, and `BOOT_MASTHEAD=off` disables one the legacy knob left on.
+ *   2. Otherwise — unset, empty, OR an unrecognized value — the legacy
+ *      `BOOT_MASTHEAD_SVG` decides via `resolveBootMastheadSvg`: off => `off`,
+ *      anything else => `html`. A TYPO in the new variable therefore falls
+ *      back to the operator's existing intent and can never silently
+ *      re-enable a masthead they turned off.
+ *
+ *  Read at CALL time (the `resolveBootIndexMode` pattern) so a per-deployment
+ *  flip and its rollback are env-only, with no re-import and no deploy. */
+export function resolveBootMasthead(env: NodeJS.ProcessEnv = process.env): "html" | "svg" | "off" {
+  const raw = env.BOOT_MASTHEAD?.trim().toLowerCase();
+  if (raw === "html" || raw === "svg") return raw;
+  if (raw === "off" || raw === "false" || raw === "0" || raw === "no") return "off";
+  return resolveBootMastheadSvg(env) ? "html" : "off";
 }
 
 /** T8 (F-1): finalize compose-offload mode.

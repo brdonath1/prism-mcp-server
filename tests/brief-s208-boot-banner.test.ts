@@ -100,6 +100,19 @@ const mockServer = {
   }),
 } as unknown as McpServer;
 
+/** S208 MCP-6: run `fn` with BOOT_MASTHEAD pinned to `mode`, always restoring
+ *  the ambient value so one test can never leak a mode into the next. */
+async function withMasthead(mode: "html" | "svg" | "off", fn: () => Promise<void>): Promise<void> {
+  const saved = process.env.BOOT_MASTHEAD;
+  process.env.BOOT_MASTHEAD = mode;
+  try {
+    await fn();
+  } finally {
+    if (saved === undefined) delete process.env.BOOT_MASTHEAD;
+    else process.env.BOOT_MASTHEAD = saved;
+  }
+}
+
 beforeEach(async () => {
   vi.clearAllMocks();
   // Mock implementations persist across tests, so restore the real renderers
@@ -182,10 +195,18 @@ describe("MCP-13 - the boot docs count is measured, never asserted", () => {
     expect(String(parsed.banner_text)).not.toContain("10/10 docs healthy");
   });
 
-  it("the masthead agrees with the text banner", async () => {
+  // S208 MCP-6: one masthead per boot. Both renderers are still checked - the
+  // agreement contract belongs to whichever one the deployment selects.
+  it("the masthead agrees with the text banner, in both modes", async () => {
     const { parsed } = await boot({ project_slug: "prism" });
-    expect(String(parsed.boot_masthead_svg)).toContain("?/10 docs (unverified)");
     expect(String(parsed.boot_masthead_html)).toContain("?/10 docs (unverified)");
+    expect(parsed.boot_masthead_svg).toBeNull();
+
+    await withMasthead("svg", async () => {
+      const { parsed: svgBoot } = await boot({ project_slug: "prism" });
+      expect(String(svgBoot.boot_masthead_svg)).toContain("?/10 docs (unverified)");
+      expect(svgBoot.boot_masthead_html).toBeNull();
+    });
   });
 });
 
@@ -194,15 +215,18 @@ describe("MCP-19 - render failures are diagnostics, not just log lines", () => {
     mockMastheadSvg.mockImplementation(() => {
       throw new Error("forced svg failure");
     });
-    const { parsed } = await boot({ project_slug: "prism" });
+    // S208 MCP-6: the SVG renderer only runs when it is the selected mode.
+    await withMasthead("svg", async () => {
+      const { parsed } = await boot({ project_slug: "prism" });
 
-    const entries = parsed.diagnostics as Array<{ code: string; context?: { surface?: string } }>;
-    const hit = entries.find((d) => d.code === "MASTHEAD_RENDER_FAILED");
-    expect(hit).toBeDefined();
-    expect(hit!.context!.surface).toBe("boot_masthead_svg");
-    expect(parsed.boot_masthead_svg).toBeNull();
-    // banner_text is unaffected - it is the genuine fallback.
-    expect(typeof parsed.banner_text).toBe("string");
+      const entries = parsed.diagnostics as Array<{ code: string; context?: { surface?: string } }>;
+      const hit = entries.find((d) => d.code === "MASTHEAD_RENDER_FAILED");
+      expect(hit).toBeDefined();
+      expect(hit!.context!.surface).toBe("boot_masthead_svg");
+      expect(parsed.boot_masthead_svg).toBeNull();
+      // banner_text is unaffected - it is the genuine fallback.
+      expect(typeof parsed.banner_text).toBe("string");
+    });
   });
 
   it("a masthead HTML render failure raises MASTHEAD_RENDER_FAILED for its own surface", async () => {
@@ -217,7 +241,22 @@ describe("MCP-19 - render failures are diagnostics, not just log lines", () => {
     );
     expect(hit).toBeDefined();
     expect(parsed.boot_masthead_html).toBeNull();
-    expect(typeof parsed.boot_masthead_svg).toBe("string");
+    // S208 MCP-6: the unselected masthead is null by design, not by failure -
+    // banner_text is what carries the boot when the selected one dies.
+    expect(parsed.boot_masthead_svg).toBeNull();
+    expect(typeof parsed.banner_text).toBe("string");
+  });
+
+  it("the mode that did NOT fail still renders (failures are per-surface)", async () => {
+    mockMastheadHtml.mockImplementation(() => {
+      throw new Error("forced html failure");
+    });
+    await withMasthead("svg", async () => {
+      const { parsed } = await boot({ project_slug: "prism" });
+      expect(typeof parsed.boot_masthead_svg).toBe("string");
+      const codes = (parsed.diagnostics as Array<{ code: string }>).map((d) => d.code);
+      expect(codes).not.toContain("MASTHEAD_RENDER_FAILED");
+    });
   });
 
   it("a clean boot raises no render diagnostics", async () => {
