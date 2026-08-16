@@ -1,5 +1,11 @@
 import type { Request, Response, NextFunction } from "express";
-import { MCP_AUTH_TOKEN, ANTHROPIC_CIDRS, ALLOWED_CIDRS, ENABLE_IP_ALLOWLIST } from "../config.js";
+import {
+  MCP_AUTH_TOKEN,
+  ANTHROPIC_CIDRS,
+  ALLOWED_CIDRS,
+  ENABLE_IP_ALLOWLIST,
+  resolveAuthRequireBearer,
+} from "../config.js";
 import { timingSafeEqual } from "node:crypto";
 import { isIpInAnyCidr } from "../utils/cidr.js";
 import { logger } from "../utils/logger.js";
@@ -49,6 +55,24 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
       // Wrong token — don't fall through to IP check, reject immediately
       logger.warn("Invalid Bearer token", { ip: getClientIp(req), path: req.path });
       res.status(403).json({ error: "Forbidden — invalid token" });
+      return;
+    }
+
+    // S208 PR-S3 / audit R20, GATED (default OFF). The reject for a MISSING or
+    // non-Bearer Authorization header lives OUTSIDE the startsWith("Bearer ")
+    // branch above, because that is exactly the case the branch cannot see: a
+    // request with no credential at all skipped the token check entirely and
+    // fell through to the IP allowlist below. With AUTH_REQUIRE_BEARER on, a
+    // configured token is a REQUIRED token and the request stops here.
+    //
+    // 401 (not 403) is deliberate: the client is unauthenticated, not
+    // forbidden, and the distinction is what tells an operator reading logs
+    // that the connector never sent a credential. Default OFF keeps 4.13.2
+    // behavior byte-identical -- see resolveAuthRequireBearer in config.ts for
+    // why the flip is an operator action rather than a merge.
+    if (resolveAuthRequireBearer()) {
+      logger.warn("Missing Bearer token", { ip: getClientIp(req), path: req.path });
+      res.status(401).json({ error: "Unauthorized: Bearer token required" });
       return;
     }
   }

@@ -61,8 +61,12 @@ export const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
  *  cache, sha-keyed parse cache, prism_load_rules deadline, wave-3 hoist,
  *  boot-test path cache, bounded Railway observation race, total-elapsed
  *  retry budget, KI-28 doc-guard paths, archive body resolution) -- delivered
- *  bootstrap payload bytes are UNCHANGED by that release. */
-export const SERVER_VERSION = "4.13.2";
+ *  bootstrap payload bytes are UNCHANGED by that release; 4.14.0 is the S208
+ *  PR-S3 gated auth-hardening + ops truth-up release (the default-OFF
+ *  AUTH_REQUIRE_BEARER knob, its pinned middleware tests, and the backfilled
+ *  4.13.0 CHANGELOG entry) -- request handling is byte-identical to 4.13.2
+ *  until an operator sets the knob. */
+export const SERVER_VERSION = "4.14.0";
 
 /** MCP client timeout is ~60s. All server-side operations must complete within 50s
  *  to leave 10s buffer for transport overhead. This constrains synthesis, draft,
@@ -745,6 +749,36 @@ export const PREFETCH_KEYWORDS: Record<string, string> = {
 
 /** MCP Auth Token for Bearer authentication (B.2) */
 export const MCP_AUTH_TOKEN = process.env.MCP_AUTH_TOKEN || "";
+
+/**
+ * S208 PR-S3 / audit R20: require a Bearer credential whenever one is
+ * configured. DEFAULT `false` -- with the knob off, `authMiddleware` behaves
+ * exactly as it did in 4.13.2: a request carrying NO `Authorization` header
+ * (or one that is not a Bearer header) falls through to the IP allowlist, and
+ * an allowlisted source is served with no credential at all. That
+ * fall-through is the finding: `MCP_AUTH_TOKEN` reads like a required
+ * credential while a caller inside the allowlisted CIDR never has to present
+ * it, so the token's real strength is the allowlist's.
+ *
+ * With the knob ON and `MCP_AUTH_TOKEN` set, a missing or non-Bearer
+ * `Authorization` header is rejected 401 instead of falling through. `/health`
+ * stays exempt in both modes (Railway's probe sends no credential).
+ *
+ * Shipped default-OFF DELIBERATELY: the live connector's auth posture is
+ * UNKNOWN at merge time, and flipping this blind would lock out a client that
+ * authenticates by source IP today. The flip is an operator action taken after
+ * confirming the live client sends Bearer; rollback is env-only
+ * (`AUTH_REQUIRE_BEARER=false`), no deploy.
+ *
+ * Reads process.env at CALL time (the resolveBootIndexMode pattern) so the
+ * flip needs no re-import and tests need no module reset. Anything other than
+ * a true-ish token (`true`/`1`/`yes`/`on`, case-insensitive) is the default:
+ * an unparseable value must never silently harden auth.
+ */
+export function resolveAuthRequireBearer(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = env.AUTH_REQUIRE_BEARER?.trim().toLowerCase();
+  return raw === "true" || raw === "1" || raw === "yes" || raw === "on";
+}
 
 /** Railway API token (workspace-scoped). Required to enable Railway tools. */
 export const RAILWAY_API_TOKEN = process.env.RAILWAY_API_TOKEN ?? "";

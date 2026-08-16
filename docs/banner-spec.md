@@ -72,9 +72,9 @@ Both surfaces consume the same TypeScript data contract, `UnifiedBannerInput`
 | `sessionNameLine` | `string \| null` (optional, boot graphical widget only) | Full current chat title rendered inside `boot_masthead_svg` as `Chat: {session_name_line}` |
 | `handoffVersion` | `number` | Handoff document version number |
 | `handoffNote` | `string` | Parenthetical after the handoff version: boot `"{size}KB"`; finalize `"pushed" \| "push failed" \| "unverified"` |
-| `decisionCount` | `number` | Total decision count |
-| `decisionNote` | `string \| null` (optional) | Parenthetical after the decision count: boot `"{N} guardrails"`; finalize `banner_data.decisions_note` or null |
-| `docCount` | `number` | Living documents in-scope count |
+| `decisionCount` | `number \| null` | Total decision count. `null` = the server could not verify it (S208 MCP-2: the finalize banner's 3s decision-index race lost) and every renderer emits `? decisions (unverified)` rather than a confident `0` |
+| `decisionNote` | `string \| null` (optional) | Parenthetical after the decision count: boot `"{N} guardrails"`; finalize `banner_data.decisions_note` or null. When `decisionCount` is `null` the note rides ALONGSIDE the marker: `? decisions (unverified; {note})` |
+| `docCount` | `number \| null` | Living documents in-scope count. `null` = the surface did not verify them (S208 MCP-13: the boot fan-out never probes all ten) and every renderer emits `?/{T} docs (unverified)` |
 | `docTotal` | `number` | Total living documents (always 10) |
 | `statusRow` | `BannerStatusEntry[]` | Status entries; each has `label: string` and `status: "ok" \| "warn" \| "critical"` |
 | `suggested` | `{ display: string; rationale: string } \| null` (optional) | Model recommendation (brief-405 / D-191); omitted entirely from output when null/undefined |
@@ -87,6 +87,7 @@ The line grammar these fields produce:
 ```
 L1   PRISM v{templateVersion} | Session {N}[ finalized] | {MM-DD-YY HH:MM:SS} CST
 L2   Handoff v{V} ({note}) | {D} decisions[ ({note})] | {C}/{T} docs {healthy|updated}
+     (unverified forms: `? decisions (unverified[; {note}])`, `?/{T} docs (unverified)`)
 L3   {icon} {label}[ | {icon} {label}…]
 L4?  Suggested: {display} — {rationale}
      (blank)
@@ -113,8 +114,8 @@ truncated to 197 + `...`.
 | L1 session segment | `Session {N}` (no tag) |
 | L1 templateVersion | live `core-template-mcp.md` version, falling back to the handoff's `Template Version`; `unknown` when unparseable |
 | L2 handoff note | handoff size, e.g. `4.4KB` |
-| L2 decision note | `{G} guardrails` (always present) |
-| L2 docs label | `docs healthy` |
+| L2 decision note | `{G} guardrails`. Present whenever the count is known; if `decisionCount` is `null` the segment renders `? decisions (unverified; {G} guardrails)` — the marker and the note share one parenthetical. Today's boot path always supplies a parsed count, so the unverified form is the shared renderer's contract rather than an observed boot output. |
+| L2 docs label | `docs healthy` when the boot fan-out probed all ten living documents; otherwise `?/{T} docs (unverified)` (S208 MCP-13). Boot verifies only the documents it actually reads — the pre-4.13.1 hardcoded `10/10 docs healthy` asserted a health check boot never performed. `prism_finalize`'s audit is the surface that inventories all ten. |
 | L3 status row | tool checks: `bootstrap`, `push verified`/`push failed`, `template loaded`, `no scaling needed`/`scaling required` |
 | L4 Suggested | from `recommended_session_settings` (brief-405 / D-191), position 4 — the line immediately after the status row |
 | List block | `Next:` — handoff next steps; first item suffixed ` [priority]` |
@@ -150,7 +151,7 @@ plain `banner_text` grammar.
 | L1 session segment | `Session {N} finalized` |
 | L1 templateVersion | the `Template Version` declared by the committed handoff.md; `unknown` when absent/unparseable |
 | L2 handoff note | `pushed` \| `push failed` \| `unverified` |
-| L2 decision note | operator-supplied `banner_data.decisions_note`, omitted when absent |
+| L2 decision note | operator-supplied `banner_data.decisions_note`, omitted when absent. The count itself resolves in precedence order (S208 MCP-2): the pushed `decisions/_INDEX.md` in `files[]`, then the audit's already-computed count, then a 3s race against the repo read, then `null` — which renders `? decisions (unverified)` and raises a `BANNER_DECISIONS_UNVERIFIED` warn. The commit is unaffected either way. |
 | L2 docs label | `docs updated` — `{C}` = living documents successfully committed (both `.prism/` and legacy root layouts counted; domain decision files `decisions/{domain}.md` are NOT living documents and do not count), `{T}` = 10. The banner and the response's `confirmation` sentence share one counter, so they always agree and `{C} ≤ {T}` by construction. |
 | L3 status row | phase steps: `audit`, `draft`, `commit`, `verified`. Defaults derive from the commit outcome; `banner_data.step_statuses` overrides win. The `full` action feeds its real audit/draft outcomes. |
 | L4 Suggested | next-session recommendation classified from the committed handoff's `Next Steps` (brief-405 / D-191) |
@@ -226,9 +227,16 @@ module (`renderBannerFallback`):
 ```
 PRISM | Session {N} | Handoff v{V} | {C}/{T} docs
 PRISM | Session {N} | Handoff v{V} | ?/{T} docs (unverified)
+PRISM | Session ? | Handoff v? | ?/{T} docs (unverified)
 ```
 
-- Boot: `{C}/{T}` = living-doc count (10/10).
+- Boot: `{C}/{T}` = living-doc count, `?` when the fan-out did not probe all
+  ten (same MCP-13 rule as the full banner).
+- `sessionNumber` and `handoffVersion` are `number | null` (S208 MCP-3). The
+  pre-resolution boot exits — an ambiguous slug, a core fetch that threw, a
+  deadline that expired before the handoff was parsed — know neither number and
+  render `Session ?` / `Handoff v?`. The pre-MCP-3 callers defaulted to `?? 1`
+  and shipped a fabricated `Handoff v1`.
 - Finalize: `{C}` = successfully pushed file count (capped at `{T}` = 10).
 - Deadline/hard-error shapes (S203 audit R18 / F-A2-11): when the failure
   means NO doc state was verified — commit deadline, outer-catch, pre-flight
