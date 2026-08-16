@@ -10,7 +10,12 @@
  * Contracts: `docs/banner-spec.md`, `_templates/finalization-banner-spec.md`.
  */
 
-import { DOC_ROOT, LIVING_DOCUMENTS, PROJECT_DISPLAY_NAMES } from "../../config.js";
+import {
+  BANNER_DECISIONS_RACE_MS,
+  DOC_ROOT,
+  LIVING_DOCUMENTS,
+  PROJECT_DISPLAY_NAMES,
+} from "../../config.js";
 import { resolveDocPath } from "../../utils/doc-resolver.js";
 import { logger } from "../../utils/logger.js";
 import { extractSection, parseNumberedList, parseMarkdownTable } from "../../utils/summarizer.js";
@@ -80,6 +85,10 @@ export interface FinalizeBannerData {
   };
   llm_usage?: unknown[];
 }
+
+/** Sentinel resolved by the MCP-2 decision-index race timer. A Symbol so it
+ *  can never collide with a real resolveDocPath result (the push.ts pattern). */
+const BANNER_DECISIONS_RACE_LOST = Symbol("finalize.banner.decisions.race");
 
 export function normalizeBannerText(value: unknown, maxLength: number): string {
   if (typeof value !== "string") return "";
@@ -172,10 +181,15 @@ export function normalizeFinalizationLlmUsage(
  * did NOT verify the repo, and the atomic commit may well have landed, so the
  * pre-R18 hardcoded `0` asserted "0/10 docs" as fact. Null renders
  * `?/10 docs (unverified)` instead — an unknown reported as unknown.
+ *
+ * S208 MCP-3 extends the same rule to the identity fields: `sessionNumber` and
+ * `handoffVersion` accept null and render `Session ?` / `Handoff v?`. Callers
+ * on paths with no supplied handoff version (action=audit, an action=full that
+ * omitted it) used to pass `?? 1` and ship a fabricated "Handoff v1".
  */
 export function assembleFinalizeErrorBannerFields(
-  sessionNumber: number,
-  handoffVersion: number,
+  sessionNumber: number | null,
+  handoffVersion: number | null,
 ): {
   banner_text: string;
   banner_spec_version: typeof BANNER_SPEC_VERSION;
@@ -246,6 +260,7 @@ export async function assembleFinalizeBanner(
   allSucceeded: boolean,
   bannerData?: FinalizeBannerData,
   diagnostics?: DiagnosticsCollector,
+  auditDecisionCount?: number | null,
 ): Promise<{ text: string; htmlInput: FinalizationBannerHtmlInput | null }> {
   const docsTotal = LIVING_DOCUMENTS.length;
 
@@ -309,21 +324,90 @@ export async function assembleFinalizeBanner(
       handoffNote = "unverified";
     }
 
-    // Count decisions from the repo index, falling back to the commit files
-    // array (handles legacy paths and unmigrated repos).
-    let decisionsCount = 0;
-    try {
-      const indexDoc = await resolveDocPath(projectSlug, "decisions/_INDEX.md");
-      decisionsCount = parseMarkdownTable(indexDoc.content).length;
-    } catch {
-      const indexFile = files.find(
-        (f) =>
-          f.path === "decisions/_INDEX.md" ||
-          f.path === `${DOC_ROOT}/decisions/_INDEX.md`,
-      );
-      if (indexFile) {
-        decisionsCount = parseMarkdownTable(indexFile.content).length;
+    // S208 MCP-2: the decision count, resolved network-SAFELY.
+    //
+    // This banner is assembled AFTER the atomic commit has landed, so an
+    // un-raced GitHub read here holds a COMPLETED finalization hostage to a
+    // slow repo read -- the finalize half of the same defect push.ts fixed at
+    // the tool level. Precedence, cheapest-and-surest first:
+    //
+    //   1. `files[]` -- the commit's own decision index. Zero I/O, and it is
+    //      the freshest copy in existence (it is what was just pushed).
+    //   2. the audit's already-computed count, when the caller has one
+    //      (action=full runs an audit that already parsed the index; the
+    //      phased action=commit path has no audit to draw on).
+    //   3. a 3s race against the repo read -- real counts on the common path.
+    //   4. null -> "(unverified)". An unknown reported as unknown; the
+    //      pre-MCP-2 catch fell through to a confident `0 decisions`.
+    //
+    // resolveDocPath/fetchFile accept no AbortSignal, so the losing fetch is
+    // left to settle on its own with its rejection swallowed; the timer is
+    // unref'd and cleared in a finally block so it can never hold the event
+    // loop open (the push.ts:73-75/:307 pattern).
+    let decisionsCount: number | null = null;
+    const indexFile = files.find(
+      (f) =>
+        f.path === "decisions/_INDEX.md" ||
+        f.path === `${DOC_ROOT}/decisions/_INDEX.md`,
+    );
+    if (indexFile) {
+      decisionsCount = parseMarkdownTable(indexFile.content).length;
+    } else if (auditDecisionCount != null) {
+      decisionsCount = auditDecisionCount;
+    } else {
+      let raceTimer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const indexRead = resolveDocPath(projectSlug, "decisions/_INDEX.md");
+        indexRead.catch(() => {}); // the losing promise must never go unhandled
+        const timeout = new Promise<typeof BANNER_DECISIONS_RACE_LOST>((resolve) => {
+          raceTimer = setTimeout(() => resolve(BANNER_DECISIONS_RACE_LOST), BANNER_DECISIONS_RACE_MS);
+          raceTimer.unref?.();
+        });
+        const raced = await Promise.race([indexRead, timeout]);
+        if (raced === BANNER_DECISIONS_RACE_LOST) {
+          logger.warn("finalization banner: decision-index read lost the race", {
+            projectSlug,
+            raceMs: BANNER_DECISIONS_RACE_MS,
+          });
+          diagnostics?.warn(
+            "BANNER_DECISIONS_UNVERIFIED",
+            `decisions/_INDEX.md did not resolve within ${BANNER_DECISIONS_RACE_MS}ms -- the banner reports the decision count as unverified. The commit itself is unaffected.`,
+            { race_ms: BANNER_DECISIONS_RACE_MS },
+          );
+        } else {
+          decisionsCount = parseMarkdownTable(raced.content).length;
+        }
+      } catch (indexErr) {
+        logger.warn("finalization banner: decision-index read failed", {
+          projectSlug,
+          error: indexErr instanceof Error ? indexErr.message : String(indexErr),
+        });
+        diagnostics?.warn(
+          "BANNER_DECISIONS_UNVERIFIED",
+          "decisions/_INDEX.md could not be read -- the banner reports the decision count as unverified. The commit itself is unaffected.",
+          { error: indexErr instanceof Error ? indexErr.message : String(indexErr) },
+        );
+      } finally {
+        if (raceTimer) clearTimeout(raceTimer);
       }
+    }
+
+    // GAP-9: a handoff that lands without its session-log entry is a real
+    // finalization gap (the next boot reads a handoff describing work the
+    // session log never recorded), and it was previously invisible. Warn on
+    // the diagnostics channel AND in the banner's own warning block, where
+    // the operator is already looking.
+    const committedPaths = new Set(
+      results.filter((r) => r.success).map((r) => (r.path.startsWith(`${DOC_ROOT}/`) ? r.path.slice(DOC_ROOT.length + 1) : r.path)),
+    );
+    const missingSessionLog =
+      committedPaths.has("handoff.md") && !committedPaths.has("session-log.md");
+    if (missingSessionLog) {
+      diagnostics?.warn(
+        "FINALIZE_MISSING_SESSION_LOG",
+        "handoff.md was committed but session-log.md was not -- this session left no session-log entry. Add the entry and re-run the commit, or record why it was intentionally skipped.",
+        { committed: Array.from(committedPaths) },
+      );
     }
 
     // Deliverables list — operator-supplied via banner_data, or a default
@@ -399,9 +483,13 @@ export async function assembleFinalizeBanner(
         : null,
       resumption,
       listItems,
-      warnings: results
-        .filter((r) => !r.success)
-        .map((r) => `Push failed: ${r.path}`),
+      warnings: [
+        ...results.filter((r) => !r.success).map((r) => `Push failed: ${r.path}`),
+        // GAP-9: surfaced in the banner itself, not just the diagnostics array.
+        ...(missingSessionLog
+          ? ["session-log.md was not committed with handoff.md"]
+          : []),
+      ],
     });
 
     // brief-447 / D-249: structured input for the finalization HTML widget,
@@ -436,6 +524,15 @@ export async function assembleFinalizeBanner(
   } catch (bannerError) {
     const msg = bannerError instanceof Error ? bannerError.message : String(bannerError);
     logger.warn("finalization banner render failed — using single-line fallback", { error: msg });
+    // S208 MCP-19: this catch was log-only. A finalization that silently
+    // degraded to the one-line fallback looked, from the response, exactly
+    // like a normal one — the operator had no way to know the rich banner
+    // (and its warning block) had been lost.
+    diagnostics?.warn(
+      "BANNER_RENDER_FAILED",
+      `finalization banner render failed — banner_text carries the single-line fallback and finalization_banner_html is null: ${msg}`,
+      { surface: "banner_text", error: msg },
+    );
     const docsUpdatedFallback = results.filter((r) => r.success).length;
     return {
       text: renderBannerFallback({

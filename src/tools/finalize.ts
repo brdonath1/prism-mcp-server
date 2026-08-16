@@ -24,9 +24,13 @@ import {
   FINALIZE_DRAFT_DEADLINE_MS,
   FINALIZE_DRAFT_DEADLINE_CC_MS,
   FINALIZE_DRAFT_ACTION_DEADLINE_MS,
+  FINALIZE_AUDIT_ACTION_DEADLINE_MS,
+  FINALIZE_FULL_AUDIT_DEADLINE_MS,
   CC_SUBPROCESS_SYNTHESIS_TIMEOUT_MS,
   DOC_ROOT,
   STANDING_RULES_WARNING_SIZE,
+  isWidgetChannelItem,
+  resolveFinalizeBanner,
 } from "../config.js";
 import { detectSessionLogOrientation, splitForArchive, utf8ByteLength, type ArchiveConfig } from "../utils/archive.js";
 
@@ -35,6 +39,16 @@ const FINALIZE_COMMIT_DEADLINE_SENTINEL = Symbol("finalize.commit.deadline");
 
 /** Sentinel used to signal that the finalize-draft deadline fired (S41). */
 const FINALIZE_DRAFT_DEADLINE_SENTINEL = Symbol("finalize.draft.deadline");
+
+/** Sentinel for the S208 MCP-1 audit deadlines -- the standalone action=audit
+ *  bound and fullPhase's internal anti-hang bound both race against it. */
+const FINALIZE_AUDIT_DEADLINE_SENTINEL = Symbol("finalize.audit.deadline");
+
+/** S208 MCP-19: the render-failure diagnostic code emitted when a banner or
+ *  widget render throws. These catches used to be log-only, so a finalization
+ *  that shipped `finalization_banner_html: null` looked identical to one where
+ *  the operator had switched the widget off. */
+const BANNER_RENDER_FAILED = "BANNER_RENDER_FAILED";
 
 /** Resolve the per-attempt timeout for draftPhase based on transport.
  *  cc_subprocess runs through the Agent SDK subprocess which has higher
@@ -244,8 +258,15 @@ export function composeDraftFiles(
         );
       }
       const items = parseNumberedList(extractSection(file.content, "Critical Context") ?? "");
-      if (items.length > 5) {
-        errors.push(`composed handoff has ${items.length} Critical Context items — the compose contract caps at 5`);
+      // S208 widget_channel binding: the `widget_channel:` flag is a machine
+      // signal the boot kernel keys on, not one of the five substantive facts
+      // the cap exists to ration. Counting it forced a handoff at cap to give
+      // up a real item to report a broken render channel. Exempt it here (cap
+      // is effectively 5 + flag); scale.ts's condensation carries the mirror
+      // exemption so a later condensation pass cannot delete it either.
+      const substantiveItems = items.filter((item) => !isWidgetChannelItem(item));
+      if (substantiveItems.length > 5) {
+        errors.push(`composed handoff has ${substantiveItems.length} Critical Context items — the compose contract caps at 5`);
       }
     }
     if (errors.length > 0) gateFailures.push({ path: file.path, errors });
@@ -1921,18 +1942,72 @@ async function fullPhase(
 ) {
   const diagnostics = new DiagnosticsCollector();
 
-  // Step 1 — Audit
-  const auditResult = await auditPhase(projectSlug, sessionNumber, diagnostics);
-  const auditStatus = auditResult.audit.living_documents.some(d => !d.exists) ? "warn" : "ok";
+  // Step 1 — Audit.
+  //
+  // S208 MCP-1d: the audit fans out ten repo reads plus a commit-history probe
+  // per unfetched doc, and it ran here with NO bound at all — a single hung
+  // read stalled the whole background finalize indefinitely. Race it against
+  // FINALIZE_FULL_AUDIT_DEADLINE_MS (a hang breaker, deliberately far wider
+  // than the interactive action bound). The losing promise is left to settle
+  // with its rejection swallowed; the timer is unref'd and cleared in a
+  // finally block (the push.ts:73-75/:307 pattern).
+  let auditResult: Awaited<ReturnType<typeof auditPhase>> | null = null;
+  let auditTimer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const auditWork = auditPhase(projectSlug, sessionNumber, diagnostics);
+    auditWork.catch(() => {});
+    const auditDeadline = new Promise<typeof FINALIZE_AUDIT_DEADLINE_SENTINEL>((resolve) => {
+      auditTimer = setTimeout(
+        () => resolve(FINALIZE_AUDIT_DEADLINE_SENTINEL),
+        FINALIZE_FULL_AUDIT_DEADLINE_MS,
+      );
+      auditTimer.unref?.();
+    });
+    const racedAudit = await Promise.race([auditWork, auditDeadline]);
+    if (racedAudit !== FINALIZE_AUDIT_DEADLINE_SENTINEL) auditResult = racedAudit;
+  } finally {
+    if (auditTimer) clearTimeout(auditTimer);
+  }
+
+  const auditExpired = auditResult === null;
+  if (auditExpired) {
+    const deadlineSec = Math.round(FINALIZE_FULL_AUDIT_DEADLINE_MS / 1000);
+    logger.error("fullPhase audit deadline exceeded", {
+      projectSlug,
+      deadlineMs: FINALIZE_FULL_AUDIT_DEADLINE_MS,
+    });
+    diagnostics.error(
+      "FINALIZE_AUDIT_DEADLINE_EXCEEDED",
+      `Audit deadline exceeded (${deadlineSec}s) — finalization continues FAIL-CLOSED: every living document counts unverified, so no from-scratch file draft may be committed over live history (INS-360). The bridged section keys (session_log_entry, task_queue_*) are unaffected and still commit.`,
+      { deadlineMs: FINALIZE_FULL_AUDIT_DEADLINE_MS, degradation: "all_docs_unverified" },
+    );
+  }
+
+  const auditStatus = auditExpired
+    ? "warn"
+    : auditResult!.audit.living_documents.some(d => !d.exists) ? "warn" : "ok";
+  const auditWarnings = auditExpired
+    ? [`Audit deadline exceeded (${Math.round(FINALIZE_FULL_AUDIT_DEADLINE_MS / 1000)}s) — living-document inventory unverified.`]
+    : auditResult!.audit.warnings;
+  // MCP-2: the count the audit already parsed, handed to the banner so the
+  // finalization banner needs no repo read of its own on this path.
+  const auditDecisionCount = auditExpired ? null : auditResult!.decision_count;
 
   // INS-360 recreate guard (audit-coupled half): docs whose state the audit
   // could not verify must never receive a from-scratch full-file draft — the
   // `.md` pass-through below would otherwise push a model-generated
   // replacement over live history (the S192 incident shape).
+  //
+  // MCP-1d fail-closed: an EXPIRED audit verified nothing, so every living
+  // document goes into this set. The guard then drops file-shaped draft keys
+  // (FINALIZE_RECREATE_BLOCKED) while the brief-456 BRIDGED keys — which do
+  // not consult this set — still commit. That is the whole degradation.
   const unverifiedDocs = new Set(
-    auditResult.audit.living_documents
-      .filter((d) => d.status === "unverified")
-      .map((d) => d.file),
+    auditExpired
+      ? (LIVING_DOCUMENT_NAMES as readonly string[])
+      : auditResult!.audit.living_documents
+          .filter((d) => d.status === "unverified")
+          .map((d) => d.file),
   );
 
   // Step 2 — Draft (CS-1): race with a transport-aware deadline.
@@ -2109,7 +2184,7 @@ async function fullPhase(
       partial_state_warning:
         "Commit deadline exceeded. The final doc commit is atomic (all-or-nothing) and was signaled to abort — verify the repo HEAD before retrying. Pre-commit steps (handoff backup, history prune) may already have committed; a retry does not duplicate archived entries (SRV-47).",
       phases: {
-        audit: { status: auditStatus, warnings: auditResult.audit.warnings },
+        audit: { status: auditStatus, warnings: auditWarnings },
         draft: { status: draftStatus },
         commit: { all_succeeded: false },
       },
@@ -2142,21 +2217,32 @@ async function fullPhase(
       },
     },
     diagnostics, // R19: BANNER_DELIVERABLES_TRUNCATED rides out on the response
+    auditDecisionCount, // MCP-2: reuse the audit's count, no extra repo read
   );
 
   // brief-447 / D-249: populate finalization_banner_html from the same
   // finalize data. Wrapped so an HTML render failure (or a null htmlInput
   // from the text fallback path) leaves the field null — banner_text is the
   // genuine fallback. Mirrors the commit surface's render block.
+  // OPS-2 (S208): FINALIZE_BANNER=off skips the render entirely and ships
+  // null; banner_text is deliberately untouched by the knob.
   let finalization_banner_html: string | null = null;
-  if (htmlInput) {
+  if (htmlInput && resolveFinalizeBanner() === "html") {
     try {
       finalization_banner_html = renderFinalizationBannerHtml(htmlInput);
     } catch (htmlErr) {
+      const msg = htmlErr instanceof Error ? htmlErr.message : String(htmlErr);
       logger.warn("finalization HTML widget render failed — leaving null (banner_text fallback)", {
         project_slug: projectSlug,
-        error: htmlErr instanceof Error ? htmlErr.message : String(htmlErr),
+        error: msg,
       });
+      // MCP-19: this catch was log-only, so a null widget field was
+      // indistinguishable from the knob being off.
+      diagnostics.warn(
+        BANNER_RENDER_FAILED,
+        `finalization_banner_html render failed — the field is null and banner_text carries the banner: ${msg}`,
+        { surface: "finalization_banner_html", error: msg },
+      );
     }
   }
 
@@ -2200,7 +2286,7 @@ async function fullPhase(
   return {
     action: "full" as const,
     phases: {
-      audit: { status: auditStatus, warnings: auditResult.audit.warnings },
+      audit: { status: auditStatus, warnings: auditWarnings },
       draft: {
         status: draftStatus,
         input_tokens: draftResult && "input_tokens" in draftResult ? draftResult.input_tokens : 0,
@@ -2228,7 +2314,7 @@ async function fullPhase(
 export function registerFinalize(server: McpServer): void {
   server.tool(
     "prism_finalize",
-    "PRISM finalization. Actions: audit (document inventory + drift), draft (AI-generated files; in compose mode returns validated draft_files + a review digest and persists them server-side), commit (backup + push + validate; use_draft_files: true commits the persisted draft so chat approves instead of regenerating), full (single call: audit + draft + commit). Phased commit (action=commit with operator-built files): handoff.md content MUST carry the handoff schema — '## Meta' (Handoff Version / Session Count / Template Version / Status), '## Critical Context' (>=1 numbered item), and a non-empty '## Where We Are' — validation rejects it otherwise, and recommendation injection + banner resumption read the same sections (HANDOFF_SCHEMA_MISSING diagnostic names any gap). Draft deadlines: the INTERACTIVE action=draft race is bounded at the ~50s MCP client ceiling, so a large-project draft that needs longer belongs on action=full — its draft step runs as a background phase on the wider 180s (300s under SYNTHESIS_DRAFT_TRANSPORT=cc_subprocess) deadline and commits without the draft if it overruns. Every commit and full response also carries finalize_render_contract: the RENDER + FALLBACK + CONFIRM obligations for the returned banner, which are NOT to be memorized from boot.",
+    "PRISM finalization. Actions: audit (document inventory + drift), draft (AI-generated files; in compose mode returns validated draft_files + a review digest and persists them server-side), commit (backup + push + validate; use_draft_files: true commits the persisted draft so chat approves instead of regenerating), full (single call: audit + draft + commit). Phased commit (action=commit with operator-built files): handoff.md content MUST carry the handoff schema — '## Meta' (Handoff Version / Session Count / Template Version / Status), '## Critical Context' (>=1 numbered item), and a non-empty '## Where We Are' — validation rejects it otherwise, and recommendation injection + banner resumption read the same sections (HANDOFF_SCHEMA_MISSING diagnostic names any gap). Deadlines: action=audit is bounded at the ~50s MCP client ceiling and returns a structured FINALIZE_AUDIT_DEADLINE_EXCEEDED response rather than hanging; the INTERACTIVE action=draft race is bounded the same way, so a large-project draft that needs longer belongs on action=full. action=full is intended for the Trigger / Claude Code caller, which drives this server WITHOUT the ~60s client turn ceiling: its draft step runs as a background phase on the wider 180s (300s under SYNTHESIS_DRAFT_TRANSPORT=cc_subprocess) deadline, its internal audit carries a 120s anti-hang bound that degrades fail-closed (unverified docs are never recreated from a draft), and worst-case it can run several minutes. A chat client CAN call action=full - the action enum cannot prevent it - but that turn is bounded by the chat client's own ceiling, so the chat path should run the phased audit -> draft -> commit sequence instead. Every commit and full response also carries finalize_render_contract: the RENDER + FALLBACK + CONFIRM obligations for the returned banner, which are NOT to be memorized from boot.",
     {
       project_slug: z.string().describe("Project repo name"),
       action: z.enum(["audit", "draft", "commit", "full"]).describe("Finalization phase: 'audit' for document inventory, 'draft' for AI-generated file drafts, 'commit' to push final files, 'full' (single call: audit + draft + commit)"),
@@ -2274,7 +2360,61 @@ export function registerFinalize(server: McpServer): void {
           const phaseStart = Date.now();
           // INS-360: the shared collector carries FINALIZE_AUDIT_UNVERIFIED_DOC
           // diagnostics from the audit into this action's response.
-          const result = await auditPhase(project_slug, session_number, diagnostics);
+          //
+          // S208 MCP-1c: bound the INTERACTIVE audit at
+          // FINALIZE_AUDIT_ACTION_DEADLINE_MS (MCP_SAFE_TIMEOUT by default).
+          // This was the last finalize action with no deadline at all: the
+          // ten-doc fan-out plus a commit-history probe per unfetched doc held
+          // the client connection to the ~60s transport timeout with no
+          // structured error, and the operator's retry started the fan-out
+          // again. Same sentinel / Promise.race / clearTimeout shape as
+          // prism_push (push.ts:73-75, :307).
+          let auditDeadlineTimer: ReturnType<typeof setTimeout> | undefined;
+          let auditRaced: Awaited<ReturnType<typeof auditPhase>> | typeof FINALIZE_AUDIT_DEADLINE_SENTINEL;
+          try {
+            const auditWork = auditPhase(project_slug, session_number, diagnostics);
+            auditWork.catch(() => {}); // the losing promise must never go unhandled
+            const auditDeadline = new Promise<typeof FINALIZE_AUDIT_DEADLINE_SENTINEL>((resolve) => {
+              auditDeadlineTimer = setTimeout(
+                () => resolve(FINALIZE_AUDIT_DEADLINE_SENTINEL),
+                FINALIZE_AUDIT_ACTION_DEADLINE_MS,
+              );
+              auditDeadlineTimer.unref?.();
+            });
+            auditRaced = await Promise.race([auditWork, auditDeadline]);
+          } finally {
+            if (auditDeadlineTimer) clearTimeout(auditDeadlineTimer);
+          }
+
+          if (auditRaced === FINALIZE_AUDIT_DEADLINE_SENTINEL) {
+            const deadlineSec = Math.round(FINALIZE_AUDIT_ACTION_DEADLINE_MS / 1000);
+            logger.error("prism_finalize audit deadline exceeded", {
+              project_slug,
+              deadlineMs: FINALIZE_AUDIT_ACTION_DEADLINE_MS,
+              elapsedMs: Date.now() - phaseStart,
+            });
+            diagnostics.error(
+              "FINALIZE_AUDIT_DEADLINE_EXCEEDED",
+              `prism_finalize audit deadline exceeded (${deadlineSec}s) — the living-document fan-out did not settle. Nothing was written; re-run the audit, or proceed via the phased draft/commit path if the repo is known-healthy.`,
+              { deadlineMs: FINALIZE_AUDIT_ACTION_DEADLINE_MS },
+            );
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify({
+                project: project_slug,
+                action: "audit",
+                error: `prism_finalize audit deadline exceeded (${deadlineSec}s)`,
+                // The audit is read-only — no partial-write surface to warn about.
+                writes_performed: false,
+                // MCP-3: action=audit never receives a handoff_version, so the
+                // banner reports it as unknown rather than fabricating v1.
+                ...assembleFinalizeErrorBannerFields(session_number, null),
+                finalize_render_contract: FINALIZE_RENDER_CONTRACT,
+                diagnostics: diagnostics.list(),
+              }) }],
+              isError: true,
+            };
+          }
+          const result = auditRaced;
           logger.info("prism_finalize audit timing", {
             projectSlug: project_slug,
             ms: Date.now() - phaseStart,
@@ -2414,7 +2554,7 @@ export function registerFinalize(server: McpServer): void {
                 error: "Full action requires handoff_content — the complete handoff.md content for this session.",
                 project: project_slug,
                 action: "full",
-                ...assembleFinalizeErrorBannerFields(session_number, handoff_version ?? 1),
+                ...assembleFinalizeErrorBannerFields(session_number, handoff_version ?? null),
                 finalize_render_contract: FINALIZE_RENDER_CONTRACT,
               })}],
               isError: true,
@@ -2466,7 +2606,7 @@ export function registerFinalize(server: McpServer): void {
                 error: `use_draft_files: no usable persisted draft at ${FINALIZE_DRAFT_STATE_PATH} (${msg}). Run action=draft first (compose mode), or supply files[] without use_draft_files.`,
                 project: project_slug,
                 action: "commit",
-                ...assembleFinalizeErrorBannerFields(session_number, handoff_version ?? 1),
+                ...assembleFinalizeErrorBannerFields(session_number, handoff_version ?? null),
                 finalize_render_contract: FINALIZE_RENDER_CONTRACT,
               }) }],
               isError: true,
@@ -2478,7 +2618,7 @@ export function registerFinalize(server: McpServer): void {
                 error: `use_draft_files: persisted draft at ${FINALIZE_DRAFT_STATE_PATH} carries no files. Run action=draft again.`,
                 project: project_slug,
                 action: "commit",
-                ...assembleFinalizeErrorBannerFields(session_number, handoff_version ?? 1),
+                ...assembleFinalizeErrorBannerFields(session_number, handoff_version ?? null),
                 finalize_render_contract: FINALIZE_RENDER_CONTRACT,
               }) }],
               isError: true,
@@ -2491,7 +2631,7 @@ export function registerFinalize(server: McpServer): void {
                 project: project_slug,
                 action: "commit",
                 draft_session: draftState.session_number,
-                ...assembleFinalizeErrorBannerFields(session_number, handoff_version ?? 1),
+                ...assembleFinalizeErrorBannerFields(session_number, handoff_version ?? null),
                 finalize_render_contract: FINALIZE_RENDER_CONTRACT,
               }) }],
               isError: true,
@@ -2532,7 +2672,7 @@ export function registerFinalize(server: McpServer): void {
                   error: "Commit phase requires files array with at least one file (or use_draft_files: true after a compose-mode draft).",
                   project: project_slug,
                   action: "commit",
-                  ...assembleFinalizeErrorBannerFields(session_number, handoff_version ?? 1),
+                  ...assembleFinalizeErrorBannerFields(session_number, handoff_version ?? null),
                   finalize_render_contract: FINALIZE_RENDER_CONTRACT,
                 }),
               },
@@ -2598,7 +2738,7 @@ export function registerFinalize(server: McpServer): void {
                   partial_state_warning:
                     "Commit deadline exceeded. The final doc commit is atomic (all-or-nothing) and was signaled to abort — verify the repo HEAD before retrying. Pre-commit steps (handoff backup, history prune) may already have committed; a retry does not duplicate archived entries (SRV-47).",
                   backup_created: "",
-                  ...assembleFinalizeErrorBannerFields(session_number, effectiveHandoffVersion ?? 1),
+                  ...assembleFinalizeErrorBannerFields(session_number, effectiveHandoffVersion ?? null),
                   finalize_render_contract: FINALIZE_RENDER_CONTRACT,
                   diagnostics: diagnostics.list(),
                 }),
@@ -2633,15 +2773,24 @@ export function registerFinalize(server: McpServer): void {
         // from the text fallback path) leaves the field null — banner_text is
         // the genuine fallback, and the outer try/catch nulls the field on any
         // hard error.
+        // OPS-2 (S208): FINALIZE_BANNER=off ships a null widget; banner_text
+        // is deliberately unaffected by the knob.
         let finalization_banner_html: string | null = null;
-        if (htmlInput) {
+        if (htmlInput && resolveFinalizeBanner() === "html") {
           try {
             finalization_banner_html = renderFinalizationBannerHtml(htmlInput);
           } catch (htmlErr) {
+            const msg = htmlErr instanceof Error ? htmlErr.message : String(htmlErr);
             logger.warn("finalization HTML widget render failed — leaving null (banner_text fallback)", {
               project_slug,
-              error: htmlErr instanceof Error ? htmlErr.message : String(htmlErr),
+              error: msg,
             });
+            // MCP-19: was log-only; a null field is now explained.
+            diagnostics.warn(
+              BANNER_RENDER_FAILED,
+              `finalization_banner_html render failed — the field is null and banner_text carries the banner: ${msg}`,
+              { surface: "finalization_banner_html", error: msg },
+            );
           }
         }
 
@@ -2691,7 +2840,7 @@ export function registerFinalize(server: McpServer): void {
                   "Finalize errored mid-turn. Doc commits are atomic, but pre-commit steps (handoff backup, history prune) may already have landed — verify the repo HEAD. A retry does not duplicate archived entries (SRV-47).",
                 ...(action === "commit" || action === "full"
                   ? {
-                      ...assembleFinalizeErrorBannerFields(session_number, handoff_version ?? 1),
+                      ...assembleFinalizeErrorBannerFields(session_number, handoff_version ?? null),
                       finalize_render_contract: FINALIZE_RENDER_CONTRACT,
                     }
                   : {}),

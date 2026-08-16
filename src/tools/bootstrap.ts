@@ -18,7 +18,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { fetchFile, pushFile, listRepos } from "../github/client.js";
-import { BOOTSTRAP_OVERSIZE_ERROR_BYTES, BOOTSTRAP_OVERSIZE_WARN_BYTES, BOOTSTRAP_WALL_CLOCK_DEADLINE_MS, CC_DISPATCH_ENABLED, DEFAULT_CONTEXT_WINDOW_TOKENS, DOC_ROOT, FRAMEWORK_REPO, GITHUB_PAT, HANDOFF_CRITICAL_SIZE, HANDOFF_ITEM_BUDGET_BYTES, LIVING_DOCUMENTS, MCP_TEMPLATE_PATH, PREFETCH_KEYWORDS, PREFETCH_SUMMARY_CAP_BYTES, PROJECT_DISPLAY_NAMES, RAILWAY_API_TOKEN, RAILWAY_ENABLED, STALE_ACTIVE_THRESHOLD_MS, SYNTHESIS_LOG_LOOKBACK_MS, TRIGGER_AUTO_ENROLL, resolveBootIndexMode, resolveBootMastheadSvg, resolveBriefCompactMode, resolveContextWindowOverride, resolvePrefetchMode, resolveProjectSlug } from "../config.js";
+import { BOOTSTRAP_OVERSIZE_ERROR_BYTES, BOOTSTRAP_OVERSIZE_WARN_BYTES, BOOTSTRAP_WALL_CLOCK_DEADLINE_MS, CC_DISPATCH_ENABLED, DEFAULT_CONTEXT_WINDOW_TOKENS, DOC_ROOT, FRAMEWORK_REPO, GITHUB_PAT, HANDOFF_CRITICAL_SIZE, HANDOFF_ITEM_BUDGET_BYTES, LIVING_DOCUMENTS, LIVING_DOCUMENT_NAMES, MCP_TEMPLATE_PATH, PREFETCH_KEYWORDS, PREFETCH_SUMMARY_CAP_BYTES, PROJECT_DISPLAY_NAMES, RAILWAY_API_TOKEN, RAILWAY_ENABLED, STALE_ACTIVE_THRESHOLD_MS, SYNTHESIS_LOG_LOOKBACK_MS, TRIGGER_AUTO_ENROLL, resolveBootIndexMode, resolveBootMastheadSvg, resolveBriefCompactMode, resolveContextWindowOverride, resolvePrefetchMode, resolveProjectSlug } from "../config.js";
 import { STALENESS_THRESHOLD_DAYS, resolveContextWindow } from "../models.js";
 import type { Surface } from "../models.js";
 import { computePayloadAttribution } from "../utils/payload-attribution.js";
@@ -88,6 +88,50 @@ interface BootstrapProgress {
   handoff_version: number | null;
   session_count: number | null;
   behavioral_rules_delivered: boolean;
+}
+
+/**
+ * Banner fields for every prism_bootstrap shape that exits before a banner can
+ * be assembled — the ambiguous-slug rejection, the hard-error catch, and the
+ * wall-clock deadline (S208 MCP-3). The boot mirror of
+ * `assembleFinalizeErrorBannerFields`.
+ *
+ * These three exits used to ship NO banner field at all, so the template's
+ * render contract had nothing to render and the session's very first response
+ * silently broke the banner obligation.
+ *
+ * Everything the boot could not establish is reported as unknown rather than
+ * defaulted: `sessionNumber`/`handoffVersion` are null before the handoff
+ * parses (`Session ?` / `Handoff v?`), and `docCount` is always null here —
+ * these shapes verified nothing, so `?/10 docs (unverified)` is the only
+ * honest count. The graphical mastheads are null: they are built from a full
+ * `UnifiedBannerInput` that does not exist on these paths, and a masthead is
+ * never the fallback — `banner_text` is.
+ *
+ * No session-name fence is emitted. A pre-resolution exit cannot know the
+ * project display name, and the template omits the chat title rather than
+ * naming the session wrongly.
+ */
+export function assembleBootErrorBannerFields(data: {
+  sessionNumber: number | null;
+  handoffVersion: number | null;
+}): {
+  banner_text: string;
+  banner_spec_version: typeof BANNER_SPEC_VERSION;
+  boot_masthead_svg: null;
+  boot_masthead_html: null;
+} {
+  return {
+    banner_text: renderBannerFallback({
+      sessionNumber: data.sessionNumber,
+      handoffVersion: data.handoffVersion,
+      docCount: null,
+      docTotal: LIVING_DOCUMENTS.length,
+    }),
+    banner_spec_version: BANNER_SPEC_VERSION,
+    boot_masthead_svg: null,
+    boot_masthead_html: null,
+  };
 }
 
 /** Input schema for prism_bootstrap */
@@ -995,6 +1039,12 @@ export function registerBootstrap(server: McpServer): void {
                 error: `Ambiguous project slug "${project_slug}" — ${candidates.length} repos match: ${candidates.join(", ")}. Re-run prism_bootstrap with the exact repo name.`,
                 candidates,
                 writes_performed: false,
+                // MCP-3: this exit is pre-resolution — nothing is known, and
+                // the banner says so instead of shipping no banner at all.
+                ...assembleBootErrorBannerFields({
+                  sessionNumber: null,
+                  handoffVersion: null,
+                }),
                 diagnostics: diagnostics.list(),
               }),
             }],
@@ -1018,6 +1068,23 @@ export function registerBootstrap(server: McpServer): void {
 
       try {
         const warnings: string[] = [];
+
+        // S208 MCP-13: the banner's docs count, MEASURED from this boot's own
+        // fan-out. It used to be `LIVING_DOCUMENTS.length` verbatim, so every
+        // boot asserted "10/10 docs healthy" as a FACT while the fan-out reads
+        // only a handful of the ten. `probed` records what this boot actually
+        // asked for; `verified` records what came back. The banner reports a
+        // number only when all ten were probed — otherwise `?/10 (unverified)`,
+        // the same "unknown reported as unknown" rule renderBannerFallback has
+        // carried since S203 audit R18.
+        const probedLivingDocs = new Set<string>();
+        const verifiedLivingDocs = new Set<string>();
+        const noteLivingDoc = (docName: string, ok: boolean): void => {
+          if (!(LIVING_DOCUMENT_NAMES as readonly string[]).includes(docName)) return;
+          probedLivingDocs.add(docName);
+          if (ok) verifiedLivingDocs.add(docName);
+        };
+
         let bytesDelivered = 0;
         let filesFetched = 0;
 
@@ -1028,6 +1095,12 @@ export function registerBootstrap(server: McpServer): void {
           resolveDocPath(resolvedSlug, "decisions/_INDEX.md").catch(() => null),
           fetchBehavioralRules(),
         ]);
+        // MCP-13: record what the core fan-out probed and what it got.
+        noteLivingDoc("handoff.md", coreResults[0].status === "fulfilled");
+        noteLivingDoc(
+          "decisions/_INDEX.md",
+          coreResults[1].status === "fulfilled" && coreResults[1].value !== null,
+        );
 
         // Handoff is required
         if (coreResults[0].status === "rejected") {
@@ -1326,8 +1399,10 @@ export function registerBootstrap(server: McpServer): void {
                 addManifestDocRow(resolved.path, resolved.sha, resolved.content);
                 bytesDelivered += resolved.content.length;
                 filesFetched++;
+                noteLivingDoc(docName, true); // MCP-13
               } catch (prefetchErr) {
                 // Prefetch failure is non-critical
+                noteLivingDoc(docName, false); // MCP-13: probed, not verified
                 diagnostics.warn("PREFETCH_FAILED", `Failed to prefetch ${docName}`, { file: docName, error: prefetchErr instanceof Error ? prefetchErr.message : String(prefetchErr) });
               }
             })
@@ -1468,6 +1543,10 @@ export function registerBootstrap(server: McpServer): void {
             resolveDocPath(resolvedSlug, "pending-doc-updates.md"),
             resolveDocPath(resolvedSlug, "standing-rules.md"),
           ]);
+        // MCP-13: wave-5 living docs (pending-doc-updates.md and
+        // standing-rules.md are not in the mandatory ten).
+        noteLivingDoc("intelligence-brief.md", briefOutcome.status === "fulfilled");
+        noteLivingDoc("insights.md", insightsOutcome.status === "fulfilled");
 
         // Always-prefetch pending-doc-updates.md when it exists. Surfaced as an
         // entry in `prefetched_documents` per D-156 §3.5 / brief author note.
@@ -1744,8 +1823,18 @@ export function registerBootstrap(server: McpServer): void {
         const projectDisplayName = getProjectDisplayName(resolvedSlug);
         const resumption = parseResumptionForBanner(resumptionPoint, currentState);
         const guardrailCount = guardrails.length;
-        const docCount = LIVING_DOCUMENTS.length;
+        // S208 MCP-13: measured, not asserted. A number only when this boot
+        // probed all ten living documents; otherwise null, which every
+        // renderer shows as `?/10 docs (unverified)`. The boot fan-out reads
+        // handoff.md, decisions/_INDEX.md, intelligence-brief.md, insights.md
+        // and whatever the opening message prefetched — so on a typical boot
+        // this IS null, and that is the honest answer. prism_finalize's audit
+        // is the surface that actually inventories all ten.
         const docTotal = LIVING_DOCUMENTS.length;
+        const allDocsProbed = (LIVING_DOCUMENT_NAMES as readonly string[]).every((name) =>
+          probedLivingDocs.has(name),
+        );
+        const docCount: number | null = allDocsProbed ? verifiedLivingDocs.size : null;
 
         // Determine push verification status from boot-test result
         const pushToolStatus = bootTestResult.success ? "ok" as const : "warn" as const;
@@ -1851,6 +1940,14 @@ export function registerBootstrap(server: McpServer): void {
           } catch (svgError) {
             const msg = svgError instanceof Error ? svgError.message : String(svgError);
             logger.warn("boot masthead SVG render failed — omitting (banner_text remains)", { error: msg });
+            // S208 MCP-19: was log-only. A null masthead field is otherwise
+            // indistinguishable from BOOT_MASTHEAD_SVG=off, so a render
+            // regression could ride silently for sessions.
+            diagnostics.warn(
+              "MASTHEAD_RENDER_FAILED",
+              `boot_masthead_svg render failed — the field is null and banner_text carries the banner: ${msg}`,
+              { surface: "boot_masthead_svg", error: msg },
+            );
           }
           try {
             bootMastheadHtml = renderBootMastheadHtml(bannerInput);
@@ -1858,6 +1955,13 @@ export function registerBootstrap(server: McpServer): void {
           } catch (htmlError) {
             const msg = htmlError instanceof Error ? htmlError.message : String(htmlError);
             logger.warn("boot masthead HTML render failed — omitting (boot_masthead_svg/banner_text remain)", { error: msg });
+            // S208 MCP-19: its own surface tag, so the operator can tell WHICH
+            // masthead failed (they render independently by design).
+            diagnostics.warn(
+              "MASTHEAD_RENDER_FAILED",
+              `boot_masthead_html render failed — the field is null and boot_masthead_svg/banner_text remain: ${msg}`,
+              { surface: "boot_masthead_html", error: msg },
+            );
           }
         } else {
           logger.info("boot masthead SVG disabled via BOOT_MASTHEAD_SVG=off (brief-s202b T6)");
@@ -2124,7 +2228,18 @@ export function registerBootstrap(server: McpServer): void {
         const message = error instanceof Error ? error.message : String(error);
         logger.error("prism_bootstrap failed", { project_slug: resolvedSlug, error: message });
         return {
-          content: [{ type: "text" as const, text: JSON.stringify({ error: message, project: resolvedSlug }) }],
+          content: [{ type: "text" as const, text: JSON.stringify({
+            error: message,
+            project: resolvedSlug,
+            // MCP-3: a boot that threw still owes the session a banner. The
+            // progress ledger supplies whatever HAD been parsed before the
+            // throw; both stay null when it died in the core fan-out.
+            ...assembleBootErrorBannerFields({
+              sessionNumber: progress.session_count === null ? null : progress.session_count + 1,
+              handoffVersion: progress.handoff_version,
+            }),
+            diagnostics: diagnostics.list(),
+          }) }],
           isError: true,
         };
       }
@@ -2167,6 +2282,12 @@ export function registerBootstrap(server: McpServer): void {
                 },
                 partial_state_warning:
                   "Boot did not complete. The boot-test write and Trigger enrollment marker may still land after this response — do NOT treat this session as booted; re-run prism_bootstrap.",
+                // MCP-3: carry whatever the boot DID resolve before the
+                // deadline; unknowns render as `?`, never as a default.
+                ...assembleBootErrorBannerFields({
+                  sessionNumber: progress.session_count === null ? null : progress.session_count + 1,
+                  handoffVersion: progress.handoff_version,
+                }),
                 diagnostics: diagnostics.list(),
               }),
             }],

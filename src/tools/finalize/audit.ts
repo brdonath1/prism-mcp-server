@@ -396,6 +396,13 @@ export async function auditPhase(
   return {
     project: projectSlug,
     session_number: sessionNumber,
+    // S208 MCP-2: expose the decision COUNT the drift detector already
+    // computed above (never the index CONTENT -- the standalone action=audit
+    // response spreads this object bare, and growing it by a living document
+    // is exactly the payload regression the byte-assertion test guards).
+    // `null` when the index could not be read, so the finalization banner can
+    // report "unverified" instead of a fabricated zero.
+    decision_count: decisionResult ? driftDetection.decision_count_current : null,
     audit: {
       living_documents: livingDocuments,
       drift_detection: driftDetection,

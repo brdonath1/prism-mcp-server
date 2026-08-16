@@ -86,11 +86,19 @@ export interface UnifiedBannerInput {
   /** Parenthetical after the handoff version — boot: "{size}KB";
    *  finalize: "pushed" | "push failed" | "unverified". */
   handoffNote: string;
-  decisionCount: number;
+  /** Decision-index row count. `null` means the server could not verify it
+   *  (S208 MCP-2) and every renderer emits `? decisions (unverified)` -- an
+   *  unknown reported as unknown, never a confident zero. */
+  decisionCount: number | null;
   /** Optional parenthetical after the decision count — boot: "{N} guardrails";
    *  finalize: operator-supplied note (banner_data.decisions_note) or null. */
   decisionNote?: string | null;
-  docCount: number;
+  /** Living documents confirmed healthy/updated. `null` means the surface did
+   *  not verify them (S208 MCP-13: the boot fan-out never probes all ten), and
+   *  every renderer emits `?/{T} docs (unverified)` rather than asserting a
+   *  count it has no evidence for. Same semantic renderBannerFallback has
+   *  carried since S203 audit R18. */
+  docCount: number | null;
   docTotal: number;
   /** Line 3 status row — boot: tool checks; finalize: phase steps. */
   statusRow: BannerStatusEntry[];
@@ -212,10 +220,18 @@ export function renderUnifiedBanner(data: UnifiedBannerInput): string {
   const isBoot = data.surface === "boot";
 
   const sessionSegment = `Session ${data.sessionNumber}${isBoot ? "" : " finalized"}`;
-  const decisionSegment = `${data.decisionCount} decisions${
-    data.decisionNote ? ` (${data.decisionNote})` : ""
+  // S208 MCP-2/MCP-13: an unverified count renders "?" plus an explicit
+  // "(unverified)" marker. An operator-supplied note still rides along.
+  const decisionNotes: string[] = [];
+  if (data.decisionCount === null) decisionNotes.push("unverified");
+  if (data.decisionNote) decisionNotes.push(data.decisionNote);
+  const decisionSegment = `${data.decisionCount === null ? "?" : data.decisionCount} decisions${
+    decisionNotes.length > 0 ? ` (${decisionNotes.join("; ")})` : ""
   }`;
-  const docsSegment = `${data.docCount}/${data.docTotal} docs ${isBoot ? "healthy" : "updated"}`;
+  const docsSegment =
+    data.docCount === null
+      ? `?/${data.docTotal} docs (unverified)`
+      : `${data.docCount}/${data.docTotal} docs ${isBoot ? "healthy" : "updated"}`;
 
   const statusRow = data.statusRow
     .map((t) => `${STATUS_ICONS[t.status]} ${t.label}`)
@@ -293,11 +309,21 @@ export function renderBootMastheadSvg(data: UnifiedBannerInput): string {
   const viewBoxHeight = hasSuggested ? 256 : 232;
   const panelHeight = hasSuggested ? 200 : 176;
 
-  const decisionChipText = `${data.decisionCount} decisions${
-    data.decisionNote ? ` · ${data.decisionNote}` : ""
-  }`;
-  const docsLabel = `${data.docCount}/${data.docTotal} docs healthy`;
-  const docsHealthy = data.docCount === data.docTotal;
+  // S208 MCP-2/MCP-13: unknown counts render "?" with an explicit
+  // "(unverified)" marker so the masthead and banner_text agree.
+  const decisionChipText =
+    data.decisionCount === null
+      ? `? decisions (unverified)${
+          data.decisionNote ? ` · ${data.decisionNote}` : ""
+        }`
+      : `${data.decisionCount} decisions${
+          data.decisionNote ? ` · ${data.decisionNote}` : ""
+        }`;
+  const docsLabel =
+    data.docCount === null
+      ? `?/${data.docTotal} docs (unverified)`
+      : `${data.docCount}/${data.docTotal} docs healthy`;
+  const docsHealthy = data.docCount !== null && data.docCount === data.docTotal;
 
   const desc =
     `Boot status masthead showing session ${data.sessionNumber}, timestamp, ` +
@@ -413,11 +439,21 @@ export function renderBootMastheadHtml(data: UnifiedBannerInput): string {
   const esc = escapeMarkup;
   const hasSuggested = data.suggested != null;
   const sessionName = data.sessionNameLine?.trim() ?? "";
-  const decisionChipText = `${data.decisionCount} decisions${
-    data.decisionNote ? ` · ${data.decisionNote}` : ""
-  }`;
-  const docsLabel = `${data.docCount}/${data.docTotal} docs healthy`;
-  const docsHealthy = data.docCount === data.docTotal;
+  // S208 MCP-2/MCP-13: unknown counts render "?" with an explicit
+  // "(unverified)" marker so the masthead and banner_text agree.
+  const decisionChipText =
+    data.decisionCount === null
+      ? `? decisions (unverified)${
+          data.decisionNote ? ` · ${data.decisionNote}` : ""
+        }`
+      : `${data.decisionCount} decisions${
+          data.decisionNote ? ` · ${data.decisionNote}` : ""
+        }`;
+  const docsLabel =
+    data.docCount === null
+      ? `?/${data.docTotal} docs (unverified)`
+      : `${data.docCount}/${data.docTotal} docs healthy`;
+  const docsHealthy = data.docCount !== null && data.docCount === data.docTotal;
 
   const srOnly =
     `PRISM boot banner: template v${data.templateVersion}, session ` +
@@ -613,7 +649,10 @@ export interface FinalizationBannerHtmlInput {
   handoffToVersion: number;
   /** Push outcome parenthetical: "pushed" | "push failed" | "unverified". */
   handoffStatus: string;
-  decisionCount: number;
+  /** Decision-index row count; `null` renders `? decisions (unverified)`
+   *  (S208 MCP-2 -- the banner's decision read is raced, and a lost race is
+   *  reported as unknown rather than as zero). */
+  decisionCount: number | null;
   /** Net new decisions this session; omit the "(+N)" segment when null. */
   decisionDelta?: number | null;
   docCount: number;
@@ -657,9 +696,12 @@ const PHASE_COLOR_VAR: Record<BannerStatusEntry["status"], string> = {
 export function renderFinalizationBannerHtml(data: FinalizationBannerHtmlInput): string {
   const esc = escapeMarkup;
   const docsAllUpdated = data.docCount === data.docTotal;
-  const decisionsText = `${data.decisionCount} decisions${
-    data.decisionDelta != null ? ` (+${data.decisionDelta})` : ""
-  }`;
+  const decisionsText =
+    data.decisionCount === null
+      ? "? decisions (unverified)"
+      : `${data.decisionCount} decisions${
+          data.decisionDelta != null ? ` (+${data.decisionDelta})` : ""
+        }`;
   const llmUsageRows = (data.llmUsage ?? []).filter(
     (row) => row.aspect.trim() !== "" && row.model.trim() !== "",
   );
@@ -788,8 +830,8 @@ export function renderFinalizationBannerHtml(data: FinalizationBannerHtmlInput):
  * assertion the server has no evidence for.
  */
 export function renderBannerFallback(data: {
-  sessionNumber: number;
-  handoffVersion: number;
+  sessionNumber: number | null;
+  handoffVersion: number | null;
   docCount: number | null;
   docTotal: number;
 }): string {
@@ -797,7 +839,13 @@ export function renderBannerFallback(data: {
     data.docCount === null
       ? `?/${data.docTotal} docs (unverified)`
       : `${data.docCount}/${data.docTotal} docs`;
-  return `PRISM | Session ${data.sessionNumber} | Handoff v${data.handoffVersion} | ${docsSegment}`;
+  // S208 MCP-3: the pre-resolution exits (an ambiguous slug, a core fetch that
+  // threw, a boot that ran out its deadline before parsing the handoff) know
+  // neither number. `Session ?` / `Handoff v?` says so; the pre-MCP-3 callers
+  // defaulted to `?? 1` and shipped a fabricated "Handoff v1" instead.
+  const session = data.sessionNumber === null ? "?" : String(data.sessionNumber);
+  const handoff = data.handoffVersion === null ? "?" : String(data.handoffVersion);
+  return `PRISM | Session ${session} | Handoff v${handoff} | ${docsSegment}`;
 }
 
 /**
