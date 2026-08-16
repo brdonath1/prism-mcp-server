@@ -146,3 +146,134 @@ describe("LLM routing policy", () => {
     });
   });
 });
+
+/**
+ * S208 Cerebras registration -- the gating proof.
+ *
+ * Registering a provider in the registry must NOT change routing. Cerebras
+ * is double-gated exactly like deepseek: a surface must explicitly name it
+ * AND it must appear in LLM_ROUTING_ALLOWED_PROVIDERS. These tests hold the
+ * key present (the strongest configuration short of the operator's opt-in)
+ * so a regression that drops either gate fails here rather than in prod.
+ */
+describe("S208 -- cerebras is registered but inert until explicitly allowed", () => {
+  const SURFACES = [
+    "recommendation",
+    "synthesis_brief",
+    "synthesis_draft",
+    "synthesis_pdu",
+    "cc_dispatch",
+  ] as const;
+
+  it("never selects cerebras on any surface when the key is set but no surface names it", () => {
+    for (const surface of SURFACES) {
+      const decision = resolveRoute(
+        { surface, taskClass: `task-${surface}` },
+        {
+          LLM_ROUTING_ENABLED: "true",
+          LLM_ROUTING_DRY_RUN: "false",
+          CEREBRAS_API_KEY: "cerebras-test-key",
+        },
+      );
+
+      expect(decision.provider).not.toBe("cerebras");
+      expect(decision.provider).toBe("anthropic");
+      expect(decision.liveInvocationAllowed).toBe(false);
+      expect(decision.authEnvVar).not.toBe("CEREBRAS_API_KEY");
+    }
+  });
+
+  it("refuses live invocation when cerebras is requested but absent from the allow-list", () => {
+    expect(resolveRoute(
+      { surface: "synthesis_brief", taskClass: "synthesis-brief" },
+      {
+        LLM_ROUTING_ENABLED: "true",
+        LLM_ROUTING_DRY_RUN: "false",
+        LLM_ROUTING_SYNTHESIS_BRIEF_PROVIDER: "cerebras",
+        CEREBRAS_API_KEY: "cerebras-test-key",
+      },
+    )).toMatchObject({
+      provider: "cerebras",
+      model: "zai-glm-4.7",
+      transport: "openai_compatible_chat",
+      authEnvVar: "CEREBRAS_API_KEY",
+      liveInvocationAllowed: false,
+      reason: "provider-not-allowed",
+      fallbackChain: ["cerebras", "anthropic"],
+    });
+  });
+
+  it("still refuses when other providers are allowed but cerebras is not", () => {
+    for (const allowed of ["anthropic", "anthropic,openai,deepseek", "openrouter"]) {
+      expect(resolveRoute(
+        { surface: "synthesis_pdu", taskClass: "synthesis-pdu" },
+        {
+          LLM_ROUTING_ENABLED: "true",
+          LLM_ROUTING_DRY_RUN: "false",
+          LLM_ROUTING_ALLOWED_PROVIDERS: allowed,
+          LLM_ROUTING_SYNTHESIS_PDU_PROVIDER: "cerebras",
+          CEREBRAS_API_KEY: "cerebras-test-key",
+        },
+      )).toMatchObject({
+        provider: "cerebras",
+        liveInvocationAllowed: false,
+        reason: "provider-not-allowed",
+      });
+    }
+  });
+
+  it("cannot reach cc_dispatch even when cerebras is allowed and requested", () => {
+    expect(resolveRoute(
+      { surface: "cc_dispatch", taskClass: "code" },
+      {
+        LLM_ROUTING_ENABLED: "true",
+        LLM_ROUTING_DRY_RUN: "false",
+        LLM_ROUTING_ALLOWED_PROVIDERS: "anthropic,cerebras",
+        LLM_ROUTING_CC_DISPATCH_PROVIDER: "cerebras",
+        CEREBRAS_API_KEY: "cerebras-test-key",
+      },
+    )).toMatchObject({
+      provider: "anthropic",
+      model: CC_DISPATCH_MODEL_ID,
+      transport: "claude_code_oauth",
+      liveInvocationAllowed: false,
+      reason: "activation-not-authorized",
+    });
+  });
+
+  it("authorizes a live cerebras route only once the operator adds it to the allow-list", () => {
+    expect(resolveRoute(
+      { surface: "synthesis_draft", taskClass: "synthesis-draft" },
+      {
+        LLM_ROUTING_ENABLED: "true",
+        LLM_ROUTING_DRY_RUN: "false",
+        LLM_ROUTING_ALLOWED_PROVIDERS: "anthropic,cerebras",
+        LLM_ROUTING_SYNTHESIS_DRAFT_PROVIDER: "cerebras",
+        CEREBRAS_API_KEY: "cerebras-test-key",
+      },
+    )).toMatchObject({
+      provider: "cerebras",
+      model: "zai-glm-4.7",
+      transport: "openai_compatible_chat",
+      authEnvVar: "CEREBRAS_API_KEY",
+      liveInvocationAllowed: true,
+      reason: "live-provider-route",
+    });
+  });
+
+  it("honors LLM_ROUTING_CEREBRAS_MODEL for the account's alternate models", () => {
+    for (const model of ["gpt-oss-120b", "gemma-4-31b"]) {
+      expect(resolveRoute(
+        { surface: "synthesis_brief", taskClass: "synthesis-brief" },
+        {
+          LLM_ROUTING_ENABLED: "true",
+          LLM_ROUTING_DRY_RUN: "false",
+          LLM_ROUTING_ALLOWED_PROVIDERS: "anthropic,cerebras",
+          LLM_ROUTING_SYNTHESIS_BRIEF_PROVIDER: "cerebras",
+          LLM_ROUTING_CEREBRAS_MODEL: model,
+          CEREBRAS_API_KEY: "cerebras-test-key",
+        },
+      )).toMatchObject({ provider: "cerebras", model });
+    }
+  });
+});

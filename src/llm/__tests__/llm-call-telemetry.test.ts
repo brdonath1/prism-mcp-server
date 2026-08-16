@@ -47,6 +47,27 @@ describe("pricing — static list-price estimates", () => {
     expect(estimateCostUsd("deepseek-v4-pro-20260801", 1_000_000, 0)).toBe(0.65);
     expect(estimateCostUsd("sonar-pro-online", 1_000_000, 0)).toBe(3);
   });
+
+  // S208: the three models the operator's Cerebras account serves. Same
+  // UNVERIFIED class as the F-G-A11 rows -- the assertions pin the contract
+  // (non-null, prefix-matched) and the current numbers together, so a bump
+  // is a deliberate edit rather than silent drift.
+  it("prices the Cerebras catalog so a served cerebras call is never unpriced (S208)", () => {
+    expect(estimateCostUsd("zai-glm-4.7", 1_000_000, 1_000_000)).toBe(2.8);
+    expect(estimateCostUsd("gpt-oss-120b", 1_000_000, 1_000_000)).toBe(1.1);
+    expect(estimateCostUsd("gemma-4-31b", 1_000_000, 1_000_000)).toBe(0.8);
+
+    for (const model of ["zai-glm-4.7", "gpt-oss-120b", "gemma-4-31b"]) {
+      expect(estimateCostUsd(model, 60_000, 3_000)).not.toBeNull();
+    }
+  });
+
+  it("does not let the Cerebras gpt-oss row collide with the gpt-5.5 prefix", () => {
+    // Longest-prefix matching must keep these two apart -- "gpt-oss-120b"
+    // and "gpt-5.5" share only "gpt", so neither may price the other.
+    expect(estimateCostUsd("gpt-oss-120b", 1_000_000, 0)).toBe(0.35);
+    expect(estimateCostUsd("gpt-5.5", 1_000_000, 0)).toBe(1.75);
+  });
 });
 
 describe("estimateTokensFromChars — the labeled chars/3.5 fallback", () => {

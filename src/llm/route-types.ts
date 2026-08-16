@@ -10,6 +10,7 @@ export type LlmProviderId =
   | "openai"
   | "gemini"
   | "deepseek"
+  | "cerebras"
   | "xai"
   | "perplexity"
   | "openrouter";

@@ -6,7 +6,7 @@ This is the **PRISM MCP Server** — a custom remote MCP (Model Context Protocol
 
 **Owner:** Brian (brdonath1 on GitHub)
 **Framework:** PRISM — current version pinned by the framework repo's core-template; fetched dynamically at bootstrap.
-**Server Version:** 4.14.2
+**Server Version:** 4.14.3
 **Status:** Production — deployed on Railway, serving all active PRISM projects.
 
 ## What PRISM Is
@@ -25,7 +25,7 @@ The MCP server is the v2 evolution — separating Claude into a pure reasoning a
 └───────────────┬───────────────────────────────┘
                 │ MCP Protocol (HTTPS)
 ┌───────────────▼───────────────────────────────┐
-│  PRISM MCP Server (Railway) — v4.14.2         │
+│  PRISM MCP Server (Railway) — v4.14.3         │
 │  32 MCP tools — stateless proxy               │
 │  ├── 14 PRISM  (bootstrap/fetch/push/X sentiment) │
 │  ├── 10 Railway (logs/deploy/env/status/CRUD) │
@@ -54,7 +54,7 @@ The MCP server is the v2 evolution — separating Claude into a pure reasoning a
 - **HTTP framework:** Express 5.x
 - **Transport:** MCP Streamable HTTP, **stateless mode** (`sessionIdGenerator: undefined`)
 - **Validation:** Zod
-- **AI Synthesis:** `@anthropic-ai/sdk` plus provider adapters for live multi-provider synthesis. Anthropic fallback uses the registry single-switch `SYNTHESIS_MODEL_ID` in `src/models.ts` (D-254); `LLM_ROUTING_*_PROVIDER` can route synthesis through OpenAI, Gemini, DeepSeek, xAI, or Perplexity when enabled; `LLM_ROUTING_OPENROUTER_SITES` routes mechanical synthesis sites to GLM-5.2 via OpenRouter (D-275).
+- **AI Synthesis:** `@anthropic-ai/sdk` plus provider adapters for live multi-provider synthesis. Anthropic fallback uses the registry single-switch `SYNTHESIS_MODEL_ID` in `src/models.ts` (D-254); `LLM_ROUTING_*_PROVIDER` can route synthesis through OpenAI, Gemini, DeepSeek, Cerebras, xAI, or Perplexity when enabled; `LLM_ROUTING_OPENROUTER_SITES` routes mechanical synthesis sites to GLM-5.2 via OpenRouter (D-275).
 - **Claude Code orchestration:** `@anthropic-ai/claude-agent-sdk` + `@anthropic-ai/claude-code` (subprocess)
 - **GitHub API client:** Plain `fetch` (Node.js 18+ built-in) — no Octokit
 - **Hosting:** Railway (persistent Node.js service)
@@ -84,11 +84,12 @@ The MCP server is the v2 evolution — separating Claude into a pure reasoning a
 | `SYNTHESIS_{BRIEF,PDU}_THINKING` | optional | Per-call-site adaptive-thinking switch for background synthesis. Defaults to `true`; set a specific call site to `false`/`0`/`no`/`off` to opt out without changing model or transport. |
 | `CC_DISPATCH_MODEL` | optional | Override the Claude Code dispatch model (default: `CC_DISPATCH_MODEL_ID` in `src/models.ts`) |
 | `CC_DISPATCH_MAX_TURNS` | optional | Default agent turn cap (default: 50) |
-| `OPENAI_API_KEY` / `GEMINI_API_KEY` / `DEEPSEEK_API_KEY` / `XAI_API_KEY` / `PERPLEXITY_API_KEY` | optional | Provider credentials for live multi-provider synthesis routes. Values must stay in Railway/env/secret stores, never source. |
+| `OPENAI_API_KEY` / `GEMINI_API_KEY` / `DEEPSEEK_API_KEY` / `CEREBRAS_API_KEY` / `XAI_API_KEY` / `PERPLEXITY_API_KEY` | optional | Provider credentials for live multi-provider synthesis routes. Values must stay in Railway/env/secret stores, never source. |
 | `LLM_ROUTING_ENABLED` / `LLM_ROUTING_DRY_RUN` | optional | Multi-provider synthesis routing switch. Live provider invocation requires enabled=true and dry-run=false. |
 | `LLM_ROUTING_X_SENTIMENT_ENABLED` | optional | Additional explicit switch for `prism_x_sentiment`; live xAI sentiment calls require this true, routing enabled, dry-run false, `xai` allowed, and `XAI_API_KEY` present. |
 | `LLM_ROUTING_*_PROVIDER` | optional | Provider preference names for synthesis route selection and sanitized status. `LLM_ROUTING_CC_DISPATCH_PROVIDER` remains Claude-only unless a future non-Claude code runner exists. |
-| `LLM_ROUTING_{OPENAI,GEMINI,DEEPSEEK,XAI,PERPLEXITY,OPENROUTER}_MODEL` | optional | Provider model override. Defaults are OpenAI `gpt-5.5`, Gemini `gemini-3.1-pro-preview`, DeepSeek `deepseek-v4-pro`, xAI `grok-4.3`, Perplexity `sonar-pro`, and OpenRouter `z-ai/glm-5.2`. |
+| `LLM_ROUTING_{OPENAI,GEMINI,DEEPSEEK,CEREBRAS,XAI,PERPLEXITY,OPENROUTER}_MODEL` | optional | Provider model override. Defaults are OpenAI `gpt-5.5`, Gemini `gemini-3.1-pro-preview`, DeepSeek `deepseek-v4-pro`, Cerebras `zai-glm-4.7`, xAI `grok-4.3`, Perplexity `sonar-pro`, and OpenRouter `z-ai/glm-5.2`. |
+| `CEREBRAS_API_KEY` / `LLM_ROUTING_CEREBRAS_MODEL` | optional | S208: Cerebras registered as a routing provider on its OpenAI-compatible chat endpoint (`https://api.cerebras.ai/v1/chat/completions`). **Registered but inert** -- a live cerebras route needs `LLM_ROUTING_ENABLED=true`, `LLM_ROUTING_DRY_RUN=false`, a `LLM_ROUTING_*_PROVIDER` naming `cerebras`, `cerebras` in `LLM_ROUTING_ALLOWED_PROVIDERS`, and this key. Adding the key alone changes nothing. `LLM_ROUTING_CEREBRAS_MODEL` accepts the three models the account serves: `zai-glm-4.7` (default), `gpt-oss-120b`, `gemma-4-31b`. |
 | `OPENROUTER_API_KEY` | optional | Auth for the D-275 mechanical-tier synthesis routes (GLM-5.2 via OpenRouter). Inert until `LLM_ROUTING_OPENROUTER_SITES` lists a site. |
 | `LLM_ROUTING_OPENROUTER_SITES` | optional | D-275 activation surface: comma list of mechanical call-site ids (`synthesis_draft`, `synthesis_pdu`, `synthesis_brief`). openrouter serves exactly (SITES ∩ mechanical); unset/empty ⇒ routing bit-identical to pre-D-275. **Kill-switch: clear this var** (no deploy needed). Requires `LLM_ROUTING_ENABLED=true`, `LLM_ROUTING_DRY_RUN=false`, and `OPENROUTER_API_KEY`; needs NO change to `LLM_ROUTING_ALLOWED_PROVIDERS` or any other shared var. |
 | `LLM_ROUTING_OPENROUTER_REASONING_{BRIEF,DRAFT,PDU}` | optional | Per-site GLM thinking control: `off` (default) \| `low` \| `medium` \| `high`. GLM-5.2 defaults to thinking mode and reasoning consumes `max_tokens` (S196 live hazard: `finish_reason=length`, zero text), so every openrouter call pins `reasoning: {enabled:false}` unless a site opts in here — and opt-in is guarded to `max_tokens ≥ 16384`. |

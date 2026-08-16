@@ -121,6 +121,53 @@ describe("provider adapters", () => {
     });
   });
 
+  // S208: Cerebras rides the same OpenAI-compatible chat adapter as DeepSeek
+  // but on its own base URL. Pinned so a future edit cannot quietly send
+  // Cerebras traffic to the api.openai.com fallback branch.
+  it("routes Cerebras to its own OpenAI-compatible chat base URL (S208)", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      choices: [{ message: { content: "cerebras text" }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 21, completion_tokens: 5 },
+    }), { status: 200 }));
+
+    const outcome = await synthesizeViaProvider({
+      decision: decision({
+        provider: "cerebras",
+        model: "zai-glm-4.7",
+        transport: "openai_compatible_chat",
+        authEnvVar: "CEREBRAS_API_KEY",
+        fallbackChain: ["cerebras", "anthropic"],
+      }),
+      systemPrompt: "system instructions",
+      userContent: "user input",
+      env: { CEREBRAS_API_KEY: "cerebras-test-secret" },
+      fetchImpl,
+    });
+
+    expect(outcome).toMatchObject({
+      success: true,
+      content: "cerebras text",
+      input_tokens: 21,
+      output_tokens: 5,
+      model: "zai-glm-4.7",
+      transport: "openai_compatible_chat",
+    });
+    const [url, init] = fetchImpl.mock.calls[0];
+    expect(url).toBe("https://api.cerebras.ai/v1/chat/completions");
+    expect(init.headers.Authorization).toBe("Bearer cerebras-test-secret");
+    expect(JSON.parse(init.body)).toMatchObject({
+      model: "zai-glm-4.7",
+      messages: [
+        { role: "system", content: "system instructions" },
+        { role: "user", content: "user input" },
+      ],
+    });
+    // The OpenRouter-only request extensions must not leak onto Cerebras.
+    expect(JSON.parse(init.body).usage).toBeUndefined();
+    expect(JSON.parse(init.body).provider).toBeUndefined();
+    expect(JSON.stringify(outcome)).not.toContain("cerebras-test-secret");
+  });
+
   it("treats OpenAI-compatible length finishes as provider failures", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       choices: [{ message: { content: "partial text" }, finish_reason: "length" }],
