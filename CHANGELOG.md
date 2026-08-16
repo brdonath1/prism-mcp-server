@@ -57,8 +57,13 @@ is unchanged (4.3).
   serial GitHub round trips - two existence probes, a sha read and a PUT - to
   write ~140 bytes on the critical boot path. Where the doc lives is a property
   of the repo, not the session, so the resolved path is cached (60 min / 100
-  repos) and the chain collapses to sha-read + PUT. A failed push invalidates
-  the entry, so a migrated repo re-probes instead of writing to a stale path.
+  repos) and the chain collapses to sha-read + PUT for repos already on the
+  canonical `.prism/` layout. Only a canonical resolution is ever cached - a
+  legacy-root resolution always re-probes on the next boot, since a push to
+  the legacy root keeps succeeding right up until the repo migrates and a
+  failed-push invalidation alone would never fire to unstick it. A repo that
+  migrates picks up the canonical path (and starts caching) on its first
+  post-migration boot instead of latching onto the stale root path forever.
 - **The boot-time Railway observation read is bounded at 2.5s** (MCP-17) by a
   CALL-SITE `Promise.race` in `checkSynthesisObservation`. The timer is
   `unref()`d and cleared in `finally`, and the loser's rejection is swallowed.

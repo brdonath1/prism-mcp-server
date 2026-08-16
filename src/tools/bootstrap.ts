@@ -656,7 +656,7 @@ async function fetchBehavioralRules(): Promise<{ content: string; size: number }
 /**
  * Push boot-test.md to verify the write path. Non-blocking — failure is a warning, not an error.
  */
-async function pushBootTest(
+export async function pushBootTest(
   slug: string,
   sessionNumber: number,
   timestamp: string,
@@ -669,14 +669,22 @@ async function pushBootTest(
   // Where boot-test.md lives is a property of the repo layout, not of the
   // session, so the resolved path is cached per repo and the two existence
   // probes collapse away on every subsequent boot -- leaving sha-read + PUT.
-  // A failed push invalidates the entry, so a repo that migrates the doc
-  // re-probes on the next boot rather than writing to a stale path forever.
+  // S2A-B1: ONLY a CANONICAL (DOC_ROOT-rooted) resolution is ever cached -- a
+  // legacy-root resolution is deliberately never written to the cache, so a
+  // repo still on the legacy layout always re-probes on its next boot instead
+  // of latching onto the stale root path. A push to the legacy root SUCCEEDS
+  // right up until the repo migrates its docs, so a failed-push invalidation
+  // alone would never fire to unstick it -- the self-heal previously claimed
+  // here did not actually happen. Self-healing instead happens on migration:
+  // once the canonical copy exists, the next re-probe resolves canonical and
+  // caching begins from there. A failed push against an already-cached
+  // (canonical) path still invalidates the entry as a backstop.
   const pathCacheKey = `${slug}:boot-test.md`;
   try {
     const cachedPath = bootTestPathCache.get(pathCacheKey);
     const bootTestPath = cachedPath ?? (await resolveDocPushPath(slug, "boot-test.md"));
     const result = await pushFile(slug, bootTestPath, content, `prism: S${sessionNumber} boot test`);
-    if (result.success) {
+    if (result.success && bootTestPath.startsWith(`${DOC_ROOT}/`)) {
       bootTestPathCache.set(pathCacheKey, bootTestPath);
     } else {
       bootTestPathCache.invalidate(pathCacheKey);

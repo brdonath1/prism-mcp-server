@@ -406,6 +406,43 @@ describe("MCP-14 - attempts stop when the budget is exhausted", () => {
     expect(elapsed).toBeLessThan(1_500);
   }, 10_000);
 
+  it("the budget-exhausted throw preserves the last response's status and Retry-After (S2A-B1)", async () => {
+    // Pre-S2A-B1: this throw was a bare "budget exhausted" message with no
+    // trace of WHY the retries were happening -- the pre-sleep
+    // `retryFitsBudget` path returns the last response (status + headers
+    // intact) to its caller, but this parallel exhausted-BEFORE-next-attempt
+    // throw carried none of that. Same fixture shape as the test above: two
+    // 300ms 429 responses with retry-after "0" against a 700ms budget, so the
+    // third attempt is refused before it starts and the last SEEN response
+    // (attempt 1's 429 / retry-after "0") must be reflected in the error.
+    vi.resetModules();
+    process.env.GITHUB_RETRY_BUDGET_MS = "700";
+    const { fetchWithRetry } = await import("../src/github/client.js");
+
+    globalThis.fetch = vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      return new Response("rate limited", {
+        status: 429,
+        headers: { "retry-after": "0" },
+      });
+    }) as unknown as typeof fetch;
+
+    let caught: unknown;
+    try {
+      await fetchWithRetry("https://api.github.com/x");
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(Error);
+    const err = caught as Error & { lastStatus?: number; retryAfter?: string | null };
+    expect(err.message).toMatch(/retry budget exhausted/i);
+    expect(err.message).toContain("429");
+    expect(err.message).toContain("Retry-After: 0");
+    expect(err.lastStatus).toBe(429);
+    expect(err.retryAfter).toBe("0");
+  }, 10_000);
+
   it("a single fast attempt is completely unaffected", async () => {
     vi.resetModules();
     process.env.GITHUB_RETRY_BUDGET_MS = "700";
@@ -471,5 +508,111 @@ describe("MCP-16 - the boot-test push path is cached per repo", () => {
   it("invalidates the cached path whenever the push does not succeed", () => {
     expect(source).toContain("bootTestPathCache.set(pathCacheKey, bootTestPath);");
     expect(source).toContain("bootTestPathCache.invalidate(pathCacheKey);");
+  });
+});
+
+describe("S2A-B1 - the boot-test path cache only self-heals through canonical resolutions", () => {
+  // Behavioral coverage (not source-text matching) for the S2A-B1 blocker fix:
+  // resolveDocPushPath's answer is cached ONLY when it resolves under
+  // DOC_ROOT. A legacy-root resolution must never be cached -- caching it
+  // would let a repo latch onto the stale root path forever, since a push to
+  // the legacy root keeps SUCCEEDING right up until the repo migrates, so a
+  // failed-push invalidation alone would never fire to unstick it.
+  beforeEach(async () => {
+    vi.resetModules();
+  });
+
+  afterEach(async () => {
+    const { bootTestPathCache } = await import("../src/utils/cache.js");
+    bootTestPathCache.clear();
+    vi.restoreAllMocks();
+  });
+
+  it("never caches a legacy-root resolution, so the repo re-probes on every boot", async () => {
+    const doc = await import("../src/utils/doc-resolver.js");
+    const clientMod = await import("../src/github/client.js");
+    const { bootTestPathCache } = await import("../src/utils/cache.js");
+    const { pushBootTest } = await import("../src/tools/bootstrap.js");
+
+    const resolvePushPath = vi.mocked(doc.resolveDocPushPath);
+    // vi.spyOn (not vi.mock) so `fetchWithRetry` in the sibling MCP-14
+    // describes above keeps its real implementation untouched -- pushBootTest
+    // never calls fetchWithRetry itself, only pushFile.
+    const push = vi.spyOn(clientMod, "pushFile");
+    resolvePushPath.mockResolvedValue("boot-test.md"); // legacy root, file lives there
+    push.mockResolvedValue({ success: true, size: 100, sha: "sha-legacy" });
+
+    const first = await pushBootTest("prism", 208, "2026-08-16T00:00:00Z", 12);
+    expect(first.success).toBe(true);
+    expect(resolvePushPath).toHaveBeenCalledTimes(1);
+    // Nothing cached: a legacy-root resolution is never written to the cache.
+    expect(bootTestPathCache.get("prism:boot-test.md")).toBeNull();
+
+    const second = await pushBootTest("prism", 209, "2026-08-16T01:00:00Z", 12);
+    expect(second.success).toBe(true);
+    // Re-probed on the next boot rather than reusing a cached legacy path.
+    expect(resolvePushPath).toHaveBeenCalledTimes(2);
+    expect(push).toHaveBeenNthCalledWith(
+      2,
+      "prism",
+      "boot-test.md",
+      expect.any(String),
+      expect.any(String),
+    );
+  });
+
+  it("caches a canonical resolution and skips the probe on the next boot", async () => {
+    const doc = await import("../src/utils/doc-resolver.js");
+    const clientMod = await import("../src/github/client.js");
+    const { bootTestPathCache } = await import("../src/utils/cache.js");
+    const { pushBootTest } = await import("../src/tools/bootstrap.js");
+    const { DOC_ROOT } = await import("../src/config.js");
+
+    const resolvePushPath = vi.mocked(doc.resolveDocPushPath);
+    const push = vi.spyOn(clientMod, "pushFile");
+    resolvePushPath.mockResolvedValue(`${DOC_ROOT}/boot-test.md`); // migrated repo
+    push.mockResolvedValue({ success: true, size: 100, sha: "sha-canonical" });
+
+    const first = await pushBootTest("prism", 208, "2026-08-16T00:00:00Z", 12);
+    expect(first.success).toBe(true);
+    expect(resolvePushPath).toHaveBeenCalledTimes(1);
+    expect(bootTestPathCache.get("prism:boot-test.md")).toBe(`${DOC_ROOT}/boot-test.md`);
+
+    const second = await pushBootTest("prism", 209, "2026-08-16T01:00:00Z", 12);
+    expect(second.success).toBe(true);
+    // Cached: resolveDocPushPath is NOT called again on the second boot.
+    expect(resolvePushPath).toHaveBeenCalledTimes(1);
+    expect(push).toHaveBeenNthCalledWith(
+      2,
+      "prism",
+      `${DOC_ROOT}/boot-test.md`,
+      expect.any(String),
+      expect.any(String),
+    );
+  });
+
+  it("stops caching a repo that migrates away from a stale cached canonical path only via a failed push (backstop)", async () => {
+    const doc = await import("../src/utils/doc-resolver.js");
+    const clientMod = await import("../src/github/client.js");
+    const { bootTestPathCache } = await import("../src/utils/cache.js");
+    const { pushBootTest } = await import("../src/tools/bootstrap.js");
+    const { DOC_ROOT } = await import("../src/config.js");
+
+    const resolvePushPath = vi.mocked(doc.resolveDocPushPath);
+    const push = vi.spyOn(clientMod, "pushFile");
+    resolvePushPath.mockResolvedValue(`${DOC_ROOT}/boot-test.md`);
+    push.mockResolvedValue({ success: true, size: 100, sha: "sha-canonical" });
+
+    await pushBootTest("prism", 208, "2026-08-16T00:00:00Z", 12);
+    expect(bootTestPathCache.get("prism:boot-test.md")).toBe(`${DOC_ROOT}/boot-test.md`);
+
+    // Cached path push now fails (e.g. the repo's write scope was pulled).
+    push.mockResolvedValue({ success: false, size: 0, sha: "", error: "403 scope loss" });
+    const failed = await pushBootTest("prism", 209, "2026-08-16T01:00:00Z", 12);
+    expect(failed.success).toBe(false);
+    // The cached-path fetch was reused (no re-probe before the failing push)...
+    expect(resolvePushPath).toHaveBeenCalledTimes(1);
+    // ...but the failure invalidates the entry as the backstop.
+    expect(bootTestPathCache.get("prism:boot-test.md")).toBeNull();
   });
 });

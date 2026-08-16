@@ -141,10 +141,18 @@ export const ruleSourceCache = new MemoryCache<RuleSourceCacheEntry>("rule-sourc
  *
  * `resolveDocPushPath` costs up to TWO existence probes before the push can
  * start; the answer is a property of the repo layout, not of the session, so
- * after the first boot the chain collapses to sha-read + PUT. Invalidated
- * whenever the push using the cached path fails, so a repo that migrates
- * boot-test.md re-probes on the next boot instead of writing to a stale path.
- * TTL 60 min / 100 repos bounds the staleness window either way.
+ * after the first boot the chain collapses to sha-read + PUT -- but ONLY for
+ * repos already on the canonical DOC_ROOT layout. `pushBootTest`
+ * (src/tools/bootstrap.ts, S2A-B1) only calls `.set()` when the resolved path
+ * starts with `DOC_ROOT + '/'`; a legacy-root resolution is never cached. That
+ * distinction matters because a push to the legacy root SUCCEEDS right up
+ * until the repo migrates -- a failed-push invalidation alone would never
+ * fire to unstick a cached legacy path, so the entry would latch onto the
+ * stale location forever. The uncached legacy case simply re-probes on every
+ * boot until migration flips the resolution to canonical, at which point
+ * caching begins. Also invalidated on push failure, as a backstop for the
+ * canonical case. TTL 60 min / 100 repos bounds the staleness window either
+ * way.
  */
 export const bootTestPathCache = new MemoryCache<string>("boot-test-path", 60, 100);
 

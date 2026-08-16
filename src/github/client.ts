@@ -210,6 +210,13 @@ function retryFitsBudget(
  */
 export async function fetchWithRetry(url: string, options: RequestInit = {}, maxRetries = 3): Promise<Response> {
   const retryDeadline = Date.now() + GITHUB_RETRY_BUDGET_MS;
+  // S2A-B1 (MCP-14 follow-up): last response's status + Retry-After, captured
+  // across iterations so the budget-exhausted throw below can surface what
+  // the pre-sleep `retryFitsBudget` path already RETURNS to its caller (the
+  // response itself, headers intact) instead of a bare "budget exhausted"
+  // with no diagnostic content. The pre-sleep path is unchanged -- this only
+  // adds visibility to the exhausted-BEFORE-next-attempt throw.
+  let lastResponseInfo: { status: number; retryAfter: string | null } | undefined;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     // MCP-14 (S208 PR-S2a): the budget bounds TOTAL elapsed attempt time, not
     // just the backoff sleeps. Pre-S2a `retryFitsBudget` only asked whether
@@ -228,9 +235,22 @@ export async function fetchWithRetry(url: string, options: RequestInit = {}, max
         attempt,
         remainingMs: budgetRemaining,
         budgetMs: GITHUB_RETRY_BUDGET_MS,
+        lastStatus: lastResponseInfo?.status,
+        lastRetryAfter: lastResponseInfo?.retryAfter,
       });
-      throw new Error(
-        `GitHub retry budget exhausted after ${attempt} attempt(s) (${GITHUB_RETRY_BUDGET_MS}ms): ${url}`,
+      const lastResponseSuffix = lastResponseInfo
+        ? ` (last response: ${lastResponseInfo.status}${
+            lastResponseInfo.retryAfter !== null ? `, Retry-After: ${lastResponseInfo.retryAfter}` : ""
+          })`
+        : "";
+      throw Object.assign(
+        new Error(
+          `GitHub retry budget exhausted after ${attempt} attempt(s) (${GITHUB_RETRY_BUDGET_MS}ms): ${url}${lastResponseSuffix}`,
+        ),
+        {
+          lastStatus: lastResponseInfo?.status,
+          retryAfter: lastResponseInfo?.retryAfter ?? null,
+        },
       );
     }
     const attemptTimeoutMs =
@@ -268,6 +288,13 @@ export async function fetchWithRetry(url: string, options: RequestInit = {}, max
       }
       await res.body?.cancel(); // Prevent response body leak on retry
       logger.warn("Rate limited, retrying", { attempt: attempt + 1, delay, url });
+      // S2A-B1: record what's about to be retried away, so a budget-exhausted
+      // throw on a LATER iteration (before the next fetch even starts) can
+      // still surface it. Scoped to this already-matched 429 branch rather
+      // than an unconditional post-fetch read -- callers/tests that stub
+      // `fetch` with a plain object (no real `Headers`) on a non-retryable
+      // status never reach here, so `res.headers` is never touched on them.
+      lastResponseInfo = { status: res.status, retryAfter: res.headers.get("retry-after") };
       await sleep(delay);
       continue;
     }
@@ -286,6 +313,7 @@ export async function fetchWithRetry(url: string, options: RequestInit = {}, max
         delay,
         url,
       });
+      lastResponseInfo = { status: res.status, retryAfter: res.headers.get("retry-after") };
       await sleep(delay);
       continue;
     }
@@ -301,6 +329,7 @@ export async function fetchWithRetry(url: string, options: RequestInit = {}, max
       }
       await res.body?.cancel();
       logger.warn("403 rate limit, retrying", { attempt: attempt + 1, delay, url });
+      lastResponseInfo = { status: res.status, retryAfter: res.headers.get("retry-after") };
       await sleep(delay);
       continue;
     }
