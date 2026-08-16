@@ -26,7 +26,7 @@ import { extractSection } from "../utils/summarizer.js";
 import { resolveDocPath, resolveDocPushPath } from "../utils/doc-resolver.js";
 import { DiagnosticsCollector } from "../utils/diagnostics.js";
 import { detectMostRecentAtFromNumbers } from "../utils/archive.js";
-import { SCALE_WALL_CLOCK_DEADLINE_MS } from "../config.js";
+import { SCALE_WALL_CLOCK_DEADLINE_MS, isWidgetChannelItem } from "../config.js";
 
 /** Maximum wall-clock time before returning a partial result (ms). */
 const SAFETY_TIMEOUT_MS = 50_000;
@@ -432,14 +432,31 @@ export function stripDuplicateSessionEntries(
 
 /**
  * Keep only the first N list items (numbered or bulleted).
+ *
+ * S208 widget_channel binding: a `widget_channel:` item is EXEMPT from the
+ * cap. It is a machine signal the boot kernel keys on (the substring
+ * `widget_channel: down` anywhere in critical_context), not one of the N
+ * substantive facts the cap rations — and it is set precisely when the render
+ * channel is broken, i.e. exactly when condensing it away costs the next boot
+ * a multi-minute hang. The cap is therefore effectively N + flag. Every other
+ * item past N is dropped as before.
+ *
+ * Exported for direct unit testing (the exemption needs a pinned regression
+ * test that does not have to drive the whole scale tool).
  */
-function condenseToMaxItems(body: string, maxItems: number): string {
+export function condenseToMaxItems(body: string, maxItems: number): string {
   const lines = body.split("\n");
   const result: string[] = [];
   let itemCount = 0;
 
   for (const line of lines) {
     if (/^\s*(\d+\.|-|\*)\s+/.test(line)) {
+      // Strip the list marker before testing so numbering never hides the flag.
+      const itemText = line.replace(/^\s*(\d+\.|-|\*)\s+/, "");
+      if (isWidgetChannelItem(itemText)) {
+        result.push(line);
+        continue;
+      }
       itemCount++;
       if (itemCount <= maxItems) {
         result.push(line);

@@ -121,8 +121,12 @@ describe("null-banner_text fallback matches the Rule 2 single-line spec", () => 
   it("bootstrap: render failure produces the single-line fallback, not banner_data", async () => {
     const result = await handlers.prism_bootstrap({ project_slug: "prism" });
     const data = JSON.parse(result.content[0].text);
-    // Session 29 = Session Count 28 + 1; handoff v33; 10/10 living docs.
-    expect(data.banner_text).toBe("PRISM | Session 29 | Handoff v33 | 10/10 docs");
+    // Session 29 = Session Count 28 + 1; handoff v33.
+    // S208 MCP-13: the doc count is MEASURED from the boot fan-out, which
+    // probes a handful of the ten living documents — not all ten — so the
+    // honest render is `?/10 (unverified)`. The pre-MCP-13 `10/10` was a
+    // hardcoded constant asserting a health check boot never performed.
+    expect(data.banner_text).toBe("PRISM | Session 29 | Handoff v33 | ?/10 docs (unverified)");
     expect(data.banner_data).toBeUndefined();
   });
 

@@ -176,6 +176,11 @@ vi.mock("../src/utils/banner.js", () => ({
   BANNER_SPEC_VERSION: "3.0",
   generateCstTimestamp: vi.fn().mockReturnValue("2026-04-25 10:00:00"),
   renderUnifiedBanner: vi.fn().mockReturnValue("banner text"),
+  // S208 MCP-19: masthead render failures now raise MASTHEAD_RENDER_FAILED
+  // instead of being log-only, so this mock has to actually supply the two
+  // masthead renderers for "clean bootstrap" to mean clean.
+  renderBootMastheadSvg: vi.fn().mockReturnValue("<svg/>"),
+  renderBootMastheadHtml: vi.fn().mockReturnValue("<div></div>"),
   renderBannerFallback: vi.fn().mockReturnValue("PRISM | Session 1 | Handoff v1 | 10/10 docs"),
   parseTemplateBannerSpecVersion: vi.fn().mockReturnValue(null),
   parseResumptionForBanner: vi.fn().mockReturnValue("resume point"),

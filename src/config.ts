@@ -53,8 +53,11 @@ export const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
  *  the S202 boot-lean server bundle (session_state_manifest + BOOT_INDEX_MODE,
  *  rules_hint, brief digest-dedup, PREFETCH_MODE, handoff item budget,
  *  masthead knob, kernel handshake, finalize compose-offload, synthesis size
- *  contracts + trim annotation). */
-export const SERVER_VERSION = "4.13.0";
+ *  contracts + trim annotation); 4.13.1 is the S208 PR-S1 finalize+banner
+ *  reliability bundle (banner fields on every bootstrap/finalize exit,
+ *  network-safe finalization banner, bounded audit paths, measured boot doc
+ *  count, render-failure diagnostics, FINALIZE_BANNER knob). */
+export const SERVER_VERSION = "4.13.1";
 
 /** MCP client timeout is ~60s. All server-side operations must complete within 50s
  *  to leave 10s buffer for transport overhead. This constrains synthesis, draft,
@@ -502,7 +505,17 @@ export const FINALIZE_DRAFT_DEADLINE_MS =
  *  wins verbatim (the R32 rollback lever, and the only way back to a >50s
  *  interactive draft); fullPhase's background race keeps the longer
  *  FINALIZE_DRAFT_DEADLINE_MS / FINALIZE_DRAFT_DEADLINE_CC_MS constants
- *  regardless — it is not bounded by a client turn. */
+ *  regardless.
+ *
+ *  MCP-1 v4 truth-up (S208 PR-S1): the earlier trailing claim that the
+ *  background race "is not bounded by a client turn" was false as written.
+ *  What is true is a CALLER distinction, not a transport one. action=full's
+ *  intended caller is the Trigger / Claude Code path, which drives the server
+ *  without the ~60s MCP client ceiling; the chat path is expected to run the
+ *  phased audit -> draft -> commit sequence instead. The action enum cannot
+ *  structurally prevent a chat client from calling action=full, and when one
+ *  does, that turn IS bounded by its own client ceiling -- a stated residual,
+ *  not a guarantee. */
 export const FINALIZE_DRAFT_ACTION_DEADLINE_MS =
   process.env.FINALIZE_DRAFT_DEADLINE_MS !== undefined
     ? FINALIZE_DRAFT_DEADLINE_MS
@@ -515,6 +528,61 @@ export const FINALIZE_DRAFT_ACTION_DEADLINE_MS =
  *  Configurable via env var for per-deployment tuning. */
 export const FINALIZE_DRAFT_DEADLINE_CC_MS =
   parseInt(process.env.FINALIZE_DRAFT_DEADLINE_CC_MS ?? "300000", 10) || 300_000;
+
+/** S208 widget_channel binding: the prefix that marks a Critical Context item
+ *  as the widget-channel health flag rather than a substantive session fact.
+ *  The boot kernel keys on the `widget_channel: down` substring appearing
+ *  ANYWHERE in critical_context -- never on a dedicated slot -- so the flag
+ *  must survive both the 5-item compose gate and handoff condensation. */
+export const WIDGET_CHANNEL_ITEM_PREFIX = "widget_channel:";
+
+/** True when a Critical Context item is the widget_channel flag. Leading
+ *  markdown list markers and numbering are already stripped by the callers'
+ *  list parsers; leading whitespace and case are tolerated here so an
+ *  operator-typed variant still gets its exemption. */
+export function isWidgetChannelItem(item: string): boolean {
+  return item.trimStart().toLowerCase().startsWith(WIDGET_CHANNEL_ITEM_PREFIX);
+}
+
+/** MCP-1c (S208 PR-S1): wall-clock deadline for the STANDALONE `action=audit`
+ *  handler. The audit fans out ten `resolveDocPath` reads plus a commit-history
+ *  probe per unfetched doc, and it was the last finalize action with no bound
+ *  at all: a hung GitHub read held the client connection to the ~60s transport
+ *  timeout and the operator got a dead turn instead of a structured error.
+ *  Defaults to MCP_SAFE_TIMEOUT so the structured response still reaches the
+ *  client. Env-overridable (`FINALIZE_AUDIT_DEADLINE_MS`) as the rollback
+ *  lever. */
+export const FINALIZE_AUDIT_ACTION_DEADLINE_MS =
+  parseInt(process.env.FINALIZE_AUDIT_DEADLINE_MS ?? "", 10) || MCP_SAFE_TIMEOUT;
+
+/** MCP-1d (S208 PR-S1): anti-hang bound for fullPhase's INTERNAL audit step.
+ *  Deliberately far wider than the action bound above (action=full's intended
+ *  caller is the Trigger / Claude Code path, which has no ~60s client ceiling
+ *  -- see FINALIZE_DRAFT_ACTION_DEADLINE_MS), so this is a hang breaker, not a
+ *  latency budget. Expiry degrades FAIL-CLOSED: every living document counts
+ *  `unverified`, so the INS-360 recreate guard drops file-shaped draft keys
+ *  rather than committing a from-scratch replacement over live history. */
+export const FINALIZE_FULL_AUDIT_DEADLINE_MS =
+  parseInt(process.env.FINALIZE_FULL_AUDIT_DEADLINE_MS ?? "120000", 10) || 120_000;
+
+/** MCP-2 (S208 PR-S1): call-site race bound (ms) for the finalization banner's
+ *  decision-index read. The banner is assembled AFTER the atomic commit, so an
+ *  un-raced `resolveDocPath` there could hold a completed finalization hostage
+ *  to a slow GitHub read. Losing the race renders `? decisions (unverified)` --
+ *  an unknown reported as unknown, never a confident zero. */
+export const BANNER_DECISIONS_RACE_MS =
+  parseInt(process.env.BANNER_DECISIONS_RACE_MS ?? "3000", 10) || 3_000;
+
+/** OPS-2 (S208 PR-S1): finalization-banner widget kill switch, the finalize
+ *  mirror of BOOT_MASTHEAD_SVG. `html` (default) emits
+ *  `finalization_banner_html`; `off` ships it as null. `banner_text` is
+ *  DELIBERATELY unaffected either way -- it is the genuine fallback and the
+ *  render contract's FALLBACK clause depends on it always being there.
+ *  Read at CALL time so a per-deployment flip needs no re-import. */
+export function resolveFinalizeBanner(env: NodeJS.ProcessEnv = process.env): "html" | "off" {
+  const raw = env.FINALIZE_BANNER?.trim().toLowerCase();
+  return raw === "off" || raw === "false" || raw === "0" || raw === "no" ? "off" : "html";
+}
 
 /** The 10 mandatory PRISM living documents (D-18, D-41, D-44, D-67) */
 export const LIVING_DOCUMENTS = [

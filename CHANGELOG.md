@@ -7,6 +7,83 @@ by `src/utils/banner.ts` (`BANNER_SPEC_VERSION`) plus the prism-framework
 templates; [docs/banner-spec.md](docs/banner-spec.md) is historical reference.
 Banner changes add an entry here.
 
+## [4.13.1] - 2026-08-16 (S208 PR-S1: finalize + banner reliability)
+
+Banner-contract behavior changes; `BANNER_SPEC_VERSION` stays 4.3 (the grammar
+is unchanged - only which values the server is willing to assert).
+
+### Added
+- **Banner fields on every `prism_bootstrap` exit** (MCP-3). The ambiguous-slug
+  rejection, the hard-error catch, and the wall-clock deadline shipped NO
+  banner field at all, so the session's first response could not satisfy the
+  template's render contract. New `assembleBootErrorBannerFields()` (the boot
+  mirror of `assembleFinalizeErrorBannerFields`) supplies `banner_text`,
+  `banner_spec_version`, and null mastheads. Pre-resolution exits emit no
+  session-name fence - the template omits the chat title rather than naming
+  the session wrongly.
+- **`FINALIZE_AUDIT_DEADLINE_EXCEEDED` + a bounded `action=audit`** (MCP-1c).
+  The standalone audit was the last finalize action with no deadline: a hung
+  ten-doc fan-out held the client to the ~60s transport timeout with no
+  structured error. Bounded at `FINALIZE_AUDIT_ACTION_DEADLINE_MS`
+  (`MCP_SAFE_TIMEOUT` by default, `FINALIZE_AUDIT_DEADLINE_MS` to override);
+  expiry returns collected diagnostics plus error-banner fields with a null
+  handoff version.
+- **A 120s anti-hang bound on `action=full`'s internal audit** (MCP-1d),
+  `FINALIZE_FULL_AUDIT_DEADLINE_MS`. Expiry degrades FAIL-CLOSED: every living
+  document counts unverified, so the INS-360 recreate guard drops file-shaped
+  draft keys (`FINALIZE_RECREATE_BLOCKED`). The brief-456 bridged keys
+  (`session_log_entry`, `task_queue_*`) do not consult that set and still
+  commit - that loss is the entire degradation, and it is regression-pinned.
+  No draft cap was added to `action=full`.
+- **`FINALIZE_MISSING_SESSION_LOG` warn diagnostic** (GAP-9) when the committed
+  set carries `handoff.md` but no `session-log.md`, surfaced in the banner's
+  own warning block as well as in `diagnostics`.
+- **`BANNER_RENDER_FAILED` / `MASTHEAD_RENDER_FAILED` diagnostics** (MCP-19)
+  replacing log-only catches on the finalization widget, the finalization text
+  banner, and both boot mastheads. A null widget field is no longer
+  indistinguishable from the knob being off.
+- **`FINALIZE_BANNER=html|off` knob** (OPS-2), the finalize mirror of
+  `BOOT_MASTHEAD_SVG`. `off` ships `finalization_banner_html: null`;
+  `banner_text` is deliberately unaffected - it is the genuine fallback.
+- **`decision_count` on the `action=audit` response** - the count the drift
+  detector already computed, never the index content. A response byte-size
+  assertion guards the standalone audit against payload growth.
+- **`BANNER_DECISIONS_UNVERIFIED` warn diagnostic** when the finalization
+  banner's decision-index read loses its race.
+
+### Changed
+- **The finalization banner is now network-safe** (MCP-2). Decision-count
+  precedence is `files[]` entry -> the audit's already-computed count (on
+  `action=full`) -> a 3s `Promise.race` against the repo read
+  (`BANNER_DECISIONS_RACE_MS`) -> `(unverified)`. The banner is assembled
+  AFTER the atomic commit, so the previous un-raced `resolveDocPath` held a
+  completed finalization hostage to a slow read; the losing promise is
+  `.catch()`-swallowed and the timer is `unref`'d and cleared in a `finally`.
+- **`decisionCount` widened to `number | null`** in `UnifiedBannerInput` and
+  `FinalizationBannerHtmlInput`; all four interpolation sites render
+  `? decisions (unverified)` instead of a confident `0 decisions`.
+- **The boot docs count is measured, not asserted** (MCP-13). `docCount` was
+  hardcoded to `LIVING_DOCUMENTS.length`, so every boot claimed
+  `10/10 docs healthy` while the fan-out reads only a handful of the ten. It
+  is now derived from the boot's own probes and renders `?/10 docs
+  (unverified)` unless all ten were probed. `docCount` widened to
+  `number | null` in `UnifiedBannerInput` accordingly.
+- **`renderBannerFallback` accepts a null session number / handoff version**,
+  rendering `Session ?` / `Handoff v?`. The seven
+  `assembleFinalizeErrorBannerFields` call sites that defaulted
+  `handoff_version ?? 1` now pass `?? null` - no more fabricated "Handoff v1"
+  on an error exit.
+- **`widget_channel:` Critical Context items are exempt** from the 5-item
+  compose gate and from handoff condensation. The flag is a machine signal the
+  boot kernel keys on, not one of the five substantive facts the cap rations,
+  and it is set exactly when condensing it away costs the next boot a
+  multi-minute hang. Effective cap: 5 + flag.
+- **`action=full`'s tool description and the `FINALIZE_DRAFT_ACTION_DEADLINE_MS`
+  comment corrected** (MCP-1a/b). Both claimed the background race "is not
+  bounded by a client turn"; the real distinction is the CALLER - `action=full`
+  is intended for the Trigger / Claude Code path, and the action enum cannot
+  structurally prevent a chat client from calling it (stated residual).
+
 ## [4.12.0] — 2026-07-14 (D-275: OpenRouter GLM-5.2 mechanical-tier routing)
 
 ### Added
