@@ -43,7 +43,7 @@ import {
   capSummaryBytes,
   findMissingKernelSections,
   parseKernelManifestHeader,
-  truncateTitle60,
+  truncateTitle40,
 } from "../src/tools/bootstrap.js";
 import { validateHandoff } from "../src/validation/handoff.js";
 
@@ -208,6 +208,7 @@ const S202B_ENV_KEYS = [
   "BRIEF_COMPACT_MODE",
   "PREFETCH_MODE",
   "BOOT_MASTHEAD_SVG",
+  "BOOT_MASTHEAD", // S208 MCP-6
   "FINALIZE_COMPOSE_MODE",
 ] as const;
 const savedEnv: Record<string, string | undefined> = {};
@@ -261,13 +262,14 @@ describe("brief-s202b env resolvers", () => {
 // ─── T1: manifest shape + BOOT_INDEX_MODE matrix ─────────────────────────────
 
 describe("brief-s202b T1 — session_state_manifest + BOOT_INDEX_MODE", () => {
-  it("truncateTitle60 caps at 60 chars + ellipsis and passes short titles through", () => {
-    expect(truncateTitle60("short title")).toBe("short title");
+  // S208 GAP-5: the cap moved 60 -> 40 (truncateTitle60 -> truncateTitle40).
+  it("truncateTitle40 caps at 40 chars + ellipsis and passes short titles through", () => {
+    expect(truncateTitle40("short title")).toBe("short title");
     const long = "x".repeat(100);
-    const capped = truncateTitle60(long);
+    const capped = truncateTitle40(long);
     expect(capped.endsWith("…")).toBe(true);
-    expect(capped.length).toBeLessThanOrEqual(61);
-    expect(truncateTitle60("y".repeat(60))).toBe("y".repeat(60)); // exactly 60 → untouched
+    expect(capped.length).toBeLessThanOrEqual(41);
+    expect(truncateTitle40("y".repeat(40))).toBe("y".repeat(40)); // exactly 40 → untouched
   });
 
   it("full mode (default): legacy standing_rules_index present AND manifest present (additive release)", async () => {
@@ -304,15 +306,23 @@ describe("brief-s202b T1 — session_state_manifest + BOOT_INDEX_MODE", () => {
     expect(handoffRow.sha).toBe("sha-handoff");
     expect(handoffRow.bytes).toBeGreaterThan(0);
 
-    // rules — totals + tier counts + compact index ({id, t, topics, title60}).
+    // rules — totals + tier counts + compact index. S208 GAP-5 row shape:
+    // {id, topics: indices into rules.topic_names, title40}, with `t` present
+    // only on non-default (C) rows.
     expect(manifest.rules.total).toBe(4);
     expect(manifest.rules.tier_counts).toEqual({ A: 1, B: 2, C: 1 });
     expect(manifest.rules.index).toHaveLength(3); // B ∪ C only — Tier A bodies ship whole
     const ins2 = manifest.rules.index.find((r: { id: string }) => r.id === "INS-2");
-    expect(ins2.t).toBe("B");
-    expect(ins2.topics).toEqual(["synthesis", "transport"]);
-    expect(ins2.title60.endsWith("…")).toBe(true);
-    expect(ins2.title60.length).toBeLessThanOrEqual(61);
+    expect("t" in ins2).toBe(false); // Tier B is the default — no tag
+    expect(ins2.topics.map((i: number) => manifest.rules.topic_names[i])).toEqual([
+      "synthesis",
+      "transport",
+    ]);
+    expect(ins2.title40.endsWith("…")).toBe(true);
+    expect(ins2.title40.length).toBeLessThanOrEqual(41);
+    const ins4 = manifest.rules.index.find((r: { id: string }) => r.id === "INS-4");
+    expect(ins4.t).toBe("C"); // Tier C IS tagged
+    expect(manifest.rules.topic_names).toEqual(["synthesis", "transport", "finalize", "history"]);
 
     // brief — synthesized session + spec sections present in the DELIVERY.
     expect(manifest.brief.synthesized_session).toBe(27);
@@ -330,7 +340,7 @@ describe("brief-s202b T1 — session_state_manifest + BOOT_INDEX_MODE", () => {
     });
     expect(manifest).toEqual({
       docs: [],
-      rules: { total: 0, tier_counts: { A: 0, B: 0, C: 0 }, index: [] },
+      rules: { total: 0, tier_counts: { A: 0, B: 0, C: 0 }, topic_names: [], index: [] },
       brief: { synthesized_session: null, sections: [] },
     });
   });
@@ -356,9 +366,13 @@ describe("brief-s202b T1 — session_state_manifest + BOOT_INDEX_MODE", () => {
       expect.arrayContaining(["INS-2", "INS-3", "INS-4"]),
     );
     // Every rule reachable by topic yesterday is reachable today (P-1
-    // mitigation): topics are carried whole in the manifest index.
+    // mitigation). S208 GAP-5: topics are carried as indices into the
+    // manifest's own topic_names dictionary — resolvable, never dropped.
+    const topicNames = parsed.session_state_manifest.rules.topic_names as string[];
     expect(
-      parsed.session_state_manifest.rules.index.flatMap((r: { topics: string[] }) => r.topics),
+      parsed.session_state_manifest.rules.index.flatMap((r: { topics: number[] }) =>
+        r.topics.map(i => topicNames[i]),
+      ),
     ).toEqual(expect.arrayContaining(["synthesis", "transport", "finalize", "history"]));
     // Brief + behavioral rules unaffected by index mode.
     expect(parsed.intelligence_brief).toContain("## Risk Flags");
@@ -461,32 +475,73 @@ describe("brief-s202b T5 — HANDOFF_ITEM_OVERSIZE (warn-only)", () => {
 
 // ─── T6: masthead knob ───────────────────────────────────────────────────────
 
-describe("brief-s202b T6 — BOOT_MASTHEAD_SVG knob", () => {
-  it("default on: boot_masthead_svg is a rendered SVG string", async () => {
+// S208 MCP-6 replaced the boolean T6 knob with the three-way BOOT_MASTHEAD.
+// Exactly ONE graphical masthead is populated per boot; the legacy
+// BOOT_MASTHEAD_SVG=off deployment stays off without operator action.
+describe("brief-s202b T6 / S208 MCP-6 — BOOT_MASTHEAD knob (single masthead)", () => {
+  it("default (both variables unset): the HTML masthead renders and boot_masthead_svg ships null", async () => {
+    delete process.env.BOOT_MASTHEAD;
     delete process.env.BOOT_MASTHEAD_SVG;
+    const parsed = await boot();
+    expect(typeof parsed.boot_masthead_html).toBe("string");
+    expect(parsed.boot_masthead_html).toContain("<div");
+    expect(parsed.boot_masthead_svg).toBeNull();
+  });
+
+  it("svg: the SVG masthead renders and boot_masthead_html ships null", async () => {
+    process.env.BOOT_MASTHEAD = "svg";
     const parsed = await boot();
     expect(typeof parsed.boot_masthead_svg).toBe("string");
     expect(parsed.boot_masthead_svg).toContain("<svg");
+    expect(parsed.boot_masthead_html).toBeNull();
   });
 
-  it("off: boot_masthead_svg ships null and banner_text is unaffected", async () => {
-    process.env.BOOT_MASTHEAD_SVG = "off";
+  it("off: BOTH graphical mastheads ship null and banner_text is unaffected", async () => {
+    process.env.BOOT_MASTHEAD = "off";
     const parsed = await boot();
     expect(parsed.boot_masthead_svg).toBeNull();
+    expect(parsed.boot_masthead_html).toBeNull();
     expect(typeof parsed.banner_text).toBe("string");
     expect(parsed.banner_text.length).toBeGreaterThan(0);
   });
-});
 
-// ─── brief-720: additive boot_masthead_html ──────────────────────────────────
+  it("legacy alias: BOOT_MASTHEAD_SVG=off still nulls both, with the new variable unset", async () => {
+    delete process.env.BOOT_MASTHEAD;
+    process.env.BOOT_MASTHEAD_SVG = "off";
+    const parsed = await boot();
+    expect(parsed.boot_masthead_svg).toBeNull();
+    expect(parsed.boot_masthead_html).toBeNull();
+    expect(typeof parsed.banner_text).toBe("string");
+  });
 
-describe("brief-720 — boot_masthead_html rides alongside boot_masthead_svg", () => {
-  it("both mastheads ship, and the HTML embeds the same session_name_line", async () => {
-    delete process.env.BOOT_MASTHEAD_SVG;
+  it("precedence at boot: BOOT_MASTHEAD=svg overrides a legacy BOOT_MASTHEAD_SVG=off", async () => {
+    process.env.BOOT_MASTHEAD = "svg";
+    process.env.BOOT_MASTHEAD_SVG = "off";
     const parsed = await boot();
     expect(typeof parsed.boot_masthead_svg).toBe("string");
+    expect(parsed.boot_masthead_html).toBeNull();
+  });
+
+  it("exactly one masthead field is non-null in every mode", async () => {
+    for (const [mode, expected] of [["html", 1], ["svg", 1], ["off", 0]] as const) {
+      process.env.BOOT_MASTHEAD = mode;
+      const parsed = await boot();
+      const populated = [parsed.boot_masthead_svg, parsed.boot_masthead_html].filter(
+        v => typeof v === "string",
+      ).length;
+      expect(populated).toBe(expected);
+    }
+  });
+});
+
+// ─── brief-720: the HTML masthead's copy control (now the default surface) ───
+
+describe("brief-720 — boot_masthead_html carries the session-name copy control", () => {
+  it("the HTML masthead embeds session_name_line with the copy control", async () => {
+    delete process.env.BOOT_MASTHEAD;
+    delete process.env.BOOT_MASTHEAD_SVG;
+    const parsed = await boot();
     expect(typeof parsed.boot_masthead_html).toBe("string");
-    expect(parsed.boot_masthead_svg).toContain(parsed.session_name_line);
     expect(parsed.boot_masthead_html).toContain(parsed.session_name_line);
     // The copy control carries the bare title — no "Chat: " prefix to strip.
     expect(parsed.boot_masthead_html).toContain(
@@ -495,12 +550,10 @@ describe("brief-720 — boot_masthead_html rides alongside boot_masthead_svg", (
     expect(parsed.boot_masthead_html).toContain("aria-label=");
   });
 
-  it("off: the knob nulls BOTH graphical mastheads", async () => {
-    process.env.BOOT_MASTHEAD_SVG = "off";
+  it("the SVG masthead still carries the same session_name_line when selected", async () => {
+    process.env.BOOT_MASTHEAD = "svg";
     const parsed = await boot();
-    expect(parsed.boot_masthead_svg).toBeNull();
-    expect(parsed.boot_masthead_html).toBeNull();
-    expect(typeof parsed.banner_text).toBe("string");
+    expect(parsed.boot_masthead_svg).toContain(parsed.session_name_line);
   });
 });
 

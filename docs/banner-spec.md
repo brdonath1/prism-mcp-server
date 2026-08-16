@@ -47,7 +47,8 @@ grammar — never a second format.
 `banner_text` is the universal text format every surface emits and the
 `banner_data` structured fallback object is gone. Spec 4.0/4.1 additionally
 restored OPTIONAL graphical widgets (D-249) as NEW, separate fields —
-`boot_masthead_svg` (boot) and `finalization_banner_html` (finalize) — rendered
+`boot_masthead_svg` / `boot_masthead_html` (boot, one of the two per boot since
+server 4.14.1 — see §2.1) and `finalization_banner_html` (finalize) — rendered
 by `renderBootMastheadSvg` / `renderFinalizationBannerHtml`; `banner_text`
 stays the guaranteed fallback when a widget render fails. Spec 4.2 adds
 chat-session title lines to those graphical widgets: boot renders
@@ -140,9 +141,32 @@ Rule 2 (core-template-mcp.md) consumes this field: lines 1–3 verbatim, the
 client-computed Tool Surface line inserted as line 4, the `Suggested:` line
 verbatim when present, and all remaining lines verbatim.
 
-`boot_masthead_svg` additionally renders the server-composed
+The boot masthead additionally renders the server-composed
 `session_name_line` as `Chat: {session_name_line}`. This does not change the
 plain `banner_text` grammar.
+
+**Masthead selection (`BOOT_MASTHEAD`, S208 MCP-6 / server 4.14.1).** Exactly
+ONE graphical masthead is populated per boot; the other field ships `null`:
+
+| `BOOT_MASTHEAD` | `boot_masthead_html` | `boot_masthead_svg` |
+|---|---|---|
+| unset / `html` (default) | rendered | `null` |
+| `svg` | `null` | rendered |
+| `off` / `false` / `0` / `no` | `null` | `null` |
+
+Precedence, in order: (1) `BOOT_MASTHEAD` when it names a known mode wins
+outright, in both directions; (2) otherwise — unset, empty, **or an
+unrecognized value** — the legacy `BOOT_MASTHEAD_SVG` decides: `off`/`false`/
+`0`/`no` means `off`, anything else means `html`. So a deployment that set
+`BOOT_MASTHEAD_SVG=off` stays off across the upgrade with no operator action,
+and a typo in the new variable falls back to the operator's existing intent
+rather than silently re-enabling a masthead they turned off.
+
+Both mastheads rendered on every boot between brief-720 and 4.14.1. The kernel
+has always said "render whichever" (Rule 1), so the second one was ~2.7KB of
+measured payload no session read. `banner_text` is unaffected in every mode —
+it is the genuine fallback and the render contract's FALLBACK clause depends
+on it always being there.
 
 ### 2.2 Finalization banner (surface `finalize`)
 
@@ -258,8 +282,8 @@ place, `banner_text: null` should not occur in practice.
 | Field | Status | Behavior |
 |-------|--------|----------|
 | `banner_text` (boot + finalize) | **Live** | The universal text contract; always emitted. |
-| `boot_masthead_svg` (bootstrap) | **Live** (D-249, brief-447; v4.2 title line) | SVG masthead for `visualize:show_widget`; includes `Chat: {session_name_line}`; `null` on render failure (then `banner_text` is the fallback). |
-| `boot_masthead_html` (bootstrap) | **Live, additive** (brief-720) | HTML masthead for `visualize:show_widget` carrying the same information as `boot_masthead_svg` PLUS an interactive copy control for `session_name_line`. Emitted ALONGSIDE `boot_masthead_svg`, which stays byte-identical — a consumer that does not know this field sees no change. Rendered by `renderBootMastheadHtml`; `null` on render failure (the SVG and `banner_text` are unaffected) and when `BOOT_MASTHEAD_SVG=off`. **Deliberately not versioned:** the spec version stays 4.3 until the companion framework-kernel change (dropping the standalone session-name fence + rename directive from Rule 2) ships, so the two repos cannot desync. |
+| `boot_masthead_svg` (bootstrap) | **Live, opt-in** (D-249, brief-447; v4.2 title line; S208 MCP-6 made it opt-in) | SVG masthead for `visualize:show_widget`; includes `Chat: {session_name_line}`. Populated only when `BOOT_MASTHEAD=svg`; `null` under the `html` default, under `off`, and on render failure (then `banner_text` is the fallback). |
+| `boot_masthead_html` (bootstrap) | **Live, default** (brief-720; S208 MCP-6 made it the default surface) | HTML masthead for `visualize:show_widget` carrying the same information as `boot_masthead_svg` PLUS an interactive copy control for `session_name_line`. Rendered by `renderBootMastheadHtml`; `null` under `BOOT_MASTHEAD=svg`, under `off`, and on render failure (then `banner_text` is the fallback). **Deliberately not versioned:** the spec version stays 4.3 until the companion framework-kernel change (dropping the standalone session-name fence + rename directive from Rule 2) ships, so the two repos cannot desync. |
 | `finalization_banner_html` (finalize commit/full) | **Live** (D-249, brief-447/448; v4.2 next-title line; v4.3 optional LLM usage table) | HTML widget for `visualize:show_widget`; includes `Next chat: {nextSessionNameLine}` when supplied and `LLM usage` when `banner_data.llm_usage` has known rows; `null` on render failure (then `banner_text` is the fallback). |
 | `banner_html` (bootstrap) | **Removed** (brief-466 / SRV-114) | Was a permanently-`null` back-compat field; the live SVG widget uses `boot_masthead_svg`. |
 | `synthesis_banner_html` (finalize commit) | **Removed** (brief-466 / SRV-114) | Was a permanently-`null` back-compat field. |

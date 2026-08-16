@@ -18,7 +18,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { fetchFile, pushFile, listRepos } from "../github/client.js";
-import { BOOTSTRAP_OVERSIZE_ERROR_BYTES, BOOTSTRAP_OVERSIZE_WARN_BYTES, BOOTSTRAP_WALL_CLOCK_DEADLINE_MS, CC_DISPATCH_ENABLED, DEFAULT_CONTEXT_WINDOW_TOKENS, DOC_ROOT, FRAMEWORK_REPO, GITHUB_PAT, HANDOFF_CRITICAL_SIZE, HANDOFF_ITEM_BUDGET_BYTES, LIVING_DOCUMENTS, LIVING_DOCUMENT_NAMES, MCP_TEMPLATE_PATH, PREFETCH_KEYWORDS, PREFETCH_SUMMARY_CAP_BYTES, PROJECT_DISPLAY_NAMES, RAILWAY_API_TOKEN, RAILWAY_ENABLED, STALE_ACTIVE_THRESHOLD_MS, SYNTHESIS_LOG_LOOKBACK_MS, TRIGGER_AUTO_ENROLL, resolveBootIndexMode, resolveBootMastheadSvg, resolveBriefCompactMode, resolveContextWindowOverride, resolvePrefetchMode, resolveProjectSlug } from "../config.js";
+import { BOOTSTRAP_OVERSIZE_ERROR_BYTES, BOOTSTRAP_OVERSIZE_WARN_BYTES, BOOTSTRAP_WALL_CLOCK_DEADLINE_MS, CC_DISPATCH_ENABLED, DEFAULT_CONTEXT_WINDOW_TOKENS, DOC_ROOT, FRAMEWORK_REPO, GITHUB_PAT, HANDOFF_CRITICAL_SIZE, HANDOFF_ITEM_BUDGET_BYTES, LIVING_DOCUMENTS, LIVING_DOCUMENT_NAMES, MCP_TEMPLATE_PATH, PREFETCH_KEYWORDS, PREFETCH_SUMMARY_CAP_BYTES, PROJECT_DISPLAY_NAMES, RAILWAY_API_TOKEN, RAILWAY_ENABLED, STALE_ACTIVE_THRESHOLD_MS, SYNTHESIS_LOG_LOOKBACK_MS, TRIGGER_AUTO_ENROLL, resolveBootIndexMode, resolveBootMasthead, resolveBriefCompactMode, resolveContextWindowOverride, resolvePrefetchMode, resolveProjectSlug } from "../config.js";
 import { STALENESS_THRESHOLD_DAYS, resolveContextWindow } from "../models.js";
 import type { Surface } from "../models.js";
 import { computePayloadAttribution } from "../utils/payload-attribution.js";
@@ -392,11 +392,20 @@ export function compactIntelligenceBrief(
  * the consumer contract (core-template-mcp.md:104 — "consults the index to
  * lazy-load") needs id + short title + topics only. Capped, never dropped:
  * a truncated title still makes the rule discoverable, and `topics` (the
- * prism_load_rules match key) is kept whole.
+ * prism_load_rules match key) stays resolvable.
+ *
+ * S208 GAP-5: 60 -> 40. At 60 the cap barely bit — the live prism registry's
+ * mean rule title is 118 chars, so every row paid the full 63 B and the index
+ * was still the largest thing in `session_state_manifest`. 40 chars is enough
+ * to recognize a rule you already know and to decide whether to fetch one you
+ * do not, which is the whole job of an index row; the body behind it is one
+ * `prism_load_rules` call away, keyed on `id`/`topics` rather than the title.
  */
-export function truncateTitle60(title: string): string {
-  if (title.length <= 60) return title;
-  return `${title.slice(0, 60).trimEnd()}…`;
+export const RULE_TITLE_CAP_CHARS = 40;
+
+export function truncateTitle40(title: string): string {
+  if (title.length <= RULE_TITLE_CAP_CHARS) return title;
+  return `${title.slice(0, RULE_TITLE_CAP_CHARS).trimEnd()}…`;
 }
 
 /** brief-s202b T1: one fetched-doc row of the session-state manifest. */
@@ -406,13 +415,32 @@ export interface ManifestDocRow {
   bytes: number;
 }
 
+/** brief-s202b T1 (P-1): one row of the compact rule index.
+ *
+ *  S208 GAP-5 shape: `topics` are INDICES into `rules.topic_names`, and `t`
+ *  is present ONLY for Tier-C rows — the index carries B and C rules, so B is
+ *  the default and naming it on ~85% of rows was pure repetition. A consumer
+ *  reads a row as: tier = `t ?? "B"`, topics = `topic_names[i]` for each i.
+ *  The kernel's R35 text is written shape-agnostically against exactly this
+ *  ("inline strings or indices into `rules.topic_names`"). */
+export interface ManifestRuleRow {
+  id: string;
+  /** Tier tag — emitted only when the tier is not the default B. */
+  t?: string;
+  /** Indices into `SessionStateManifest["rules"]["topic_names"]`. */
+  topics: number[];
+  title40: string;
+}
+
 /** brief-s202b T1 (P-1): the machine-readable session-state manifest. */
 export interface SessionStateManifest {
   docs: ManifestDocRow[];
   rules: {
     total: number;
     tier_counts: { A: number; B: number; C: number };
-    index: Array<{ id: string; t: string; topics: string[]; title60: string }>;
+    /** S208 GAP-5: deduplicated topic dictionary. Rows point INTO this. */
+    topic_names: string[];
+    index: ManifestRuleRow[];
   };
   brief: {
     synthesized_session: number | null;
@@ -425,10 +453,10 @@ export interface SessionStateManifest {
  *
  * Replaces the two boot fields whose cost scales with REPOSITORY POPULATION
  * rather than session need (audit §B.3/§B.7): the B/C rules index (compact
- * rows here: id + tier + topics + title60) and the prefetch surface (doc
- * rows: path + sha + bytes, lazy-loadable via prism_fetch). Behavioral rules
- * and Tier-A bodies are NOT manifest-izable — they sit on the wrong side of
- * the fidelity wall (proposals §0.1) and are untouched.
+ * rows here: id + non-default tier + topic indices + title40) and the prefetch
+ * surface (doc rows: path + sha + bytes, lazy-loadable via prism_fetch).
+ * Behavioral rules and Tier-A bodies are NOT manifest-izable — they sit on
+ * the wrong side of the fidelity wall (proposals §0.1) and are untouched.
  *
  * Pure and exported for direct unit testing.
  */
@@ -441,17 +469,40 @@ export function buildSessionStateManifest(inputs: {
 }): SessionStateManifest {
   const tierCount = (tier: string): number =>
     inputs.allRules.filter(r => r.tier === tier).length;
+
+  // S208 GAP-5: one deduplicated topic dictionary, built in first-seen order
+  // so the payload is deterministic across boots with identical input. Rows
+  // then carry indices instead of repeating the strings — the live prism
+  // registry repeats 105 distinct topic strings across 244 row-slots.
+  const topicNames: string[] = [];
+  const topicIndex = new Map<string, number>();
+  const indexOfTopic = (topic: string): number => {
+    const existing = topicIndex.get(topic);
+    if (existing !== undefined) return existing;
+    const next = topicNames.length;
+    topicNames.push(topic);
+    topicIndex.set(topic, next);
+    return next;
+  };
+
+  const index: ManifestRuleRow[] = inputs.indexedRules.map(r => ({
+    id: r.id,
+    // Tier tag ONLY when it is not the default. The index is B ∪ C, so in
+    // practice this tags exactly the C rows; the `!== "B"` test (rather than
+    // `=== "C"`) means a caller who ever indexes a Tier-A rule still gets a
+    // tagged row instead of one that silently resolves to B.
+    ...(r.tier === "B" ? {} : { t: r.tier }),
+    topics: r.topics.map(indexOfTopic),
+    title40: truncateTitle40(r.title),
+  }));
+
   return {
     docs: inputs.docs,
     rules: {
       total: inputs.allRules.length,
       tier_counts: { A: tierCount("A"), B: tierCount("B"), C: tierCount("C") },
-      index: inputs.indexedRules.map(r => ({
-        id: r.id,
-        t: r.tier,
-        topics: r.topics,
-        title60: truncateTitle60(r.title),
-      })),
+      topic_names: topicNames,
+      index,
     },
     brief: {
       synthesized_session: inputs.briefSynthesizedSession,
@@ -2064,20 +2115,24 @@ export function registerBootstrap(server: McpServer): void {
         // data (Option M). Independent of banner_text — banner_text remains the
         // genuine fallback, so a masthead render failure just omits the field
         // (null) rather than affecting the text banner.
-        // brief-s202b T6 (P-6a): BOOT_MASTHEAD_SVG=off skips the render and
-        // ships null — the template's fallback path (banner_text only) is
-        // pre-built and production-tested by render-failure handling. Default
-        // ON: graphical banners are an explicit operator choice (D-249); the
-        // knob exists for context-pressure pushes, not as a silent removal.
-        // brief-720: `boot_masthead_html` is an ADDITIVE companion rendered from
-        // the same bannerInput — same information, plus an interactive copy
-        // control for the session name. It has its OWN try/catch so an HTML
-        // render failure can never disturb `boot_masthead_svg`, which must stay
-        // byte-identical for consumers that do not know the new field exists.
-        // Both graphical mastheads ride the one BOOT_MASTHEAD_SVG knob.
+        // brief-s202b T6 (P-6a): the masthead knob skips the render and ships
+        // null — the template's fallback path (banner_text only) is pre-built
+        // and production-tested by render-failure handling. Graphical banners
+        // stay ON by default: they are an explicit operator choice (D-249) and
+        // the knob exists for context-pressure pushes, not silent removal.
+        //
+        // S208 MCP-6: brief-720 added `boot_masthead_html` ALONGSIDE the SVG so
+        // older consumers saw no change; both then rendered on every boot while
+        // the session rendered ONE ("render whichever" — kernel Rule 1), making
+        // the loser ~2.7KB of measured dead payload. `BOOT_MASTHEAD` now names
+        // which single masthead is populated (`html` default | `svg` | `off`);
+        // the other field ships null, and `off` ships both null. Each render
+        // keeps its OWN try/catch and its own diagnostic surface tag so a
+        // failure is attributable to the exact field that went null.
+        const mastheadMode = resolveBootMasthead();
         let bootMastheadSvg: string | null = null;
         let bootMastheadHtml: string | null = null;
-        if (resolveBootMastheadSvg()) {
+        if (mastheadMode === "svg") {
           try {
             bootMastheadSvg = renderBootMastheadSvg(bannerInput);
             logger.info("boot masthead SVG rendered", { svgLength: bootMastheadSvg.length });
@@ -2085,40 +2140,44 @@ export function registerBootstrap(server: McpServer): void {
             const msg = svgError instanceof Error ? svgError.message : String(svgError);
             logger.warn("boot masthead SVG render failed — omitting (banner_text remains)", { error: msg });
             // S208 MCP-19: was log-only. A null masthead field is otherwise
-            // indistinguishable from BOOT_MASTHEAD_SVG=off, so a render
-            // regression could ride silently for sessions.
+            // indistinguishable from a knob set to off, so a render regression
+            // could ride silently for sessions.
             diagnostics.warn(
               "MASTHEAD_RENDER_FAILED",
               `boot_masthead_svg render failed — the field is null and banner_text carries the banner: ${msg}`,
               { surface: "boot_masthead_svg", error: msg },
             );
           }
+        } else if (mastheadMode === "html") {
           try {
             bootMastheadHtml = renderBootMastheadHtml(bannerInput);
             logger.info("boot masthead HTML rendered", { htmlLength: bootMastheadHtml.length });
           } catch (htmlError) {
             const msg = htmlError instanceof Error ? htmlError.message : String(htmlError);
-            logger.warn("boot masthead HTML render failed — omitting (boot_masthead_svg/banner_text remain)", { error: msg });
+            logger.warn("boot masthead HTML render failed — omitting (banner_text remains)", { error: msg });
             // S208 MCP-19: its own surface tag, so the operator can tell WHICH
-            // masthead failed (they render independently by design).
+            // masthead failed.
             diagnostics.warn(
               "MASTHEAD_RENDER_FAILED",
-              `boot_masthead_html render failed — the field is null and boot_masthead_svg/banner_text remain: ${msg}`,
+              `boot_masthead_html render failed — the field is null and banner_text carries the banner: ${msg}`,
               { surface: "boot_masthead_html", error: msg },
             );
           }
         } else {
-          logger.info("boot masthead SVG disabled via BOOT_MASTHEAD_SVG=off (brief-s202b T6)");
+          logger.info("boot mastheads disabled — banner_text is the render surface (BOOT_MASTHEAD=off)");
         }
 
         // brief-s202b T1 (P-1): session_state_manifest + BOOT_INDEX_MODE.
         // `full` (default) ships the legacy standing_rules_index unchanged PLUS
         // the manifest — an additive release so the template can learn to
         // consume the manifest before the legacy index is dropped (SRV-109
-        // two-phase field-removal pattern). `compact` ships the manifest ONLY
-        // (measured legacy index: 19,873 B; compact manifest index ≈ 4.5KB —
-        // titles capped at 60 chars, topics kept whole as the
-        // prism_load_rules match key).
+        // two-phase field-removal pattern). `compact` ships the manifest ONLY.
+        // S208 GAP-5 re-measured both against the live 109-rule prism registry
+        // (the S202 note here said "≈ 4.5KB", taken on a much smaller one):
+        // legacy standing_rules_index 20,908 B; manifest rule index 13,924 B
+        // before compaction, 10,454 B after (topic_names dictionary + indices,
+        // titles capped at 40, tier tag on C rows only). Topics stay fully
+        // resolvable — they are the prism_load_rules match key.
         const bootIndexMode = resolveBootIndexMode();
         const sessionStateManifest = buildSessionStateManifest({
           docs: manifestDocRows,

@@ -260,11 +260,27 @@ describe("prism_bootstrap banner_spec_version handshake", () => {
     expect(data.banner_data).toBeUndefined();
   });
 
-  it("boot_masthead_svg includes the exact server-composed session_name_line", async () => {
+  // S208 MCP-6: exactly ONE masthead is populated per boot. The default is
+  // html; the svg mode is checked in the same test so the session_name_line
+  // contract is pinned on BOTH renderers, not just whichever is default.
+  it("the populated masthead includes the exact server-composed session_name_line", async () => {
     setupBootstrapMocks(templateContent(null));
     const data = parse(await handlers.prism_bootstrap({ project_slug: "prism" }));
     expect(data.session_name_line).toBeTruthy();
-    expect(data.boot_masthead_svg).toContain(data.session_name_line);
+    expect(data.boot_masthead_html).toContain(data.session_name_line);
+    expect(data.boot_masthead_svg).toBeNull();
+
+    const saved = process.env.BOOT_MASTHEAD;
+    process.env.BOOT_MASTHEAD = "svg";
+    try {
+      setupBootstrapMocks(templateContent(null));
+      const svgBoot = parse(await handlers.prism_bootstrap({ project_slug: "prism" }));
+      expect(svgBoot.boot_masthead_svg).toContain(svgBoot.session_name_line);
+      expect(svgBoot.boot_masthead_html).toBeNull();
+    } finally {
+      if (saved === undefined) delete process.env.BOOT_MASTHEAD;
+      else process.env.BOOT_MASTHEAD = saved;
+    }
   });
 });
 

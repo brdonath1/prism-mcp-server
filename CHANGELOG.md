@@ -7,6 +7,77 @@ by `src/utils/banner.ts` (`BANNER_SPEC_VERSION`) plus the prism-framework
 templates; [docs/banner-spec.md](docs/banner-spec.md) is historical reference.
 Banner changes add an entry here.
 
+## [4.14.1] - 2026-08-16 (S208 PR-S2b: payload contract — single masthead + compact manifest)
+
+**This release deliberately changes delivered bootstrap bytes.** Every other
+release in the S208 server chain (4.13.1, 4.13.2, 4.14.0) was byte-identical by
+design and proved so with `scripts/measure-boot-payload.mjs`. This one is the
+payload change the chain was clearing the way for: **103,690 B → 97,362 B on
+the measured prism corpus (−6,328 B, −6.1%)**, attributed exactly as
+`boot_masthead_svg` −2,721 B and `session_state_manifest` −3,605 B. Same
+harness, same frozen clock, same corpus; the two reports differ only where
+this release intends them to. `BANNER_SPEC_VERSION` is unchanged (4.3) — no
+banner grammar moved.
+
+### Added
+- **`BOOT_MASTHEAD` (`html` | `svg` | `off`, default `html`)** (S208 MCP-6).
+  Exactly ONE graphical masthead is populated per boot; the other field ships
+  `null`, and `off` ships both null with `banner_text` as the render surface.
+  brief-720 added `boot_masthead_html` ALONGSIDE `boot_masthead_svg` so older
+  consumers saw no change, and both have rendered on every boot since — while
+  the session renders one, because the kernel has always said "render
+  whichever" (Rule 1). The loser was 2,721 measured bytes no client read.
+  Resolved from `process.env` per call, so the flip and its rollback are
+  env-only with no deploy.
+  **Precedence** (two variables now overlap, so it is stated in the config
+  docblock, `CLAUDE.md`, and `docs/banner-spec.md` §2.1): a recognized
+  `BOOT_MASTHEAD` wins outright in both directions; unset, empty, OR an
+  unrecognized value falls through to the legacy `BOOT_MASTHEAD_SVG`
+  (`off`/`false`/`0`/`no` → `off`, anything else → `html`). A deployment that
+  set `BOOT_MASTHEAD_SVG=off` therefore stays off across this upgrade with no
+  operator action, and a typo in the new variable can never silently
+  re-enable a masthead an operator turned off.
+- **`session_state_manifest.rules.topic_names`** (S208 GAP-5) — a deduplicated
+  dictionary of every indexed topic string, built in first-seen order so the
+  payload stays deterministic. Rows now carry `topics` as INDICES into it. The
+  live prism registry repeats 105 distinct topic strings across 244 row-slots.
+- **`tests/s208-pr-s2b-payload-contract.test.ts`** (22 tests) — the resolver
+  matrix plus the two PINNED gates the plan names: SIZE (the serialized rule
+  index at a live-shaped 103-rule registry fixture) and PARITY (id-set
+  equality pre/post compaction with `id`/tier/topics resolvable for every
+  single rule, including the defaulted-tier rows). Parity is the gate that
+  matters: compaction that loses a rule, a tier, or a topic is a regression no
+  byte count would catch.
+
+### Changed
+- **Manifest rule rows are compacted** (S208 GAP-5): `title60` → `title40`
+  (`truncateTitle60` → `truncateTitle40`), inline topic strings → indices into
+  `topic_names`, and the tier tag `t` is emitted ONLY for Tier-C rows — the
+  index is B ∪ C, so B is the default and naming it on ~85% of rows was pure
+  repetition. Measured on the live 109-rule registry: **13,924 B → 10,454 B**.
+  The 60-char cap barely bit (mean live title: 118 chars); 40 is enough to
+  recognize a rule you know and decide whether to fetch one you do not, which
+  is the whole job of an index row.
+  **No template coupling.** The framework kernel's R35 consumption text is
+  shape-agnostic by construction (`prism-framework` `core-template-mcp.md`,
+  merged 2ad598d: topics are "inline strings or indices into
+  `rules.topic_names`"), which is the hard gate this PR was held behind.
+- **Stale measurements corrected in place.** The S202-era config comment
+  claimed a "compact manifest index ≈ 4.5KB" and `CLAUDE.md` claimed
+  `BOOT_INDEX_MODE=compact` saves "≈ −15.4KB"; both were taken against a much
+  smaller registry. Re-measured at S208 against the live corpus: legacy
+  `standing_rules_index` is 20,908 B, so the `compact` flip is ≈ −20.9KB.
+
+### Deviation from plan v6 (recorded)
+The plan pinned the size gate at **≤ 6,000 B at 103 rules**; this ships it at
+**≤ 11,000 B** (measured 10,376 B), paired with a relative gate of **≤ 80% of
+the pre-compaction shape** (measured 73.7%). 6,000 B is unreachable under the
+row shape the same plan mandates: 6,000 / 103 = 58 B per row, and a capped
+title (53 B) plus an `id` (15 B) already exceed that before `topics`, braces,
+or separators. The 6,000 figure descends from the stale "≈ 4.5KB" note
+corrected above. The shipped ceiling is derived from the arithmetic floor of
+the mandated shape (~87 B/row × 103 + a ~1.2KB dictionary), not tuned to pass.
+
 ## [4.14.0] - 2026-08-16 (S208 PR-S3: gated auth hardening + ops truth-up)
 
 Nothing about request handling changes on deploy. The one code change ships
