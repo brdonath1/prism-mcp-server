@@ -39,8 +39,9 @@ banner grammar moved.
   re-enable a masthead an operator turned off.
 - **`session_state_manifest.rules.topic_names`** (S208 GAP-5) — a deduplicated
   dictionary of every indexed topic string, built in first-seen order so the
-  payload stays deterministic. Rows now carry `topics` as INDICES into it. The
-  live prism registry repeats 105 distinct topic strings across 244 row-slots.
+  payload stays deterministic. Rows now carry `topics` as INDICES into it. As
+  of prism 7bb470e7, the live prism registry repeats 117 distinct topic
+  strings across 260 row-slots.
 - **`tests/s208-pr-s2b-payload-contract.test.ts`** (22 tests) — the resolver
   matrix plus the two PINNED gates the plan names: SIZE (the serialized rule
   index at a live-shaped 103-rule registry fixture) and PARITY (id-set
@@ -54,10 +55,11 @@ banner grammar moved.
   (`truncateTitle60` → `truncateTitle40`), inline topic strings → indices into
   `topic_names`, and the tier tag `t` is emitted ONLY for Tier-C rows — the
   index is B ∪ C, so B is the default and naming it on ~85% of rows was pure
-  repetition. Measured on the live 109-rule registry: **13,924 B → 10,454 B**.
-  The 60-char cap barely bit (mean live title: 118 chars); 40 is enough to
-  recognize a rule you know and decide whether to fetch one you do not, which
-  is the whole job of an index row.
+  repetition. Measured on the live registry (as of prism 7bb470e7: 115 rules,
+  106 indexed — 90 B + 16 C): **14,685 B → 9,740 B**. The 60-char cap barely
+  bit (mean live title: 119 chars); 40 is enough to recognize a rule you know
+  and decide whether to fetch one you do not, which is the whole job of an
+  index row.
   **No template coupling.** The framework kernel's R35 consumption text is
   shape-agnostic by construction (`prism-framework` `core-template-mcp.md`,
   merged 2ad598d: topics are "inline strings or indices into

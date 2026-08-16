@@ -90,9 +90,9 @@ function rule(id: string, tier: "A" | "B" | "C", title: string, topics: string[]
  * Deterministic registry fixture shaped like the LIVE prism registry, which
  * is what makes the size gate mean anything (synthetic short titles would
  * measure the fixture, not the compaction). Measured on
- * `/Users/brdonath/development/prism/.prism/standing-rules.md` at S208:
- * 109 rules / 101 indexed (85 B + 16 C), mean title 118 chars, 2.41 topics
- * per rule, 105 distinct topic strings averaging ~8 chars.
+ * `/Users/brdonath/development/prism/.prism/standing-rules.md`, as of prism
+ * 7bb470e7: 115 rules / 106 indexed (90 B + 16 C), mean title 119 chars,
+ * 2.45 topics per rule, 117 distinct topic strings averaging ~8 chars.
  *
  * `indexed` here is the count of B+C rows (the rows that actually cost bytes);
  * eight Tier-A rules ride along so `tier_counts` is exercised too.
@@ -244,8 +244,18 @@ describe("S208 GAP-5 — PINNED size gate at a 103-rule registry fixture", () =>
    * 58 B per row, less than the 53 B a capped title plus the 15 B an `id`
    * already cost. The gate is pinned at the arithmetic floor of the mandated
    * shape instead, and paired with the relative gate below so it still has
-   * teeth. Live-corpus measurement behind this: 101 indexed rules,
-   * 13,924 B pre-compaction -> 10,454 B post.
+   * teeth.
+   *
+   * HONEST FRAMING: 11,000 B is a FIXTURE SHAPE GATE fixed at 103 synthetic
+   * rows — it does NOT bound the live payload, and the live registry has
+   * already grown past the row count the fixture pins. For reference, not as
+   * a gate: as of prism 7bb470e7, the live `{topic_names, index}` object
+   * (106 indexed rows) measures 11,090 B (index 9,740 B + the 1,325 B
+   * `topic_names` dictionary) — pre-compaction it was 14,685 B. This gate
+   * would need re-pinning to a live row count if it were meant to cap
+   * delivered bytes; it isn't — there is no pinned live-payload ceiling.
+   * `scripts/measure-boot-payload.mjs` against the real corpus is how the
+   * live number gets re-measured; it reports, it does not gate.
    */
   const RULES_INDEX_CEILING_BYTES = 11_000;
 

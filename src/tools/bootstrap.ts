@@ -2172,12 +2172,15 @@ export function registerBootstrap(server: McpServer): void {
         // the manifest — an additive release so the template can learn to
         // consume the manifest before the legacy index is dropped (SRV-109
         // two-phase field-removal pattern). `compact` ships the manifest ONLY.
-        // S208 GAP-5 re-measured both against the live 109-rule prism registry
-        // (the S202 note here said "≈ 4.5KB", taken on a much smaller one):
-        // legacy standing_rules_index 20,908 B; manifest rule index 13,924 B
-        // before compaction, 10,454 B after (topic_names dictionary + indices,
-        // titles capped at 40, tier tag on C rows only). Topics stay fully
-        // resolvable — they are the prism_load_rules match key.
+        // S208 GAP-5 re-measured both against the live prism registry (the
+        // S202 note here said "≈ 4.5KB", taken on a much smaller one) — as of
+        // prism 7bb470e7: 115 rules, 106 indexed (90 B + 16 C). legacy
+        // standing_rules_index 20,908 B; manifest rules.index 14,685 B before
+        // compaction, 9,740 B after (topic_names dictionary + indices, titles
+        // capped at 40, tier tag on C rows only) — {topic_names, index}
+        // combined is 11,090 B, of which the topic_names dictionary is
+        // 1,325 B. Topics stay fully resolvable — they are the
+        // prism_load_rules match key.
         const bootIndexMode = resolveBootIndexMode();
         const sessionStateManifest = buildSessionStateManifest({
           docs: manifestDocRows,
