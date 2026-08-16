@@ -10,9 +10,10 @@
  * (2) with an explicit "arbitrary-path" code path.
  */
 
-import { fetchFile, fileExists } from "../github/client.js";
+import { fetchFile, fetchFileConditional, fileExists } from "../github/client.js";
 import { DOC_ROOT } from "../config.js";
 import { logger } from "./logger.js";
+import { ruleSourceCache, type RuleSourceCacheEntry } from "./cache.js";
 
 /**
  * Resolve a document path: tries .prism/{docName} first, then {docName} at root.
@@ -51,6 +52,132 @@ export async function resolveDocPath(
     logger.info("doc-resolver: using legacy path", { projectSlug, docName });
     return { path: docName, content: file.content, sha: file.sha, legacy: true };
   }
+}
+
+/** Outcome of {@link resolveRuleSourceDoc}. Superset of `resolveDocPath`'s
+ *  shape plus the cache-provenance flag callers log/diagnose with. */
+export interface RuleSourceResolution {
+  path: string;
+  content: string;
+  sha: string;
+  legacy: boolean;
+  /** True when GitHub answered 304 and the cached body was served. */
+  notModified: boolean;
+}
+
+/**
+ * Resolve a RULE-SOURCE document (standing-rules.md, insights.md,
+ * standing-rules-archive.md) through the sha/ETag-keyed cache (S208 PR-S2a).
+ *
+ * Contract, and why it is safe: this is `resolveDocPath` with a conditional
+ * request bolted on. A cache hit still asks GitHub -- with `If-None-Match` --
+ * and only serves the cached body when the server answers 304, i.e. when it
+ * has certified the body unchanged. So the CONTENT returned is exactly what
+ * `resolveDocPath` would have returned at the same instant; what changes is
+ * that ~320KB (prism's standing-rules.md) stops crossing the wire on the
+ * unchanged case, and 304s do not consume rate-limit budget.
+ *
+ * Path resolution mirrors `resolveDocPath` exactly, SRV-44 discrimination
+ * included: `.prism/{docName}` first, legacy repo root only on a genuine 404.
+ * A cached entry that 404s (the doc moved, or was migrated to `.prism/`) drops
+ * from the cache and re-resolves from scratch.
+ *
+ * Callers that are NOT rule sources should keep using `resolveDocPath` -- the
+ * cache is deliberately scoped to the three heavy, repeatedly-read documents.
+ */
+export async function resolveRuleSourceDoc(
+  projectSlug: string,
+  docName: string,
+): Promise<RuleSourceResolution> {
+  const key = `${projectSlug}:${docName}`;
+  const cached = ruleSourceCache.get(key);
+
+  if (cached?.etag) {
+    try {
+      const conditional = await fetchFileConditional(projectSlug, cached.path, cached.etag);
+      if (conditional.status === "not_modified") {
+        logger.debug("rule source served from cache (304)", {
+          projectSlug,
+          docName,
+          path: cached.path,
+          bytes: cached.content.length,
+        });
+        return {
+          path: cached.path,
+          content: cached.content,
+          sha: cached.sha,
+          legacy: cached.legacy,
+          notModified: true,
+        };
+      }
+      return storeRuleSource(key, {
+        path: cached.path,
+        content: conditional.content,
+        sha: conditional.sha,
+        etag: conditional.etag,
+        legacy: cached.legacy,
+      });
+    } catch (error) {
+      // The cached path no longer resolves. Only a genuine 404 justifies a
+      // re-resolve (SRV-44): an operational 401/403/timeout must surface as
+      // the real cause rather than silently walking to the legacy root copy.
+      const msg = error instanceof Error ? error.message : String(error);
+      if (!/Not found/i.test(msg)) throw error;
+      ruleSourceCache.invalidate(key);
+      logger.info("rule source cached path vanished - re-resolving", {
+        projectSlug,
+        docName,
+        path: cached.path,
+      });
+    }
+  }
+
+  const newPath = `${DOC_ROOT}/${docName}`;
+  try {
+    const file = await fetchFileConditional(projectSlug, newPath);
+    if (file.status === "not_modified") {
+      // Unreachable: no If-None-Match was sent. Treated as a cache miss.
+      throw new Error(`Unexpected 304 without a conditional request: ${projectSlug}/${newPath}`);
+    }
+    return storeRuleSource(key, {
+      path: newPath,
+      content: file.content,
+      sha: file.sha,
+      etag: file.etag,
+      legacy: false,
+    });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    if (!/Not found/i.test(msg)) throw error;
+    const file = await fetchFileConditional(projectSlug, docName);
+    if (file.status === "not_modified") {
+      throw new Error(`Unexpected 304 without a conditional request: ${projectSlug}/${docName}`);
+    }
+    logger.info("doc-resolver: using legacy path", { projectSlug, docName });
+    return storeRuleSource(key, {
+      path: docName,
+      content: file.content,
+      sha: file.sha,
+      etag: file.etag,
+      legacy: true,
+    });
+  }
+}
+
+/** Write a resolved rule source into the cache and return the caller's view. */
+function storeRuleSource(key: string, entry: RuleSourceCacheEntry): RuleSourceResolution {
+  // No ETag means no conditional path is available; caching the body would
+  // only risk serving it unvalidated later, so skip the write entirely.
+  if (entry.etag) {
+    ruleSourceCache.set(key, entry);
+  }
+  return {
+    path: entry.path,
+    content: entry.content,
+    sha: entry.sha,
+    legacy: entry.legacy,
+    notModified: false,
+  };
 }
 
 /**

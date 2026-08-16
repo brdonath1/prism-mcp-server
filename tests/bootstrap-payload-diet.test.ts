@@ -6,13 +6,26 @@
 process.env.GITHUB_PAT = process.env.GITHUB_PAT || "test-dummy-pat";
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { createHash } from "node:crypto";
 
-vi.mock("../src/github/client.js", () => ({
-  fetchFile: vi.fn(),
-  fetchFiles: vi.fn(),
-  pushFile: vi.fn(),
-  fileExists: vi.fn(),
-}));
+vi.mock("../src/github/client.js", () => {
+  const fetchFile = vi.fn();
+  // S208 PR-S2a: rule-source reads go through fetchFileConditional. These
+  // fixtures mint no ETags, so the conditional read is the SAME read -- it
+  // delegates to the fetchFile mock every test already drives and reports
+  // status "ok" (never 304).
+  const fetchFileConditional = vi.fn(async (repo: string, path: string) => {
+    const file = await fetchFile(repo, path);
+    return { status: "ok", content: file.content, sha: file.sha, size: file.size, etag: null };
+  });
+  return {
+    fetchFile,
+    fetchFileConditional,
+    fetchFiles: vi.fn(),
+    pushFile: vi.fn(),
+    fileExists: vi.fn(),
+  };
+});
 
 import { fetchFile, fetchFiles, pushFile, fileExists } from "../src/github/client.js";
 import {
@@ -57,6 +70,11 @@ function makeInsights(ruleCount: number, procChars = 900): string {
   return `# Insights\n\n## Active\n\n${blocks.join("\n\n")}\n\n<!-- EOF: insights.md -->`;
 }
 
+/** Deterministic stand-in for a GitHub blob sha: a hash OF THE CONTENT. */
+function fixtureSha(content: string): string {
+  return createHash("sha1").update(content).digest("hex");
+}
+
 function setupMocks(opts: { decisionsIndex?: string; insights?: string } = {}) {
   const decisionsIndex =
     opts.decisionsIndex ??
@@ -79,7 +97,11 @@ function setupMocks(opts: { decisionsIndex?: string; insights?: string } = {}) {
       return { content: "# Intelligence Brief\n\n## Project State\nHealthy.\n\n## Risk Flags\nNone.\n\n## Quality Audit\nGood.\n\n<!-- EOF: intelligence-brief.md -->", sha: "jkl012", size: 100 };
     }
     if (path === ".prism/insights.md" || path === "insights.md") {
-      return { content: insights, sha: "mno345", size: insights.length };
+      // S208 PR-S2a: content-derived sha. Real GitHub blob shas ARE content
+      // hashes, and the standing-rule parse cache is keyed on them - a fixture
+      // that reuses one sha for different bodies models something GitHub can
+      // never produce.
+      return { content: insights, sha: fixtureSha(insights), size: insights.length };
     }
     throw new Error(`Not found: ${path}`);
   });

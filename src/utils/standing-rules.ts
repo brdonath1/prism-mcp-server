@@ -299,6 +299,107 @@ export function extractStandingRules(
 }
 
 /**
+ * ARCHIVE BODY POINTER GRAMMAR (S208 PR-S2a item 8 -- net-new).
+ *
+ *   pointer = ["**"] "Body:" ["**"] SP* "standing-rules-archive.md" [ "#" anchor ]
+ *
+ * A registry entry whose ENTIRE body is one such line is a STUB: its id, title,
+ * tier and topics stay in `.prism/standing-rules.md` (never-delete id
+ * continuity, and the boot index still sees it), while the body itself lives in
+ * `.prism/standing-rules-archive.md` so the registry stops carrying the bytes.
+ * The pointer is matched case-insensitively and the optional `#anchor` /
+ * bold-marker variants are accepted so a hand-written stub cannot miss by a
+ * decoration.
+ *
+ * Nothing populates stubs yet -- PR-P2 performs the Tier-B/C body moves under
+ * its round-trip gate. Until then {@link isArchiveBodyStub} is false for every
+ * live rule and {@link resolveArchivedRuleBodies} is a no-op that fetches
+ * nothing, which is exactly why this can ship ahead of the data move.
+ */
+const ARCHIVE_BODY_POINTER =
+  /^\s*(?:\*\*)?body:(?:\*\*)?\s*(?:\.prism\/)?standing-rules-archive\.md\s*(?:#\S*)?\s*$/i;
+
+/** Document name of the archive rule source (resolver-relative, no DOC_ROOT). */
+export const STANDING_RULES_ARCHIVE_DOC = "standing-rules-archive.md";
+
+/**
+ * Is this rule a body-in-archive stub? True when its whole procedure is the
+ * pointer line and nothing else -- a rule that merely MENTIONS the archive
+ * inside a real procedure is not a stub.
+ */
+export function isArchiveBodyStub(rule: StandingRule): boolean {
+  const lines = rule.procedure.split("\n").filter(line => line.trim().length > 0);
+  return lines.length === 1 && ARCHIVE_BODY_POINTER.test(lines[0]);
+}
+
+/** Outcome of an archive body-resolution pass. */
+export interface ArchiveBodyResolution {
+  /** Input rules with every resolvable stub's procedure replaced in place. */
+  rules: StandingRule[];
+  /** Ids whose body was successfully pulled from the archive. */
+  resolved: string[];
+  /** Stub ids with no matching body in the archive - surfaced, never silent. */
+  unresolved: string[];
+}
+
+/**
+ * Resolve body-in-archive stubs against the archive document.
+ *
+ * The archive is parsed with `"registry"` semantics (every `### INS-N:` section
+ * counts -- the archive IS a rule document, and its entries do not re-declare
+ * the insights.md title suffix). Only ids that are stubs in the input are
+ * looked up, so genuinely retired archive entries are never resurrected: they
+ * are excluded by D-48 in the LIVE registry and are simply not asked for here.
+ *
+ * Merge policy, chosen so the registry stays the index of record:
+ *   - `procedure` comes from the archive (that is the point);
+ *   - `topics` come from the stub when it declares any, else from the archive
+ *     body -- a stub that kept its topics keeps controlling topic matching;
+ *   - `id` / `title` / `tier` always stay with the stub.
+ *
+ * Returns a NEW array; input rules are not mutated. `archiveContent === null`
+ * (archive absent) leaves every stub untouched and reports it as unresolved.
+ */
+export function resolveArchivedRuleBodies(
+  rules: StandingRule[],
+  archiveContent: string | null,
+): ArchiveBodyResolution {
+  const resolved: string[] = [];
+  const unresolved: string[] = [];
+
+  const archiveRules = archiveContent ? extractStandingRules(archiveContent, "registry") : [];
+  const archiveById = new Map(archiveRules.map(rule => [rule.id, rule]));
+
+  const merged = rules.map(rule => {
+    if (!isArchiveBodyStub(rule)) return rule;
+    const source = archiveById.get(rule.id);
+    if (!source || source.procedure.trim().length === 0) {
+      unresolved.push(rule.id);
+      logger.warn(
+        "standing-rule body pointer could not be resolved from the archive (STANDING_RULE_ARCHIVE_BODY_MISSING)",
+        { id: rule.id, archivePresent: archiveContent !== null },
+      );
+      return rule;
+    }
+    resolved.push(rule.id);
+    return {
+      ...rule,
+      procedure: source.procedure,
+      topics: rule.topics.length > 0 ? rule.topics : source.topics,
+    };
+  });
+
+  if (resolved.length > 0) {
+    logger.info("standing-rule bodies resolved from archive", {
+      resolved: resolved.length,
+      unresolved: unresolved.length,
+    });
+  }
+
+  return { rules: merged, resolved, unresolved };
+}
+
+/**
  * Select which standing rules to deliver at bootstrap based on tier.
  *
  * Selection rules (D-253 — partial, evidence-driven reversal of R7-b /

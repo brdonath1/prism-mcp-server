@@ -148,6 +148,15 @@ function sleep(ms: number): Promise<void> {
 const MAX_TRANSIENT_401_RETRIES = 2;
 
 /**
+ * MCP-14 (S208 PR-S2a): floor on the budget a retry attempt needs before it is
+ * worth starting. Below this, `GITHUB_RETRY_BUDGET_MS` is spent -- issuing a
+ * request with a sub-quarter-second abort deadline would only manufacture a
+ * misleading "timed out after 3ms" error, so the chain stops and surfaces the
+ * budget as the cause.
+ */
+const MIN_RETRY_ATTEMPT_MS = 250;
+
+/**
  * Detect whether a 403 is a rate-limit response (SRV-40). GitHub signals its
  * primary rate limit with `x-ratelimit-remaining: 0` and secondary rate limits
  * with a `retry-after` header. Header-only by design: deciding from headers
@@ -202,7 +211,33 @@ function retryFitsBudget(
 export async function fetchWithRetry(url: string, options: RequestInit = {}, maxRetries = 3): Promise<Response> {
   const retryDeadline = Date.now() + GITHUB_RETRY_BUDGET_MS;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    const timeoutSignal = AbortSignal.timeout(GITHUB_REQUEST_TIMEOUT_MS);
+    // MCP-14 (S208 PR-S2a): the budget bounds TOTAL elapsed attempt time, not
+    // just the backoff sleeps. Pre-S2a `retryFitsBudget` only asked whether
+    // the SLEEP fit; the attempt that followed could then run a further
+    // GITHUB_REQUEST_TIMEOUT_MS past the deadline, and each earlier attempt's
+    // own wall clock was likewise unbudgeted -- a chain of slow-but-not-timed-
+    // out attempts overran the budget by design. Now: (a) no RETRY starts once
+    // the remaining budget is below MIN_RETRY_ATTEMPT_MS, and (b) every retry's
+    // per-request timeout is clamped to what is left. The first attempt always
+    // gets the full per-request timeout, so the non-retry path is unchanged and
+    // total elapsed is bounded by max(GITHUB_REQUEST_TIMEOUT_MS, budget).
+    const budgetRemaining = retryDeadline - Date.now();
+    if (attempt > 0 && budgetRemaining < MIN_RETRY_ATTEMPT_MS) {
+      logger.warn("github retry budget exhausted before next attempt", {
+        url,
+        attempt,
+        remainingMs: budgetRemaining,
+        budgetMs: GITHUB_RETRY_BUDGET_MS,
+      });
+      throw new Error(
+        `GitHub retry budget exhausted after ${attempt} attempt(s) (${GITHUB_RETRY_BUDGET_MS}ms): ${url}`,
+      );
+    }
+    const attemptTimeoutMs =
+      attempt === 0
+        ? GITHUB_REQUEST_TIMEOUT_MS
+        : Math.min(GITHUB_REQUEST_TIMEOUT_MS, budgetRemaining);
+    const timeoutSignal = AbortSignal.timeout(attemptTimeoutMs);
     const signal = options.signal
       ? AbortSignal.any([options.signal, timeoutSignal])
       : timeoutSignal;
@@ -214,8 +249,8 @@ export async function fetchWithRetry(url: string, options: RequestInit = {}, max
       const isAbort = name === "AbortError" || name === "TimeoutError";
       if (isAbort) {
         if (timeoutSignal.aborted) {
-          logger.warn("github fetch timed out", { url, timeoutMs: GITHUB_REQUEST_TIMEOUT_MS, attempt });
-          throw new Error(`GitHub API request timed out after ${GITHUB_REQUEST_TIMEOUT_MS}ms: ${url}`);
+          logger.warn("github fetch timed out", { url, timeoutMs: attemptTimeoutMs, attempt });
+          throw new Error(`GitHub API request timed out after ${attemptTimeoutMs}ms: ${url}`);
         }
         // Caller aborted — propagate unchanged.
         throw error;
@@ -308,6 +343,87 @@ export async function fetchFile(
 
   logger.debug("github.fetchFile complete", { repo, path, size, ms: Date.now() - start });
   return { content, sha: data.sha, size };
+}
+
+/**
+ * Result of a conditional (`If-None-Match`) file fetch (S208 PR-S2a / MCP-1).
+ *
+ * `not_modified` carries no body by construction -- GitHub answered 304 and the
+ * caller's cached copy is provably still current.
+ */
+export type ConditionalFileResult =
+  | { status: "not_modified" }
+  | { status: "ok"; content: string; sha: string; size: number; etag: string | null };
+
+/**
+ * Fetch a file, sending `If-None-Match` when the caller holds an ETag.
+ *
+ * Why (S208 PR-S2a / MCP-1): the rule sources are the boot payload's heaviest
+ * reads -- prism's `.prism/standing-rules.md` alone is ~320KB, and both
+ * `prism_bootstrap` and `prism_load_rules` re-download it in full on every
+ * call even though it changes a few times per session at most. GitHub honors
+ * conditional requests on the Contents API: an unchanged blob answers 304 with
+ * no body AND without consuming rate-limit budget. The delivered payload is
+ * unaffected -- the caller serves its cached copy, which the 304 has just
+ * certified byte-identical to what a 200 would have returned.
+ *
+ * Returns `{ status: "not_modified" }` for 304. Every other non-2xx routes
+ * through {@link handleApiError} exactly as {@link fetchFile} does, so callers
+ * keep the SRV-44 "only a genuine 404 justifies the legacy fallback"
+ * discrimination.
+ */
+export async function fetchFileConditional(
+  repo: string,
+  path: string,
+  etag?: string | null,
+  ref?: string,
+): Promise<ConditionalFileResult> {
+  const url = contentsUrl(repo, path, ref);
+  const start = Date.now();
+  const requestHeaders = headers();
+  if (etag) {
+    requestHeaders["If-None-Match"] = etag;
+  }
+
+  logger.debug("github.fetchFileConditional", { repo, path, ref, conditional: !!etag });
+
+  const res = await fetchWithRetry(url, { headers: requestHeaders });
+
+  // 304 is NOT `res.ok` -- check it before the error path, and drain the (empty)
+  // body so the socket is released like every other early return here.
+  if (res.status === 304) {
+    await res.body?.cancel();
+    logger.debug("github.fetchFileConditional not modified", {
+      repo,
+      path,
+      ms: Date.now() - start,
+    });
+    return { status: "not_modified" };
+  }
+
+  if (!res.ok) {
+    throw handleApiError(res.status, await res.text(), `fetchFile ${repo}/${path}`);
+  }
+
+  const data = (await res.json()) as GitHubContentsResponse;
+  if (!data.content) {
+    throw new Error(`No content returned for ${repo}/${path} — file may be a directory or too large`);
+  }
+  const content = Buffer.from(data.content, "base64").toString("utf-8");
+
+  logger.debug("github.fetchFileConditional complete", {
+    repo,
+    path,
+    size: data.size,
+    ms: Date.now() - start,
+  });
+  return {
+    status: "ok",
+    content,
+    sha: data.sha,
+    size: data.size,
+    etag: res.headers.get("etag"),
+  };
 }
 
 /**

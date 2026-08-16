@@ -15,11 +15,20 @@
 process.env.GITHUB_PAT = process.env.GITHUB_PAT || "test-dummy-pat";
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { createHash } from "node:crypto";
 
-vi.mock("../src/utils/doc-resolver.js", () => ({
-  resolveDocPath: vi.fn(),
-  resolveDocPushPath: vi.fn(),
-}));
+vi.mock("../src/utils/doc-resolver.js", () => {
+  const resolveDocPath = vi.fn();
+  return {
+    resolveDocPath,
+    // S208 PR-S2a: rule sources resolve through the sha/ETag-cached variant.
+    // From a test's point of view it is the SAME read (the fixtures mint no
+    // ETags, so nothing is ever served from cache), so it shares one mock and
+    // every existing `mockResolveDocPath.mockImplementation` keeps driving both.
+    resolveRuleSourceDoc: resolveDocPath,
+    resolveDocPushPath: vi.fn(),
+  };
+});
 
 import { registerLoadRules } from "../src/tools/load-rules.js";
 import { resolveDocPath } from "../src/utils/doc-resolver.js";
@@ -45,6 +54,11 @@ function createServerStub() {
   return { server, handlers };
 }
 
+/** Deterministic stand-in for a GitHub blob sha: a hash OF THE CONTENT. */
+function fixtureSha(content: string): string {
+  return createHash("sha1").update(content).digest("hex");
+}
+
 /**
  * Path-aware doc-resolver mock (R2-B). Declares which rule-source files
  * exist for the test: a `null`/omitted entry rejects like a 404, mirroring
@@ -59,7 +73,11 @@ function mockDocs(opts: {
       return {
         path: ".prism/insights.md",
         content: opts.insights,
-        sha: "ins-sha",
+        // S208 PR-S2a: content-derived sha. Real GitHub blob shas ARE content
+        // hashes, and the standing-rule parse cache is keyed on them - a
+        // fixture that reuses one sha across different bodies models something
+        // GitHub can never produce.
+        sha: fixtureSha(opts.insights),
         legacy: false,
       };
     }
@@ -67,7 +85,7 @@ function mockDocs(opts: {
       return {
         path: ".prism/standing-rules.md",
         content: opts.standingRules,
-        sha: "sr-sha",
+        sha: fixtureSha(opts.standingRules),
         legacy: false,
       };
     }
