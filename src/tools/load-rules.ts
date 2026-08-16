@@ -21,16 +21,22 @@
 
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { resolveProjectSlug } from "../config.js";
-import { resolveDocPath } from "../utils/doc-resolver.js";
+import { LOAD_RULES_WALL_CLOCK_DEADLINE_MS, resolveProjectSlug } from "../config.js";
+import { resolveRuleSourceDoc } from "../utils/doc-resolver.js";
 import { logger } from "../utils/logger.js";
 import { DiagnosticsCollector } from "../utils/diagnostics.js";
 import {
+  isArchiveBodyStub,
   normalizeTopic,
+  resolveArchivedRuleBodies,
   selectStandingRulesByTopic,
+  STANDING_RULES_ARCHIVE_DOC,
   type StandingRule,
 } from "../utils/standing-rules.js";
-import { unionStandingRules } from "../utils/standing-rules-union.js";
+import { unionStandingRulesCached } from "../utils/standing-rules-union.js";
+
+/** Sentinel used to signal that the tool-level deadline fired (MCP-2). */
+const LOAD_RULES_DEADLINE_SENTINEL = Symbol("load-rules.deadline");
 
 /**
  * Input schema for prism_load_rules.
@@ -88,6 +94,20 @@ export function registerLoadRules(server: McpServer): void {
         };
       }
 
+      // MCP-2 (S208 PR-S2a): tool-level wall-clock deadline. Same sentinel/race
+      // shape as prism_push -- the work promise is raced against a timer, the
+      // timer is cleared in `finally` so a fast call leaves nothing pending,
+      // and an expiry returns a STRUCTURED error instead of letting the MCP
+      // transport time out with nothing to show the operator.
+      let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+      const deadlinePromise = new Promise<typeof LOAD_RULES_DEADLINE_SENTINEL>((resolve) => {
+        deadlineTimer = setTimeout(
+          () => resolve(LOAD_RULES_DEADLINE_SENTINEL),
+          LOAD_RULES_WALL_CLOCK_DEADLINE_MS,
+        );
+      });
+
+      const workPromise = (async () => {
       try {
         // R2-B (D-240 Phase B): fetch BOTH rule sources in parallel via the
         // same path-resolution mechanism bootstrap uses — the standing-rule
@@ -95,14 +115,24 @@ export function registerLoadRules(server: McpServer): void {
         // (insights.md). Rules are unioned by INS-N with the registry winning
         // on conflict, so projects that have not migrated keep resolving from
         // insights.md alone.
+        //
+        // S208 PR-S2a (MCP-1): both reads go through the sha/ETag-keyed rule
+        // source cache. A cache hit still round-trips with If-None-Match, so
+        // the CONTENT is exactly what an unconditional fetch would return --
+        // what stops crossing the wire is the body (prism: ~320KB registry +
+        // ~40KB insights) whenever GitHub answers 304.
         const [standingRulesOutcome, insightsOutcome] = await Promise.allSettled([
-          resolveDocPath(resolvedSlug, "standing-rules.md"),
-          resolveDocPath(resolvedSlug, "insights.md"),
+          resolveRuleSourceDoc(resolvedSlug, "standing-rules.md"),
+          resolveRuleSourceDoc(resolvedSlug, "insights.md"),
         ]);
         const standingRulesContent =
           standingRulesOutcome.status === "fulfilled" ? standingRulesOutcome.value.content : null;
         const insightsContent =
           insightsOutcome.status === "fulfilled" ? insightsOutcome.value.content : null;
+        const standingRulesSha =
+          standingRulesOutcome.status === "fulfilled" ? standingRulesOutcome.value.sha : null;
+        const insightsSha =
+          insightsOutcome.status === "fulfilled" ? insightsOutcome.value.sha : null;
 
         // insights.md is a mandatory living document — its absence is signal
         // even when the registry covers the rules. A missing standing-rules.md
@@ -147,7 +177,11 @@ export function registerLoadRules(server: McpServer): void {
           };
         }
 
-        const union = unionStandingRules(standingRulesContent, insightsContent);
+        const union = unionStandingRulesCached(
+          resolvedSlug,
+          { content: standingRulesContent, sha: standingRulesSha },
+          { content: insightsContent, sha: insightsSha },
+        );
         if (union.conflicts.length > 0) {
           diagnostics.warn(
             "STANDING_RULE_SOURCE_CONFLICT",
@@ -186,6 +220,45 @@ export function registerLoadRules(server: McpServer): void {
           }
         } else {
           matchedRules = selectStandingRulesByTopic(allRules, normalizedTopic, includeTierC);
+        }
+
+        // S208 PR-S2a item 8: body-in-archive stubs. A matched rule whose whole
+        // body is a `Body: standing-rules-archive.md` pointer is useless to the
+        // caller as-is, so the archive source is fetched and the real body
+        // spliced in. Scoped to MATCHED rules and skipped entirely when none is
+        // a stub, so the archive read happens only when it would change the
+        // answer -- today, on every live project, that is never (PR-P2 performs
+        // the body moves that create stubs).
+        if (matchedRules.some(isArchiveBodyStub)) {
+          let archiveContent: string | null = null;
+          try {
+            archiveContent = (await resolveRuleSourceDoc(resolvedSlug, STANDING_RULES_ARCHIVE_DOC))
+              .content;
+          } catch (archiveErr) {
+            const message =
+              archiveErr instanceof Error ? archiveErr.message : String(archiveErr);
+            diagnostics.warn(
+              "STANDING_RULES_ARCHIVE_UNAVAILABLE",
+              `${STANDING_RULES_ARCHIVE_DOC} could not be loaded for project "${resolvedSlug}": ${message}. Rules whose body lives in the archive are served as pointers.`,
+              { project: resolvedSlug, error: message },
+            );
+          }
+          const archiveResolution = resolveArchivedRuleBodies(matchedRules, archiveContent);
+          matchedRules = archiveResolution.rules;
+          if (archiveResolution.unresolved.length > 0) {
+            diagnostics.warn(
+              "STANDING_RULE_ARCHIVE_BODY_MISSING",
+              `${archiveResolution.unresolved.length} rule(s) point at ${STANDING_RULES_ARCHIVE_DOC} but no matching body was found there: ${archiveResolution.unresolved.join(", ")}.`,
+              { ids: archiveResolution.unresolved },
+            );
+          }
+          if (archiveResolution.resolved.length > 0) {
+            diagnostics.info(
+              "STANDING_RULE_ARCHIVE_BODY_RESOLVED",
+              `${archiveResolution.resolved.length} rule body/bodies resolved from ${STANDING_RULES_ARCHIVE_DOC}: ${archiveResolution.resolved.join(", ")}.`,
+              { ids: archiveResolution.resolved },
+            );
+          }
         }
 
         const tierBMatched = matchedRules.filter(r => r.tier === "B");
@@ -285,6 +358,38 @@ export function registerLoadRules(server: McpServer): void {
           }],
           isError: true,
         };
+      }
+      })();
+
+      try {
+        const raced = await Promise.race([workPromise, deadlinePromise]);
+        if (raced === LOAD_RULES_DEADLINE_SENTINEL) {
+          const deadlineSec = Math.round(LOAD_RULES_WALL_CLOCK_DEADLINE_MS / 1000);
+          logger.error("prism_load_rules deadline exceeded", {
+            project_slug: resolvedSlug,
+            topic: normalizedTopic,
+            rule_id,
+            deadlineMs: LOAD_RULES_WALL_CLOCK_DEADLINE_MS,
+            elapsedMs: Date.now() - start,
+          });
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({
+                project: resolvedSlug,
+                topic: normalizedTopic,
+                rule_id: rule_id ?? null,
+                error: `prism_load_rules deadline exceeded (${deadlineSec}s)`,
+                code: "DEADLINE_EXCEEDED",
+                diagnostics: diagnostics.list(),
+              }),
+            }],
+            isError: true,
+          };
+        }
+        return raced;
+      } finally {
+        if (deadlineTimer) clearTimeout(deadlineTimer);
       }
     },
   );

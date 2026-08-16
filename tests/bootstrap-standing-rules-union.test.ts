@@ -14,13 +14,25 @@ process.env.GITHUB_PAT = process.env.GITHUB_PAT || "test-dummy-pat";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
-vi.mock("../src/github/client.js", () => ({
-  fetchFile: vi.fn(),
-  fetchFiles: vi.fn(),
-  pushFile: vi.fn(),
-  fileExists: vi.fn(),
-  listRepos: vi.fn(),
-}));
+vi.mock("../src/github/client.js", () => {
+  const fetchFile = vi.fn();
+  // S208 PR-S2a: rule-source reads go through fetchFileConditional. These
+  // fixtures mint no ETags, so the conditional read is the SAME read -- it
+  // delegates to the fetchFile mock every test already drives and reports
+  // status "ok" (never 304).
+  const fetchFileConditional = vi.fn(async (repo: string, path: string) => {
+    const file = await fetchFile(repo, path);
+    return { status: "ok", content: file.content, sha: file.sha, size: file.size, etag: null };
+  });
+  return {
+    fetchFile,
+    fetchFileConditional,
+    fetchFiles: vi.fn(),
+    pushFile: vi.fn(),
+    fileExists: vi.fn(),
+    listRepos: vi.fn(),
+  };
+});
 
 interface CapturedHandler {
   (args: Record<string, unknown>): Promise<{

@@ -7,6 +7,86 @@ by `src/utils/banner.ts` (`BANNER_SPEC_VERSION`) plus the prism-framework
 templates; [docs/banner-spec.md](docs/banner-spec.md) is historical reference.
 Banner changes add an entry here.
 
+## [4.13.2] - 2026-08-16 (S208 PR-S2a: boot + load latency, payload-byte-identical)
+
+Latency and robustness only. The DELIVERED `prism_bootstrap` payload is
+byte-identical to 4.13.1 - proven per-release by `scripts/measure-boot-payload.mjs`,
+which replays a full simulated boot against the live prism `.prism/` corpus and
+reports the total payload bytes plus per-field attribution. `BANNER_SPEC_VERSION`
+is unchanged (4.3).
+
+### Added
+- **Sha/ETag-conditional rule-source cache** (MCP-1). `standing-rules.md`,
+  `insights.md` and `standing-rules-archive.md` are the heaviest documents PRISM
+  reads - prism's registry alone is ~320KB - and both `prism_bootstrap` and
+  `prism_load_rules` re-downloaded them in full on every single call. They now
+  resolve through `resolveRuleSourceDoc()`, which sends `If-None-Match` with the
+  cached ETag: an unchanged document answers 304 with no body and without
+  consuming rate-limit budget. A cache hit still round-trips, so the content
+  served is exactly what an unconditional fetch would have returned - the cache
+  can never serve an unvalidated body. Bounded by TTL and size like every other
+  house cache (`src/utils/cache.ts`).
+- **Sha-keyed standing-rule parse cache** (MCP-1, `unionStandingRulesCached`).
+  Keyed on `(repo, registry sha, insights sha)`, shared by both consumers.
+  Keying on content shas is what makes it safe: a changed document is a changed
+  sha is a different key, so a stale parse is unreachable rather than unlikely.
+- **`LOAD_RULES_WALL_CLOCK_DEADLINE_MS`** (MCP-2, default `MCP_SAFE_TIMEOUT`).
+  `prism_load_rules` was fanning out to the two largest documents in the system
+  with no tool-level backstop; a stalled fetch held the client to the ~60s
+  transport timeout with nothing structured to show. Same sentinel/race shape as
+  `prism_push`, timer cleared in `finally`.
+- **Archive body resolution for pointer stubs** (net-new, inert today). A
+  registry entry whose entire body is `Body: standing-rules-archive.md` is a
+  STUB: its id/title/tier/topics stay in the registry while the body lives in
+  the archive. Both consumers splice the real body back in - bootstrap for the
+  Tier A rules it actually delivers, `prism_load_rules` for matched rules - and
+  the archive is read ONLY when a stub is present, which is never until the
+  body moves land. Unresolvable stubs surface a diagnostic instead of silently
+  shipping the pointer.
+- **`SYNTHESIS_OBSERVATION_TIMEOUT` diagnostic** when the boot-time Railway
+  observation read is abandoned (see below).
+
+### Changed
+- **Wave-3 boot reads launch at slug-resolution time** (MCP-8). The
+  intelligence-brief / insights / pending-doc-updates / standing-rules fan-out
+  depends on nothing but the project slug, yet it waited for the core fetch,
+  the boot-test push and the prefetch wave to finish first. It now starts
+  immediately and is awaited exactly where it always was. Pure reordering: same
+  reads, same results, same payload.
+- **Boot-test path is cached per repo** (MCP-16). The boot-test write cost four
+  serial GitHub round trips - two existence probes, a sha read and a PUT - to
+  write ~140 bytes on the critical boot path. Where the doc lives is a property
+  of the repo, not the session, so the resolved path is cached (60 min / 100
+  repos) and the chain collapses to sha-read + PUT for repos already on the
+  canonical `.prism/` layout. Only a canonical resolution is ever cached - a
+  legacy-root resolution always re-probes on the next boot, since a push to
+  the legacy root keeps succeeding right up until the repo migrates and a
+  failed-push invalidation alone would never fire to unstick it. A repo that
+  migrates picks up the canonical path (and starts caching) on its first
+  post-migration boot instead of latching onto the stale root path forever.
+- **The boot-time Railway observation read is bounded at 2.5s** (MCP-17) by a
+  CALL-SITE `Promise.race` in `checkSynthesisObservation`. The timer is
+  `unref()`d and cleared in `finally`, and the loser's rejection is swallowed.
+  Deliberately at the call site, not in `src/railway/client.ts`: every other
+  Railway caller is an explicit operator tool where a long read is correct;
+  only this one is a best-effort boot extra that was charging the operator
+  latency for an optional diagnostic.
+- **`GITHUB_RETRY_BUDGET_MS` now bounds TOTAL elapsed attempt time** (MCP-14),
+  not just the backoff sleeps. Previously only the SLEEP was budget-checked, so
+  a chain of slow-but-not-timed-out attempts could overrun the budget by
+  multiples. Now no retry starts once the budget is spent and each retry's
+  per-request timeout is clamped to what remains. The FIRST attempt keeps the
+  full per-request timeout, so single-attempt calls are unchanged.
+- **`KNOWN_PRISM_PATHS` covers the post-D-18 living docs** (MCP-15 / KI-28):
+  `audit-trail.md`, `pending-doc-updates.md`, `audit-harness.md`,
+  `standing-rules-archive.md`, `pending-doc-updates-archive.md`. A bare-name
+  `prism_push` of any of these wrote a ROOT-LEVEL DUPLICATE while the canonical
+  `.prism/` copy went stale - observed live at S179 with a 6,259 B root
+  `audit-trail.md`. `prism_patch`/`prism_fetch` already resolved them, so the
+  divergence was `prism_push`'s alone; this also widens `prism_fetch`'s SRV-17
+  allowlist to match.
+- `MemoryCache` takes a `maxEntries` bound (default 200) alongside its TTL.
+
 ## [4.13.1] - 2026-08-16 (S208 PR-S1: finalize + banner reliability)
 
 Banner-contract behavior changes; `BANNER_SPEC_VERSION` stays 4.3 (the grammar

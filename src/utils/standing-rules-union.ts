@@ -23,6 +23,8 @@
  * insights.md sections qualify only via the `— STANDING RULE` title suffix.
  */
 import { extractStandingRules, type StandingRule } from "./standing-rules.js";
+import { MemoryCache } from "./cache.js";
+import { logger } from "./logger.js";
 
 /** Result of unioning the two standing-rule sources. */
 export interface StandingRulesUnion {
@@ -76,4 +78,60 @@ export function unionStandingRules(
     fromStandingRulesFile: fromRegistry.length,
     fromInsights: fromInsights.length,
   };
+}
+
+/**
+ * Parse cache for {@link unionStandingRules}, keyed `${repo}:${srSha}:${insSha}`
+ * (S208 PR-S2a / MCP-1). Both consumers hit it -- `prism_bootstrap` once per
+ * boot and `prism_load_rules` on every mid-session call -- and the parse is the
+ * expensive half once the 304 path has removed the download: prism's registry
+ * is ~320KB of markdown split into ~100 regex-scanned sections.
+ *
+ * Keying on the CONTENT SHAS is what makes the cache safe: a changed document
+ * is a changed sha is a different key, so a stale parse is unreachable rather
+ * than merely unlikely. 10-minute TTL / 40 entries bound the memory.
+ */
+const unionParseCache = new MemoryCache<StandingRulesUnion>("standing-rules-parse", 10, 40);
+
+/** Test seam: drop every cached parse. */
+export function clearStandingRulesParseCache(): void {
+  unionParseCache.clear();
+}
+
+/**
+ * Sha-keyed {@link unionStandingRules}. Identical result, computed once per
+ * (repo, registry sha, insights sha) triple.
+ *
+ * Pass `null` shas when a source is absent or its sha is unknown -- an unknown
+ * sha disables caching for that call rather than guessing, because a cache
+ * whose key cannot distinguish two document versions is a correctness bug, not
+ * an optimization.
+ *
+ * Returned arrays are fresh shallow copies, so a caller that sorts or splices
+ * its result cannot corrupt the cached entry. The rule OBJECTS are shared and
+ * treated as immutable by every consumer (both call sites only filter/map).
+ */
+export function unionStandingRulesCached(
+  repo: string,
+  standingRules: { content: string | null; sha: string | null },
+  insights: { content: string | null; sha: string | null },
+): StandingRulesUnion {
+  const cacheable =
+    (standingRules.content === null || standingRules.sha !== null) &&
+    (insights.content === null || insights.sha !== null);
+
+  if (!cacheable) {
+    return unionStandingRules(standingRules.content, insights.content);
+  }
+
+  const key = `${repo}:${standingRules.sha ?? "-"}:${insights.sha ?? "-"}`;
+  const cached = unionParseCache.get(key);
+  if (cached) {
+    logger.debug("standing-rules parse served from cache", { repo, key });
+    return { ...cached, rules: [...cached.rules], conflicts: [...cached.conflicts] };
+  }
+
+  const union = unionStandingRules(standingRules.content, insights.content);
+  unionParseCache.set(key, union);
+  return { ...union, rules: [...union.rules], conflicts: [...union.conflicts] };
 }

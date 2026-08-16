@@ -50,11 +50,24 @@ export const KNOWN_PRISM_PATHS: string[] = [
   // Support files
   "boot-test.md",
   "standing-rules.md",
+  // MCP-15 (S208 PR-S2a): the post-D-18 living docs KI-28 named. A bare-name
+  // `prism_push` of any of these wrote a ROOT-LEVEL DUPLICATE while the
+  // canonical `.prism/` copy went stale -- the exact duplication D-67 exists to
+  // make impossible, and observed live at S179 with a 6,259 B root
+  // `audit-trail.md`. prism_patch and prism_fetch already resolved them (they
+  // derive from the resolver, not from this list), so the divergence was
+  // prism_push's alone. Adding them here closes it for every write path at
+  // once and widens prism_fetch's SRV-17 allowlist to match.
+  "audit-trail.md",
+  "pending-doc-updates.md",
+  "audit-harness.md",
   // Archive files
   "session-log-archive.md",
   "known-issues-archive.md",
   "build-history-archive.md",
   "insights-archive.md",
+  "standing-rules-archive.md",
+  "pending-doc-updates-archive.md",
 ];
 
 /**

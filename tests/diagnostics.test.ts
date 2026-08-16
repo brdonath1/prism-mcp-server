@@ -113,12 +113,18 @@ vi.mock("../src/github/client.js", () => ({
 }));
 
 // Mock doc-resolver
-vi.mock("../src/utils/doc-resolver.js", () => ({
-  resolveDocPath: vi.fn(),
-  resolveDocPushPath: vi.fn(),
-  resolveDocExists: vi.fn(),
-  resolveDocFiles: vi.fn(),
-}));
+vi.mock("../src/utils/doc-resolver.js", () => {
+  const resolveDocPath = vi.fn();
+  return {
+    resolveDocPath,
+    // S208 PR-S2a: rule sources resolve through the sha/ETag-cached variant.
+    // Same read from the test's point of view, so it shares the mock.
+    resolveRuleSourceDoc: resolveDocPath,
+    resolveDocPushPath: vi.fn(),
+    resolveDocExists: vi.fn(),
+    resolveDocFiles: vi.fn(),
+  };
+});
 
 // Mock doc-guard
 vi.mock("../src/utils/doc-guard.js", () => ({
@@ -155,21 +161,24 @@ vi.mock("../src/utils/logger.js", () => ({
 }));
 
 // Mock cache
-vi.mock("../src/utils/cache.js", () => ({
-  templateCache: {
-    get: vi.fn().mockReturnValue(null),
-    set: vi.fn(),
-    invalidate: vi.fn(),
-  },
-  // SRV-86: push/patch now invalidate via this shared helper.
-  invalidateTemplateCacheOnWrite: vi.fn().mockReturnValue(false),
-  MemoryCache: vi.fn().mockImplementation(() => ({
-    get: vi.fn().mockReturnValue(null),
-    set: vi.fn(),
-    invalidate: vi.fn(),
-    clear: vi.fn(),
-  })),
-}));
+// S208 PR-S2a: partial mock. The module now also exports the rule-source and
+// boot-test-path caches (and MemoryCache is constructed at import time by
+// standing-rules-union), so an exhaustive hand-written double goes stale every
+// time a cache is added. Spread the real module and override only the two
+// surfaces these tests care about.
+vi.mock("../src/utils/cache.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/utils/cache.js")>();
+  return {
+    ...actual,
+    templateCache: {
+      get: vi.fn().mockReturnValue(null),
+      set: vi.fn(),
+      invalidate: vi.fn(),
+    },
+    // SRV-86: push/patch now invalidate via this shared helper.
+    invalidateTemplateCacheOnWrite: vi.fn().mockReturnValue(false),
+  };
+});
 
 // Mock banner (brief-439 / R8: unified generator surface)
 vi.mock("../src/utils/banner.js", () => ({

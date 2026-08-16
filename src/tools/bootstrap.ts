@@ -26,9 +26,9 @@ import { getEnvironmentLogs } from "../railway/client.js";
 import { checkStaleActive } from "../utils/stale-active-check.js";
 import { checkSynthesisObservationEvents, type ObservationCheckResult } from "../utils/synthesis-fallback-check.js";
 import { getExpectedToolSurface, POST_BOOT_TOOL_SEARCHES } from "../tool-registry.js";
-import { resolveDocPath, resolveDocPushPath } from "../utils/doc-resolver.js";
+import { resolveDocPath, resolveDocPushPath, resolveRuleSourceDoc } from "../utils/doc-resolver.js";
 import { logger } from "../utils/logger.js";
-import { templateCache } from "../utils/cache.js";
+import { bootTestPathCache, templateCache } from "../utils/cache.js";
 import {
   extractSection,
   parseNumberedList,
@@ -50,10 +50,13 @@ import {
 import { DiagnosticsCollector } from "../utils/diagnostics.js";
 import {
   extractStandingRules,
+  isArchiveBodyStub,
+  resolveArchivedRuleBodies,
   selectStandingRulesForBoot,
+  STANDING_RULES_ARCHIVE_DOC,
   type StandingRule,
 } from "../utils/standing-rules.js";
-import { unionStandingRules } from "../utils/standing-rules-union.js";
+import { unionStandingRulesCached } from "../utils/standing-rules-union.js";
 import { INTELLIGENCE_BRIEF_SPEC_SECTIONS } from "../utils/intelligence-brief-spec.js";
 import { classifySession, parsePersistedRecommendation, type SessionRecommendation } from "../utils/session-classifier.js";
 import { applyPendingDocUpdates, isPduEmpty, parseLastSynthesizedSession, type ApplyPduResult } from "../utils/apply-pdu.js";
@@ -653,21 +656,45 @@ async function fetchBehavioralRules(): Promise<{ content: string; size: number }
 /**
  * Push boot-test.md to verify the write path. Non-blocking — failure is a warning, not an error.
  */
-async function pushBootTest(
+export async function pushBootTest(
   slug: string,
   sessionNumber: number,
   timestamp: string,
   handoffVersion: number,
 ): Promise<{ success: boolean; error?: string }> {
   const content = `# Boot Test \u2014 Session ${sessionNumber}\nTimestamp: ${timestamp} CST\nProject: ${slug}\nHandoff: v${handoffVersion}\nMode: MCP\n\n<!-- EOF: boot-test.md -->\n`;
+  // MCP-16 (S208 PR-S2a): the boot-test chain was
+  // fileExists(.prism/) -> fileExists(root) -> fetchSha -> PUT, i.e. FOUR
+  // serial GitHub round trips on the critical boot path to write ~140 bytes.
+  // Where boot-test.md lives is a property of the repo layout, not of the
+  // session, so the resolved path is cached per repo and the two existence
+  // probes collapse away on every subsequent boot -- leaving sha-read + PUT.
+  // S2A-B1: ONLY a CANONICAL (DOC_ROOT-rooted) resolution is ever cached -- a
+  // legacy-root resolution is deliberately never written to the cache, so a
+  // repo still on the legacy layout always re-probes on its next boot instead
+  // of latching onto the stale root path. A push to the legacy root SUCCEEDS
+  // right up until the repo migrates its docs, so a failed-push invalidation
+  // alone would never fire to unstick it -- the self-heal previously claimed
+  // here did not actually happen. Self-healing instead happens on migration:
+  // once the canonical copy exists, the next re-probe resolves canonical and
+  // caching begins from there. A failed push against an already-cached
+  // (canonical) path still invalidates the entry as a backstop.
+  const pathCacheKey = `${slug}:boot-test.md`;
   try {
-    const bootTestPath = await resolveDocPushPath(slug, "boot-test.md");
+    const cachedPath = bootTestPathCache.get(pathCacheKey);
+    const bootTestPath = cachedPath ?? (await resolveDocPushPath(slug, "boot-test.md"));
     const result = await pushFile(slug, bootTestPath, content, `prism: S${sessionNumber} boot test`);
+    if (result.success && bootTestPath.startsWith(`${DOC_ROOT}/`)) {
+      bootTestPathCache.set(pathCacheKey, bootTestPath);
+    } else {
+      bootTestPathCache.invalidate(pathCacheKey);
+    }
     // pushFile reports HTTP failures (403 scope loss, 422, 409-after-retry)
     // as a result shape, not a throw — the write-path verification must
     // propagate that result instead of reporting verified (SRV-16).
     return { success: result.success, error: result.error };
   } catch (err) {
+    bootTestPathCache.invalidate(pathCacheKey);
     const msg = err instanceof Error ? err.message : String(err);
     return { success: false, error: msg };
   }
@@ -862,8 +889,18 @@ async function checkTriggerStaleActive(slug: string): Promise<{
  * surfaces simply skip this check rather than walking projects → envs at
  * boot.
  */
+/** MCP-17: call-site bound on the boot-time Railway observation read. 2.5s is
+ *  above the p99 of a healthy GraphQL log query and far below any tool
+ *  deadline, so a healthy Railway is never cut off and an unhealthy one never
+ *  costs the operator a boot. */
+export const RAILWAY_OBSERVATION_TIMEOUT_MS = 2_500;
+
+/** MCP-17: sentinel resolved by the observation timer (never a valid log set). */
+const OBSERVATION_TIMEOUT_SENTINEL = Symbol("bootstrap.observationTimeout");
+
 async function checkSynthesisObservation(
   slug: string,
+  diagnostics?: DiagnosticsCollector,
 ): Promise<ObservationCheckResult | null> {
   if (!RAILWAY_API_TOKEN) return null;
 
@@ -882,15 +919,47 @@ async function checkSynthesisObservation(
   // discard. Substring filter on "SYNTHESIS_" alone would miss the
   // CS3_QUALITY_* codes; Railway's filter syntax does not OR multiple
   // prefixes. limit:200 amply covers a 4h window even on a busy fleet.
+  // MCP-17 (S208 PR-S2a): bound the Railway GraphQL read at the CALL SITE.
+  // getEnvironmentLogs carries no deadline of its own, and this call sits
+  // inside the boot fan-out that every session waits on -- a slow or wedged
+  // Railway API turned an OPTIONAL diagnostic into boot latency, up to the
+  // whole bootstrap deadline. The race is deliberately here and not in
+  // src/railway/client.ts: every other Railway caller is an explicit operator
+  // tool where a long read is expected and correct; only this one is a
+  // best-effort boot extra. The timer is unref'd (never holds the process
+  // open) and cleared in `finally`; the loser's rejection is swallowed so a
+  // late Railway failure cannot surface as an unhandled rejection.
   let logs;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const logsPromise = getEnvironmentLogs(envId, 200, "@level:warn");
+  const timeoutPromise = new Promise<typeof OBSERVATION_TIMEOUT_SENTINEL>((resolve) => {
+    timer = setTimeout(() => resolve(OBSERVATION_TIMEOUT_SENTINEL), RAILWAY_OBSERVATION_TIMEOUT_MS);
+    timer.unref?.();
+  });
   try {
-    logs = await getEnvironmentLogs(envId, 200, "@level:warn");
+    const raced = await Promise.race([logsPromise, timeoutPromise]);
+    if (raced === OBSERVATION_TIMEOUT_SENTINEL) {
+      logsPromise.catch(() => {});
+      logger.info("synthesis observation check timed out", {
+        slug,
+        timeoutMs: RAILWAY_OBSERVATION_TIMEOUT_MS,
+      });
+      diagnostics?.info(
+        "SYNTHESIS_OBSERVATION_TIMEOUT",
+        `Railway observation check exceeded ${RAILWAY_OBSERVATION_TIMEOUT_MS}ms and was abandoned - boot proceeded without it. Synthesis observation events (INS-242) are not reported for this boot.`,
+        { slug, timeout_ms: RAILWAY_OBSERVATION_TIMEOUT_MS },
+      );
+      return null;
+    }
+    logs = raced;
   } catch (err) {
     logger.debug("synthesis observation fetch skipped", {
       slug,
       error: err instanceof Error ? err.message : String(err),
     });
     return null;
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 
   return checkSynthesisObservationEvents(
@@ -1087,6 +1156,26 @@ export function registerBootstrap(server: McpServer): void {
 
         let bytesDelivered = 0;
         let filesFetched = 0;
+
+        // MCP-8 (S208 PR-S2a): LAUNCH the wave-3 document reads here, at the
+        // first instant `resolvedSlug` is known, instead of after the boot-test
+        // /prefetch wave has been awaited. These four reads depend on NOTHING
+        // the intervening code produces -- they only need the slug -- so they
+        // spent the whole core-fetch + boot-test + prefetch window idle for no
+        // reason. They are still AWAITED exactly where wave 3 sat before, and
+        // `Promise.allSettled` never rejects, so a failure here cannot become
+        // an unhandled rejection even when the core fetch throws first. Pure
+        // reordering: same reads, same results, same payload.
+        //
+        // insights.md and standing-rules.md go through the sha/ETag-keyed rule
+        // source cache (MCP-1) -- a 304 serves the cached body, which GitHub
+        // has just certified byte-identical to what a 200 would have sent.
+        const waveThreePromise = Promise.allSettled([
+          resolveDocPath(resolvedSlug, "intelligence-brief.md"),
+          resolveRuleSourceDoc(resolvedSlug, "insights.md"),
+          resolveDocPath(resolvedSlug, "pending-doc-updates.md"),
+          resolveRuleSourceDoc(resolvedSlug, "standing-rules.md"),
+        ]);
 
         // 1. Fetch core files in parallel: handoff, decisions, and cached behavioral rules
         progress.stage = "core_fetch";
@@ -1321,7 +1410,7 @@ export function registerBootstrap(server: McpServer): void {
         const bootTestPromise = pushBootTest(resolvedSlug, sessionNumber, sessionTimestamp, handoffVersion);
         const triggerEnrollmentPromise = ensureTriggerMarker(resolvedSlug);
         const staleActivePromise = checkTriggerStaleActive(resolvedSlug);
-        const observationPromise = checkSynthesisObservation(resolvedSlug);
+        const observationPromise = checkSynthesisObservation(resolvedSlug, diagnostics);
 
         const prefetchedDocuments: Array<{ file: string; size_bytes: number; summary: string }> = [];
         let prefetchPromise: Promise<void> = Promise.resolve();
@@ -1536,13 +1625,11 @@ export function registerBootstrap(server: McpServer): void {
         let briefFullContent: string | null = null;
         let insightsContent: string | null = null;
 
+        //    MCP-8: these four were LAUNCHED at the top of the handler (right
+        //    after the slug resolved) and are merely awaited here, where the
+        //    original sequential wave sat.
         const [briefOutcome, insightsOutcome, pendingUpdatesOutcome, standingRulesFileOutcome] =
-          await Promise.allSettled([
-            resolveDocPath(resolvedSlug, "intelligence-brief.md"),
-            resolveDocPath(resolvedSlug, "insights.md"),
-            resolveDocPath(resolvedSlug, "pending-doc-updates.md"),
-            resolveDocPath(resolvedSlug, "standing-rules.md"),
-          ]);
+          await waveThreePromise;
         // MCP-13: wave-5 living docs (pending-doc-updates.md and
         // standing-rules.md are not in the mandatory ten).
         noteLivingDoc("intelligence-brief.md", briefOutcome.status === "fulfilled");
@@ -1714,7 +1801,23 @@ export function registerBootstrap(server: McpServer): void {
           standingRulesFileOutcome.status === "fulfilled"
             ? standingRulesFileOutcome.value.content
             : null;
-        const rulesUnion = unionStandingRules(standingRulesFileContent, insightsContent);
+        // MCP-1: the parse is memoized on (repo, registry sha, insights sha).
+        // Same union, same order, same conflicts - a different document is a
+        // different sha is a different key, so a stale parse is unreachable.
+        const rulesUnion = unionStandingRulesCached(
+          resolvedSlug,
+          {
+            content: standingRulesFileContent,
+            sha:
+              standingRulesFileOutcome.status === "fulfilled"
+                ? standingRulesFileOutcome.value.sha
+                : null,
+          },
+          {
+            content: insightsContent,
+            sha: insightsOutcome.status === "fulfilled" ? insightsOutcome.value.sha : null,
+          },
+        );
         if (rulesUnion.conflicts.length > 0) {
           diagnostics.warn(
             "STANDING_RULE_SOURCE_CONFLICT",
@@ -1735,7 +1838,48 @@ export function registerBootstrap(server: McpServer): void {
         // INDEX (IDs + titles + tier + topics, no bodies) in
         // `standing_rules_index` so the session knows what prism_load_rules
         // can pull on demand.
-        const standingRules = selectStandingRulesForBoot(allStandingRules);
+        let standingRules = selectStandingRulesForBoot(allStandingRules);
+
+        // S208 PR-S2a item 8: body-in-archive stubs. A Tier A rule whose whole
+        // body is a `Body: standing-rules-archive.md` pointer would otherwise
+        // ship the pointer instead of the rule, so the archive source is read
+        // and the real bodies spliced in. Scoped to the rules whose bodies
+        // actually SHIP (Tier A) and skipped entirely when none is a stub, so
+        // no boot pays a read it does not need -- which today is every boot:
+        // nothing mints stubs until PR-P2 performs the body moves. Tier B/C
+        // stubs are resolved on demand by prism_load_rules, not here.
+        if (standingRules.some(isArchiveBodyStub)) {
+          let archiveContent: string | null = null;
+          try {
+            archiveContent = (
+              await resolveRuleSourceDoc(resolvedSlug, STANDING_RULES_ARCHIVE_DOC)
+            ).content;
+          } catch (archiveErr) {
+            const archiveMsg =
+              archiveErr instanceof Error ? archiveErr.message : String(archiveErr);
+            diagnostics.warn(
+              "STANDING_RULES_ARCHIVE_UNAVAILABLE",
+              `${STANDING_RULES_ARCHIVE_DOC} could not be loaded for project "${resolvedSlug}": ${archiveMsg}. Tier A rules whose body lives in the archive are delivered as pointers.`,
+              { project: resolvedSlug, error: archiveMsg },
+            );
+          }
+          const archiveResolution = resolveArchivedRuleBodies(standingRules, archiveContent);
+          standingRules = archiveResolution.rules;
+          if (archiveResolution.unresolved.length > 0) {
+            diagnostics.warn(
+              "STANDING_RULE_ARCHIVE_BODY_MISSING",
+              `${archiveResolution.unresolved.length} boot-delivered rule(s) point at ${STANDING_RULES_ARCHIVE_DOC} but no matching body was found there: ${archiveResolution.unresolved.join(", ")}.`,
+              { ids: archiveResolution.unresolved },
+            );
+          }
+          if (archiveResolution.resolved.length > 0) {
+            diagnostics.info(
+              "STANDING_RULE_ARCHIVE_BODY_RESOLVED",
+              `${archiveResolution.resolved.length} boot-delivered rule body/bodies resolved from ${STANDING_RULES_ARCHIVE_DOC}: ${archiveResolution.resolved.join(", ")}.`,
+              { ids: archiveResolution.resolved },
+            );
+          }
+        }
 
         // D-156 / D-253: Tier accounting for diagnostics + log. Tier B and
         // Tier C are both indexed (bodies excluded); only Tier A bodies ship.

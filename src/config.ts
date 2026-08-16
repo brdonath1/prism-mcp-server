@@ -56,8 +56,13 @@ export const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
  *  contracts + trim annotation); 4.13.1 is the S208 PR-S1 finalize+banner
  *  reliability bundle (banner fields on every bootstrap/finalize exit,
  *  network-safe finalization banner, bounded audit paths, measured boot doc
- *  count, render-failure diagnostics, FINALIZE_BANNER knob). */
-export const SERVER_VERSION = "4.13.1";
+ *  count, render-failure diagnostics, FINALIZE_BANNER knob); 4.13.2 is the
+ *  S208 PR-S2a boot+load latency bundle (sha/ETag-conditional rule-source
+ *  cache, sha-keyed parse cache, prism_load_rules deadline, wave-3 hoist,
+ *  boot-test path cache, bounded Railway observation race, total-elapsed
+ *  retry budget, KI-28 doc-guard paths, archive body resolution) -- delivered
+ *  bootstrap payload bytes are UNCHANGED by that release. */
+export const SERVER_VERSION = "4.13.2";
 
 /** MCP client timeout is ~60s. All server-side operations must complete within 50s
  *  to leave 10s buffer for transport overhead. This constrains synthesis, draft,
@@ -444,11 +449,29 @@ export const BOOTSTRAP_WALL_CLOCK_DEADLINE_MS =
   parseInt(process.env.BOOTSTRAP_WALL_CLOCK_DEADLINE_MS ?? `${MCP_SAFE_TIMEOUT}`, 10) ||
   MCP_SAFE_TIMEOUT;
 
+/** Tool-level wall-clock deadline for prism_load_rules (S208 PR-S2a / MCP-2).
+ *  prism_load_rules fans out to two rule sources whose bodies are the largest
+ *  documents PRISM reads (prism's standing-rules.md is ~320KB); a stalled
+ *  fetch on either held the MCP client to the ~60s transport timeout with no
+ *  structured error, the same gap R23 closed for prism_bootstrap. Default
+ *  MCP_SAFE_TIMEOUT so the structured DEADLINE response still reaches the
+ *  client; same sentinel/race pattern as PUSH_WALL_CLOCK_DEADLINE_MS. */
+export const LOAD_RULES_WALL_CLOCK_DEADLINE_MS =
+  parseInt(process.env.LOAD_RULES_WALL_CLOCK_DEADLINE_MS ?? `${MCP_SAFE_TIMEOUT}`, 10) ||
+  MCP_SAFE_TIMEOUT;
+
 /** Total elapsed-time budget (ms) across ALL retries inside fetchWithRetry
  *  (S203 audit R24 / F-C1-8). Bounds worst-case honored Retry-After chains:
  *  without it, three 60s Retry-After responses could hold a caller ~300s —
  *  far past every tool deadline. Once the budget is exhausted the client
- *  stops retrying and surfaces the last response/error. */
+ *  stops retrying and surfaces the last response/error.
+ *
+ *  MCP-14 (S208 PR-S2a): the budget now bounds TOTAL elapsed attempt time, not
+ *  only the backoff sleeps. No retry starts once the remaining budget is spent,
+ *  and each retry's per-request timeout is clamped to what is left, so a chain
+ *  of slow-but-not-timed-out attempts can no longer overrun the budget. The
+ *  FIRST attempt keeps the full per-request timeout, so a single-attempt call
+ *  behaves exactly as before. */
 export const GITHUB_RETRY_BUDGET_MS =
   parseInt(process.env.GITHUB_RETRY_BUDGET_MS ?? "20000", 10) || 20_000;
 
