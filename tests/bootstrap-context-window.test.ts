@@ -195,7 +195,7 @@ describe("backward compatibility — params absent", () => {
     "context_window", // ← the only brief-s5 addition
   ];
 
-  it("adds exactly one top-level key and removes none", async () => {
+  it("adds exactly one top-level key and, as of the 4.14.2 default, omits the legacy standing_rules_index", async () => {
     const r = await boot();
     expect(Object.keys(r).sort()).toEqual(EXPECTED_KEYS.sort());
   });

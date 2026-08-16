@@ -1886,9 +1886,11 @@ export function registerBootstrap(server: McpServer): void {
         // ENTIRE response was offloaded to a sandbox file and zero bytes
         // reached the session. Tier B bodies are now lazy-loaded by topic via
         // prism_load_rules (D-156 §3.5 restored). Tier B + Tier C ship as an
-        // INDEX (IDs + titles + tier + topics, no bodies) in
-        // `standing_rules_index` so the session knows what prism_load_rules
-        // can pull on demand.
+        // INDEX (ids + truncated titles + topics, no bodies) in
+        // `session_state_manifest.rules.index` (the default as of 4.14.2's
+        // S2c flip; the legacy `standing_rules_index` ships only under the
+        // BOOT_INDEX_MODE=full rollback) so the session knows what
+        // prism_load_rules can pull on demand.
         let standingRules = selectStandingRulesForBoot(allStandingRules);
 
         // S208 PR-S2a item 8: body-in-archive stubs. A Tier A rule whose whole
@@ -2168,7 +2170,7 @@ export function registerBootstrap(server: McpServer): void {
         }
 
         // brief-s202b T1 (P-1): session_state_manifest + BOOT_INDEX_MODE.
-        // `full` (default) ships the legacy standing_rules_index unchanged PLUS
+        // `compact` (default as of 4.14.2, S2c flip) omits the legacy standing_rules_index and ships the manifest as the single index; `full` (env-only rollback) ships the legacy standing_rules_index unchanged PLUS
         // the manifest — an additive release so the template can learn to
         // consume the manifest before the legacy index is dropped (SRV-109
         // two-phase field-removal pattern). `compact` ships the manifest ONLY.

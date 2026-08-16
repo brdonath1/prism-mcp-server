@@ -10,10 +10,11 @@
  *   3. `guardrails` cap raised 10 → 20. (R7-b, unchanged.)
  *   4. QW-4 prefetch hard cap of 2 removed. (R7-b, unchanged.)
  *   5. Standing rules: Tier A bodies ONLY at boot (D-253 §Change 1 — Tier B
- *      bodies lazy-load via prism_load_rules), plus a Tier B+C index
- *      (`standing_rules_index`, {id,title,tier,topics}) and the deprecated
- *      C-only `standing_rules_tier_c_index` alias, sourced from the R2-B
- *      union read (standing-rules.md ∪ insights.md).
+ *      bodies lazy-load via prism_load_rules), plus a Tier B+C index —
+ *      `session_state_manifest.rules.index` at the 4.14.2 default;
+ *      the legacy `standing_rules_index` {id,title,tier,topics} shape is
+ *      exercised here under an explicit BOOT_INDEX_MODE=full — sourced
+ *      from the R2-B union read (standing-rules.md ∪ insights.md).
  *
  * Also covers: D-253 §Change 2 in-response oversize tripwire (`response_bytes`
  * + BOOTSTRAP_OVERSIZE), the compactor's spec coupling, and R-intel-SLO — an
