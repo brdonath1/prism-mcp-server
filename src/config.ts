@@ -69,8 +69,16 @@ export const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
  *  contract (single masthead via BOOT_MASTHEAD, compacted
  *  session_state_manifest.rules) -- the one release in the S208 server chain
  *  that deliberately CHANGES delivered bootstrap bytes, by design and by
- *  measurement (-6,328 B per boot on the prism corpus: 103,690 -> 97,362). */
-export const SERVER_VERSION = "4.14.1";
+ *  measurement (-6,328 B per boot on the prism corpus: 103,690 -> 97,362);
+ *  4.14.2 is the S208 PR-S2c BOOT_INDEX_MODE default flip (D-278 two-phase
+ *  completion, plan v6) -- `compact` becomes the default boot rules-index
+ *  mode, dropping the legacy standing_rules_index (duplicated by
+ *  session_state_manifest.rules.index since 4.13.0) from every default boot:
+ *  measured -20,908 B per boot on the prism corpus (~-5,974 tokens
+ *  fleet-wide). Rollback: BOOT_INDEX_MODE=full (env-only). Merge for this
+ *  release is soak-gated on one post-S2b boot observation (see
+ *  CLAUDE.md:96). */
+export const SERVER_VERSION = "4.14.2";
 
 /** MCP client timeout is ~60s. All server-side operations must complete within 50s
  *  to leave 10s buffer for transport overhead. This constrains synthesis, draft,
@@ -147,12 +155,16 @@ export const BOOTSTRAP_OVERSIZE_ERROR_BYTES =
  * ------------------------------------------------------------------------ */
 
 /** T1 (P-1): boot rules-index delivery mode.
- *  `full` (default) ships today's standing_rules_index unchanged PLUS the new
- *  session_state_manifest (additive release — SRV-109 two-phase);
- *  `compact` ships the manifest ONLY (legacy index omitted; ≈ −20.9KB on the
- *  S208-measured prism baseline). Rollback: BOOT_INDEX_MODE=full (env-only). */
+ *  `compact` (default as of S208 PR-S2c, D-278 two-phase completion) ships the
+ *  session_state_manifest ONLY — the legacy standing_rules_index is omitted
+ *  (≈ −20.9KB on the S208-measured prism baseline: drops the duplicated
+ *  20,908 B standing_rules_index from every boot). `full` ships today's
+ *  legacy standing_rules_index PLUS the manifest (the S202 additive shape —
+ *  SRV-109 two-phase, phase one). The phase-one `full` default shipped in
+ *  4.13.0 and stayed in place through a full soak cycle before this flip.
+ *  Rollback: BOOT_INDEX_MODE=full (env-only). */
 export function resolveBootIndexMode(env: NodeJS.ProcessEnv = process.env): "full" | "compact" {
-  return env.BOOT_INDEX_MODE?.trim().toLowerCase() === "compact" ? "compact" : "full";
+  return env.BOOT_INDEX_MODE?.trim().toLowerCase() === "full" ? "full" : "compact";
 }
 
 /** T3 (P-3): intelligence-brief boot compaction mode.

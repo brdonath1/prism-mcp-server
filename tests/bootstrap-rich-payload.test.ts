@@ -10,10 +10,11 @@
  *   3. `guardrails` cap raised 10 → 20. (R7-b, unchanged.)
  *   4. QW-4 prefetch hard cap of 2 removed. (R7-b, unchanged.)
  *   5. Standing rules: Tier A bodies ONLY at boot (D-253 §Change 1 — Tier B
- *      bodies lazy-load via prism_load_rules), plus a Tier B+C index
- *      (`standing_rules_index`, {id,title,tier,topics}) and the deprecated
- *      C-only `standing_rules_tier_c_index` alias, sourced from the R2-B
- *      union read (standing-rules.md ∪ insights.md).
+ *      bodies lazy-load via prism_load_rules), plus a Tier B+C index —
+ *      `session_state_manifest.rules.index` at the 4.14.2 default;
+ *      the legacy `standing_rules_index` {id,title,tier,topics} shape is
+ *      exercised here under an explicit BOOT_INDEX_MODE=full — sourced
+ *      from the R2-B union read (standing-rules.md ∪ insights.md).
  *
  * Also covers: D-253 §Change 2 in-response oversize tripwire (`response_bytes`
  * + BOOTSTRAP_OVERSIZE), the compactor's spec coupling, and R-intel-SLO — an
@@ -552,42 +553,55 @@ describe("D-253: standing-rules delivery — Tier A bodies only, Tier B+C indexe
   });
 
   it("standing_rules_index lists Tier B then Tier C entries with id+title+tier+topics (no bodies)", async () => {
-    const handler = await setupBootstrap({
-      brief: FULL_BRIEF,
-      insights: INSIGHTS_WITH_TIER_A,
-      standingRules: REGISTRY_B_AND_C,
-    });
-    const parsed = await boot(handler);
+    // S208 PR-S2c: the legacy standing_rules_index shape this test pins is
+    // now the explicit BOOT_INDEX_MODE=full rollback path, not the default.
+    process.env.BOOT_INDEX_MODE = "full";
+    try {
+      const handler = await setupBootstrap({
+        brief: FULL_BRIEF,
+        insights: INSIGHTS_WITH_TIER_A,
+        standingRules: REGISTRY_B_AND_C,
+      });
+      const parsed = await boot(handler);
 
-    // Tier B first (source order), then Tier C — union order from the registry.
-    expect(parsed.standing_rules_index).toEqual([
-      { id: "INS-201", title: "launchd recovery", tier: "B", topics: ["launchd"] },
-      { id: "INS-202", title: "untopiced B rule", tier: "B", topics: [] },
-      { id: "INS-203", title: "deep audit walkthrough", tier: "C", topics: ["audit"] },
-      { id: "INS-204", title: "cost reconciliation", tier: "C", topics: ["cost"] },
-    ]);
-    // The index carries NO rule bodies (B or C).
-    const raw = JSON.stringify(parsed);
-    expect(raw).not.toContain("Reload the plist.");
-    expect(raw).not.toContain("Long reference body that must NOT ship at boot");
+      // Tier B first (source order), then Tier C — union order from the registry.
+      expect(parsed.standing_rules_index).toEqual([
+        { id: "INS-201", title: "launchd recovery", tier: "B", topics: ["launchd"] },
+        { id: "INS-202", title: "untopiced B rule", tier: "B", topics: [] },
+        { id: "INS-203", title: "deep audit walkthrough", tier: "C", topics: ["audit"] },
+        { id: "INS-204", title: "cost reconciliation", tier: "C", topics: ["cost"] },
+      ]);
+      // The index carries NO rule bodies (B or C).
+      const raw = JSON.stringify(parsed);
+      expect(raw).not.toContain("Reload the plist.");
+      expect(raw).not.toContain("Long reference body that must NOT ship at boot");
+    } finally {
+      delete process.env.BOOT_INDEX_MODE;
+    }
   });
 
   it("SRV-109: the deprecated standing_rules_tier_c_index alias is removed; Tier C is reachable via standing_rules_index", async () => {
-    const handler = await setupBootstrap({
-      brief: FULL_BRIEF,
-      insights: INSIGHTS_WITH_TIER_A,
-      standingRules: REGISTRY_B_AND_C,
-    });
-    const parsed = await boot(handler);
+    // S208 PR-S2c: explicit full mode — this test pins the legacy field shape.
+    process.env.BOOT_INDEX_MODE = "full";
+    try {
+      const handler = await setupBootstrap({
+        brief: FULL_BRIEF,
+        insights: INSIGHTS_WITH_TIER_A,
+        standingRules: REGISTRY_B_AND_C,
+      });
+      const parsed = await boot(handler);
 
-    // brief-465 / SRV-109: the alias duplicated ~2.8KB/boot of data already in
-    // standing_rules_index with zero consumers — removed.
-    expect(parsed.standing_rules_tier_c_index).toBeUndefined();
-    // Tier C entries still ship in the canonical index ({id,title,tier,topics}).
-    const tierCInIndex = (parsed.standing_rules_index as Array<{ id: string; tier: string }>).filter(
-      e => e.tier === "C",
-    );
-    expect(tierCInIndex.map(e => e.id)).toEqual(["INS-203", "INS-204"]);
+      // brief-465 / SRV-109: the alias duplicated ~2.8KB/boot of data already in
+      // standing_rules_index with zero consumers — removed.
+      expect(parsed.standing_rules_tier_c_index).toBeUndefined();
+      // Tier C entries still ship in the canonical index ({id,title,tier,topics}).
+      const tierCInIndex = (parsed.standing_rules_index as Array<{ id: string; tier: string }>).filter(
+        e => e.tier === "C",
+      );
+      expect(tierCInIndex.map(e => e.id)).toEqual(["INS-203", "INS-204"]);
+    } finally {
+      delete process.env.BOOT_INDEX_MODE;
+    }
   });
 
   it("SRV-109: the alias stays absent when no Tier C rules exist", async () => {

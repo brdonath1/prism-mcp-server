@@ -117,12 +117,27 @@ beforeEach(() => {
 });
 
 describe("M-012 SRV-109 — deprecated standing_rules_tier_c_index alias removed", () => {
-  it("the alias field is absent from the bootstrap response", async () => {
+  it("the alias field is absent from the bootstrap response; full mode keeps the legacy index", async () => {
+    process.env.BOOT_INDEX_MODE = "full";
+    try {
+      const result = await bootstrapHandler({ project_slug: "prism", opening_message: "Begin" });
+      const parsed = JSON.parse(result.content[0].text);
+      expect(parsed.standing_rules_tier_c_index).toBeUndefined();
+      // The replacement field stays — sessions read prism_load_rules off this.
+      expect(parsed.standing_rules_index).toBeDefined();
+    } finally {
+      delete process.env.BOOT_INDEX_MODE;
+    }
+  });
+
+  it("S208 PR-S2c: default env => standing_rules_index ABSENT, session_state_manifest.rules.index present", async () => {
+    delete process.env.BOOT_INDEX_MODE;
     const result = await bootstrapHandler({ project_slug: "prism", opening_message: "Begin" });
     const parsed = JSON.parse(result.content[0].text);
     expect(parsed.standing_rules_tier_c_index).toBeUndefined();
-    // The replacement field stays — sessions read prism_load_rules off this.
-    expect(parsed.standing_rules_index).toBeDefined();
+    expect("standing_rules_index" in parsed).toBe(false);
+    expect(parsed.session_state_manifest).toBeDefined();
+    expect(Array.isArray(parsed.session_state_manifest.rules.index)).toBe(true);
   });
 });
 
@@ -209,8 +224,11 @@ describe("M-012 FIDELITY GUARD — bootstrap round-trip is field-complete on the
     // Decisions surfaces:
     expect(parsed.recent_decisions.length).toBeGreaterThan(0);
     expect(parsed.guardrails.length).toBeGreaterThan(0);
-    // Standing-rules index (the load-by-topic contract) — required, NOT dropped:
-    expect(parsed.standing_rules_index).toBeDefined();
+    // Standing-rules index (the load-by-topic contract) — required, NOT
+    // dropped; under the S208 PR-S2c default (compact) it lives on the
+    // manifest rather than the legacy top-level field.
+    expect("standing_rules_index" in parsed).toBe(false);
+    expect(Array.isArray(parsed.session_state_manifest.rules.index)).toBe(true);
     expect(parsed.standing_rules).toBeDefined();
     // Behavioral template + banner:
     expect(parsed.behavioral_rules).toBeTruthy();
