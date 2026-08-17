@@ -32,6 +32,12 @@ describe("SRV-90 — SERVER_VERSION discipline", () => {
     expect(pkg.version).toBe(SERVER_VERSION);
   });
 
+  it("matches package-lock.json version (both the root and packages[\"\"] fields -- closes the drift class that recurred at 4.12.0 and 4.14.1)", () => {
+    const lock = JSON.parse(readFileSync("package-lock.json", "utf-8"));
+    expect(lock.version).toBe(SERVER_VERSION);
+    expect(lock.packages?.[""]?.version).toBe(SERVER_VERSION);
+  });
+
   it("CLAUDE.md architecture banner cites the current SERVER_VERSION", () => {
     expect(claudeMd).toContain(`v${SERVER_VERSION}`);
   });
