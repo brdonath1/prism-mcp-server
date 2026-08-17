@@ -138,6 +138,10 @@ describe("synthesize() — openrouter mechanical-tier leg", () => {
       expect(result.content).toBe(content);
       expect(result.model).toBe("z-ai/glm-5.2");
       expect(result.transport).toBe("openai_compatible_chat");
+      // baselines followup served-by-footer (2026-08-16 S209): mutation pin
+      // on the synthesize() success re-wrap -- fails if that assignment is
+      // deleted.
+      expect(result.provider).toBe("openrouter");
     }
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(String(fetchMock.mock.calls[0][0])).toBe("https://openrouter.ai/api/v1/chat/completions");

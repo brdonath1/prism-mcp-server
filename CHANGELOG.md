@@ -7,6 +7,56 @@ by `src/utils/banner.ts` (`BANNER_SPEC_VERSION`) plus the prism-framework
 templates; [docs/banner-spec.md](docs/banner-spec.md) is historical reference.
 Banner changes add an entry here.
 
+## [4.14.5] - 2026-08-16 (S209: served-by provider/model/transport stamp on synthesis artifacts)
+
+**Baselines followup `served-by-footer`, registered in
+`docs/prisma-performance-baselines.json`.** Synthesis artifacts
+(intelligence-brief.md, pending-doc-updates.md) stamped their INPUTS (T9
+manifest, T9c truncation footer) and a human-friendly model display line
+(SRV-89), but never the serving provider/model/transport -- so the
+per-(model,transport) rows in the baselines file could not be verified from
+the committed artifacts themselves.
+
+### Added
+- **`appendServedByFooter()`** (`src/ai/synthesize.ts`): server-stamped
+  `> Served by: {provider}/{model} via {transport}` line, same
+  deterministic-stamp family as `enforceLastSynthesizedHeader` /
+  `enforceProvenanceHeader` / `appendTruncationProvenanceFooter`. Degrades to
+  `> Served by: {provider}/{model}` (no transport clause) on the rare
+  success that somehow lacks a transport; strips any stale line and stamps
+  nothing when provider or model is unknown (never a half claim). Called
+  immediately after the T9c truncation footer at both stamp sites --
+  intelligence-brief.md and pending-doc-updates.md -- landing between the
+  T9c footer and the EOF sentinel when both stamp. NOT called on the draft
+  lane (it composes canonical .prism docs the server must not decorate).
+- **`SynthesisResult.provider`** (`src/ai/client.ts`): the serving provider
+  label, set by `synthesize()`'s success re-wrap from the SAME
+  `providerForTransport()` call the LLM_CALL telemetry line already uses --
+  so the served-by stamp and the telemetry line can never disagree. The
+  re-wrap sets ONLY `provider`; `transport` is untouched, and the legacy
+  no-callSite contract (`result.transport` undefined) is unchanged.
+
+### Behavior change
+- **pending-doc-updates.md gains its first model-attribution line.** The PDU
+  artifact has never carried `enforceProvenanceHeader`, so the served-by
+  line is the first place a pushed PDU states which model produced it.
+  Intended and desirable.
+
+### Tests
+- Unit pins for `appendServedByFooter` (`tests/synthesis-output-guards.test.ts`):
+  fresh stamp, replace-stale, strip-when-provider-unknown,
+  strip-when-model-unknown, transport-less degraded shape, placement above
+  the EOF sentinel (with the no-sentinel edge), and coexistence/line-order
+  with the T9c truncation footer.
+- Pipeline pins (`tests/synthesis-input-budget.test.ts`): the pushed content
+  of both `generateIntelligenceBrief` and `generatePendingDocUpdates` is
+  asserted to carry the exact served-by line, including the T9c-coexistence
+  case on oversized-input fixtures.
+- Mutation-criterion pins on the `synthesize()` success re-wrap
+  (`src/ai/__tests__/client-routing.test.ts`,
+  `src/ai/__tests__/client-openrouter.test.ts`): fail if the re-wrap
+  assignment is deleted.
+
 ## [4.14.4] - 2026-08-17 (S208: cerebras mechanical-cost tier + SRV-90 package-lock pin -- PR #126 activation-gate follow-ups)
 
 **The two prescribed follow-ups from the PR #126 review, closed before

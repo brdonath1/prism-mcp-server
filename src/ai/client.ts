@@ -45,6 +45,14 @@ export interface SynthesisResult {
   input_tokens: number;
   output_tokens: number;
   model: string;
+  /** baselines followup served-by-footer (2026-08-16 S209): serving
+   *  provider label, same derivation as the LLM_CALL telemetry line
+   *  (providerForTransport) -- so the served-by stamp and the LLM_CALL line
+   *  can never disagree. Optional for the same reason as `transport`: set
+   *  by synthesize()'s success re-wrap, so it is present on every result
+   *  that field went through (all callSite-bearing calls, and legacy
+   *  no-callSite calls too -- only the field itself is new there). */
+  provider?: string;
   /** brief-417: which transport produced this result. Optional because legacy
    *  callers (no callSite passed to synthesize) don't always need to know. */
   transport?:
@@ -246,7 +254,17 @@ export async function synthesize(
     project_slug: projectSlug,
   });
 
-  return outcome;
+  // baselines followup served-by-footer (2026-08-16 S209): re-wrap the
+  // outcome to carry `provider`, derived from the SAME providerForTransport
+  // call the LLM_CALL line above just used (single source -- the served-by
+  // stamp and the telemetry line can never disagree). ONLY `provider` is
+  // set here; `transport` is left untouched -- every callSite-bearing
+  // success path already sets it (provider-adapter outcomes carry it;
+  // cc_subprocess and messages_api[_fallback] set it explicitly with a
+  // callSite present), and the legacy no-callSite contract
+  // (result.transport undefined, pinned by
+  // src/ai/__tests__/client-routing.test.ts) is deliberately preserved.
+  return outcome.success ? { ...outcome, provider: providerForTransport(transport, chain.provider) } : outcome;
 }
 
 /** Mutable per-call record of the serving chain, for the LLM_CALL line. */

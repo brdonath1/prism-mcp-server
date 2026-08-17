@@ -162,6 +162,10 @@ describe("synthesize() — per-call-site routing", () => {
     expect(passedBody.model).toBe(SYNTHESIS_MODEL_ID); // SYNTHESIS_MODEL default
     if (result.success) {
       expect(result.transport).toBe("messages_api");
+      // baselines followup served-by-footer (2026-08-16 S209): mutation pin
+      // on the synthesize() success re-wrap -- fails if that assignment is
+      // deleted.
+      expect(result.provider).toBe("anthropic");
     }
   });
 
