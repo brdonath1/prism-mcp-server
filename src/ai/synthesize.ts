@@ -234,15 +234,18 @@ export async function assembleSynthesisBundle(
 /**
  * brief-s202b T9c (D-278): server-stamped truncation provenance footer.
  * When any synthesis input doc was truncated, append
- * `> Synthesized from: glossary.md [trimmed 82.0KB→21.0KB], …` immediately
- * above the EOF sentinel — same deterministic server-stamp pattern as the
+ * `> Synthesized from: glossary.md [trimmed 82.0KB→21.0KB], ...` above
+ * the EOF sentinel -- same deterministic server-stamp pattern as the
  * staleness/provenance headers (never model-authored). Replaces any existing
- * footer line (re-runs, or a model echoing one). No truncated inputs → the
+ * footer line (re-runs, or a model echoing one). No truncated inputs -> the
  * content is returned unchanged (no footer).
- * baselines followup served-by-footer (2026-08-16 S209): appendServedByFooter
- * is called immediately after this function at both stamp sites, so when a
- * served-by line also stamps it lands between this footer and the EOF
- * sentinel, not immediately above the sentinel itself.
+ * Placement (tightened, PR #128 review-prescribed follow-up): this footer
+ * sits immediately above the EOF sentinel ONLY when no served-by line also
+ * stamps that run. baselines followup served-by-footer (2026-08-16 S209):
+ * appendServedByFooter runs immediately after this function at both stamp
+ * sites and inserts below whatever this function left in place, so when
+ * both stamp, this T9c footer sits immediately above the served-by line,
+ * and the served-by line sits immediately above the EOF sentinel.
  */
 export function appendTruncationProvenanceFooter(
   content: string,

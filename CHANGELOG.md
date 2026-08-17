@@ -7,7 +7,73 @@ by `src/utils/banner.ts` (`BANNER_SPEC_VERSION`) plus the prism-framework
 templates; [docs/banner-spec.md](docs/banner-spec.md) is historical reference.
 Banner changes add an entry here.
 
-## [4.14.5] - 2026-08-16 (S209: served-by provider/model/transport stamp on synthesis artifacts)
+## [4.14.6] - 2026-08-17 (S209: synthesize guidance refresh + T9c docstring reconciliation -- v3.4 ruling)
+
+**Plan v3.4 Change B.** `prism_synthesize`'s background-dispatch
+`status_hint` still asserted Haiku-era durations as current ("brief ~1-2
+min, pending-doc-updates up to ~8 min") -- stale by roughly two orders of
+magnitude on the speed-tier lane, and wrong in the other direction if a lane
+reverts to anthropic. Also reconciles the T9c docstring's placement
+sentences and normalizes the CHANGELOG dates. An earlier draft of this PR
+also attempted header duplicate-strip parity; two independent implementation
+reviews of PR #129 found the fix unsafe and it was descoped (see below).
+
+### Changed
+- **`status_hint` (`src/tools/synthesize.ts`):** no longer asserts any
+  duration as universal or current. Neutral, self-contained wording:
+  duration varies with the routed synthesis provider/model, so no fixed
+  estimate is given. Retains the `mode=status` completion-check instruction
+  unchanged. Carries no concrete numbers and no cross-repo pointer -- an
+  earlier draft pointed at the prism repo's performance-baselines doc, but
+  both PR #129 implementation reviews found that pointer unactionable for a
+  generic MCP consumer and a leak of operator-local repo layout, so it is
+  dropped.
+- **Historical header comment (`src/tools/synthesize.ts`, S172
+  fire-and-forget rationale):** gains a "(Haiku-era measurement)"
+  clarifier; no longer claims the baselines doc carries "current per-model
+  bands" (its speed-tier rows are still `pending_measurement`) -- points at
+  it as the measurement ledger for the figure instead.
+
+### Fixed
+- **T9c docstring (`appendTruncationProvenanceFooter`, comment-only).**
+  4.14.5 appended a served-by placement note without amending the original
+  "immediately above the EOF sentinel" sentence, leaving two claims that
+  read as contradictory when both a T9c footer and a served-by line stamp.
+  Tightened into one consistent claim: the T9c footer sits immediately above
+  the EOF sentinel only when no served-by line also stamps that run. The
+  format example's trim arrow, briefly ASCII-ified to "->" in an earlier
+  draft of this PR, is restored to the real arrow character matching the
+  emitted, test-pinned format.
+- **CHANGELOG.md date normalization.** The 4.14.5 entry above was dated
+  2026-08-16 (local) while 4.14.4 below it was dated 2026-08-17 (UTC spill),
+  so the file read non-monotonically. Normalized 4.14.5 to 2026-08-17.
+
+### Descoped
+- **Header duplicate-strip parity** (`enforceLastSynthesizedHeader`,
+  `enforceProvenanceHeader` in `src/ai/synthesize.ts`) was attempted in an
+  earlier draft of this PR and reverted. Both PR #129 implementation reviews
+  verified the strip-all-then-reinsert shape relocates the canonical line in
+  the normal every-run case (splitting the PDU's prescribed contiguous
+  blockquote and desynchronizing from apply-pdu's
+  `buildResidualPduDocument`) and accumulates one blank line per run
+  (idempotence loss, probe-verified both ways); the review-prescribed
+  replace-first + strip-rest alternative was then shown to delete
+  header-formatted lines legitimately inside fenced PDU proposal bodies (an
+  `^`-anchored global strip has no fence awareness). The header
+  duplicate-echo defect has never been observed live, and the prompts
+  prescribe exactly one header line; a speculative fix whose blast radius
+  exceeds its observed benefit does not ship. Both helpers are reverted to
+  their pre-PR-128 main behavior (replace-first-in-place), byte-identical;
+  the two duplicate-stale header tests this PR had added are removed. The
+  residual defect class is recorded as a watch item -- a fix, if ever
+  needed, requires its own design (e.g. fence-aware or region-bounded
+  stripping).
+
+### Tests
+- Regression pin (`tests/synthesize.test.ts`): `status_hint` must NOT match
+  `/~?\d+(-\d+)?\s*min/` and MUST still contain `mode=status`.
+
+## [4.14.5] - 2026-08-17 (S209: served-by provider/model/transport stamp on synthesis artifacts)
 
 **Baselines followup `served-by-footer`, registered in
 `docs/prisma-performance-baselines.json`.** Synthesis artifacts

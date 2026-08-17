@@ -8,7 +8,9 @@
  *
  * brief-460 Task C / INS-331: `mode: "generate"` is FIRE-AND-FORGET. The
  * pre-460 handler awaited both synthesis legs in-request; measured live
- * (S172), synthesis runs far past the MCP client transport ceiling (brief at
+ * (S172, Haiku-era measurement -- see docs/prisma-performance-baselines.json
+ * in the prism repo, the measurement ledger for this figure), synthesis
+ * runs far past the MCP client transport ceiling (brief at
  * 107s, PDU ~8 min), so the client connection dropped ("MCP server
  * connection lost") while the handler survived and completed — the operator
  * paid for the work and never saw the response. Now the handler dispatches
@@ -197,7 +199,7 @@ export function registerSynthesize(server: McpServer) {
               intelligence_brief: { status: "started" },
               pending_doc_updates: { status: "started" },
               status_hint:
-                "Synthesis running in background (brief ~1-2 min, pending-doc-updates up to ~8 min). Check completion via prism_synthesize mode=status — compare 'Last synthesized' against this session.",
+                "Synthesis running in background. Duration varies with the routed synthesis provider/model, so no fixed estimate is given here. Check completion via prism_synthesize mode=status — compare 'Last synthesized' against this session.",
               diagnostics: diagnostics.list(),
             }),
           }],
