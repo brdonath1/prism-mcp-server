@@ -248,7 +248,7 @@ export function appendTruncationProvenanceFooter(
   content: string,
   docManifest: SynthesisDocManifestRow[] | undefined,
 ): string {
-  const footerRe = /^>\s*Synthesized from:.*$\n?/m;
+  const footerRe = /^>\s*Synthesized from:.*$\n?/gm;
   const truncated = (docManifest ?? []).filter(r => r.truncated);
   if (truncated.length === 0) {
     // Strip a stale/model-echoed footer so an untruncated run never carries one.
@@ -292,7 +292,7 @@ export function appendServedByFooter(
   model: string | undefined,
   transport: string | undefined,
 ): string {
-  const footerRe = /^>\s*Served by:.*$\n?/m;
+  const footerRe = /^>\s*Served by:.*$\n?/gm;
   if (!provider || !model) {
     // Strip a stale/model-echoed line so an unknown-provider run never carries one.
     return footerRe.test(content) ? content.replace(footerRe, "") : content;

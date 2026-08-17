@@ -780,6 +780,41 @@ describe("brief-s202b T9 — synthesis truncation fidelity", () => {
     expect(pushed).not.toContain("> Synthesized from:");
   });
 
+  it("T9c truncated run: TWO stale/model-echoed 'Synthesized from' lines collapse to exactly ONE fresh line (codex cross-model finding)", async () => {
+    const living = makeOversizedDocs();
+    living.delete("decisions/operations.md");
+    wireResolver(living);
+    mockSynthesize.mockResolvedValue({
+      ...SUCCESS_RESULT,
+      content:
+        "## Project State\nok\n\n> Synthesized from: stale-a.md [trimmed 9.9KB→1.0KB]\n\nmore body\n\n> Synthesized from: stale-b.md [trimmed 8.8KB→2.0KB]\n\n<!-- EOF: intelligence-brief.md -->",
+    });
+
+    await generateIntelligenceBrief("test-project", 99);
+
+    const pushed = mockPushFile.mock.calls[0][2] as string;
+    const matches = pushed.match(/^> Synthesized from:.*$/gm) ?? [];
+    expect(matches.length).toBe(1);
+    expect(matches[0]).toMatch(/insights\.md \[trimmed [\d.]+KB→[\d.]+KB\]/);
+    expect(matches[0]).not.toContain("stale-a.md");
+    expect(matches[0]).not.toContain("stale-b.md");
+  });
+
+  it("T9c untruncated run: TWO stale/model-echoed 'Synthesized from' lines are BOTH stripped (codex cross-model finding)", async () => {
+    const living = makeNormalDocs();
+    wireResolver(living);
+    mockSynthesize.mockResolvedValue({
+      ...SUCCESS_RESULT,
+      content:
+        "## Project State\nok\n\n> Synthesized from: stale-a.md [trimmed 9.9KB→1.0KB]\n\nmore body\n\n> Synthesized from: stale-b.md [trimmed 8.8KB→2.0KB]\n\n<!-- EOF: intelligence-brief.md -->",
+    });
+
+    await generateIntelligenceBrief("test-project", 99);
+
+    const pushed = mockPushFile.mock.calls[0][2] as string;
+    expect(pushed).not.toContain("> Synthesized from:");
+  });
+
   it("T9d: one SYNTHESIS_INPUT_TRUNCATED info line per truncated doc with call_site + true/included bytes", async () => {
     const living = makeOversizedDocs();
     living.delete("decisions/operations.md");

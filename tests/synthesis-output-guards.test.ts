@@ -404,8 +404,23 @@ describe("appendServedByFooter (baselines followup served-by-footer, 2026-08-16 
     expect((out.match(/^> Served by:/gm) ?? []).length).toBe(1);
   });
 
+  it("replaces TWO stale served-by lines with exactly one canonical line (codex cross-model finding)", () => {
+    const stale = `# Title\n\nBody.\n\n> Served by: openrouter/old-model-a via openai_compatible_chat\n\nMore body.\n\n> Served by: cc_subprocess/old-model-b via cc_subprocess\n\n${EOF}`;
+    const out = appendServedByFooter(stale, "anthropic", "test-model", "messages_api");
+    expect(out).toContain("> Served by: anthropic/test-model via messages_api");
+    expect(out).not.toContain("old-model-a");
+    expect(out).not.toContain("old-model-b");
+    expect((out.match(/^> Served by:/gm) ?? []).length).toBe(1);
+  });
+
   it("strips a stale line and stamps nothing when provider is unknown", () => {
     const stale = `# Title\n\nBody.\n\n> Served by: anthropic/old-model via messages_api\n\n${EOF}`;
+    const out = appendServedByFooter(stale, undefined, "test-model", "messages_api");
+    expect(out).not.toContain("> Served by:");
+  });
+
+  it("strips BOTH stale served-by lines and stamps nothing when provider is unknown (codex cross-model finding)", () => {
+    const stale = `# Title\n\nBody.\n\n> Served by: anthropic/old-model-a via messages_api\n\nMore body.\n\n> Served by: openrouter/old-model-b via openai_compatible_chat\n\n${EOF}`;
     const out = appendServedByFooter(stale, undefined, "test-model", "messages_api");
     expect(out).not.toContain("> Served by:");
   });
