@@ -7,6 +7,40 @@ by `src/utils/banner.ts` (`BANNER_SPEC_VERSION`) plus the prism-framework
 templates; [docs/banner-spec.md](docs/banner-spec.md) is historical reference.
 Banner changes add an entry here.
 
+## [4.14.4] - 2026-08-17 (S208: cerebras mechanical-cost tier + SRV-90 package-lock pin -- PR #126 activation-gate follow-ups)
+
+**The two prescribed follow-ups from the PR #126 review, closed before
+cerebras is eligible for the allow-list.** Neither changes routing
+selection or authorization -- both are truth-in-labeling and drift-guard
+fixes.
+
+### Changed
+- **`qualityTierFor()` now labels `cerebras` explicitly** (`src/llm/routing-policy.ts`):
+  a new `provider === "cerebras"` row returns `"mechanical-cost"`, the same
+  D-275 precedent already applied to `openrouter`/GLM-5.2. Before this fix
+  a cerebras decision fell through to the surface-based default (`"frontier"`
+  for most surfaces), mislabeling a ~$0.6/$2.2-per-M-token `zai-glm-4.7`
+  route as a frontier-tier one in cost-tier analytics and the
+  `LLM_ROUTE_OBSERVATION` telemetry record. Pinned by a direct unit test
+  (`src/llm/__tests__/routing-policy.test.ts`) and a route-observer
+  telemetry-record test (`src/llm/__tests__/route-observer.test.ts`,
+  new -- no prior dedicated route-observer test existed for the openrouter
+  case either, so this adds the direct pin rather than parallel
+  dispatch-level telemetry-capture machinery).
+
+### Added
+- **SRV-90 package-lock drift guard** (`tests/brief-466-docs-version.test.ts`):
+  a new assertion that `package-lock.json`'s `version` (both the root field
+  and `packages[""].version`) equals `SERVER_VERSION`. Closes the drift
+  class that recurred twice already (stale at 4.12.0, then again at 4.14.1,
+  #125) by making the next recurrence a test failure instead of an
+  operator-packet cleanup item.
+
+### Fixed
+- **`package-lock.json` version fields** re-synced to `4.14.4` via
+  `npm install --package-lock-only` (dependency tree untouched, verified by
+  diff -- only the two version fields moved).
+
 ## [4.14.3] - 2026-08-16 (S208: register Cerebras as an LLM routing provider)
 
 **A registration, not an activation.** Cerebras joins the provider registry

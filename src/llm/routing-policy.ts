@@ -275,6 +275,11 @@ function qualityTierFor(
   // D-275: GLM-5.2 via openrouter is the mechanical/cost tier, not a frontier
   // peer — keep the tier label honest wherever the decision is displayed.
   if (provider === "openrouter") return "mechanical-cost";
+  // D-275 precedent, same class: Cerebras serves zai-glm-4.7 at roughly
+  // $0.6/$2.2 per M tokens in/out — mechanical-cost, not a frontier peer, so
+  // cost-tier analytics stay honest once cerebras is allow-listed (S208
+  // PR #126 review follow-up).
+  if (provider === "cerebras") return "mechanical-cost";
   if (surface === "cc_dispatch") return "frontier-code";
   if (surface === "synthesis_pdu") return "frontier-long-context";
   return "frontier";

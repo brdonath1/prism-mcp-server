@@ -256,6 +256,7 @@ describe("S208 -- cerebras is registered but inert until explicitly allowed", ()
       model: "zai-glm-4.7",
       transport: "openai_compatible_chat",
       authEnvVar: "CEREBRAS_API_KEY",
+      qualityTier: "mechanical-cost",
       liveInvocationAllowed: true,
       reason: "live-provider-route",
     });
