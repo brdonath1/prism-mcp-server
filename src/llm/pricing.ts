@@ -34,6 +34,24 @@
  *    bills PER-REQUEST search fees that a per-token table cannot model, so
  *    this row is a FLOOR — a served sonar call costs at least this, plausibly
  *    more. Same double gate as deepseek in prod today.
+ *
+ * Added 2026-08-16 (S208 Cerebras registration) for the three models the
+ * operator's Cerebras account actually serves (verified live against
+ * https://api.cerebras.ai/v1/models). Same UNVERIFIED class as the F-G-A11
+ * rows above -- conservative midpoints in the cheap/high-throughput tier,
+ * NOT vendor-console-confirmed figures, and deliberately round rather than
+ * falsely precise. Re-derive from the Cerebras price page before using them
+ * for a budget decision. All three carry the same double gate as deepseek:
+ * no surface selects cerebras, and cerebras is absent from
+ * LLM_ROUTING_ALLOWED_PROVIDERS, so none is reachable in prod today.
+ *  - zai-glm-4.7: UNVERIFIED midpoint $0.60/$2.20 (assumed range
+ *    $0.35-0.90 / $1.40-3.00). GLM-class, priced just under the S196-pinned
+ *    GLM-5.2 marketplace midpoints ($1.15/$3.70) it succeeds in the
+ *    mechanical lane.
+ *  - gpt-oss-120b: UNVERIFIED midpoint $0.35/$0.75 (assumed range
+ *    $0.15-0.55 / $0.40-1.20). Open-weights MoE, cheap-tier class.
+ *  - gemma-4-31b: UNVERIFIED midpoint $0.20/$0.60 (assumed range
+ *    $0.10-0.35 / $0.30-1.00). Smallest of the three.
  * Models without a sourced price (e.g. grok-4.3) intentionally have NO entry:
  * estimateCostUsd returns null rather than inventing a number.
  */
@@ -60,6 +78,10 @@ const MODEL_PRICE_TABLE: Record<string, ModelPrice> = {
   // F-G-A11 (2026-08-14) — UNVERIFIED, see the header block.
   "deepseek-v4-pro": { input_per_mtok: 0.65, output_per_mtok: 2.15 },
   "sonar-pro": { input_per_mtok: 3, output_per_mtok: 15 },
+  // S208 Cerebras catalog (2026-08-16) -- UNVERIFIED, see the header block.
+  "zai-glm-4.7": { input_per_mtok: 0.6, output_per_mtok: 2.2 },
+  "gpt-oss-120b": { input_per_mtok: 0.35, output_per_mtok: 0.75 },
+  "gemma-4-31b": { input_per_mtok: 0.2, output_per_mtok: 0.6 },
 };
 
 /**

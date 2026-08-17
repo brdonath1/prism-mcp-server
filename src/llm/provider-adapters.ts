@@ -394,6 +394,8 @@ function responsesUrl(provider: RouteDecision["provider"]): string {
 
 function openAiCompatibleChatUrl(provider: RouteDecision["provider"]): string {
   if (provider === "deepseek") return "https://api.deepseek.com/chat/completions";
+  // S208: Cerebras exposes an OpenAI-compatible chat endpoint under /v1.
+  if (provider === "cerebras") return "https://api.cerebras.ai/v1/chat/completions";
   if (provider === "perplexity") return "https://api.perplexity.ai/chat/completions";
   if (provider === "openrouter") return OPENROUTER_CHAT_COMPLETIONS_URL;
   return "https://api.openai.com/v1/chat/completions";

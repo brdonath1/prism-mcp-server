@@ -57,6 +57,33 @@ const PROVIDER_REGISTRY: readonly ProviderMetadata[] = [
     qualityPolicy: "quality-before-cost",
   },
   {
+    // S208 Cerebras registration. The operator's Cerebras account serves
+    // exactly three models (verified live against
+    // https://api.cerebras.ai/v1/models, 2026-08-16): gemma-4-31b,
+    // gpt-oss-120b, zai-glm-4.7.
+    //
+    // Default pin rationale: the estate's synthesis lanes already run
+    // GLM-class models via OpenRouter per D-275, so zai-glm-4.7 is the
+    // continuity choice AND Cerebras serves it natively at high throughput.
+    // gpt-oss-120b and gemma-4-31b are the account's alternates, reachable
+    // via LLM_ROUTING_CEREBRAS_MODEL without a code change.
+    //
+    // Registered but INERT: like every active_when_configured row, a live
+    // cerebras route additionally requires LLM_ROUTING_ENABLED=true,
+    // LLM_ROUTING_DRY_RUN=false, a surface provider override naming
+    // cerebras, cerebras present in LLM_ROUTING_ALLOWED_PROVIDERS, and
+    // CEREBRAS_API_KEY. Nothing routes here until an operator env action.
+    id: "cerebras",
+    displayName: "Cerebras",
+    authEnvVar: "CEREBRAS_API_KEY",
+    modelEnvVar: "LLM_ROUTING_CEREBRAS_MODEL",
+    defaultModel: "zai-glm-4.7",
+    transport: "openai_compatible_chat",
+    supportedSurfaces: [...ROUTABLE_SYNTHESIS_SURFACES],
+    activationStatus: "active_when_configured",
+    qualityPolicy: "quality-before-cost",
+  },
+  {
     id: "xai",
     displayName: "xAI",
     authEnvVar: "XAI_API_KEY",

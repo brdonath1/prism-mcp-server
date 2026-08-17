@@ -7,6 +7,55 @@ by `src/utils/banner.ts` (`BANNER_SPEC_VERSION`) plus the prism-framework
 templates; [docs/banner-spec.md](docs/banner-spec.md) is historical reference.
 Banner changes add an entry here.
 
+## [4.14.3] - 2026-08-16 (S208: register Cerebras as an LLM routing provider)
+
+**A registration, not an activation.** Cerebras joins the provider registry
+as a seventh routable synthesis provider on its OpenAI-compatible chat
+endpoint. Nothing about routing behavior changes with this release: no
+surface selects `cerebras`, and `cerebras` is absent from
+`LLM_ROUTING_ALLOWED_PROVIDERS`, so the same double gate that keeps
+`deepseek` and `perplexity` dormant keeps `cerebras` dormant. Activation is
+a separate operator env action -- see the gates below.
+
+Model catalog is ground truth, not a guess: the operator's Cerebras account
+was queried live against `https://api.cerebras.ai/v1/models` on 2026-08-16
+and serves exactly three models -- `zai-glm-4.7`, `gpt-oss-120b`, and
+`gemma-4-31b`. The registry default is `zai-glm-4.7`: the estate's synthesis
+lanes already run GLM-class models via OpenRouter per D-275, and Cerebras
+serves that family natively at high throughput. The other two are reachable
+via `LLM_ROUTING_CEREBRAS_MODEL` with no code change.
+
+### Added
+- **`cerebras` provider row** (`src/llm/provider-registry.ts`,
+  `src/llm/route-types.ts`). `CEREBRAS_API_KEY` /
+  `LLM_ROUTING_CEREBRAS_MODEL`, default `zai-glm-4.7`, transport
+  `openai_compatible_chat`, `active_when_configured`, the four routable
+  synthesis surfaces (never `cc_dispatch`), `quality-before-cost`.
+- **Cerebras base URL** in the OpenAI-compatible chat adapter
+  (`src/llm/provider-adapters.ts`): `https://api.cerebras.ai/v1/chat/completions`.
+  The OpenRouter-only request extensions (`usage.include`,
+  `provider.data_collection`, `reasoning`) stay OpenRouter-only.
+- **`LLM_ROUTING_CEREBRAS_MODEL`** in the sanitized readiness inventory
+  (`src/llm/route-status.ts`), so `prism_*` route status names the knob
+  without ever printing a value.
+- **Price rows** for all three Cerebras models (`src/llm/pricing.ts`) so a
+  served cerebras call can never log `est_cost_usd: null`. These are
+  UNVERIFIED conservative midpoints in the same list-price class as the
+  S203 F-G-A11 rows -- round on purpose, not vendor-console-confirmed.
+  Re-derive before any budget decision.
+- **Gating proof tests** (`src/llm/__tests__/routing-policy.test.ts`): with
+  `CEREBRAS_API_KEY` present, routing enabled, and dry-run off, no surface
+  selects cerebras; naming cerebras without allow-listing it yields
+  `provider-not-allowed` with `liveInvocationAllowed: false`; `cc_dispatch`
+  stays on Claude Code even when cerebras is both allowed and requested.
+  Plus registry-shape, adapter-URL, readiness, and pricing tests.
+
+### Operator activation (all five required, none of them shipped here)
+`LLM_ROUTING_ENABLED=true`, `LLM_ROUTING_DRY_RUN=false`, a
+`LLM_ROUTING_*_PROVIDER` naming `cerebras`, `cerebras` added to
+`LLM_ROUTING_ALLOWED_PROVIDERS`, and `CEREBRAS_API_KEY` set. Kill-switch:
+remove `cerebras` from `LLM_ROUTING_ALLOWED_PROVIDERS` (env-only, no deploy).
+
 ## [4.14.2] - 2026-08-16 (S208 PR-S2c: BOOT_INDEX_MODE default → compact, soak-gated merge)
 
 **The D-278 two-phase completion.** Phase one (4.13.0, S202) shipped

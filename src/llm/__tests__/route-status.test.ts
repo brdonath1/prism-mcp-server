@@ -43,4 +43,21 @@ describe("route readiness status", () => {
       allowedProviders: ["anthropic", "openai"],
     });
   });
+
+  // S208: readiness must surface the new provider's contract by NAME so an
+  // operator can see it without reading source -- and must keep reporting
+  // it as not-allowed until they add it to LLM_ROUTING_ALLOWED_PROVIDERS.
+  it("reports the cerebras auth/model contract without treating it as allowed (S208)", () => {
+    const status = buildRouteReadinessStatus({
+      LLM_ROUTING_ENABLED: "true",
+      LLM_ROUTING_DRY_RUN: "false",
+      LLM_ROUTING_ALLOWED_PROVIDERS: "anthropic,openai",
+      CEREBRAS_API_KEY: "cerebras-test-secret-should-not-log",
+    });
+
+    expect(status.providerEnvVars).toContain("CEREBRAS_API_KEY");
+    expect(status.candidateRoutingEnvVars).toContain("LLM_ROUTING_CEREBRAS_MODEL");
+    expect(status.allowedProviders).not.toContain("cerebras");
+    expect(JSON.stringify(status)).not.toContain("cerebras-test-secret-should-not-log");
+  });
 });

@@ -11,6 +11,7 @@ describe("provider registry", () => {
       "openai",
       "gemini",
       "deepseek",
+      "cerebras",
       "xai",
       "perplexity",
       "openrouter",
@@ -20,6 +21,7 @@ describe("provider registry", () => {
       "OPENAI_API_KEY",
       "GEMINI_API_KEY",
       "DEEPSEEK_API_KEY",
+      "CEREBRAS_API_KEY",
       "XAI_API_KEY",
       "PERPLEXITY_API_KEY",
       "OPENROUTER_API_KEY",
@@ -44,6 +46,34 @@ describe("provider registry", () => {
       "synthesis_draft",
       "synthesis_pdu",
     ]);
+  });
+
+  // S208 Cerebras registration. The shape is pinned here so a later edit
+  // cannot silently repoint the row at a model the operator's account does
+  // not serve, or swap the OpenAI-compatible transport for something else.
+  it("registers Cerebras on the OpenAI-compatible transport with the GLM default (S208)", () => {
+    const cerebras = getProviderRegistry().find((provider) => provider.id === "cerebras");
+
+    expect(cerebras).toMatchObject({
+      displayName: "Cerebras",
+      authEnvVar: "CEREBRAS_API_KEY",
+      modelEnvVar: "LLM_ROUTING_CEREBRAS_MODEL",
+      defaultModel: "zai-glm-4.7",
+      transport: "openai_compatible_chat",
+      activationStatus: "active_when_configured",
+      qualityPolicy: "quality-before-cost",
+    });
+    // Same routable synthesis surfaces as the other configured providers --
+    // never cc_dispatch (protected Claude judgment tier).
+    expect(cerebras?.supportedSurfaces).toEqual([
+      "recommendation",
+      "synthesis_brief",
+      "synthesis_draft",
+      "synthesis_pdu",
+    ]);
+    // The default must be one of the three models the account actually
+    // serves (verified live 2026-08-16 against /v1/models).
+    expect(["zai-glm-4.7", "gpt-oss-120b", "gemma-4-31b"]).toContain(cerebras?.defaultModel);
   });
 
   it("marks synthesis providers active when configured while keeping cc_dispatch on Claude Code", () => {
