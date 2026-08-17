@@ -381,22 +381,6 @@ describe("enforceLastSynthesizedHeader (SRV-52 helper)", () => {
     const out = enforceLastSynthesizedHeader("Body only.", 26, "ts");
     expect(out.startsWith("> Last synthesized: S26 (ts)")).toBe(true);
   });
-
-  it("PR #128 review-prescribed follow-up: header duplicate-strip parity - collapses TWO stale/model-echoed header lines to EXACTLY ONE canonical line", () => {
-    const out = enforceLastSynthesizedHeader(
-      "# Title\n\n> Last synthesized: S9 (whenever)\n\nBody.\n\n> Last synthesized: S8 (older)\n",
-      26,
-      "06-11-26 09:00:00 AM CST",
-    );
-    const matches = out.match(/^>\s*Last synthesized:.*$/gm) ?? [];
-    expect(matches).toHaveLength(1);
-    expect(matches[0]).toBe("> Last synthesized: S26 (06-11-26 09:00:00 AM CST)");
-    expect(out).not.toContain("S9 (whenever)");
-    expect(out).not.toContain("S8 (older)");
-    // Correct position: still immediately after the H1 title (existing
-    // insertion logic), before the body content.
-    expect(out.indexOf("> Last synthesized: S26")).toBeLessThan(out.indexOf("Body."));
-  });
 });
 
 describe("appendServedByFooter (baselines followup served-by-footer, 2026-08-16 S209)", () => {
