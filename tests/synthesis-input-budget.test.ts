@@ -493,6 +493,11 @@ const SUCCESS_RESULT = {
   input_tokens: 1000,
   output_tokens: 500,
   model: "test-model",
+  // baselines followup served-by-footer (2026-08-16 S209): provider +
+  // transport so the pipeline pins below can assert the exact served-by
+  // line the server stamps onto pushed content.
+  provider: "anthropic",
+  transport: "messages_api" as const,
 };
 
 function findAssembledLog(message: string): Record<string, unknown> | undefined {
@@ -603,6 +608,56 @@ describe("generatePendingDocUpdates — input bound integration", () => {
     expect(logPayload?.input_trimmed).toBe(true);
     expect(logPayload?.post_trim_tokens).toBeLessThanOrEqual(SYNTHESIS_INPUT_MAX_TOKENS);
     expect(outcome.input_budget?.trimmed).toBe(true);
+
+    // baselines followup served-by-footer (2026-08-16 S209): coexistence on
+    // the PDU artifact too -- served-by sits between the T9c footer and the
+    // PDU EOF sentinel (the FIRST sentinel in the buffer; this fixture
+    // carries the PDU one, not the brief one).
+    const pushed = mockPushFile.mock.calls[0][2] as string;
+    const footerIdx = pushed.indexOf("> Synthesized from:");
+    const servedByIdx = pushed.indexOf("> Served by:");
+    const eofIdx = pushed.indexOf("<!-- EOF: pending-doc-updates.md -->");
+    expect(footerIdx).toBeGreaterThan(-1);
+    expect(pushed).toMatch(/^> Served by: anthropic\/test-model via messages_api$/m);
+    expect(servedByIdx).toBeGreaterThan(footerIdx);
+    expect(eofIdx).toBeGreaterThan(servedByIdx);
+  });
+});
+
+describe("served-by footer pipeline pins (baselines followup served-by-footer, 2026-08-16 S209)", () => {
+  it("brief: pushed content carries the exact served-by line above the EOF sentinel", async () => {
+    wireResolver(makeNormalDocs());
+    mockSynthesize.mockResolvedValue(SUCCESS_RESULT);
+
+    const outcome = await generateIntelligenceBrief("test-project", 99);
+
+    expect(outcome.success).toBe(true);
+    const pushed = mockPushFile.mock.calls[0][2] as string;
+    expect(pushed).toMatch(/^> Served by: anthropic\/test-model via messages_api$/m);
+    const servedByIdx = pushed.indexOf("> Served by:");
+    const eofIdx = pushed.indexOf("<!-- EOF: intelligence-brief.md -->");
+    expect(servedByIdx).toBeGreaterThan(-1);
+    expect(eofIdx).toBeGreaterThan(servedByIdx);
+  });
+
+  it("PDU: pushed content carries the exact served-by line above the EOF sentinel (PDU's first model attribution)", async () => {
+    wireResolver(makeNormalDocs());
+    mockResolveDocPushPath.mockResolvedValue(".prism/pending-doc-updates.md");
+    mockSynthesize.mockResolvedValue({
+      ...SUCCESS_RESULT,
+      content:
+        "## architecture.md\nNo updates needed at this time.\n## glossary.md\nNo updates needed at this time.\n## insights.md\nNo updates needed at this time.\n## No Updates Needed\nok\n<!-- EOF: pending-doc-updates.md -->",
+    });
+
+    const outcome = await generatePendingDocUpdates("test-project", 99);
+
+    expect(outcome.success).toBe(true);
+    const pushed = mockPushFile.mock.calls[0][2] as string;
+    expect(pushed).toMatch(/^> Served by: anthropic\/test-model via messages_api$/m);
+    const servedByIdx = pushed.indexOf("> Served by:");
+    const eofIdx = pushed.indexOf("<!-- EOF: pending-doc-updates.md -->");
+    expect(servedByIdx).toBeGreaterThan(-1);
+    expect(eofIdx).toBeGreaterThan(servedByIdx);
   });
 });
 
@@ -702,6 +757,12 @@ describe("brief-s202b T9 — synthesis truncation fidelity", () => {
     expect(footerIdx).toBeGreaterThan(-1);
     expect(eofIdx).toBeGreaterThan(footerIdx);
     expect(pushed.trimEnd().endsWith("<!-- EOF: intelligence-brief.md -->")).toBe(true);
+    // baselines followup served-by-footer (2026-08-16 S209): coexistence --
+    // the served-by line sits BETWEEN the T9c footer and the EOF sentinel.
+    expect(pushed).toMatch(/^> Served by: anthropic\/test-model via messages_api$/m);
+    const servedByIdx = pushed.indexOf("> Served by:");
+    expect(servedByIdx).toBeGreaterThan(footerIdx);
+    expect(eofIdx).toBeGreaterThan(servedByIdx);
   });
 
   it("T9c: no truncated inputs → no footer (and a model-echoed footer is stripped)", async () => {
@@ -711,6 +772,41 @@ describe("brief-s202b T9 — synthesis truncation fidelity", () => {
       ...SUCCESS_RESULT,
       content:
         "## Project State\nok\n\n> Synthesized from: stale.md [trimmed 9.9KB→1.0KB]\n\n<!-- EOF: intelligence-brief.md -->",
+    });
+
+    await generateIntelligenceBrief("test-project", 99);
+
+    const pushed = mockPushFile.mock.calls[0][2] as string;
+    expect(pushed).not.toContain("> Synthesized from:");
+  });
+
+  it("T9c truncated run: TWO stale/model-echoed 'Synthesized from' lines collapse to exactly ONE fresh line (codex cross-model finding)", async () => {
+    const living = makeOversizedDocs();
+    living.delete("decisions/operations.md");
+    wireResolver(living);
+    mockSynthesize.mockResolvedValue({
+      ...SUCCESS_RESULT,
+      content:
+        "## Project State\nok\n\n> Synthesized from: stale-a.md [trimmed 9.9KB→1.0KB]\n\nmore body\n\n> Synthesized from: stale-b.md [trimmed 8.8KB→2.0KB]\n\n<!-- EOF: intelligence-brief.md -->",
+    });
+
+    await generateIntelligenceBrief("test-project", 99);
+
+    const pushed = mockPushFile.mock.calls[0][2] as string;
+    const matches = pushed.match(/^> Synthesized from:.*$/gm) ?? [];
+    expect(matches.length).toBe(1);
+    expect(matches[0]).toMatch(/insights\.md \[trimmed [\d.]+KB→[\d.]+KB\]/);
+    expect(matches[0]).not.toContain("stale-a.md");
+    expect(matches[0]).not.toContain("stale-b.md");
+  });
+
+  it("T9c untruncated run: TWO stale/model-echoed 'Synthesized from' lines are BOTH stripped (codex cross-model finding)", async () => {
+    const living = makeNormalDocs();
+    wireResolver(living);
+    mockSynthesize.mockResolvedValue({
+      ...SUCCESS_RESULT,
+      content:
+        "## Project State\nok\n\n> Synthesized from: stale-a.md [trimmed 9.9KB→1.0KB]\n\nmore body\n\n> Synthesized from: stale-b.md [trimmed 8.8KB→2.0KB]\n\n<!-- EOF: intelligence-brief.md -->",
     });
 
     await generateIntelligenceBrief("test-project", 99);

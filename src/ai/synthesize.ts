@@ -239,12 +239,16 @@ export async function assembleSynthesisBundle(
  * staleness/provenance headers (never model-authored). Replaces any existing
  * footer line (re-runs, or a model echoing one). No truncated inputs → the
  * content is returned unchanged (no footer).
+ * baselines followup served-by-footer (2026-08-16 S209): appendServedByFooter
+ * is called immediately after this function at both stamp sites, so when a
+ * served-by line also stamps it lands between this footer and the EOF
+ * sentinel, not immediately above the sentinel itself.
  */
 export function appendTruncationProvenanceFooter(
   content: string,
   docManifest: SynthesisDocManifestRow[] | undefined,
 ): string {
-  const footerRe = /^>\s*Synthesized from:.*$\n?/m;
+  const footerRe = /^>\s*Synthesized from:.*$\n?/gm;
   const truncated = (docManifest ?? []).filter(r => r.truncated);
   if (truncated.length === 0) {
     // Strip a stale/model-echoed footer so an untruncated run never carries one.
@@ -254,6 +258,48 @@ export function appendTruncationProvenanceFooter(
   const footer = `> Synthesized from: ${truncated
     .map(r => `${r.path} [trimmed ${kb(r.true_bytes)}→${kb(r.included_bytes)}]`)
     .join(", ")}`;
+  const withoutExisting = footerRe.test(content) ? content.replace(footerRe, "") : content;
+  const eofRe = /^<!--\s*EOF:.*-->\s*$/m;
+  const eofMatch = withoutExisting.match(eofRe);
+  if (eofMatch && eofMatch.index !== undefined) {
+    const head = withoutExisting.slice(0, eofMatch.index).replace(/\s+$/, "");
+    const tail = withoutExisting.slice(eofMatch.index);
+    return `${head}\n\n${footer}\n\n${tail}`;
+  }
+  return `${withoutExisting.trimEnd()}\n\n${footer}\n`;
+}
+
+/**
+ * baselines followup served-by-footer (2026-08-16 S209): server-stamped
+ * `> Served by: {provider}/{model} via {transport}` line, sourced from the
+ * same provider/model/transport recorded on the LLM_CALL telemetry line
+ * (src/ai/client.ts synthesize()) -- so the stamp and the telemetry line can
+ * never disagree. Same deterministic server-stamp pattern as
+ * enforceLastSynthesizedHeader / enforceProvenanceHeader /
+ * appendTruncationProvenanceFooter: replaces any existing `> Served by:`
+ * line first, then inserts immediately above the EOF sentinel -- below any
+ * T9c truncation footer already stamped there, since this is always called
+ * AFTER appendTruncationProvenanceFooter at both stamp sites. If transport
+ * is somehow absent on a success, the line degrades to
+ * `> Served by: {provider}/{model}` (no " via ..."); if provider OR model is
+ * unknown, any stale line is stripped and nothing is stamped -- baselines
+ * RULE 1 keys latency rows by {model, transport}, so a partial claim would
+ * misattribute a row, and a half-stamped line is worse than none.
+ */
+export function appendServedByFooter(
+  content: string,
+  provider: string | undefined,
+  model: string | undefined,
+  transport: string | undefined,
+): string {
+  const footerRe = /^>\s*Served by:.*$\n?/gm;
+  if (!provider || !model) {
+    // Strip a stale/model-echoed line so an unknown-provider run never carries one.
+    return footerRe.test(content) ? content.replace(footerRe, "") : content;
+  }
+  const footer = transport
+    ? `> Served by: ${provider}/${model} via ${transport}`
+    : `> Served by: ${provider}/${model}`;
   const withoutExisting = footerRe.test(content) ? content.replace(footerRe, "") : content;
   const eofRe = /^<!--\s*EOF:.*-->\s*$/m;
   const eofMatch = withoutExisting.match(eofRe);
@@ -386,6 +432,12 @@ export async function generateIntelligenceBrief(
     // 5c. brief-s202b T9c (D-278): truncation provenance footer — names every
     //     truncated input so a size-claim artifact is traceable at a glance.
     content = appendTruncationProvenanceFooter(content, bundle.docManifest);
+    // 5d. baselines followup served-by-footer (2026-08-16 S209): server-
+    //     stamped provider/model/transport line, sourced from the SAME
+    //     synthesize() result the LLM_CALL telemetry line derives from
+    //     (single source -- the stamp and the telemetry line can never
+    //     disagree).
+    content = appendServedByFooter(content, result.provider, result.model, result.transport);
 
     // 6. Push to project repo (D-67: resolve path)
     const briefPushPath = await resolveDocPushPath(projectSlug, "intelligence-brief.md");
@@ -623,6 +675,11 @@ export async function generatePendingDocUpdates(
     // 5c. brief-s202b T9c (D-278): truncation provenance footer (mirrors the
     //     intelligence-brief stamp).
     content = appendTruncationProvenanceFooter(content, bundle.docManifest);
+    // 5d. baselines followup served-by-footer (2026-08-16 S209): mirrors the
+    //     intelligence-brief stamp; this is pending-doc-updates.md's FIRST
+    //     model attribution line (it has never carried
+    //     enforceProvenanceHeader) -- intended and desirable.
+    content = appendServedByFooter(content, result.provider, result.model, result.transport);
 
     // 6. Push
     const pushPath = await resolveDocPushPath(projectSlug, "pending-doc-updates.md");

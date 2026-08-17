@@ -63,7 +63,10 @@ import {
   generateIntelligenceBrief,
   generatePendingDocUpdates,
   enforceLastSynthesizedHeader,
+  appendServedByFooter,
+  appendTruncationProvenanceFooter,
 } from "../src/ai/synthesize.js";
+import type { SynthesisDocManifestRow } from "../src/ai/input-budget.js";
 import { synthesize } from "../src/ai/client.js";
 import { pushFile } from "../src/github/client.js";
 import { resolveDocFiles, resolveDocPushPath } from "../src/utils/doc-resolver.js";
@@ -377,5 +380,95 @@ describe("enforceLastSynthesizedHeader (SRV-52 helper)", () => {
   it("prepends when there is no H1 title", () => {
     const out = enforceLastSynthesizedHeader("Body only.", 26, "ts");
     expect(out.startsWith("> Last synthesized: S26 (ts)")).toBe(true);
+  });
+});
+
+describe("appendServedByFooter (baselines followup served-by-footer, 2026-08-16 S209)", () => {
+  const EOF = "<!-- EOF: intelligence-brief.md -->";
+
+  it("fresh stamp: provider + model + transport all present", () => {
+    const out = appendServedByFooter(
+      `# Title\n\nBody.\n\n${EOF}`,
+      "anthropic",
+      "test-model",
+      "messages_api",
+    );
+    expect(out).toContain("> Served by: anthropic/test-model via messages_api");
+  });
+
+  it("replaces an existing served-by line rather than duplicating it", () => {
+    const stale = `# Title\n\nBody.\n\n> Served by: openrouter/old-model via openai_compatible_chat\n\n${EOF}`;
+    const out = appendServedByFooter(stale, "anthropic", "test-model", "messages_api");
+    expect(out).toContain("> Served by: anthropic/test-model via messages_api");
+    expect(out).not.toContain("openrouter/old-model");
+    expect((out.match(/^> Served by:/gm) ?? []).length).toBe(1);
+  });
+
+  it("replaces TWO stale served-by lines with exactly one canonical line (codex cross-model finding)", () => {
+    const stale = `# Title\n\nBody.\n\n> Served by: openrouter/old-model-a via openai_compatible_chat\n\nMore body.\n\n> Served by: cc_subprocess/old-model-b via cc_subprocess\n\n${EOF}`;
+    const out = appendServedByFooter(stale, "anthropic", "test-model", "messages_api");
+    expect(out).toContain("> Served by: anthropic/test-model via messages_api");
+    expect(out).not.toContain("old-model-a");
+    expect(out).not.toContain("old-model-b");
+    expect((out.match(/^> Served by:/gm) ?? []).length).toBe(1);
+  });
+
+  it("strips a stale line and stamps nothing when provider is unknown", () => {
+    const stale = `# Title\n\nBody.\n\n> Served by: anthropic/old-model via messages_api\n\n${EOF}`;
+    const out = appendServedByFooter(stale, undefined, "test-model", "messages_api");
+    expect(out).not.toContain("> Served by:");
+  });
+
+  it("strips BOTH stale served-by lines and stamps nothing when provider is unknown (codex cross-model finding)", () => {
+    const stale = `# Title\n\nBody.\n\n> Served by: anthropic/old-model-a via messages_api\n\nMore body.\n\n> Served by: openrouter/old-model-b via openai_compatible_chat\n\n${EOF}`;
+    const out = appendServedByFooter(stale, undefined, "test-model", "messages_api");
+    expect(out).not.toContain("> Served by:");
+  });
+
+  it("strips a stale line and stamps nothing when model is unknown", () => {
+    const stale = `# Title\n\nBody.\n\n> Served by: anthropic/old-model via messages_api\n\n${EOF}`;
+    const out = appendServedByFooter(stale, "anthropic", undefined, "messages_api");
+    expect(out).not.toContain("> Served by:");
+  });
+
+  it("degrades to the transport-less shape when transport is absent (never silent-wrong)", () => {
+    const out = appendServedByFooter(`Body.\n\n${EOF}`, "anthropic", "test-model", undefined);
+    expect(out).toContain("> Served by: anthropic/test-model");
+    expect(out).not.toContain(" via ");
+  });
+
+  it("inserts immediately above the EOF sentinel, which stays last", () => {
+    const out = appendServedByFooter(`Body.\n\n${EOF}`, "anthropic", "test-model", "messages_api");
+    const servedByIdx = out.indexOf("> Served by:");
+    const eofIdx = out.indexOf(EOF);
+    expect(servedByIdx).toBeGreaterThan(-1);
+    expect(eofIdx).toBeGreaterThan(servedByIdx);
+    expect(out.trimEnd().endsWith(EOF)).toBe(true);
+  });
+
+  it("no-sentinel edge: appends at the end when no EOF sentinel is present", () => {
+    const out = appendServedByFooter(
+      "Body only, no sentinel.",
+      "anthropic",
+      "test-model",
+      "messages_api",
+    );
+    expect(
+      out.trimEnd().endsWith("> Served by: anthropic/test-model via messages_api"),
+    ).toBe(true);
+  });
+
+  it("coexists with the T9c truncation footer, sitting between it and the EOF sentinel", () => {
+    const manifest: SynthesisDocManifestRow[] = [
+      { path: "insights.md", true_bytes: 9999, included_bytes: 1000, truncated: true },
+    ];
+    const withT9c = appendTruncationProvenanceFooter(`Body.\n\n${EOF}`, manifest);
+    const out = appendServedByFooter(withT9c, "anthropic", "test-model", "messages_api");
+    const t9cIdx = out.indexOf("> Synthesized from:");
+    const servedByIdx = out.indexOf("> Served by:");
+    const eofIdx = out.indexOf(EOF);
+    expect(t9cIdx).toBeGreaterThan(-1);
+    expect(servedByIdx).toBeGreaterThan(t9cIdx);
+    expect(eofIdx).toBeGreaterThan(servedByIdx);
   });
 });
