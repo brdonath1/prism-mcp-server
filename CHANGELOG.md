@@ -7,7 +7,61 @@ by `src/utils/banner.ts` (`BANNER_SPEC_VERSION`) plus the prism-framework
 templates; [docs/banner-spec.md](docs/banner-spec.md) is historical reference.
 Banner changes add an entry here.
 
-## [4.14.5] - 2026-08-16 (S209: served-by provider/model/transport stamp on synthesis artifacts)
+## [4.14.6] - 2026-08-17 (S209: synthesize guidance refresh + header duplicate-strip parity -- PR #128 review-prescribed follow-ups)
+
+**Plan v3 Change B.** `prism_synthesize`'s background-dispatch `status_hint`
+still asserted Haiku-era durations as current ("brief ~1-2 min,
+pending-doc-updates up to ~8 min") -- stale by roughly two orders of
+magnitude on the speed-tier lane, and wrong in the other direction if a lane
+reverts to anthropic. Also closes three follow-ups the PR #128 (4.14.5)
+implementation review prescribed rather than leaving them to rot.
+
+### Changed
+- **`status_hint` (`src/tools/synthesize.ts`):** no longer asserts any
+  duration as universal or current. States that duration depends on the
+  configured synthesis provider and transport, points to the prism repo's
+  performance-baselines doc for measured per-model bands when available, and
+  retains the `mode=status` completion-check instruction unchanged. Carries
+  no concrete numbers at all -- the plan's own "simplest, always-honest"
+  option, since the only candidate measured numbers in
+  `docs/prisma-performance-baselines.json` were still `pending_measurement`
+  as of this PR.
+- **Historical header comment (`src/tools/synthesize.ts`, S172
+  fire-and-forget rationale):** gains a "(Haiku-era measurement)" clarifier
+  and a pointer to the baselines doc, so the retained historical figures
+  read as history rather than current guidance.
+
+### Fixed
+- **Header duplicate-strip parity (`enforceLastSynthesizedHeader`,
+  `enforceProvenanceHeader` in `src/ai/synthesize.ts`).** Both helpers were
+  replace-FIRST-with-canonical (non-global regex): a second stale or
+  model-echoed copy of either header line survived alongside the canonical
+  line. Same defect class Codex found in the T9c/served-by footers (fixed in
+  4.14.5) and pre-existing on main before that fix. Corrected semantics:
+  strip ALL stale matches (global), then insert exactly ONE canonical line
+  via each helper's existing insertion logic -- NOT a global find/replace,
+  which would have produced N identical canonical lines instead of one.
+- **T9c docstring (`appendTruncationProvenanceFooter`, comment-only).**
+  4.14.5 appended a served-by placement note without amending the original
+  "immediately above the EOF sentinel" sentence, leaving two claims that
+  read as contradictory when both a T9c footer and a served-by line stamp.
+  Tightened into one consistent claim: the T9c footer sits immediately above
+  the EOF sentinel only when no served-by line also stamps that run.
+- **CHANGELOG.md date normalization.** The 4.14.5 entry above was dated
+  2026-08-16 (local) while 4.14.4 below it was dated 2026-08-17 (UTC spill),
+  so the file read non-monotonically. Normalized 4.14.5 to 2026-08-17.
+
+### Tests
+- Regression pin (`tests/synthesize.test.ts`): `status_hint` must NOT match
+  `/~?\d+(-\d+)?\s*min/` and MUST still contain `mode=status`.
+- Duplicate-stale pins for both header helpers
+  (`tests/synthesis-output-guards.test.ts` for
+  `enforceLastSynthesizedHeader`, `tests/synthesis-dedup.test.ts` for
+  `enforceProvenanceHeader`): a fixture carrying TWO stale/model-echoed
+  copies of the header line collapses to EXACTLY ONE canonical line, in the
+  correct position. Existing zero-stale insertion-path tests remain green.
+
+## [4.14.5] - 2026-08-17 (S209: served-by provider/model/transport stamp on synthesis artifacts)
 
 **Baselines followup `served-by-footer`, registered in
 `docs/prisma-performance-baselines.json`.** Synthesis artifacts

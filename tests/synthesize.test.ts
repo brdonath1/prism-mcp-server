@@ -94,6 +94,26 @@ describe("prism_synthesize — generate mode (brief-460 / INS-331 fire-and-forge
     expect(result.isError).toBeUndefined();
   });
 
+  it("S209 guidance refresh (plan v3 Change B / BLOCKER 3): status_hint carries no bare duration claim and still names the mode=status completion check", async () => {
+    mockGenerateBrief.mockResolvedValue({ success: true, bytes_written: 1000 });
+    mockGeneratePending.mockResolvedValue({ success: true, bytes_written: 500 });
+
+    const handler = getHandler();
+    const result = await handler({
+      project_slug: "prism",
+      mode: "generate",
+      session_number: 70,
+    });
+
+    const payload = JSON.parse(result.content[0].text);
+    // The Haiku-era "brief ~1-2 min, pending-doc-updates up to ~8 min" claim
+    // went stale by roughly two orders of magnitude on the speed-tier lane
+    // and would be wrong in the other direction under a revert to anthropic.
+    // No duration claim of that shape may reappear here.
+    expect(payload.status_hint).not.toMatch(/~?\d+(-\d+)?\s*min/);
+    expect(payload.status_hint).toContain("mode=status");
+  });
+
   it("INS-331 pin: generate RETURNS IMMEDIATELY — the response does not wait for either synthesis leg to settle", async () => {
     // Both legs hang on a deferred we control — measured live (S172), the
     // pre-460 handler held the request open for the full synthesis duration
