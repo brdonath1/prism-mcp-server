@@ -237,8 +237,9 @@ export async function assembleSynthesisBundle(
  * `> Synthesized from: glossary.md [trimmed 82.0KB→21.0KB], ...` above
  * the EOF sentinel -- same deterministic server-stamp pattern as the
  * staleness/provenance headers (never model-authored). Replaces any existing
- * footer line (re-runs, or a model echoing one). No truncated inputs -> the
- * content is returned unchanged (no footer).
+ * footer line (re-runs, or a model echoing one). No truncated inputs -> no
+ * footer is stamped, but a stale/model-echoed footer line is still
+ * stripped (the untruncated branch is not a pure pass-through).
  * Placement (tightened, PR #128 review-prescribed follow-up): this footer
  * sits immediately above the EOF sentinel ONLY when no served-by line also
  * stamps that run. baselines followup served-by-footer (2026-08-16 S209):

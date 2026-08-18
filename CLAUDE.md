@@ -6,7 +6,7 @@ This is the **PRISM MCP Server** — a custom remote MCP (Model Context Protocol
 
 **Owner:** Brian (brdonath1 on GitHub)
 **Framework:** PRISM — current version pinned by the framework repo's core-template; fetched dynamically at bootstrap.
-**Server Version:** 4.14.6
+**Server Version:** 4.14.7
 **Status:** Production — deployed on Railway, serving all active PRISM projects.
 
 ## What PRISM Is
@@ -25,7 +25,7 @@ The MCP server is the v2 evolution — separating Claude into a pure reasoning a
 └───────────────┬───────────────────────────────┘
                 │ MCP Protocol (HTTPS)
 ┌───────────────▼───────────────────────────────┐
-│  PRISM MCP Server (Railway) — v4.14.6         │
+│  PRISM MCP Server (Railway) — v4.14.7         │
 │  32 MCP tools — stateless proxy               │
 │  ├── 14 PRISM  (bootstrap/fetch/push/X sentiment) │
 │  ├── 10 Railway (logs/deploy/env/status/CRUD) │
