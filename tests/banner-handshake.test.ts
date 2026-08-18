@@ -98,6 +98,7 @@ import { registerFinalize } from "../src/tools/finalize.js";
 import {
   BANNER_SPEC_VERSION,
   parseTemplateBannerSpecVersion,
+  renderBootMastheadHtml,
   renderBootMastheadSvg,
   renderFinalizationBannerHtml,
   type UnifiedBannerInput,
@@ -790,15 +791,15 @@ describe("renderFinalizationBannerHtml (brief-447 / D-249)", () => {
     });
     // The "finalized" pill carries the danger (red) palette.
     expect(html).toContain(
-      '<span style="font-size:12px;font-weight:500;color:var(--color-text-danger);background:var(--color-background-danger);padding:4px 12px;border-radius:var(--border-radius-md);">finalized</span>',
+      '<span style="font-size:12px;font-weight:500;color:var(--text-danger,var(--color-text-danger,#791F1F));background:var(--bg-danger,var(--color-background-danger,#FCEBEB));padding:4px 12px;border-radius:var(--radius,6px);">finalized</span>',
     );
     // Card div clips via overflow:hidden; its first child is the 3px danger strip.
     expect(html).toContain(
-      '<div style="background:var(--color-background-secondary);border:0.5px solid var(--color-border-tertiary);border-radius:var(--border-radius-lg);overflow:hidden;">\n' +
-        '<div style="height:3px;background:var(--color-text-danger);"></div>',
+      '<div style="background:var(--surface-2,var(--color-background-secondary,#ffffff));border:0.5px solid var(--border,var(--color-border-tertiary,rgba(11,11,11,0.10)));border-radius:12px;overflow:hidden;">\n' +
+        '<div style="height:3px;background:var(--text-danger,var(--color-text-danger,#791F1F));"></div>',
     );
     // ok phase glyphs keep success-green — red there would read as failure.
-    expect(html).toContain('color:var(--color-text-success);font-weight:500;">✓</span>');
+    expect(html).toContain('color:var(--text-success,var(--color-text-success,#27500A));font-weight:500;">✓</span>');
   });
 
   it("renders an optional escaped LLM usage table when llmUsage rows are supplied", () => {
@@ -863,6 +864,64 @@ describe("renderFinalizationBannerHtml (brief-447 / D-249)", () => {
     });
 
     expect(html).not.toContain("LLM usage");
+  });
+});
+
+describe("4.14.9 banner color self-containment (N5, N6, N8)", () => {
+  it("N5 -- the SVG masthead contains no <style> element and no @media rule (contract L75)", () => {
+    const svg = renderBootMastheadSvg(MASTHEAD_INPUT);
+    expect(svg).not.toMatch(/<style/i);
+    expect(svg).not.toContain("@media");
+  });
+
+  it("N6 -- no @media is added anywhere new; the finalize widget's pre-existing .brand/.mark dark block stays byte-identical", () => {
+    const bootHtml = renderBootMastheadHtml(MASTHEAD_INPUT);
+    expect(bootHtml).not.toContain("@media");
+
+    const finHtml = renderFinalizationBannerHtml({
+      templateVersion: "2.19.1",
+      sessionNumber: 1,
+      timestamp: "01-01-26 00:00:00",
+      handoffFromVersion: 1,
+      handoffToVersion: 2,
+      handoffStatus: "pushed",
+      decisionCount: 1,
+      docCount: 1,
+      docTotal: 1,
+      statusRow: [{ label: "verified", status: "ok" }],
+      deliverables: ["One deliverable"],
+      next: null,
+    });
+    const mediaOccurrences = (finHtml.match(/@media/g) ?? []).length;
+    expect(mediaOccurrences).toBe(1);
+    expect(finHtml).toContain(
+      '<style>.brand{color:#534AB7}.mark{background:#534AB7}@media(prefers-color-scheme:dark){.brand{color:#b3aef0}.mark{background:#b3aef0}}</style>',
+    );
+  });
+
+  it("N8 -- the finalize phase-glyph constants emit full expressions terminating in literals, never a broken double-wrap", () => {
+    const html = renderFinalizationBannerHtml({
+      templateVersion: "2.19.1",
+      sessionNumber: 1,
+      timestamp: "01-01-26 00:00:00",
+      handoffFromVersion: 1,
+      handoffToVersion: 2,
+      handoffStatus: "pushed",
+      decisionCount: 1,
+      docCount: 1,
+      docTotal: 1,
+      statusRow: [
+        { label: "ok phase", status: "ok" },
+        { label: "warn phase", status: "warn" },
+        { label: "critical phase", status: "critical" },
+      ],
+      deliverables: ["One deliverable"],
+      next: null,
+    });
+    expect(html).toContain("var(--text-success,var(--color-text-success,#27500A))");
+    expect(html).toContain("var(--text-warning,var(--color-text-warning,#633806))");
+    expect(html).toContain("var(--text-danger,var(--color-text-danger,#791F1F))");
+    expect(html).not.toContain("var(var(");
   });
 });
 

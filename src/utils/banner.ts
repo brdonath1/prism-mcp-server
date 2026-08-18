@@ -18,11 +18,14 @@
  *     session end (the variable-length Deliverables list wraps natively).
  *
  * Contracts: `_templates/banner-spec.md` (boot) and
- * `_templates/finalization-banner-spec.md` (finalize); cite them for any
- * future banner change. The graphical renderers emit inert markup STRINGS —
- * the `visualize` design-system classes (box, c-purple, c-green, …) and CSS
- * variables (--color-*, --border-radius-*) resolve at render time inside the
- * widget host, so never substitute hardcoded colors for them.
+ * `_templates/finalization-banner-spec.md`; cite them for any
+ * future banner change. The graphical renderers emit inert markup STRINGS --
+ * the `visualize` design-system classes (box, c-purple, c-green, etc) render
+ * at widget-host time. Colors resolve through the documented `visualize`
+ * tokens first, then the legacy `--color-*` names, then a literal, always in
+ * `var()` fallback position only -- never a color literal applied outside a
+ * fallback position (sole exception: the finalize `.brand`/`.mark` block, see
+ * `renderFinalizationBannerHtml`).
  *
  * History: the original HTML boot banner (D-35) gave way to `banner_text` in
  * ME-1 (template v2.10.0), and the HTML finalization widget (D-46) was
@@ -47,7 +50,10 @@ export interface BannerStatusEntry {
  * session-state color designation: green boot pill, red finalized pill + 3px
  * top accent strip. 4.2 adds explicit chat-session title lines to the graphical
  * boot/finalize widgets while leaving the unified text grammar unchanged. 4.3
- * adds the optional finalization LLM usage table.
+ * adds the optional finalization LLM usage table. Server 4.14.9 widened
+ * every color expression to a documented-token-first chained fallback; the
+ * spec version is deliberately UNCHANGED at 4.3 (see docs/banner-spec.md,
+ * styling note 2026-08-18, section 5.1, and docs/banner-spec.md:286).
  * Contracts: `_templates/banner-spec.md` and
  * `_templates/finalization-banner-spec.md`.
  */
@@ -295,8 +301,11 @@ const STATUS_COLOR_CLASS: Record<BannerStatusEntry["status"], string> = {
  * client-side Tool Surface line) is NOT in the masthead — it stays in
  * `banner_text` and renders inline below. Because the masthead carries no
  * client-side data, Claude passes the returned string to `visualize:show_widget`
- * verbatim. Static layout/classes/colors are byte-identical to the approved
- * `_templates/banner-spec.md` target; only the annotated fields interpolate.
+ * verbatim. Layout, structure, classes and copy are byte-identical to the
+ * approved `_templates/banner-spec.md` target; the color expressions are
+ * widened per the 4.14.9 styling note (see docs/banner-spec.md, section 5.1),
+ * with the framework spec update tracked as a companion follow-up. Only the
+ * annotated fields interpolate.
  *
  * The status row is laid out left-to-right at y=192 using a proportional
  * x-advance per label; glyph color follows status (c-green/c-amber/c-red). The
@@ -343,12 +352,12 @@ export function renderBootMastheadSvg(data: UnifiedBannerInput): string {
     `<g class="c-purple"><text x="92" y="80" class="th" font-size="24">PRISM</text></g>`,
     `<text x="182" y="80" class="ts" font-size="13">v${esc(data.templateVersion)}</text>`,
     `<g class="c-green"><rect x="556" y="60" width="60" height="22" rx="11"/><text x="586" y="75" class="ts" text-anchor="middle">boot</text></g>`,
-    `<line x1="64" y1="98" x2="616" y2="98" stroke="var(--color-border-tertiary)" stroke-width="0.5"/>`,
+    `<line x1="64" y1="98" x2="616" y2="98" stroke="var(--border,var(--color-border-tertiary,rgba(11,11,11,0.10)))" stroke-width="0.5"/>`,
     `<text x="64" y="124" class="th" font-size="${data.sessionNameLine ? "13" : "16"}">${esc(sessionLine)}</text>`,
     ...(data.sessionNameLine ? [] : [`<text x="176" y="124" class="ts" font-size="13">${esc(data.timestamp)} CST</text>`]),
-    `<rect x="64" y="144" width="150" height="24" rx="6" fill="var(--color-background-primary)" stroke="var(--color-border-tertiary)" stroke-width="0.5"/>`,
+    `<rect x="64" y="144" width="150" height="24" rx="6" fill="var(--surface-1,var(--color-background-primary,#fcfcfb))" stroke="var(--border,var(--color-border-tertiary,rgba(11,11,11,0.10)))" stroke-width="0.5"/>`,
     `<text x="139" y="160" class="ts" text-anchor="middle">Handoff v${data.handoffVersion} · ${esc(data.handoffNote)}</text>`,
-    `<rect x="226" y="144" width="190" height="24" rx="6" fill="var(--color-background-primary)" stroke="var(--color-border-tertiary)" stroke-width="0.5"/>`,
+    `<rect x="226" y="144" width="190" height="24" rx="6" fill="var(--surface-1,var(--color-background-primary,#fcfcfb))" stroke="var(--border,var(--color-border-tertiary,rgba(11,11,11,0.10)))" stroke-width="0.5"/>`,
     `<text x="321" y="160" class="ts" text-anchor="middle">${esc(decisionChipText)}</text>`,
   ];
 
@@ -360,7 +369,7 @@ export function renderBootMastheadSvg(data: UnifiedBannerInput): string {
     );
   } else {
     parts.push(
-      `<rect x="428" y="144" width="140" height="24" rx="6" fill="var(--color-background-primary)" stroke="var(--color-border-tertiary)" stroke-width="0.5"/>`,
+      `<rect x="428" y="144" width="140" height="24" rx="6" fill="var(--surface-1,var(--color-background-primary,#fcfcfb))" stroke="var(--border,var(--color-border-tertiary,rgba(11,11,11,0.10)))" stroke-width="0.5"/>`,
       `<text x="498" y="160" class="ts" text-anchor="middle">${esc(docsLabel)}</text>`,
     );
   }
@@ -380,7 +389,7 @@ export function renderBootMastheadSvg(data: UnifiedBannerInput): string {
 
   if (hasSuggested) {
     parts.push(
-      `<line x1="64" y1="208" x2="616" y2="208" stroke="var(--color-border-tertiary)" stroke-width="0.5"/>`,
+      `<line x1="64" y1="208" x2="616" y2="208" stroke="var(--border,var(--color-border-tertiary,rgba(11,11,11,0.10)))" stroke-width="0.5"/>`,
       `<text x="64" y="228" class="ts">Suggested: ${esc(data.suggested!.display)} — ${esc(data.suggested!.rationale)}</text>`,
     );
   }
@@ -395,13 +404,15 @@ export function renderBootMastheadSvg(data: UnifiedBannerInput): string {
  *  is scoped under this id, so the block cannot leak into the widget host. */
 const BOOT_MASTHEAD_HTML_ID = "prism-boot-masthead";
 
-/** Role-tint CSS variables for the HTML masthead's status glyphs. Parallel to
- *  STATUS_ICONS / STATUS_COLOR_CLASS; the variables themselves are aliased to
- *  the `visualize` design-system `--color-*` set in the widget's style block. */
-const HTML_STATUS_TINT_VAR: Record<BannerStatusEntry["status"], string> = {
-  ok: "--tint-ok",
-  warn: "--tint-warn",
-  critical: "--tint-danger",
+/** Full color expressions for the HTML masthead's status glyphs, parallel to
+ *  STATUS_ICONS / STATUS_COLOR_CLASS. Each value is a complete CSS color value
+ *  (not a property name) and is interpolated directly -- the template supplies
+ *  no `var(` wrapper. The `--pbm-*` aliases they read are defined once in the
+ *  widget's id-scoped style block and each terminates in a literal. */
+const HTML_STATUS_TINT_EXPR: Record<BannerStatusEntry["status"], string> = {
+  ok: "var(--pbm-tint-ok)",
+  warn: "var(--pbm-tint-warn)",
+  critical: "var(--pbm-tint-danger)",
 };
 
 /**
@@ -421,13 +432,14 @@ const HTML_STATUS_TINT_VAR: Record<BannerStatusEntry["status"], string> = {
  * breaks alone.
  *
  * Constraints held by construction:
- *   - No hardcoded color anywhere. Every color resolves through a CSS variable;
- *     the semantic names (`--surface-1`, `--text-primary`, `--border`, the role
- *     tints) are aliased to the host design-system `--color-*` variables at the
- *     root, each with a keyword fallback (`currentColor`/`transparent`) so an
- *     unstyled host still renders legibly in BOTH light and dark mode. The
- *     brand purple rides the design-system `c-purple` class (as the SVG does),
- *     with `currentColor` underneath it.
+ *   - No color literal outside a `var()` fallback position. The semantic
+ *     aliases (`--pbm-surface-1`, `--pbm-text-primary`, `--pbm-border`, the
+ *     role tints, `--pbm-font-mono`) are private (non-shadowing) and each
+ *     chains the documented `visualize` token, then the legacy `--color-*`
+ *     token, then a literal terminal, so an unstyled host still renders
+ *     legibly in BOTH light and dark mode. The brand purple rides the
+ *     design-system `c-purple` class (as the SVG does), with `currentColor`
+ *     underneath it as a presentation-attribute default (not a `var()` chain).
  *   - Self-contained: no `<script src>`, no stylesheet/font load, no network.
  *     The diamond and copy glyphs are inline SVG (no `xmlns` needed inside
  *     HTML), and the copy handler is a small dependency-free inline script.
@@ -463,45 +475,47 @@ export function renderBootMastheadHtml(data: UnifiedBannerInput): string {
     `${hasSuggested ? `, suggested ${data.suggested!.display}` : ""}.` +
     `${sessionName ? ` Chat session name: ${sessionName} — use the copy button to copy it and rename this chat to match.` : ""}`;
 
-  // Semantic variables first (aliased to the host design system, keyword
-  // fallbacks underneath), then layout. Every selector is id-scoped.
+  // The --pbm-* private aliases first (each chaining the documented
+  // `visualize` token, then the legacy --color-* token, then a literal
+  // terminal -- see the token map in banner-spec.md section 5.1), then
+  // layout. Every selector is id-scoped.
   const style =
     `<style>` +
     `#${BOOT_MASTHEAD_HTML_ID}{` +
-    `--surface-1:var(--color-background-primary,transparent);` +
-    `--surface-2:var(--color-background-secondary,transparent);` +
-    `--text-primary:var(--color-text-primary,currentColor);` +
-    `--text-secondary:var(--color-text-secondary,currentColor);` +
-    `--border:var(--color-border-tertiary,currentColor);` +
-    `--tint-ok:var(--color-text-success,currentColor);` +
-    `--tint-ok-surface:var(--color-background-success,transparent);` +
-    `--tint-warn:var(--color-text-warning,currentColor);` +
-    `--tint-danger:var(--color-text-danger,currentColor);` +
-    `--font-mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;` +
-    `background:var(--surface-2);border:0.5px solid var(--border);border-radius:12px;` +
-    `padding:1.1rem 1.25rem;color:var(--text-primary);}` +
+    `--pbm-surface-1:var(--surface-1,var(--color-background-primary,#fcfcfb));` +
+    `--pbm-surface-2:var(--surface-2,var(--color-background-secondary,#ffffff));` +
+    `--pbm-text-primary:var(--text-primary,var(--color-text-primary,#0b0b0b));` +
+    `--pbm-text-secondary:var(--text-secondary,var(--color-text-secondary,#52514e));` +
+    `--pbm-border:var(--border,var(--color-border-tertiary,rgba(11,11,11,0.10)));` +
+    `--pbm-tint-ok:var(--text-success,var(--color-text-success,#27500A));` +
+    `--pbm-tint-ok-surface:var(--bg-success,var(--color-background-success,#EAF3DE));` +
+    `--pbm-tint-warn:var(--text-warning,var(--color-text-warning,#633806));` +
+    `--pbm-tint-danger:var(--text-danger,var(--color-text-danger,#791F1F));` +
+    `--pbm-font-mono:var(--font-mono,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace);` +
+    `background:var(--pbm-surface-2);border:0.5px solid var(--pbm-border);border-radius:12px;` +
+    `padding:1.1rem 1.25rem;color:var(--pbm-text-primary);}` +
     `#${BOOT_MASTHEAD_HTML_ID} .pbm-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;}` +
     `#${BOOT_MASTHEAD_HTML_ID} .pbm-brand{display:flex;align-items:center;gap:10px;}` +
     `#${BOOT_MASTHEAD_HTML_ID} .pbm-word{font-size:22px;font-weight:500;letter-spacing:0.5px;}` +
-    `#${BOOT_MASTHEAD_HTML_ID} .pbm-ver{font-size:13px;color:var(--text-secondary);}` +
-    `#${BOOT_MASTHEAD_HTML_ID} .pbm-badge{font-size:12px;font-weight:500;color:var(--tint-ok);background:var(--tint-ok-surface);padding:4px 12px;border-radius:11px;}` +
-    `#${BOOT_MASTHEAD_HTML_ID} .pbm-rule{border-top:0.5px solid var(--border);margin:14px 0;}` +
-    `#${BOOT_MASTHEAD_HTML_ID} .pbm-label{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;font-size:12px;font-weight:500;color:var(--text-secondary);margin-bottom:6px;}` +
+    `#${BOOT_MASTHEAD_HTML_ID} .pbm-ver{font-size:13px;color:var(--pbm-text-secondary);}` +
+    `#${BOOT_MASTHEAD_HTML_ID} .pbm-badge{font-size:12px;font-weight:500;color:var(--pbm-tint-ok);background:var(--pbm-tint-ok-surface);padding:4px 12px;border-radius:11px;}` +
+    `#${BOOT_MASTHEAD_HTML_ID} .pbm-rule{border-top:0.5px solid var(--pbm-border);margin:14px 0;}` +
+    `#${BOOT_MASTHEAD_HTML_ID} .pbm-label{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;font-size:12px;font-weight:500;color:var(--pbm-text-secondary);margin-bottom:6px;}` +
     `#${BOOT_MASTHEAD_HTML_ID} .pbm-time{font-weight:400;}` +
     `#${BOOT_MASTHEAD_HTML_ID} .pbm-namerow{display:flex;align-items:flex-start;gap:8px;}` +
-    `#${BOOT_MASTHEAD_HTML_ID} .pbm-name{flex:1 1 auto;min-width:0;font-family:var(--font-mono);font-size:13px;line-height:1.45;color:var(--text-primary);background:var(--surface-1);border:0.5px solid var(--border);border-radius:8px;padding:7px 10px;white-space:normal;overflow-wrap:anywhere;}` +
-    `#${BOOT_MASTHEAD_HTML_ID} .pbm-copy{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;width:31px;height:31px;padding:0;line-height:0;background:var(--surface-1);color:var(--text-secondary);border:0.5px solid var(--border);border-radius:8px;cursor:pointer;}` +
-    `#${BOOT_MASTHEAD_HTML_ID} .pbm-copy:hover{color:var(--text-primary);}` +
-    `#${BOOT_MASTHEAD_HTML_ID} .pbm-copy:focus-visible{outline:1.5px solid var(--text-secondary);outline-offset:2px;}` +
-    `#${BOOT_MASTHEAD_HTML_ID} .pbm-caption{margin-top:6px;font-size:12px;color:var(--text-secondary);}` +
-    `#${BOOT_MASTHEAD_HTML_ID} .pbm-caption[data-state="ok"]{color:var(--tint-ok);}` +
-    `#${BOOT_MASTHEAD_HTML_ID} .pbm-caption[data-state="fail"]{color:var(--tint-danger);}` +
+    `#${BOOT_MASTHEAD_HTML_ID} .pbm-name{flex:1 1 auto;min-width:0;font-family:var(--pbm-font-mono);font-size:13px;line-height:1.45;color:var(--pbm-text-primary);background:var(--pbm-surface-1);border:0.5px solid var(--pbm-border);border-radius:8px;padding:7px 10px;white-space:normal;overflow-wrap:anywhere;}` +
+    `#${BOOT_MASTHEAD_HTML_ID} .pbm-copy{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;width:31px;height:31px;padding:0;line-height:0;background:var(--pbm-surface-1);color:var(--pbm-text-secondary);border:0.5px solid var(--pbm-border);border-radius:8px;cursor:pointer;}` +
+    `#${BOOT_MASTHEAD_HTML_ID} .pbm-copy:hover{color:var(--pbm-text-primary);}` +
+    `#${BOOT_MASTHEAD_HTML_ID} .pbm-copy:focus-visible{outline:1.5px solid var(--pbm-text-secondary);outline-offset:2px;}` +
+    `#${BOOT_MASTHEAD_HTML_ID} .pbm-caption{margin-top:6px;font-size:12px;color:var(--pbm-text-secondary);}` +
+    `#${BOOT_MASTHEAD_HTML_ID} .pbm-caption[data-state="ok"]{color:var(--pbm-tint-ok);}` +
+    `#${BOOT_MASTHEAD_HTML_ID} .pbm-caption[data-state="fail"]{color:var(--pbm-tint-danger);}` +
     `#${BOOT_MASTHEAD_HTML_ID} .pbm-chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px;}` +
-    `#${BOOT_MASTHEAD_HTML_ID} .pbm-chip{font-size:12px;color:var(--text-secondary);background:var(--surface-1);border:0.5px solid var(--border);padding:5px 10px;border-radius:6px;}` +
-    `#${BOOT_MASTHEAD_HTML_ID} .pbm-chip-ok{font-size:12px;color:var(--tint-ok);background:var(--tint-ok-surface);padding:5px 10px;border-radius:6px;}` +
-    `#${BOOT_MASTHEAD_HTML_ID} .pbm-status{display:flex;flex-wrap:wrap;gap:18px;margin-top:14px;font-size:12px;color:var(--text-secondary);}` +
+    `#${BOOT_MASTHEAD_HTML_ID} .pbm-chip{font-size:12px;color:var(--pbm-text-secondary);background:var(--pbm-surface-1);border:0.5px solid var(--pbm-border);padding:5px 10px;border-radius:6px;}` +
+    `#${BOOT_MASTHEAD_HTML_ID} .pbm-chip-ok{font-size:12px;color:var(--pbm-tint-ok);background:var(--pbm-tint-ok-surface);padding:5px 10px;border-radius:6px;}` +
+    `#${BOOT_MASTHEAD_HTML_ID} .pbm-status{display:flex;flex-wrap:wrap;gap:18px;margin-top:14px;font-size:12px;color:var(--pbm-text-secondary);}` +
     `#${BOOT_MASTHEAD_HTML_ID} .pbm-glyph{font-weight:500;margin-right:4px;}` +
-    `#${BOOT_MASTHEAD_HTML_ID} .pbm-suggested{font-size:12px;color:var(--text-secondary);}` +
+    `#${BOOT_MASTHEAD_HTML_ID} .pbm-suggested{font-size:12px;color:var(--pbm-text-secondary);}` +
     `</style>`;
 
   const lines: string[] = [
@@ -545,7 +559,7 @@ export function renderBootMastheadHtml(data: UnifiedBannerInput): string {
 
   for (const entry of data.statusRow) {
     lines.push(
-      `    <span><span class="pbm-glyph" style="color:var(${HTML_STATUS_TINT_VAR[entry.status]})">${STATUS_ICONS[entry.status]}</span>${esc(entry.label)}</span>`,
+      `    <span><span class="pbm-glyph" style="color:${HTML_STATUS_TINT_EXPR[entry.status]}">${STATUS_ICONS[entry.status]}</span>${esc(entry.label)}</span>`,
     );
   }
 
@@ -669,18 +683,24 @@ export interface FinalizationBannerHtmlInput {
   nextSessionNameLine?: string | null;
 }
 
-/** Phase-step glyph CSS color variables for the finalization HTML widget. */
-const PHASE_COLOR_VAR: Record<BannerStatusEntry["status"], string> = {
-  ok: "--color-text-success",
-  warn: "--color-text-warning",
-  critical: "--color-text-danger",
+/** Full color expressions for the finalization widget's phase-step glyphs.
+ *  The finalize surface has no alias layer -- every color is inline -- so each
+ *  value carries the whole documented-token -> legacy-token -> literal chain
+ *  and is interpolated directly; the template supplies no `var(` wrapper. */
+const PHASE_COLOR_EXPR: Record<BannerStatusEntry["status"], string> = {
+  ok: "var(--text-success,var(--color-text-success,#27500A))",
+  warn: "var(--text-warning,var(--color-text-warning,#633806))",
+  critical: "var(--text-danger,var(--color-text-danger,#791F1F))",
 };
 
 /**
  * Render the rich finalization HTML widget (D-249), rendered via
- * `visualize:show_widget` at session end. Static layout/classes/styles are
- * byte-identical to the approved `_templates/finalization-banner-spec.md`
- * target; only the annotated data interpolates. The "finalized" pill and the
+ * `visualize:show_widget` at session end. Layout, structure, classes and copy
+ * are byte-identical to the approved `_templates/finalization-banner-spec.md`
+ * target; the color expressions are widened per the 4.14.9 styling note (see
+ * docs/banner-spec.md, section 5.1), with the framework spec update tracked
+ * as a companion follow-up (only the annotated data interpolates otherwise).
+ * The "finalized" pill and the
  * card's 3px top accent strip carry the red session-end designation (D-256,
  * spec 4.1) via the danger CSS variables; spec 4.2 adds the optional next
  * chat-session title line. Phase-step glyphs keep their status colors — green
@@ -691,7 +711,10 @@ const PHASE_COLOR_VAR: Record<BannerStatusEntry["status"], string> = {
  * `<style>` block is
  * intentionally hardcoded purple + dark `@media` (no host CSS var exists for
  * the brand color); all other colors stay on the `visualize` design-system CSS
- * variables for theming/dark-mode.
+ * variables for theming/dark-mode. The 4.14.9 fallback literals elsewhere in
+ * this widget live only in `var()` fallback position and resolve to the real
+ * design-system token whenever the host supplies it -- they are not a second
+ * hardcoded exception; `.brand`/`.mark` remains the sole unconditional one.
  */
 export function renderFinalizationBannerHtml(data: FinalizationBannerHtmlInput): string {
   const esc = escapeMarkup;
@@ -709,8 +732,8 @@ export function renderFinalizationBannerHtml(data: FinalizationBannerHtmlInput):
   // Docs chip: success-colored when every doc updated, else a neutral chip
   // (matching the two stat chips before it).
   const docsChipStyle = docsAllUpdated
-    ? "font-size:12px;color:var(--color-text-success);background:var(--color-background-success);padding:5px 10px;border-radius:var(--border-radius-md);"
-    : "font-size:12px;color:var(--color-text-secondary);background:var(--color-background-primary);border:0.5px solid var(--color-border-tertiary);padding:5px 10px;border-radius:var(--border-radius-md);";
+    ? "font-size:12px;color:var(--text-success,var(--color-text-success,#27500A));background:var(--bg-success,var(--color-background-success,#EAF3DE));padding:5px 10px;border-radius:var(--radius,6px);"
+    : "font-size:12px;color:var(--text-secondary,var(--color-text-secondary,#52514e));background:var(--surface-1,var(--color-background-primary,#fcfcfb));border:0.5px solid var(--border,var(--color-border-tertiary,rgba(11,11,11,0.10)));padding:5px 10px;border-radius:var(--radius,6px);";
 
   const srOnly =
     `Finalization banner: session ${data.sessionNumber} finalized, handoff ` +
@@ -720,24 +743,24 @@ export function renderFinalizationBannerHtml(data: FinalizationBannerHtmlInput):
   const lines: string[] = [
     `<h2 class="sr-only" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">${esc(srOnly)}</h2>`,
     `<style>.brand{color:#534AB7}.mark{background:#534AB7}@media(prefers-color-scheme:dark){.brand{color:#b3aef0}.mark{background:#b3aef0}}</style>`,
-    `<div style="background:var(--color-background-secondary);border:0.5px solid var(--color-border-tertiary);border-radius:var(--border-radius-lg);overflow:hidden;">`,
-    `<div style="height:3px;background:var(--color-text-danger);"></div>`,
+    `<div style="background:var(--surface-2,var(--color-background-secondary,#ffffff));border:0.5px solid var(--border,var(--color-border-tertiary,rgba(11,11,11,0.10)));border-radius:12px;overflow:hidden;">`,
+    `<div style="height:3px;background:var(--text-danger,var(--color-text-danger,#791F1F));"></div>`,
     `<div style="padding:1.1rem 1.25rem;">`,
     `  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">`,
     `    <div style="display:flex;align-items:center;gap:10px;">`,
     `      <span class="mark" style="display:inline-block;width:13px;height:13px;border-radius:2px;transform:rotate(45deg);"></span>`,
     `      <span class="brand" style="font-size:22px;font-weight:500;letter-spacing:0.5px;">PRISM</span>`,
-    `      <span style="font-size:13px;color:var(--color-text-secondary);">v${esc(data.templateVersion)}</span>`,
+    `      <span style="font-size:13px;color:var(--text-secondary,var(--color-text-secondary,#52514e));">v${esc(data.templateVersion)}</span>`,
     `    </div>`,
-    `    <span style="font-size:12px;font-weight:500;color:var(--color-text-danger);background:var(--color-background-danger);padding:4px 12px;border-radius:var(--border-radius-md);">finalized</span>`,
+    `    <span style="font-size:12px;font-weight:500;color:var(--text-danger,var(--color-text-danger,#791F1F));background:var(--bg-danger,var(--color-background-danger,#FCEBEB));padding:4px 12px;border-radius:var(--radius,6px);">finalized</span>`,
     `  </div>`,
     `  <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:12px;">`,
-    `    <span style="font-size:16px;font-weight:500;color:var(--color-text-primary);">Session ${data.sessionNumber} finalized</span>`,
-    `    <span style="font-size:13px;color:var(--color-text-secondary);">${esc(data.timestamp)} CST</span>`,
+    `    <span style="font-size:16px;font-weight:500;color:var(--text-primary,var(--color-text-primary,#0b0b0b));">Session ${data.sessionNumber} finalized</span>`,
+    `    <span style="font-size:13px;color:var(--text-secondary,var(--color-text-secondary,#52514e));">${esc(data.timestamp)} CST</span>`,
     `  </div>`,
-    `  <div style="border-top:0.5px solid var(--color-border-tertiary);padding-top:12px;margin-bottom:12px;display:flex;flex-wrap:wrap;gap:8px;">`,
-    `    <span style="font-size:12px;color:var(--color-text-secondary);background:var(--color-background-primary);border:0.5px solid var(--color-border-tertiary);padding:5px 10px;border-radius:var(--border-radius-md);">Handoff v${data.handoffFromVersion} → v${data.handoffToVersion} · ${esc(data.handoffStatus)}</span>`,
-    `    <span style="font-size:12px;color:var(--color-text-secondary);background:var(--color-background-primary);border:0.5px solid var(--color-border-tertiary);padding:5px 10px;border-radius:var(--border-radius-md);">${esc(decisionsText)}</span>`,
+    `  <div style="border-top:0.5px solid var(--border,var(--color-border-tertiary,rgba(11,11,11,0.10)));padding-top:12px;margin-bottom:12px;display:flex;flex-wrap:wrap;gap:8px;">`,
+    `    <span style="font-size:12px;color:var(--text-secondary,var(--color-text-secondary,#52514e));background:var(--surface-1,var(--color-background-primary,#fcfcfb));border:0.5px solid var(--border,var(--color-border-tertiary,rgba(11,11,11,0.10)));padding:5px 10px;border-radius:var(--radius,6px);">Handoff v${data.handoffFromVersion} → v${data.handoffToVersion} · ${esc(data.handoffStatus)}</span>`,
+    `    <span style="font-size:12px;color:var(--text-secondary,var(--color-text-secondary,#52514e));background:var(--surface-1,var(--color-background-primary,#fcfcfb));border:0.5px solid var(--border,var(--color-border-tertiary,rgba(11,11,11,0.10)));padding:5px 10px;border-radius:var(--radius,6px);">${esc(decisionsText)}</span>`,
     `    <span style="${docsChipStyle}">${data.docCount}/${data.docTotal} docs updated</span>`,
     `  </div>`,
     `  <div style="display:flex;flex-wrap:wrap;gap:18px;margin-bottom:12px;">`,
@@ -745,21 +768,21 @@ export function renderFinalizationBannerHtml(data: FinalizationBannerHtmlInput):
 
   for (const entry of data.statusRow) {
     lines.push(
-      `    <span style="font-size:12px;color:var(--color-text-secondary);"><span style="color:var(${PHASE_COLOR_VAR[entry.status]});font-weight:500;">${STATUS_ICONS[entry.status]}</span> ${esc(entry.label)}</span>`,
+      `    <span style="font-size:12px;color:var(--text-secondary,var(--color-text-secondary,#52514e));"><span style="color:${PHASE_COLOR_EXPR[entry.status]};font-weight:500;">${STATUS_ICONS[entry.status]}</span> ${esc(entry.label)}</span>`,
     );
   }
 
   lines.push(
     `  </div>`,
-    `  <div style="border-top:0.5px solid var(--color-border-tertiary);padding-top:12px;">`,
-    `    <div style="font-size:12px;font-weight:500;color:var(--color-text-secondary);margin-bottom:8px;">Deliverables</div>`,
+    `  <div style="border-top:0.5px solid var(--border,var(--color-border-tertiary,rgba(11,11,11,0.10)));padding-top:12px;">`,
+    `    <div style="font-size:12px;font-weight:500;color:var(--text-secondary,var(--color-text-secondary,#52514e));margin-bottom:8px;">Deliverables</div>`,
   );
 
   data.deliverables.forEach((deliverable, i) => {
     const isLast = i === data.deliverables.length - 1;
     const rowStyle = isLast
-      ? "font-size:13px;color:var(--color-text-primary);line-height:1.5;"
-      : "font-size:13px;color:var(--color-text-primary);line-height:1.5;margin-bottom:7px;";
+      ? "font-size:13px;color:var(--text-primary,var(--color-text-primary,#0b0b0b));line-height:1.5;"
+      : "font-size:13px;color:var(--text-primary,var(--color-text-primary,#0b0b0b));line-height:1.5;margin-bottom:7px;";
     lines.push(
       `    <div style="${rowStyle}"><span class="brand" style="margin-right:8px;">▸</span>${esc(deliverable)}</div>`,
     );
@@ -769,14 +792,14 @@ export function renderFinalizationBannerHtml(data: FinalizationBannerHtmlInput):
 
   if (llmUsageRows.length > 0) {
     lines.push(
-      `  <div style="border-top:0.5px solid var(--color-border-tertiary);padding-top:12px;margin-top:12px;">`,
-      `    <div style="font-size:12px;font-weight:500;color:var(--color-text-secondary);margin-bottom:8px;">LLM usage</div>`,
-      `    <table style="width:100%;border-collapse:collapse;table-layout:fixed;font-size:12px;color:var(--color-text-primary);">`,
+      `  <div style="border-top:0.5px solid var(--border,var(--color-border-tertiary,rgba(11,11,11,0.10)));padding-top:12px;margin-top:12px;">`,
+      `    <div style="font-size:12px;font-weight:500;color:var(--text-secondary,var(--color-text-secondary,#52514e));margin-bottom:8px;">LLM usage</div>`,
+      `    <table style="width:100%;border-collapse:collapse;table-layout:fixed;font-size:12px;color:var(--text-primary,var(--color-text-primary,#0b0b0b));">`,
       `      <thead>`,
       `        <tr>`,
-      `          <th style="text-align:left;font-weight:500;color:var(--color-text-secondary);padding:0 10px 6px 0;">Aspect</th>`,
-      `          <th style="text-align:left;font-weight:500;color:var(--color-text-secondary);padding:0 10px 6px 0;">Model</th>`,
-      `          <th style="text-align:left;font-weight:500;color:var(--color-text-secondary);padding:0 0 6px 0;">Settings</th>`,
+      `          <th style="text-align:left;font-weight:500;color:var(--text-secondary,var(--color-text-secondary,#52514e));padding:0 10px 6px 0;">Aspect</th>`,
+      `          <th style="text-align:left;font-weight:500;color:var(--text-secondary,var(--color-text-secondary,#52514e));padding:0 10px 6px 0;">Model</th>`,
+      `          <th style="text-align:left;font-weight:500;color:var(--text-secondary,var(--color-text-secondary,#52514e));padding:0 0 6px 0;">Settings</th>`,
       `        </tr>`,
       `      </thead>`,
       `      <tbody>`,
@@ -786,9 +809,9 @@ export function renderFinalizationBannerHtml(data: FinalizationBannerHtmlInput):
       const settings = row.settings?.trim() ? row.settings.trim() : "Not recorded";
       lines.push(
         `        <tr>`,
-        `          <td style="vertical-align:top;border-top:0.5px solid var(--color-border-tertiary);padding:7px 10px 7px 0;line-height:1.4;word-break:break-word;">${esc(row.aspect.trim())}</td>`,
-        `          <td style="vertical-align:top;border-top:0.5px solid var(--color-border-tertiary);padding:7px 10px 7px 0;line-height:1.4;word-break:break-word;">${esc(row.model.trim())}</td>`,
-        `          <td style="vertical-align:top;border-top:0.5px solid var(--color-border-tertiary);padding:7px 0;line-height:1.4;word-break:break-word;color:var(--color-text-secondary);">${esc(settings)}</td>`,
+        `          <td style="vertical-align:top;border-top:0.5px solid var(--border,var(--color-border-tertiary,rgba(11,11,11,0.10)));padding:7px 10px 7px 0;line-height:1.4;word-break:break-word;">${esc(row.aspect.trim())}</td>`,
+        `          <td style="vertical-align:top;border-top:0.5px solid var(--border,var(--color-border-tertiary,rgba(11,11,11,0.10)));padding:7px 10px 7px 0;line-height:1.4;word-break:break-word;">${esc(row.model.trim())}</td>`,
+        `          <td style="vertical-align:top;border-top:0.5px solid var(--border,var(--color-border-tertiary,rgba(11,11,11,0.10)));padding:7px 0;line-height:1.4;word-break:break-word;color:var(--text-secondary,var(--color-text-secondary,#52514e));">${esc(settings)}</td>`,
         `        </tr>`,
       );
     }
@@ -802,13 +825,13 @@ export function renderFinalizationBannerHtml(data: FinalizationBannerHtmlInput):
 
   if (data.next != null && data.next.trim() !== "") {
     lines.push(
-      `  <div style="margin-top:12px;font-size:12px;color:var(--color-text-tertiary);">Next: ${esc(data.next)}</div>`,
+      `  <div style="margin-top:12px;font-size:12px;color:var(--text-muted,var(--color-text-tertiary,#898781));">Next: ${esc(data.next)}</div>`,
     );
   }
 
   if (data.nextSessionNameLine != null && data.nextSessionNameLine.trim() !== "") {
     lines.push(
-      `  <div style="margin-top:${data.next?.trim() ? "6px" : "12px"};font-size:12px;color:var(--color-text-tertiary);">Next chat: ${esc(data.nextSessionNameLine.trim())}</div>`,
+      `  <div style="margin-top:${data.next?.trim() ? "6px" : "12px"};font-size:12px;color:var(--text-muted,var(--color-text-tertiary,#898781));">Next chat: ${esc(data.nextSessionNameLine.trim())}</div>`,
     );
   }
 
