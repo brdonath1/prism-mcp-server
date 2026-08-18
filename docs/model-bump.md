@@ -181,6 +181,18 @@ model's long-context probe passes — do not clear or "tidy" it during a bump.
 For the Sonnet 5 migration, the target replacement is `claude-sonnet-5`
 because Sonnet 5 is natively 1M on supported Claude Code versions.
 
+**Update, 2026-08-17:** the PDU call-site's long-context hold referenced in
+the section 4 row b table below was RELEASED by the operator's synthesis
+Sonnet 5 OAuth speed-flip directive (plan v6, prism repo docs). The release
+is by explicit model replacement per the rule above -- the target is
+`claude-sonnet-5`, natively 1M on the cc_subprocess path (no `[1m]` suffix
+needed) -- NOT by a completed pre-merge probe: no long-context probe ran
+before this change. The plan's post-flip verification (first-finalize
+measurement watch, plan section 4) is the live gate for the replacement
+routing. The general rule above (never clear-and-tidy a held call-site
+without explicit replacement) remains the standing procedure for future
+bumps.
+
 ## 4. The canonical fleet bump — all surfaces, in order
 
 A fleet migration touches five surfaces. Registry + env cover the server;
@@ -189,7 +201,7 @@ the rest live outside this repo.
 | # | Surface | Owner / mechanism | Action |
 |---|---|---|---|
 | a | **This repo's registry** | PR to `src/models.ts` (the single switch, §1) | Edit the constants; keep `KNOWN_FAMILIES` + `extractPins()` contracts (§1); build/test/pin-audit; merge. Railway auto-deploys on merge. |
-| b | **Railway env overrides** | Chat-side (operator + claude.ai session) | Flip `SYNTHESIS_BRIEF_MODEL`, `SYNTHESIS_DRAFT_MODEL`, `CC_DISPATCH_MODEL` to the new id. 2026-06-25 source fallback: all three defaults → `claude-opus-4-8`; live Railway env values are not read or changed by this repo. `SYNTHESIS_PDU_MODEL` held (§3). Gate: INS-244 / INS-245 (§5). |
+| b | **Railway env overrides** | Chat-side (operator + claude.ai session) | Flip `SYNTHESIS_BRIEF_MODEL`, `SYNTHESIS_DRAFT_MODEL`, `CC_DISPATCH_MODEL` to the new id. 2026-06-25 source fallback: all three defaults → `claude-opus-4-8`; live Railway env values are not read or changed by this repo. `SYNTHESIS_PDU_MODEL` held (§3) -- RELEASED 2026-08-17 by the operator's synthesis Sonnet 5 OAuth speed-flip directive (plan v6, prism repo docs): the hold no longer applies; PDU may route `claude-sonnet-5` via cc_subprocess like brief/draft. Prior hold language in §3 is kept for history and annotated there. Gate: INS-244 / INS-245 (§5). |
 | c | **Trigger daemon runtime config** | chezmoi-managed `~/.config/trigger/trigger.config.yaml` (INS-277) | Update the daemon's model setting in the chezmoi source, apply, then run the daemon's `rebuild-if-code` / kickstart path so running state picks it up. |
 | d | **Operator local Claude Code setting** | Operator's machine | Update the local CC model preference (e.g. `claude config` / settings) so interactive local sessions match the fleet. |
 | e | **Living-document references** | INS-307 per-line manifest — **only** | Do **not** mass-edit model mentions across PRISM living docs. The INS-307 manifest tracks model references per line; stale prose references are updated through normal doc maintenance, not a bump sweep. |
@@ -207,8 +219,12 @@ human-reviewed even when the freshness automation opens the PR:
   evidence only; no Max OAuth probe, Railway env flip, merge, or production
   deploy is implied by the local source change.
 - **Long-context probe (per call-site):** a call-site relying on a `[1m]`
-  window (currently `pdu`) needs its own probe on the new model's
-  long-context variant before its held env is touched.
+  window needs its own probe on the new model's long-context variant before
+  its held env is touched. (Historical note: `pdu` was the held call-site
+  until 2026-08-17, when the Sonnet 5 OAuth speed-flip release -- see the
+  section 3 update -- moved it to `claude-sonnet-5`, natively 1M on the cc
+  path with no `[1m]` suffix; no call-site currently holds a `[1m]` pin.
+  The rule stands for any future held call-site.)
 - **Cost:** review the new model's pricing against synthesis + dispatch
   volume before adoption.
 

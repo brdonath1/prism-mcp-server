@@ -12,9 +12,13 @@
 
 // Set required env BEFORE imports — config.ts reads at module load time.
 process.env.GITHUB_PAT = process.env.GITHUB_PAT || "test-dummy-pat";
+// Hermeticity: the default-effort assertions below pin the
+// UNSET-SYNTHESIS_EFFORT contract; strip any ambient value.
+delete process.env.SYNTHESIS_EFFORT;
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildResolvedRoutingTable } from "../route-table.js";
+import { logger } from "../../utils/logger.js";
 
 const STAGED_ENV: Record<string, string> = {
   LLM_ROUTING_ENABLED: "true",
@@ -89,6 +93,15 @@ describe("LLM_ROUTING_TABLE — resolved startup routing table", () => {
     });
     expect(String(bySite.recommendation.note)).toContain("non-LLM");
     expect(rows).toHaveLength(5);
+
+    // All three synthesis rows are live (non-anthropic) under the staged
+    // env, plus cc_dispatch and recommendation are never anthropic-serving
+    // synthesis rows -- none of these carry the effort column.
+    expect(bySite.synthesis_draft).not.toHaveProperty("effort");
+    expect(bySite.synthesis_pdu).not.toHaveProperty("effort");
+    expect(bySite.synthesis_brief).not.toHaveProperty("effort");
+    expect(bySite.cc_dispatch).not.toHaveProperty("effort");
+    expect(bySite.recommendation).not.toHaveProperty("effort");
   });
 
   it("shows the serving Anthropic leg when SITES is cleared (kill-switch view)", () => {
@@ -101,11 +114,100 @@ describe("LLM_ROUTING_TABLE — resolved startup routing table", () => {
       provider: "gemini",
       live: true,
     });
+    expect(bySite.synthesis_draft).not.toHaveProperty("effort");
     expect(bySite.synthesis_pdu).toMatchObject({
       provider: "anthropic",
       model: "claude-opus-4-8",
       transport: "cc_subprocess",
       live: false,
+      // claude-opus-4-8 is not the explicit Sonnet 5 id, so the
+      // cc_subprocess per-model default is "high" (ccSubprocessEffortForModel).
+      effort: "high",
+    });
+  });
+
+  it("SYNTHESIS_EFFORT=xhigh overrides the anthropic-serving synthesis row's effort", () => {
+    delete process.env.LLM_ROUTING_OPENROUTER_SITES;
+    process.env.SYNTHESIS_EFFORT = "xhigh";
+    try {
+      const rows = buildResolvedRoutingTable();
+      const bySite = Object.fromEntries(rows.map((row) => [row.call_site, row]));
+
+      expect(bySite.synthesis_pdu).toMatchObject({
+        provider: "anthropic",
+        transport: "cc_subprocess",
+        live: false,
+        effort: "xhigh",
+      });
+    } finally {
+      delete process.env.SYNTHESIS_EFFORT;
+    }
+  });
+
+  it("an invalid SYNTHESIS_EFFORT logs exactly one warn and rows fall back to per-path defaults", () => {
+    delete process.env.LLM_ROUTING_OPENROUTER_SITES;
+    process.env.SYNTHESIS_EFFORT = "ultra-turbo";
+    const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    try {
+      const rows = buildResolvedRoutingTable();
+      const bySite = Object.fromEntries(rows.map((row) => [row.call_site, row]));
+
+      expect(bySite.synthesis_pdu).toMatchObject({
+        provider: "anthropic",
+        transport: "cc_subprocess",
+        live: false,
+        effort: "high",
+      });
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy.mock.calls[0][0]).toContain("SYNTHESIS_EFFORT");
+    } finally {
+      delete process.env.SYNTHESIS_EFFORT;
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("omits effort on a messages_api synthesis row whose thinking resolves off, keeps it when on", () => {
+    delete process.env.LLM_ROUTING_OPENROUTER_SITES;
+    process.env.LLM_ROUTING_SYNTHESIS_BRIEF_PROVIDER = "anthropic";
+    process.env.SYNTHESIS_BRIEF_TRANSPORT = "messages_api";
+    process.env.SYNTHESIS_BRIEF_THINKING = "false";
+    try {
+      let rows = buildResolvedRoutingTable();
+      let bySite = Object.fromEntries(rows.map((row) => [row.call_site, row]));
+      expect(bySite.synthesis_brief).toMatchObject({
+        provider: "anthropic",
+        transport: "messages_api",
+        live: false,
+      });
+      // thinking off -> the messages_api leg sends no output_config.effort,
+      // so the row must not advertise one (the configured-but-not-serving
+      // class this table exists to kill).
+      expect(bySite.synthesis_brief).not.toHaveProperty("effort");
+
+      // thinking back on (default true) -> the leg sends effort again.
+      delete process.env.SYNTHESIS_BRIEF_THINKING;
+      rows = buildResolvedRoutingTable();
+      bySite = Object.fromEntries(rows.map((row) => [row.call_site, row]));
+      expect(bySite.synthesis_brief).toMatchObject({
+        transport: "messages_api",
+        effort: "max",
+      });
+    } finally {
+      delete process.env.SYNTHESIS_BRIEF_THINKING;
+    }
+  });
+
+  it("draft on messages_api keeps effort (draft thinking hardcoded on at the finalize call site)", () => {
+    delete process.env.LLM_ROUTING_OPENROUTER_SITES;
+    process.env.LLM_ROUTING_SYNTHESIS_DRAFT_PROVIDER = "anthropic";
+    process.env.SYNTHESIS_DRAFT_TRANSPORT = "messages_api";
+    const rows = buildResolvedRoutingTable();
+    const bySite = Object.fromEntries(rows.map((row) => [row.call_site, row]));
+    expect(bySite.synthesis_draft).toMatchObject({
+      provider: "anthropic",
+      transport: "messages_api",
+      live: false,
+      effort: "max",
     });
   });
 

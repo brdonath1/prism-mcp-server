@@ -8,6 +8,7 @@ import { resolveCallSiteRouting, resolveCallSiteTimeout } from "../src/ai/client
 import {
   computeSynthesisEnabled,
   synthesisCharsPerToken,
+  resolveSynthesisEffort,
   SYNTHESIS_MODEL,
   SYNTHESIS_TIMEOUT_MS,
   CC_SUBPROCESS_SYNTHESIS_TIMEOUT_MS,
@@ -88,5 +89,55 @@ describe("SRV-62 — model-aware chars-per-token", () => {
   });
   it("the resolved default synthesis model maps to its calibrated ratio", () => {
     expect(synthesisCharsPerToken(SYNTHESIS_MODEL)).toBe(3.5);
+  });
+});
+
+describe("resolveSynthesisEffort — SYNTHESIS_EFFORT global override resolver", () => {
+  it("recognizes all five valid values", () => {
+    for (const value of ["low", "medium", "high", "xhigh", "max"] as const) {
+      expect(resolveSynthesisEffort({ SYNTHESIS_EFFORT: value })).toEqual({
+        value,
+        raw: value,
+        invalid: false,
+      });
+    }
+  });
+
+  it("matches case-insensitively and trims the compared value while preserving raw", () => {
+    expect(resolveSynthesisEffort({ SYNTHESIS_EFFORT: "  HIGH  " })).toEqual({
+      value: "high",
+      raw: "  HIGH  ",
+      invalid: false,
+    });
+    expect(resolveSynthesisEffort({ SYNTHESIS_EFFORT: "Xhigh" })).toEqual({
+      value: "xhigh",
+      raw: "Xhigh",
+      invalid: false,
+    });
+  });
+
+  it("flags an unrecognized value as invalid while preserving raw", () => {
+    expect(resolveSynthesisEffort({ SYNTHESIS_EFFORT: "ultra" })).toEqual({
+      value: null,
+      raw: "ultra",
+      invalid: true,
+    });
+  });
+
+  it("is unset-safe: no key present -> value null, invalid false, raw undefined", () => {
+    expect(resolveSynthesisEffort({})).toEqual({ value: null, raw: undefined, invalid: false });
+  });
+
+  it("treats an empty or whitespace-only value as unset (not invalid)", () => {
+    expect(resolveSynthesisEffort({ SYNTHESIS_EFFORT: "" })).toEqual({
+      value: null,
+      raw: "",
+      invalid: false,
+    });
+    expect(resolveSynthesisEffort({ SYNTHESIS_EFFORT: "   " })).toEqual({
+      value: null,
+      raw: "   ",
+      invalid: false,
+    });
   });
 });

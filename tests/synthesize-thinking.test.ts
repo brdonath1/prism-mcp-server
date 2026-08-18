@@ -5,9 +5,11 @@
  *   1. synthesize() called WITHOUT a thinking arg → request body MUST NOT
  *      include `thinking`. Preserves CS-1 (draft) behavior.
  *   2. synthesize() called WITH thinking:true -> request body MUST include
- *      `thinking: { type: "adaptive" }` plus `output_config.effort=max`.
- *      Current Claude models reject the legacy "enabled" + budget_tokens form
- *      with HTTP 400; Sonnet 5 also rejects non-default sampling params.
+ *      `thinking: { type: "adaptive" }` plus `output_config.effort=max`
+ *      (default) or the SYNTHESIS_EFFORT override value when that env var
+ *      is set to a recognized effort. Current Claude models reject the
+ *      legacy "enabled" + budget_tokens form with HTTP 400; Sonnet 5 also
+ *      rejects non-default sampling params.
  *   3. A mock API response carrying both `thinking` and `text` content blocks
  *      collapses to text only — the `block.type === "text"` filter in
  *      src/ai/client.ts already discards thinking blocks; verify nothing
@@ -22,11 +24,17 @@
  */
 
 process.env.GITHUB_PAT = process.env.GITHUB_PAT || "test-dummy-pat";
+// Hermeticity: the default output_config effort pin asserts the
+// UNSET-SYNTHESIS_EFFORT contract; strip any ambient value.
+delete process.env.SYNTHESIS_EFFORT;
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 interface CapturedPayload {
   thinking?: { type: string };
+  // effort defaults to "max" but may be overridden fleet-wide via
+  // SYNTHESIS_EFFORT (low/medium/high/xhigh/max) -- kept as a plain string
+  // here since this interface only captures the outgoing wire shape.
   output_config?: { effort: string };
   model?: string;
   max_tokens?: number;
@@ -49,6 +57,7 @@ describe("synthesize() — adaptive thinking parameter (Phase 3a)", () => {
     }
     vi.resetModules();
     vi.doUnmock("@anthropic-ai/sdk");
+    vi.unstubAllEnvs();
   });
 
   it("omits the thinking field when called without the thinking flag (default)", async () => {
@@ -106,6 +115,35 @@ describe("synthesize() — adaptive thinking parameter (Phase 3a)", () => {
     expect(captured[0]).not.toHaveProperty("temperature");
     expect(captured[0]).not.toHaveProperty("top_p");
     expect(captured[0]).not.toHaveProperty("top_k");
+  });
+
+  it("overrides the applied effort via SYNTHESIS_EFFORT when thinking flag is true", async () => {
+    vi.stubEnv("SYNTHESIS_EFFORT", "high");
+
+    const captured: CapturedPayload[] = [];
+    const createSpy = vi.fn().mockImplementation((payload: CapturedPayload) => {
+      captured.push(payload);
+      return Promise.resolve({
+        content: [{ type: "text", text: "ok" }],
+        usage: { input_tokens: 10, output_tokens: 5 },
+      });
+    });
+
+    vi.doMock("@anthropic-ai/sdk", () => {
+      class MockAnthropic {
+        messages = { create: createSpy };
+        constructor(_opts: unknown) {}
+      }
+      return { default: MockAnthropic };
+    });
+
+    const { synthesize } = await import("../src/ai/client.js");
+
+    const result = await synthesize("sys", "user", undefined, undefined, undefined, true);
+    expect(result.success).toBe(true);
+    expect(captured).toHaveLength(1);
+    expect(captured[0].thinking).toEqual({ type: "adaptive" });
+    expect(captured[0].output_config).toEqual({ effort: "high" });
   });
 
   it("strips thinking content blocks from the response — only text reaches result.content", async () => {

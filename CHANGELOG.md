@@ -7,6 +7,60 @@ by `src/utils/banner.ts` (`BANNER_SPEC_VERSION`) plus the prism-framework
 templates; [docs/banner-spec.md](docs/banner-spec.md) is historical reference.
 Banner changes add an entry here.
 
+## [4.14.8] - 2026-08-17 (synthesis effort knob: SYNTHESIS_EFFORT global override)
+
+**Plan v6 (5-round gate).** Adds a global, opt-in reasoning-effort override
+for synthesis. Behavior-neutral when unset: every existing path (cc_subprocess
+per-model default, messages_api thinking-branch default) stays byte-identical
+to 4.14.7.
+
+### Added
+- **`SYNTHESIS_EFFORT` env knob** (`src/config.ts`, `resolveSynthesisEffort`):
+  accepts `low|medium|high|xhigh|max` (case-insensitive, trimmed). Unset or
+  empty resolves to `{ value: null, invalid: false }` (no override); an
+  unrecognized value resolves to `{ value: null, invalid: true }` so callers
+  fall back to their own per-path default. Resolved at call time (same
+  pattern as `computeSynthesisThinkingEnabled`), no logger import (avoids the
+  logger.ts TDZ cycle).
+- **cc_subprocess consumer** (`src/ai/cc-subprocess.ts`): `synthesizeViaCcSubprocess`
+  now resolves `SYNTHESIS_EFFORT` at call time and applies it in place of
+  `ccSubprocessEffortForModel(model)` when set to a recognized value. The
+  per-model function is now exported for reuse by the routing table. The
+  applied effort is added to the `cc_subprocess synthesis complete` info log
+  as `effort`.
+- **messages_api thinking-branch consumer** (`src/ai/client.ts`): when
+  `thinking` is true, `output_config.effort` now carries the
+  `SYNTHESIS_EFFORT` override when set, else the existing `"max"` default.
+  The applied effort is added to the `Synthesis API call complete` info log
+  as `effort` (`null` when thinking was off, since no `output_config` was
+  sent).
+- **Routing table effort column** (`src/llm/route-table.ts`): `RoutingTableRow`
+  gains an optional `effort` field, populated only for the three
+  anthropic-serving synthesis rows (never for live non-anthropic rows,
+  `cc_dispatch`, or `recommendation` -- `cc_dispatch` is governed by
+  `CC_DISPATCH_EFFORT`, not this knob). The column shows only what the next
+  call will actually send: a messages_api synthesis row whose call-site
+  thinking resolves off omits `effort` entirely (that leg sends no
+  `output_config`; draft thinking is hardcoded on at the finalize call
+  site). An invalid `SYNTHESIS_EFFORT` emits exactly one `logger.warn` per
+  table build before the rows are returned.
+
+### Changed
+- **`docs/model-bump.md`**: the section 4 row b `SYNTHESIS_PDU_MODEL` hold is
+  recorded as RELEASED by the 2026-08-17 operator synthesis Sonnet 5 OAuth
+  speed-flip directive (plan v6); the section 3 tail is annotated to match.
+  Prior hold language is kept for history, not deleted.
+- **`.env.example`**: the "INTENDED PRODUCTION CONFIG" block is realigned to
+  the new intended config -- all three synthesis lanes on `claude-sonnet-5`
+  via `cc_subprocess` at effort `high`, zero metered API spend (OAuth
+  billing), thinking on for brief/PDU. A new commented `SYNTHESIS_EFFORT`
+  example line is added. The file still contains the SRV-95-pinned literal
+  substrings `SYNTHESIS_BRIEF_TRANSPORT`, `SYNTHESIS_BRIEF_THINKING=true`,
+  and `SYNTHESIS_PDU_THINKING=true`.
+- **`CLAUDE.md`**: server version bumped 4.14.7 -> 4.14.8 (both the metadata
+  line and the architecture-banner line); new `SYNTHESIS_EFFORT` row added to
+  the environment-variables table.
+
 ## [4.14.7] - 2026-08-17 (S210 seat: T9c docstring reconciliation -- comment-only)
 
 ### Changed

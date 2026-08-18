@@ -6,7 +6,7 @@ This is the **PRISM MCP Server** — a custom remote MCP (Model Context Protocol
 
 **Owner:** Brian (brdonath1 on GitHub)
 **Framework:** PRISM — current version pinned by the framework repo's core-template; fetched dynamically at bootstrap.
-**Server Version:** 4.14.7
+**Server Version:** 4.14.8
 **Status:** Production — deployed on Railway, serving all active PRISM projects.
 
 ## What PRISM Is
@@ -25,7 +25,7 @@ The MCP server is the v2 evolution — separating Claude into a pure reasoning a
 └───────────────┬───────────────────────────────┘
                 │ MCP Protocol (HTTPS)
 ┌───────────────▼───────────────────────────────┐
-│  PRISM MCP Server (Railway) — v4.14.7         │
+│  PRISM MCP Server (Railway) — v4.14.8         │
 │  32 MCP tools — stateless proxy               │
 │  ├── 14 PRISM  (bootstrap/fetch/push/X sentiment) │
 │  ├── 10 Railway (logs/deploy/env/status/CRUD) │
@@ -79,6 +79,7 @@ The MCP server is the v2 evolution — separating Claude into a pure reasoning a
 | `RAILWAY_API_TOKEN` | optional | Enables `railway_*` tools (brief-103) |
 | `RAILWAY_WORKSPACE_ID` | optional | Required when `RAILWAY_API_TOKEN` is a workspace-scoped Railway token; selects `projects(workspaceId: ...)` for project discovery. |
 | `SYNTHESIS_MODEL` | optional | Override the synthesis model. The registry default lives in `src/models.ts` (`SYNTHESIS_MODEL_ID`); do not assume a specific model name. |
+| `SYNTHESIS_EFFORT` | optional | Global synthesis reasoning-effort override. Accepts `low\|medium\|high\|xhigh\|max` (case-insensitive). When set, overrides the effort for every model on the cc_subprocess path, and on the messages_api leg wherever thinking is enabled (with thinking off that leg carries no effort). Unset or invalid falls back to per-path defaults (cc: max for Sonnet 5, high otherwise; messages_api: max); invalid values warn once at boot in the LLM_ROUTING_TABLE build, whose effort column shows only the effort a call will actually send (omitted for a messages_api synthesis row whose call-site thinking is off). Note: `xhigh` is not SDK-declared on the cc path; operator guidance is high or max there. |
 | `SYNTHESIS_{BRIEF,DRAFT,PDU}_MODEL` | optional | Per-call-site synthesis model override (production knob per `docs/model-bump.md`) |
 | `SYNTHESIS_{BRIEF,DRAFT,PDU}_TRANSPORT` | optional | Per-call-site transport: `messages_api` or `cc_subprocess` (production synthesis routing) |
 | `SYNTHESIS_{BRIEF,PDU}_THINKING` | optional | Per-call-site adaptive-thinking switch for background synthesis. Defaults to `true`; set a specific call site to `false`/`0`/`no`/`off` to opt out without changing model or transport. |

@@ -75,7 +75,7 @@
  */
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
-import { CLAUDE_CODE_OAUTH_TOKEN, MCP_SAFE_TIMEOUT } from "../config.js";
+import { CLAUDE_CODE_OAUTH_TOKEN, MCP_SAFE_TIMEOUT, resolveSynthesisEffort } from "../config.js";
 import {
   buildDispatchEnv,
   detectOAuthRejection,
@@ -100,7 +100,7 @@ function isExplicitSonnet5(model: string): boolean {
   );
 }
 
-function ccSubprocessEffortForModel(model: string): "high" | "max" {
+export function ccSubprocessEffortForModel(model: string): "high" | "max" {
   return isExplicitSonnet5(model) ? "max" : "high";
 }
 
@@ -141,7 +141,8 @@ export async function synthesizeViaCcSubprocess(
     };
   }
 
-  const effort = ccSubprocessEffortForModel(model);
+  const resolved = resolveSynthesisEffort();
+  const effort = resolved.value ?? ccSubprocessEffortForModel(model);
   const effectiveThinking = Boolean(thinking && isExplicitSonnet5(model));
 
   // Preserve the D-206 safety posture for legacy Sonnet 4.x routing while
@@ -278,6 +279,7 @@ export async function synthesizeViaCcSubprocess(
       total_input_tokens: inputTokens + cacheCreationTokens + cacheReadTokens,
       output_tokens: outputTokens,
       thinking_enabled: !!thinking,
+      effort,
       ms: Date.now() - start,
     });
 
