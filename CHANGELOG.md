@@ -7,6 +7,11 @@ by `src/utils/banner.ts` (`BANNER_SPEC_VERSION`) plus the prism-framework
 templates; [docs/banner-spec.md](docs/banner-spec.md) is historical reference.
 Banner changes add an entry here.
 
+## [4.14.7] - 2026-08-17 (S210 seat: T9c docstring reconciliation -- comment-only)
+
+### Changed
+- **Comment-only**: the appendTruncationProvenanceFooter docstring (src/ai/synthesize.ts) claimed "No truncated inputs -> the content is returned unchanged (no footer)"; inexact post-#128 because the untruncated branch strips a stale/model-echoed footer line (test-pinned). Docstring now states the strip. Recorded as residual 3 in the served-by-footer implementation review packet and in the prism baselines followup. Zero behavior change; no source logic touched.
+
 ## [4.14.6] - 2026-08-17 (S209: synthesize guidance refresh + T9c docstring reconciliation -- v3.4 ruling)
 
 **Plan v3.4 Change B.** `prism_synthesize`'s background-dispatch
