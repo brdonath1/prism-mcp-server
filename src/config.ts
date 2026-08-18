@@ -78,7 +78,7 @@ export const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
  *  fleet-wide). Rollback: BOOT_INDEX_MODE=full (env-only). Merge for this
  *  release is soak-gated on one post-S2b boot observation (see
  *  CLAUDE.md:96). */
-export const SERVER_VERSION = "4.14.7";
+export const SERVER_VERSION = "4.14.8";
 
 /** MCP client timeout is ~60s. All server-side operations must complete within 50s
  *  to leave 10s buffer for transport overhead. This constrains synthesis, draft,
@@ -352,6 +352,35 @@ export function computeSynthesisThinkingEnabled(
   if (["false", "0", "no", "off"].includes(raw)) return false;
   if (["true", "1", "yes", "on"].includes(raw)) return true;
   return true;
+}
+
+/** Valid values for the SYNTHESIS_EFFORT global override. */
+export type SynthesisEffort = "low" | "medium" | "high" | "xhigh" | "max";
+
+const SYNTHESIS_EFFORT_VALUES: readonly SynthesisEffort[] = [
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+];
+
+/** Global synthesis reasoning-effort override (SYNTHESIS_EFFORT). Applies to
+ *  every model on the cc_subprocess path and to the messages_api leg
+ *  wherever thinking is enabled. Consumers apply `value ?? <per-path
+ *  default>` silently -- the single invalid-value warn lives in the routing
+ *  table boot log (route-table.ts), not here. Resolved at CALL time (same
+ *  pattern as computeSynthesisThinkingEnabled) so per-deployment flips do
+ *  not require a restart. */
+export function resolveSynthesisEffort(
+  env: NodeJS.ProcessEnv = process.env,
+): { value: SynthesisEffort | null; raw: string | undefined; invalid: boolean } {
+  const raw = env.SYNTHESIS_EFFORT;
+  const trimmed = raw?.trim().toLowerCase();
+  if (!trimmed) return { value: null, raw, invalid: false };
+  const match = SYNTHESIS_EFFORT_VALUES.find((v) => v === trimmed);
+  if (match) return { value: match, raw, invalid: false };
+  return { value: null, raw, invalid: true };
 }
 
 /** Max output tokens for synthesis calls. Bumped from 4096 → 8192 for Phase 3a:

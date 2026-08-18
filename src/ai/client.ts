@@ -11,6 +11,8 @@ import {
   SYNTHESIS_MAX_OUTPUT_TOKENS,
   SYNTHESIS_TIMEOUT_MS,
   MCP_SAFE_TIMEOUT,
+  resolveSynthesisEffort,
+  type SynthesisEffort,
 } from "../config.js";
 import {
   emitLlmCall,
@@ -169,8 +171,10 @@ export function resolveCallSiteTimeout(callSite: SynthesisCallSite): number {
  * Call the synthesis model. Returns structured outcome with success/error info.
  *
  * @param thinking When true, sends `thinking: { type: "adaptive" }` plus
- *   `output_config: { effort: "max" }` so current Claude models dynamically
- *   allocate the highest first-party reasoning effort per request. Current
+ *   `output_config: { effort: <applied> }`, where `<applied>` defaults to
+ *   "max" and can be overridden fleet-wide via the SYNTHESIS_EFFORT env var
+ *   (low/medium/high/xhigh/max) so current Claude models dynamically
+ *   allocate the configured reasoning effort per request. Current
  *   Opus-tier models (Opus 4.8) and Sonnet 5 accept ONLY the adaptive
  *   thinking variant — the legacy fixed-budget thinking shape returns HTTP
  *   400. The text-extraction filter below ignores any `thinking` content
@@ -567,17 +571,20 @@ async function callMessagesApi(params: MessagesApiCallParams): Promise<Synthesis
       // small/volatile inputs) — see buildSynthesisUserMessages.
       messages: buildSynthesisUserMessages(userContent),
     };
+    let appliedEffort: SynthesisEffort | null = null;
     if (thinking) {
       // Current Opus-tier models (Opus 4.8) and Sonnet 5 support ONLY the
       // adaptive thinking variant; the legacy fixed-budget thinking shape
       // returns HTTP 400. Cast through unknown because the installed SDK's
       // declarations do not yet include adaptive thinking/output_config effort.
+      const resolved = resolveSynthesisEffort();
+      appliedEffort = resolved.value ?? "max";
       const adaptiveRequest = requestBody as unknown as {
         thinking: { type: "adaptive" };
-        output_config: { effort: "max" };
+        output_config: { effort: SynthesisEffort };
       };
       adaptiveRequest.thinking = { type: "adaptive" };
-      adaptiveRequest.output_config = { effort: "max" };
+      adaptiveRequest.output_config = { effort: appliedEffort };
     }
 
     const response = await anthropic.messages.create(requestBody, requestOptions);
@@ -643,6 +650,7 @@ async function callMessagesApi(params: MessagesApiCallParams): Promise<Synthesis
       input_tokens: result.input_tokens,
       output_tokens: result.output_tokens,
       thinking_enabled: !!thinking,
+      effort: appliedEffort,
       ms: Date.now() - start,
       projectSlug,
     });

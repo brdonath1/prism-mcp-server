@@ -10,8 +10,11 @@
 // module load time.
 process.env.GITHUB_PAT = process.env.GITHUB_PAT || "test-dummy-pat";
 process.env.CLAUDE_CODE_OAUTH_TOKEN = process.env.CLAUDE_CODE_OAUTH_TOKEN || "sk-ant-oat01-test-dummy";
+// Hermeticity: the default-effort pins below assert the UNSET-SYNTHESIS_EFFORT
+// contract; an ambient value in the caller's shell/CI env must not leak in.
+delete process.env.SYNTHESIS_EFFORT;
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // Capture the options passed into query() so we can assert them. Each call
 // resets the captured-options reference and the mock generator function so
@@ -55,6 +58,10 @@ beforeEach(() => {
       total_cost_usd: 0.001,
     };
   };
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 describe("synthesizeViaCcSubprocess — wrapper behavior", () => {
@@ -120,6 +127,42 @@ describe("synthesizeViaCcSubprocess — wrapper behavior", () => {
     await synthesizeViaCcSubprocess("sys", "user", "claude-sonnet-4-6", undefined, undefined, false);
 
     expect(capturedQueryOptions?.thinking).toBeUndefined();
+  });
+
+  it("test 2d: SYNTHESIS_EFFORT overrides the per-model default for Sonnet 5 (queryOptions.effort + env)", async () => {
+    vi.stubEnv("SYNTHESIS_EFFORT", "high");
+    await synthesizeViaCcSubprocess("sys", "user", "claude-sonnet-5");
+
+    expect(capturedQueryOptions?.effort).toBe("high");
+    const env = capturedQueryOptions?.env as Record<string, string> | undefined;
+    expect(env?.CLAUDE_CODE_EFFORT_LEVEL).toBe("high");
+  });
+
+  it("test 2e: an invalid SYNTHESIS_EFFORT falls back to the per-model default", async () => {
+    vi.stubEnv("SYNTHESIS_EFFORT", "ultra");
+    await synthesizeViaCcSubprocess("sys", "user", "claude-sonnet-5");
+
+    expect(capturedQueryOptions?.effort).toBe("max");
+    const env = capturedQueryOptions?.env as Record<string, string> | undefined;
+    expect(env?.CLAUDE_CODE_EFFORT_LEVEL).toBe("max");
+  });
+
+  it("test 2g: SYNTHESIS_EFFORT overrides the non-Sonnet-5 'high' default too (both sinks)", async () => {
+    vi.stubEnv("SYNTHESIS_EFFORT", "max");
+    await synthesizeViaCcSubprocess("sys", "user", "claude-sonnet-4-6");
+
+    expect(capturedQueryOptions?.effort).toBe("max");
+    const env = capturedQueryOptions?.env as Record<string, string> | undefined;
+    expect(env?.CLAUDE_CODE_EFFORT_LEVEL).toBe("max");
+  });
+
+  it("test 2f: SYNTHESIS_EFFORT is matched case-insensitively", async () => {
+    // claude-sonnet-5 defaults to "max"; a case-varied override to "high"
+    // proves the override applied rather than the per-model default.
+    vi.stubEnv("SYNTHESIS_EFFORT", "High");
+    await synthesizeViaCcSubprocess("sys", "user", "claude-sonnet-5");
+
+    expect(capturedQueryOptions?.effort).toBe("high");
   });
 
   it("test 3: successful subprocess returns SynthesisResult with parsed text", async () => {

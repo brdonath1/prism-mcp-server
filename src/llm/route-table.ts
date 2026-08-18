@@ -6,12 +6,18 @@
  *
  * This permanently kills the "configured but never serving" env-knob class
  * (D-275 §3.5 forensics): any inert knob is visible in one log line at every
- * deploy. Rows carry provider names, model ids, transport names, and reasons
- * only — never env values or secrets.
+ * deploy. Rows carry provider names, model ids, transport names, reasons,
+ * and (for the anthropic-serving synthesis rows) a low-cardinality effort
+ * attribute -- never env values or secrets.
  */
 
 import { resolveCallSiteRouting, type SynthesisCallSite } from "../ai/client.js";
-import { CC_DISPATCH_MODEL } from "../config.js";
+import { ccSubprocessEffortForModel } from "../ai/cc-subprocess.js";
+import {
+  CC_DISPATCH_MODEL,
+  computeSynthesisThinkingEnabled,
+  resolveSynthesisEffort,
+} from "../config.js";
 import { logger } from "../utils/logger.js";
 import { resolveRoute } from "./routing-policy.js";
 import type { LlmSurface, RoutingEnv } from "./route-types.js";
@@ -24,6 +30,14 @@ export interface RoutingTableRow {
   live: boolean;
   reason: string;
   note?: string;
+  /** SYNTHESIS_EFFORT-resolved reasoning effort for the anthropic-serving
+   *  synthesis rows only -- the value the next call will ACTUALLY apply.
+   *  Omitted for live non-anthropic rows; for cc_dispatch/recommendation
+   *  (governed by CC_DISPATCH_EFFORT / not an LLM call, respectively); and
+   *  for a messages_api synthesis row whose call-site thinking resolves
+   *  off, because that leg sends no output_config.effort at all
+   *  (src/ai/client.ts thinking branch). */
+  effort?: string;
 }
 
 const SYNTHESIS_TABLE_SITES: ReadonlyArray<{
@@ -42,6 +56,8 @@ const SYNTHESIS_TABLE_SITES: ReadonlyArray<{
  * (cc_subprocess/messages_api + model from resolveCallSiteRouting).
  */
 export function buildResolvedRoutingTable(env: RoutingEnv = process.env): RoutingTableRow[] {
+  const resolvedEffort = resolveSynthesisEffort(env as NodeJS.ProcessEnv);
+
   const rows: RoutingTableRow[] = SYNTHESIS_TABLE_SITES.map(({ surface, callSite }) => {
     const routing = resolveCallSiteRouting(callSite);
     const decision = resolveRoute(
@@ -65,7 +81,7 @@ export function buildResolvedRoutingTable(env: RoutingEnv = process.env): Routin
         reason: decision.reason,
       };
     }
-    return {
+    const row: RoutingTableRow = {
       call_site: surface,
       provider: "anthropic",
       model: routing.model,
@@ -73,6 +89,21 @@ export function buildResolvedRoutingTable(env: RoutingEnv = process.env): Routin
       live: false,
       reason: decision.reason,
     };
+    // Effort is shown only where the serving leg will actually send one:
+    // cc_subprocess always applies effort; the messages_api leg applies it
+    // only inside its thinking branch. Draft thinking is hardcoded true at
+    // the finalize call site (src/tools/finalize.ts), brief/pdu resolve via
+    // computeSynthesisThinkingEnabled.
+    const effortApplies =
+      routing.transport === "cc_subprocess" ||
+      callSite === "draft" ||
+      computeSynthesisThinkingEnabled(callSite, env as NodeJS.ProcessEnv);
+    if (effortApplies) {
+      row.effort =
+        resolvedEffort.value ??
+        (routing.transport === "cc_subprocess" ? ccSubprocessEffortForModel(routing.model) : "max");
+    }
+    return row;
   });
 
   const recommendation = resolveRoute(
@@ -108,6 +139,13 @@ export function buildResolvedRoutingTable(env: RoutingEnv = process.env): Routin
     reason: ccDispatch.reason,
     note: "protected Claude judgment tier (routing-policy hard wall)",
   });
+
+  if (resolvedEffort.invalid) {
+    logger.warn(
+      "SYNTHESIS_EFFORT invalid: unrecognized value; synthesis lanes fall back to per-path defaults",
+      { raw: resolvedEffort.raw },
+    );
+  }
 
   return rows;
 }
