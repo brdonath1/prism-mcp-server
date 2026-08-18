@@ -299,6 +299,60 @@ table added in 4.3).
 
 ---
 
+### 5.1 Styling note -- 2026-08-18, server 4.14.9
+
+Server 4.14.9 (banner color self-containment) widened every COLOR
+expression in `src/utils/banner.ts` from a single undocumented-namespace
+`var(--color-*)` call (invalid at computed-value time on any host that does
+not define that namespace) to a chained fallback: the documented `visualize`
+token first, then the legacy `--color-*` token (behavior-preserving on hosts
+that still supply it), then a literal terminal that guarantees the design
+when neither exists. The RADIUS expressions are the deliberate exception
+(D7, table below): the `-md` sites emit `var(--radius,6px)` with no legacy
+link, and the `-lg` card emits a bare `12px` literal. Two live defects motivated
+the change: `--border-radius-lg`/`-md` rendered 0 radius (not 12px/6px) with
+no fallback, and the boot masthead's local alias block declared properties
+named `--surface-1`, `--surface-2`, `--text-primary`, `--text-secondary`,
+`--border` and `--font-mono` that SHADOWED the host's real documented tokens
+of the same name inside `#prism-boot-masthead` (the color aliases with
+`transparent`/`currentColor` terminals; `--font-mono` with a hardcoded font
+stack). The alias block is renamed to a private `--pbm-*` namespace to end
+the shadowing and make a self-reference cycle structurally impossible. The
+un-shadowed `--font-mono` is a visible live-host improvement: the
+session-name box now uses the host's own monospace stack whenever the host
+supplies one, with the hardcoded stack demoted to the fallback position.
+
+Token map (documented token -> legacy token -> literal terminal). The
+role-tint literals are ramp-sourced (never off-table hex: c-green 800/50,
+c-red 800/50, c-amber 800); the two surface literals and the neutral
+text/border literals come from the contract's own surface-default and
+typography prose, not the ramp table:
+
+| documented | legacy | literal |
+|---|---|---|
+| `--surface-1` | `--color-background-primary` | `#fcfcfb` |
+| `--surface-2` | `--color-background-secondary` | `#ffffff` |
+| `--text-primary` | `--color-text-primary` | `#0b0b0b` |
+| `--text-secondary` | `--color-text-secondary` | `#52514e` |
+| `--text-muted` | `--color-text-tertiary` | `#898781` |
+| `--border` | `--color-border-tertiary` | `rgba(11,11,11,0.10)` |
+| `--text-success` | `--color-text-success` | `#27500A` |
+| `--bg-success` | `--color-background-success` | `#EAF3DE` |
+| `--text-danger` | `--color-text-danger` | `#791F1F` |
+| `--bg-danger` | `--color-background-danger` | `#FCEBEB` |
+| `--text-warning` | `--color-text-warning` | `#633806` |
+| `--radius` | (dropped, D7) | `6px` -- emitted as `var(--radius,6px)`; the legacy `--border-radius-md` link is deliberately dropped |
+| (none, D7) | (dropped, D7) | `12px` bare literal -- the legacy `--border-radius-lg` link is deliberately dropped; chaining `--radius` first would collapse the 12px card to the host's 8px |
+
+The declared spec version stays **4.3** -- this is a styling-only change to
+the server's rendering implementation, not a contract change (see the
+"Deliberately not versioned" note above). The companion prism-framework
+Design Tokens table (`_templates/finalization-banner-spec.md:90-103`) is
+tracked as a required, non-blocking follow-up; because there is no version
+bump, the two repos can be updated independently and in either order.
+
+---
+
 ## 6. Spec Version History
 
 | Spec | Date | Change |

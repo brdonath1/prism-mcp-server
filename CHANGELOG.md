@@ -7,6 +7,95 @@ by `src/utils/banner.ts` (`BANNER_SPEC_VERSION`) plus the prism-framework
 templates; [docs/banner-spec.md](docs/banner-spec.md) is historical reference.
 Banner changes add an entry here.
 
+## [4.14.9] - 2026-08-18 (banner color self-containment: chained fallbacks, no more undocumented namespace)
+
+**Plan v3 (3-round gate, FOLDS addendum).** `src/utils/banner.ts` rendered
+every banner color/radius through an undocumented `--color-*` /
+`--border-radius-*` namespace that does not exist on the `visualize` host
+today (probed directly via the host's own `read_me` contract capture, which
+returns zero `--color-*`/`--border-radius-*` definitions). This release
+widens every one of those expressions to a documented-token-first chained
+fallback and fixes two live defects the probe surfaced along the way.
+
+### Fixed
+- **Radii rendered 0px, not 12px/6px, on the live host.** `--border-radius-lg`
+  / `-md` had no fallback, so on any host lacking the legacy namespace the
+  `border-radius` property fell back to its CSS initial value (0). The
+  finalize card corner is now a bare `12px` literal (contract-cited, D7 --
+  chaining it onto the documented `--radius` token, which is 8px, would have
+  visibly shrunk the corner); chip/pill radii chain to `var(--radius,6px)`.
+- **The boot masthead's alias block shadowed the host's real tokens.** It
+  declared local custom properties named `--surface-1`, `--surface-2`,
+  `--text-primary`, `--text-secondary`, `--border` and `--font-mono` --
+  exactly the host's documented names. The five color aliases were declared
+  as `var(--color-*, keyword)`, so inside `#prism-boot-masthead` they
+  SHADOWED the host's working tokens with `transparent`/`currentColor`
+  instead of reading them; `--font-mono` was declared as a hardcoded font
+  stack, shadowing the host's documented `--font-mono` token outright. The
+  un-shadowed `--font-mono` is a **visible live-host improvement**: the
+  session-name box now uses the host's own monospace stack whenever the
+  host supplies one, with the hardcoded stack demoted to the fallback
+  position (D-Q7).
+
+### Changed
+- **Documented-token-first chained fallback everywhere** (89 edit sites: 60
+  `var()` occurrences across the boot SVG/HTML/finalize surfaces, 2 sites
+  whose token name was interpolated from a module constant, 27
+  alias-consumption sites). Shape: `var(<documented>, var(<legacy>,
+  <literal>))` -- on the real host the documented token resolves and the rest
+  of the chain is inert; on a host supplying only the legacy namespace,
+  behavior is unchanged; on a host supplying neither, a contract-sourced
+  literal renders a legible, self-paired neutral/ramp-stop palette. See
+  `docs/banner-spec.md` section 5.1 for the full 13-row token map.
+- **The boot masthead alias block is renamed to a private `--pbm-*`
+  namespace** (`--pbm-surface-1`, `--pbm-tint-ok`, `--pbm-font-mono`, etc.),
+  ending the shadowing defect and making a self-reference cycle structurally
+  impossible (the defined set and the host-namespace set are disjoint by
+  construction).
+- **`HTML_STATUS_TINT_VAR` -> `HTML_STATUS_TINT_EXPR`** and
+  **`PHASE_COLOR_VAR` -> `PHASE_COLOR_EXPR`**: both module constants now hold
+  full CSS color expressions (documented token -> legacy token -> literal)
+  instead of a bare property name for the template's own `var(...)` wrapper
+  to consume; the templates now interpolate the constant directly. Neither
+  constant is exported, so the rename is internal.
+- **`SVG_AT_BRIEF_720` re-captured and renamed `SVG_AT_4_14_9`**
+  (`tests/brief-720-boot-masthead-html.test.ts`). Its "locks that guarantee
+  for good" framing was retired -- a byte-exact pin cannot be both permanent
+  and re-specifiable. It now locks the SVG against COLLATERAL drift and moves
+  only on a deliberate, reviewed edit to `renderBootMastheadSvg`; exactly the
+  four lines carrying a `--color-border-tertiary` / `--color-background-primary`
+  var() chain differ from the prior capture.
+
+### Not changed
+- **`BANNER_SPEC_VERSION` stays "4.3" -- deliberately not bumped.** This is a
+  styling-only change to the server's rendering implementation, not a
+  contract change (`docs/banner-spec.md:286`, "Deliberately not versioned").
+  A bump would fire `BANNER_DRIFT` on every boot and finalize until the
+  framework templates catch up; because there is no bump, no diagnostic
+  fires and the companion prism-framework update (below) can land
+  independently, in either order. All 16 pre-existing `"4.3"` assertions
+  across 9 test files are untouched.
+- No markup restructuring, no class fights, no `@media` block added anywhere
+  (dark mode in the normal case comes from the documented host token, which
+  auto-adapts; the degraded no-token case uses mode-neutral literals by
+  construction -- each pill pairs its own surface and text from the same ramp
+  stop, so it is legible in either OS mode without a media query).
+
+### Measured payload growth (four named fixtures, `Buffer.byteLength` utf8, vs the `0224a03c` HEAD baseline; bound was <= +25% per surface)
+| fixture | HEAD bytes | 4.14.9 bytes | growth |
+|---|---|---|---|
+| boot masthead HTML | 7,464 | 7,782 | +4.26% |
+| boot masthead SVG | 2,353 | 2,539 | +7.90% |
+| finalize widget, minimum legal input | 3,100 | 3,734 | +20.45% |
+| finalize widget, maximum legal input | 12,820 | 15,190 | +18.49% |
+
+### Required follow-up (tracked, non-blocking)
+- The prism-framework design of record (`_templates/finalization-banner-spec.md:88-103`)
+  pins the legacy color namespace in its Design Tokens table and cites
+  byte-exact markup. That table needs the same chained-fallback update and a
+  re-capture of its markup pins; because `BANNER_SPEC_VERSION` did not bump,
+  this can ship as a separate, independently-timed PR in that repo.
+
 ## [4.14.8] - 2026-08-17 (synthesis effort knob: SYNTHESIS_EFFORT global override)
 
 **Plan v6 (5-round gate).** Adds a global, opt-in reasoning-effort override
