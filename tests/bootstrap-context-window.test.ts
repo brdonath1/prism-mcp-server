@@ -327,3 +327,29 @@ describe("§5 — staleness is surfaced, not just computed", () => {
       .not.toContain("CONTEXT_WINDOW_STALE");
   });
 });
+
+// ─── brief-801 — claude-fable-5-1 (operator-confirmed 1M chat/Cowork) ─
+
+describe("brief-801 — claude-fable-5-1 context_window", () => {
+  it("chat/Cowork resolves to 1M, matched, no fallback_reason, no staleness warning", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2026-09-03T00:00:00Z")); // the cell's own as_of date
+    const r = await boot({ client_model: "claude-fable-5-1", client_surface: "chat" });
+    expect(r.context_window.tokens).toBe(1_000_000);
+    expect(r.context_window.matched).toBeTruthy();
+    expect(r.context_window.fallback_reason).toBeUndefined();
+    expect((r.diagnostics as Array<{ code: string }>).map((d) => d.code))
+      .not.toContain("CONTEXT_WINDOW_STALE");
+  });
+
+  it("claude_code resolves to 1M, matched, no fallback_reason, no staleness warning", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2026-09-03T00:00:00Z"));
+    const r = await boot({ client_model: "claude-fable-5-1", client_surface: "claude_code" });
+    expect(r.context_window.tokens).toBe(1_000_000);
+    expect(r.context_window.matched).toBeTruthy();
+    expect(r.context_window.fallback_reason).toBeUndefined();
+    expect((r.diagnostics as Array<{ code: string }>).map((d) => d.code))
+      .not.toContain("CONTEXT_WINDOW_STALE");
+  });
+});
