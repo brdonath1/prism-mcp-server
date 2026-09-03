@@ -7,6 +7,15 @@ by `src/utils/banner.ts` (`BANNER_SPEC_VERSION`) plus the prism-framework
 templates; [docs/banner-spec.md](docs/banner-spec.md) is historical reference.
 Banner changes add an entry here.
 
+## [4.14.10] - 2026-09-03 (brief-801: claude-fable-5-1 registered in MODEL_CAPABILITIES)
+
+### Added
+- **`claude-fable-5-1` in the model capability registry** (`src/models.ts`). Operator directive 2026-09-03 (porch-pop-collective S1 INS-1, corroborated by independent-appraisers-coalition-platform INS-1 via support.claude.com): Fable 5.1 in Claude Cowork/chat has a 1,000,000-token context window. `prism_bootstrap` called with `client_model: "claude-fable-5-1", client_surface: "chat"` previously fell back to the 200K `undocumented_floor` with a `CONTEXT_WINDOW_STALE` diagnostic; it now resolves to the operator-confirmed 1M figure. `chat` and `claude_code` are both `1_000_000` tokens under a new `operator_confirmed` provenance tag; `api` is copied verbatim from the existing `claude-fable-5` cell (1M, `documented`, unchanged `as_of`) rather than re-dated, since the API surface was not re-verified by this directive.
+- **New `Provenance` value: `operator_confirmed`.** The registry's provenance enum (`documented | inferred | observed | undocumented_floor`) had no member for an operator-asserted, independently-corroborated window that lacks a citable per-model published statement — exactly this case. Staleness treats it like `documented` (180-day threshold), since it is a confirmed determination rather than a standing request for evidence.
+- **Alias resolution confirmed, no normalizer changes needed.** `claude-fable-5-1`, `fable-5-1`, `Fable 5.1`, and `claude-fable-5.1` all already resolve to the `fable-5-1` registry key through the existing generic `normalizeModelKey` transform (prefix-strip, space/dot-to-dash, dedup) — no hardcoded alias table exists to extend.
+- Tests: +9 (`tests/model-capabilities.test.ts`, `tests/bootstrap-context-window.test.ts`) covering the new cell's chat/claude_code/api resolution, all four aliases, and the absence of `CONTEXT_WINDOW_STALE` at the `prism_bootstrap` tool layer. Full suite: 2201 passed / 6 skipped / 0 failed (baseline 2192/6 at `f4cd043`).
+- This is a registry addition only — the undocumented-floor fallback, the 30-day staleness rule, and every other model's numbers are unchanged. Companion framework-side change: brief-800 on `prism-framework` (separate repo, out of scope here).
+
 ## [4.14.9] - 2026-08-18 (banner color self-containment: chained fallbacks, no more undocumented namespace)
 
 **Plan v3 (3-round gate, FOLDS addendum).** `src/utils/banner.ts` rendered

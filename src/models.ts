@@ -169,6 +169,14 @@ export type Surface = "chat" | "claude_code" | "api";
 export type Provenance =
   /** An explicit published statement about THIS surface. */
   | "documented"
+  /**
+   * Operator directive asserting a window as confirmed fact, corroborated by
+   * independent evidence, but without a citable per-model published
+   * statement naming this exact surface (brief-801). Staleness treats it
+   * like `documented` (180d): a confirmed determination, not a standing
+   * request for evidence.
+   */
+  | "operator_confirmed"
   /** Derived from a catch-all row or an omission ("X and older"), not named. */
   | "inferred"
   /** Measured in a live session; no documentation supports it. */
@@ -225,6 +233,7 @@ export const CONTEXT_WINDOW_FLOOR_TOKENS = 200_000;
  */
 export const STALENESS_THRESHOLD_DAYS: Record<Provenance, number> = {
   documented: 180,
+  operator_confirmed: 180,
   inferred: 30,
   observed: 30,
   undocumented_floor: 30,
@@ -363,6 +372,26 @@ export const MODEL_CAPABILITIES: Record<string, ModelCapability> = {
       ref: PAID_PLANS_REF,
       plan_note: MAX_NO_CREDIT_STEP,
     },
+    api: { tokens: 1_000_000, source: "documented", as_of: REGISTRY_AS_OF },
+  },
+  "fable-5-1": {
+    display: "Fable 5.1",
+    chat: {
+      tokens: 1_000_000,
+      source: "operator_confirmed",
+      as_of: "2026-09-03",
+      note: "Operator-confirmed 2026-09-03 (porch-pop-collective S1 INS-1); corroborated by independent-appraisers-coalition-platform INS-1 (support.claude.com). Cowork is chat-class.",
+    },
+    claude_code: {
+      tokens: 1_000_000,
+      source: "operator_confirmed",
+      as_of: "2026-09-03",
+      note: "Operator-confirmed 2026-09-03 (porch-pop-collective S1 INS-1); corroborated by independent-appraisers-coalition-platform INS-1 (support.claude.com). Cowork is chat-class.",
+    },
+    // Copied verbatim from "fable-5" (brief-801 task 2) — the api surface was
+    // not re-verified by this operator directive, so it keeps its own
+    // "documented" provenance and original as_of rather than inheriting
+    // today's date.
     api: { tokens: 1_000_000, source: "documented", as_of: REGISTRY_AS_OF },
   },
   "mythos-5": {

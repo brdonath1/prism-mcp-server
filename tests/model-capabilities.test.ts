@@ -37,7 +37,7 @@ describe("MODEL_CAPABILITIES shape", () => {
         expect(typeof cell.tokens, `${key}.${surface}.tokens`).toBe("number");
         expect(cell.tokens, `${key}.${surface}.tokens`).toBeGreaterThan(0);
         expect(
-          ["documented", "inferred", "observed", "undocumented_floor"],
+          ["documented", "operator_confirmed", "inferred", "observed", "undocumented_floor"],
           `${key}.${surface}.source`,
         ).toContain(cell.source);
         expect(cell.as_of, `${key}.${surface}.as_of`).toMatch(/^\d{4}-\d{2}-\d{2}$/);
@@ -144,6 +144,33 @@ describe("resolveContextWindow — api surface", () => {
   });
 });
 
+// ─── claude-fable-5-1 (brief-801, operator-confirmed) ─────────────────
+
+describe("resolveContextWindow — claude-fable-5-1", () => {
+  it("chat/Cowork resolves to 1M, operator-confirmed — the S1 bug this brief fixes", () => {
+    const r = resolveContextWindow("claude-fable-5-1", "chat", AT_SEED);
+    expect(r.tokens).toBe(1_000_000);
+    expect(r.source).toBe("operator_confirmed");
+    expect(r.matched).toBe("fable-5-1");
+    expect(r.fallback_reason).toBeUndefined();
+  });
+
+  it("claude_code resolves to 1M, operator-confirmed", () => {
+    const r = resolveContextWindow("claude-fable-5-1", "claude_code", AT_SEED);
+    expect(r.tokens).toBe(1_000_000);
+    expect(r.source).toBe("operator_confirmed");
+    expect(r.matched).toBe("fable-5-1");
+    expect(r.fallback_reason).toBeUndefined();
+  });
+
+  it("api keeps fable-5's own documented figure — not re-dated to today", () => {
+    const r = resolveContextWindow("claude-fable-5-1", "api", AT_SEED);
+    expect(r.tokens).toBe(1_000_000);
+    expect(r.source).toBe("documented");
+    expect(r.as_of).toBe(REGISTRY_AS_OF);
+  });
+});
+
 // ─── floor / degradation paths ───────────────────────────────────────
 
 describe("resolveContextWindow — degradation to a disclosed floor", () => {
@@ -211,6 +238,16 @@ describe("normalizeModelKey", () => {
   it("accepts the RECOMMENDATION_MODELS short codes the classifier already emits", () => {
     expect(resolveContextWindow("opus-4-8", "chat", AT_SEED).tokens).toBe(500_000);
     expect(resolveContextWindow("sonnet-5", "chat", AT_SEED).tokens).toBe(1_000_000);
+  });
+
+  it.each([
+    ["claude-fable-5-1", "canonical API id"],
+    ["fable-5-1", "registry key form"],
+    ["Fable 5.1", "human display label"],
+    ["claude-fable-5.1", "dotted minor version"],
+  ])("alias %s (%s) normalizes and resolves to the fable-5-1 entry (brief-801)", (alias) => {
+    expect(normalizeModelKey(alias)).toBe("fable-5-1");
+    expect(resolveContextWindow(alias, "chat", AT_SEED).matched).toBe("fable-5-1");
   });
 });
 
