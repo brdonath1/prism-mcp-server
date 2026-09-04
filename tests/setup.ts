@@ -23,3 +23,11 @@ process.env.CLAUDE_CODE_OAUTH_TOKEN =
 // Tests needing the unset/disabled behavior set/delete it themselves at
 // runtime (see bootstrap-synthesis-observation.test.ts).
 process.env.RAILWAY_API_TOKEN = process.env.RAILWAY_API_TOKEN || "test-railway-token";
+
+// Same import-time-const problem for RAILWAY_WORKSPACE_ID (brief-802): a
+// per-test-file `process.env.RAILWAY_WORKSPACE_ID = ...` assignment placed
+// before that file's own imports still runs AFTER config.ts has already been
+// evaluated, since static imports are hoisted ahead of top-level statements.
+// Provide a dummy here so railway_create_project's workspace-scoped-token
+// path (input.workspaceId) is exercised by default in tests/railway-lifecycle-tools.test.ts.
+process.env.RAILWAY_WORKSPACE_ID = process.env.RAILWAY_WORKSPACE_ID || "test-workspace-id";

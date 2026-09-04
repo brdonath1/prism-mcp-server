@@ -78,7 +78,7 @@ export const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
  *  fleet-wide). Rollback: BOOT_INDEX_MODE=full (env-only). Merge for this
  *  release is soak-gated on one post-S2b boot observation (see
  *  CLAUDE.md:96). */
-export const SERVER_VERSION = "4.14.10";
+export const SERVER_VERSION = "4.14.11";
 
 /** MCP client timeout is ~60s. All server-side operations must complete within 50s
  *  to leave 10s buffer for transport overhead. This constrains synthesis, draft,
