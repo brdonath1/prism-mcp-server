@@ -587,14 +587,14 @@ export async function deleteVariable(
  * Create a new Railway project.
  *
  * When RAILWAY_WORKSPACE_ID is set (workspace-scoped token), the project is
- * created inside that workspace/team via `teamId`, mirroring how listProjects
+ * created inside that workspace/team via `workspaceId`, mirroring how listProjects
  * scopes queries with `workspaceId`. Railway auto-creates a default
  * `production` environment, returned here so callers can immediately scope
  * follow-up service/volume/domain operations to it.
  */
 export async function createProject(name: string): Promise<RailwayCreatedProject> {
   const input: Record<string, unknown> = { name };
-  if (RAILWAY_WORKSPACE_ID) input.teamId = RAILWAY_WORKSPACE_ID;
+  if (RAILWAY_WORKSPACE_ID) input.workspaceId = RAILWAY_WORKSPACE_ID;
   const query = `mutation($input: ProjectCreateInput!) {
     projectCreate(input: $input) {
       id

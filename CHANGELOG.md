@@ -7,6 +7,13 @@ by `src/utils/banner.ts` (`BANNER_SPEC_VERSION`) plus the prism-framework
 templates; [docs/banner-spec.md](docs/banner-spec.md) is historical reference.
 Banner changes add an entry here.
 
+## [4.14.11] - 2026-09-03 (brief-802: railway_create_project sends workspaceId, not legacy teamId)
+
+### Fixed
+- **`railway_create_project` failed with Railway GraphQL `Workspace not found`, even when `RAILWAY_WORKSPACE_ID` was verified correct** (dashboard "Copy Active Workspace ID" returned the same value the server held). Root cause: `src/railway/client.ts`'s `createProject` set `input.teamId = RAILWAY_WORKSPACE_ID` on the `projectCreate` mutation's `ProjectCreateInput`. Railway migrated teams to workspaces and `ProjectCreateInput` now takes `workspaceId` (the Railway CLI itself moved from `teamId` in 4.5.x to `workspaceId` in 4.57.x — `src/gql/mutations/strings/ProjectCreate.graphql` in the `railwayapp` crate). The list query in the same file already scoped reads with `projects(workspaceId:)`, which is why `railway_list_projects`/reads worked while creates failed. `createProject` now sets `input.workspaceId` instead; its doc comment updated to match.
+- Tests: `tests/railway-lifecycle-tools.test.ts`'s `railway_create_project` happy-path test now sets a `RAILWAY_WORKSPACE_ID` fixture and asserts the captured `projectCreate` mutation input carries `workspaceId` equal to that fixture and no longer contains `teamId`.
+- Scope: this one field (plus its comment and test) only — no other Railway mutation, the list query, env handling, or masking behavior changed.
+
 ## [4.14.10] - 2026-09-03 (brief-801: claude-fable-5-1 registered in MODEL_CAPABILITIES)
 
 ### Added

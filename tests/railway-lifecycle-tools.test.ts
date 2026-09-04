@@ -12,6 +12,7 @@
 // Railway client's token guard.
 process.env.GITHUB_PAT = process.env.GITHUB_PAT || "test-dummy-pat";
 process.env.RAILWAY_API_TOKEN = process.env.RAILWAY_API_TOKEN || "test-railway-token";
+process.env.RAILWAY_WORKSPACE_ID = process.env.RAILWAY_WORKSPACE_ID || "test-workspace-id";
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { registerRailwayCreateProject } from "../src/tools/railway-create-project.js";
@@ -30,6 +31,7 @@ const NEW_SERVICE_ID = "55555555-5555-4555-8555-555555555555";
 const VOLUME_ID = "66666666-6666-4666-8666-666666666666";
 const DOMAIN_ID = "77777777-7777-4777-8777-777777777777";
 const GENERATED_DOMAIN = "web-production.up.railway.app";
+const WORKSPACE_ID = process.env.RAILWAY_WORKSPACE_ID as string;
 
 interface CapturedCall {
   query: string;
@@ -166,7 +168,13 @@ describe("railway_create_project", () => {
 
     // The name flowed through to the projectCreate mutation input.
     const create = calls.find((c) => c.query.includes("projectCreate"));
-    expect((create?.variables.input as { name: string }).name).toBe("brand-new-project");
+    const input = create?.variables.input as { name: string; workspaceId?: string };
+    expect(input.name).toBe("brand-new-project");
+
+    // Workspace-scoped token: sent via the current `workspaceId` field, not
+    // the legacy `teamId` field Railway's workspaces API no longer accepts.
+    expect(input.workspaceId).toBe(WORKSPACE_ID);
+    expect(input).not.toHaveProperty("teamId");
   });
 
   it("returns an error payload when projectCreate fails (failure path)", async () => {
