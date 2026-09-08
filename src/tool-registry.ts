@@ -15,7 +15,7 @@
  * corresponding keyword coverage.
  */
 
-export type ToolCategory = "prism_core" | "railway" | "claude_code" | "github";
+export type ToolCategory = "prism_core" | "railway" | "claude_code" | "github" | "supabase";
 
 /**
  * R17 (S203 F-A2-9): categories the boot payload declares as EXPECTED, which
@@ -88,21 +88,28 @@ export const TOOL_REGISTRY: readonly ToolRegistryEntry[] = [
   { name: "gh_delete_tag", category: "github" },
   { name: "gh_get_branch_protection", category: "github" },
   { name: "gh_set_branch_protection", category: "github" },
+  // Supabase (5), enabled only with configured project scope and server credentials.
+  { name: "supabase_status", category: "supabase" },
+  { name: "supabase_management_request", category: "supabase" },
+  { name: "supabase_project_request", category: "supabase" },
+  { name: "supabase_execute_sql", category: "supabase" },
+  { name: "supabase_apply_migration", category: "supabase" },
 ] as const;
 
 /**
  * Derive the expected tool surface by category, respecting feature flags.
  * Returned shape is suitable for direct inclusion in the bootstrap response.
  *
- * R17: the four registered categories are feature-flag gated; `render` is
+ * Optional registered categories are configuration-gated; `render` is
  * unconditional and unregistered — no server-side flag can observe whether the
  * client's visualize MCP is up, so the server ships the expectation and the
- * client resolves ✓|✗ against it. Parameter list intentionally unchanged.
+ * client resolves ✓|✗ against it. Supabase remains absent until configured.
  */
 export function getExpectedToolSurface(
   railwayEnabled: boolean,
   ccDispatchEnabled: boolean,
   githubEnabled: boolean,
+  supabaseEnabled = false,
 ): Record<ExpectedSurfaceCategory, string[]> {
   const filterByCategory = (cat: ToolCategory) =>
     TOOL_REGISTRY.filter((t) => t.category === cat).map((t) => t.name);
@@ -112,19 +119,20 @@ export function getExpectedToolSurface(
     railway: railwayEnabled ? filterByCategory("railway") : [],
     claude_code: ccDispatchEnabled ? filterByCategory("claude_code") : [],
     github: githubEnabled ? filterByCategory("github") : [],
+    supabase: supabaseEnabled ? filterByCategory("supabase") : [],
     render: [...RENDER_SURFACE_TOOLS],
   };
 }
 
 /**
- * Post-boot tool_search queries that Claude executes after receiving the
- * bootstrap response. Together these three queries empirically load all 32
- * registered tools (verified live S43; expanded for the github category in
+ * Post-boot tool_search queries for the connected client. The first three
+ * cover the original 32 registered tools (verified live S43; expanded for the github category in
  * brief-403/404; "tag" keyword added S105 to surface gh_delete_tag, which
  * was ranking below limit:20 in the github query without it; "protection"
  * added in brief-446 for the two branch-protection tools, mirroring the
  * S105 fix proactively; "create service volume domain project settings
- * delete" added for the six Railway provisioning/lifecycle tools). Each
+ * delete" added for the six Railway provisioning/lifecycle tools). The fourth
+ * covers the five optional Supabase administration tools. Each
  * query's limit is intentionally set to 20 to defeat the relevance-ranking
  * cap that causes `tool_search("prism", limit=20)` to still return only 7
  * results.
@@ -146,4 +154,5 @@ export const POST_BOOT_TOOL_SEARCHES: readonly PostBootToolSearch[] = [
     limit: 20,
   },
   { query: "github branch release tag protection delete create update", limit: 20 },
+  { query: "supabase status management project request execute sql apply migration", limit: 20 },
 ] as const;

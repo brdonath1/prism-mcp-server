@@ -14,8 +14,16 @@ import { logger } from "../utils/logger.js";
  * Timing-safe string comparison — prevents character-by-character brute force.
  */
 function safeTokenCompare(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  return timingSafeEqual(Buffer.from(a), Buffer.from(b));
+  const left = Buffer.from(a);
+  const right = Buffer.from(b);
+  return left.length === right.length && timingSafeEqual(left, right);
+}
+
+/** Trusted request context for privileged tools; IP fallback never grants this proof. */
+export function isBearerAuthenticated(req: Pick<Request, "headers">): boolean {
+  const header = req.headers.authorization;
+  return Boolean(MCP_AUTH_TOKEN && typeof header === "string" &&
+    header.startsWith("Bearer ") && safeTokenCompare(header.slice(7), MCP_AUTH_TOKEN));
 }
 
 /**
@@ -40,6 +48,20 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
   // 1. Always allow health checks (Railway needs this)
   if (req.path === "/health") {
     next();
+    return;
+  }
+
+  // Supabase credentials are also reachable through privileged legacy tools
+  // such as railway_env. Protect the entire service when either credential is
+  // present, even if Supabase configuration is malformed or its tools disabled.
+  // This must fail closed if MCP_AUTH_TOKEN is missing; IP access is not proof.
+  const hasSupabaseCredentials = Boolean(
+    process.env.SUPABASE_ACCESS_TOKEN || process.env.SUPABASE_PROJECT_CREDENTIALS_JSON,
+  );
+  if (hasSupabaseCredentials && !isBearerAuthenticated(req)) {
+    const invalidToken = Boolean(MCP_AUTH_TOKEN && req.headers.authorization?.startsWith("Bearer "));
+    logger.warn("Supabase credential protection rejected unauthenticated request", { path: req.path });
+    res.status(invalidToken ? 403 : 401).json({ error: "A valid Bearer token is required" });
     return;
   }
 

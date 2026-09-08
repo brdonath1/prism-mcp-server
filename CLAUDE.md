@@ -6,8 +6,8 @@ This is the **PRISM MCP Server** — a custom remote MCP (Model Context Protocol
 
 **Owner:** Brian (brdonath1 on GitHub)
 **Framework:** PRISM — current version pinned by the framework repo's core-template; fetched dynamically at bootstrap.
-**Server Version:** 4.14.11
-**Status:** Production — deployed on Railway, serving all active PRISM projects.
+**Server Version:** 4.15.0
+**Status:** Deployed on Railway. Verify the runtime version, release commit and credential readiness before claiming an optional capability is live.
 
 ## What PRISM Is
 
@@ -25,12 +25,13 @@ The MCP server is the v2 evolution — separating Claude into a pure reasoning a
 └───────────────┬───────────────────────────────┘
                 │ MCP Protocol (HTTPS)
 ┌───────────────▼───────────────────────────────┐
-│  PRISM MCP Server (Railway) — v4.14.11        │
-│  32 MCP tools — stateless proxy               │
+│  PRISM MCP Server (Railway) — v4.15.0         │
+│  37 MCP tools — stateless proxy               │
 │  ├── 14 PRISM  (bootstrap/fetch/push/X sentiment) │
 │  ├── 10 Railway (logs/deploy/env/status/CRUD) │
 │  ├──  2 Claude Code (cc_dispatch/cc_status)   │
-│  └──  6 GitHub (branch/release/tag/protect)   │
+│  ├──  6 GitHub (branch/release/tag/protect)   │
+│  └──  5 Supabase (status/APIs/SQL/migrations) │
 │  Parallelized GitHub API operations           │
 │  Server-side validation + synthesis + dedup   │
 └──┬──────────────────────┬──────────────────┬──┘
@@ -42,6 +43,8 @@ The MCP server is the v2 evolution — separating Claude into a pure reasoning a
 │ .prism/ docs │ │                  │ │  subprocess)  │
 └──────────────┘ └──────────────────┘ └───────────────┘
 ```
+
+The inventory above is the complete configured server surface; optional categories register only when their configuration is ready. The five Supabase tools are `supabase_status`, `supabase_management_request`, `supabase_project_request`, `supabase_execute_sql`, and `supabase_apply_migration`. They provide direct project-scoped administration and require verified Bearer authentication independently of IP access. See [Supabase administration, credentials, and limits](docs/supabase-management.md).
 
 **Note:** The MemoryCache singleton and Anthropic client singleton are intentional performance optimizations — safe in stateless mode since they are read-only/config-only (A.6).
 
@@ -73,7 +76,11 @@ The MCP server is the v2 evolution — separating Claude into a pure reasoning a
 | Variable | Required | Purpose |
 |----------|----------|---------|
 | `GITHUB_PAT` | ✅ | GitHub API auth for all read/write operations |
-| `MCP_AUTH_TOKEN` | ✅ (recommended) | Bearer token for MCP client auth. Enforced together with the IP allowlist (auth is OR-composed in code), so technically optional when the allowlist restricts access — but set it. |
+| `MCP_AUTH_TOKEN` | required for Supabase; otherwise recommended | Bearer token for MCP client auth. Supabase credential presence forces valid Bearer authentication across the service, except `/health`, and fails closed if this token is missing. Legacy IP fallback applies only without Supabase credentials and with `AUTH_REQUIRE_BEARER` disabled. |
+| `AUTH_REQUIRE_BEARER` | configured `true` in production | With `MCP_AUTH_TOKEN` configured, requires Bearer authentication instead of IP fallback. Code default is `false`; production was explicitly configured `true` on September 8, 2026, before adding Supabase credentials. The credential-triggered guard in 4.15.0 remains enforced even if this flag is disabled. |
+| `SUPABASE_ACCESS_TOKEN` | required for Supabase tools | Supabase Management API personal access token with permissions for the intended operations. A non-empty value forces service-wide Bearer protection in 4.15.0 even if the rest of Supabase configuration is invalid. |
+| `SUPABASE_PROJECT_REFS` | required for Supabase tools | Comma-separated allowlist of hosted project refs. A tool may default only when exactly one ref is allowed. |
+| `SUPABASE_PROJECT_CREDENTIALS_JSON` | optional; required for Project APIs | Per-project administrative API credentials for REST, Auth, Storage, and Edge Function invocation; see the Supabase guide for the JSON format. A non-empty value independently forces service-wide Bearer protection in 4.15.0. Never commit credential values. |
 | `ANTHROPIC_API_KEY` | optional | Enables intelligence-brief synthesis via the Messages API (cc_dispatch uses CLAUDE_CODE_OAUTH_TOKEN — see below) |
 | `CLAUDE_CODE_OAUTH_TOKEN` | optional | Enables `cc_dispatch`/`cc_status` AND the cc_subprocess synthesis transport (Claude Max subscription OAuth from `claude setup-token`) |
 | `RAILWAY_API_TOKEN` | optional | Enables `railway_*` tools (brief-103) |
@@ -104,7 +111,7 @@ The MCP server is the v2 evolution — separating Claude into a pure reasoning a
 | `SYNTHESIS_INPUT_{MAX,TARGET}_TOKENS` | optional | Synthesis input-budget ceiling/trim-target, estimated tokens (default `120000`/`60000`). Over MAX, `src/ai/input-budget.ts` deterministically priority-trims the assembled brief/PDU input down to TARGET before the call; at-or-under MAX the input is never trimmed (S203 audit F-B21). |
 | `DEFAULT_CONTEXT_WINDOW_TOKENS` | optional | Server-side boot-estimate context window, default `500000` (`src/config.ts`). Feeds only the banner's boot-cost percentage — not the client's own Rule 9 meter, which the server cannot see directly. Superseded per-request by the `MODEL_CAPABILITIES` resolved cell (`docs/model-bump.md` §1) once the client declares `client_model`/`client_surface`. See `docs/model-bump.md` §2 for the pending R2 operator env action. |
 | `CC_DISPATCH_EFFORT` | optional | Reasoning-depth effort for `cc_dispatch` (Anthropic API `effort` parameter). Accepts `low\|medium\|high\|xhigh\|max`; defaults to `max`. |
-| `ENABLE_IP_ALLOWLIST` | optional | Activates the CIDR-based IP allowlist referenced in the `MCP_AUTH_TOKEN` row above (Anthropic's published range plus `ALLOWED_CIDRS`). Defaults to `true`; set `false` to disable (e.g. local development). |
+| `ENABLE_IP_ALLOWLIST` | optional | Activates the CIDR-based IP allowlist (Anthropic's published range plus `ALLOWED_CIDRS`). Defaults to `true`; set `false` to disable (e.g. local development). IP access cannot bypass mandatory Bearer authentication or grant access to Supabase tools. |
 
 > This table covers the load-bearing knobs. `src/config.ts` reads 56 distinct
 > env vars directly (verified 2026-08-14 by exhaustive grep — `SYNTHESIS_*`,
@@ -177,6 +184,7 @@ prism-mcp-server/
 │   ├── github/                   # GitHub API wrapper (fetch-based, parallelized)
 │   ├── ai/                       # Anthropic SDK client for synthesis
 │   ├── railway/                  # Railway GraphQL client (brief-103)
+│   ├── supabase/                 # Project-scoped Management and Project API client
 │   ├── claude-code/              # Agent SDK wrapper + repo clone helpers (brief-104)
 │   │   ├── client.ts             # dispatchTask() — Agent SDK query() wrapper
 │   │   └── repo.ts               # cloneRepo(), commitAndPushBranch()
@@ -197,7 +205,8 @@ prism-mcp-server/
 │   │   ├── railway-*.ts          # 10 Railway tools (read/mutate: brief-103; provision/lifecycle: create-project/service/volume/domain, update-service-settings, delete-service)
 │   │   ├── cc-dispatch.ts        # cc_dispatch (brief-104)
 │   │   ├── cc-status.ts          # cc_status (brief-104)
-│   │   └── gh-*.ts               # 6 GitHub utility tools (branch/release/tag/protection, brief-403/404/446)
+│   │   ├── gh-*.ts               # 6 GitHub utility tools (branch/release/tag/protection, brief-403/404/446)
+│   │   └── supabase.ts           # 5 Supabase administration tools
 │   ├── middleware/               # auth + request logging
 │   ├── validation/               # Server-side push validation
 │   └── utils/                    # doc-resolver, doc-guard, logger, etc.

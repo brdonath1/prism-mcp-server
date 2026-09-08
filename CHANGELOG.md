@@ -7,6 +7,17 @@ by `src/utils/banner.ts` (`BANNER_SPEC_VERSION`) plus the prism-framework
 templates; [docs/banner-spec.md](docs/banner-spec.md) is historical reference.
 Banner changes add an entry here.
 
+## [4.15.0] — 2026-09-08
+
+### Added
+- Direct Supabase project administration: Management API, complete SQL batches, managed migrations, and project Data/Auth/Storage/Functions requests, plus sanitized capability status.
+- Explicit project scope, transport-derived Bearer authentication for every new handler, separate server-held Management and project credentials, bounded JSON/binary/multipart requests, secret redaction and uncertain-mutation receipts without automatic retries.
+- Supabase credential presence requires Bearer authentication across the entire service, including existing environment tools; missing server auth fails closed and health checks remain public.
+- Supabase registry/discovery wiring and [configuration and migration guidance](docs/supabase-management.md). Existing model and dispatch routes are unchanged.
+
+### Fixed
+- Bearer comparison now compares UTF-8 buffer lengths before the timing-safe comparison, avoiding errors for multibyte invalid credentials.
+
 ## [4.14.11] - 2026-09-03 (brief-802: railway_create_project sends workspaceId, not legacy teamId)
 
 ### Fixed
