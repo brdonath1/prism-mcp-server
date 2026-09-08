@@ -17,7 +17,8 @@ import {
 } from "./config.js";
 import { logger } from "./utils/logger.js";
 import { requestLogger } from "./middleware/request-logger.js";
-import { authMiddleware } from "./middleware/auth.js";
+import { authMiddleware, isBearerAuthenticated } from "./middleware/auth.js";
+import { registerSupabaseTools } from "./tools/supabase.js";
 import { registerBootstrap } from "./tools/bootstrap.js";
 import { registerFetch } from "./tools/fetch.js";
 import { registerPush } from "./tools/push.js";
@@ -56,14 +57,15 @@ import { registerShutdownHandlers } from "./shutdown.js";
 import { shutdownReaper } from "./utils/inflight-registry.js";
 
 const app = express();
-app.use(express.json({ limit: "5mb" }));
+// Allows the 4 MiB Supabase binary limit after base64 and MCP JSON encoding.
+app.use(express.json({ limit: "8mb" }));
 app.use(requestLogger);
 app.use(authMiddleware);
 
 /**
  * Create a fresh McpServer instance with all tools registered.
  */
-function createServer(): McpServer {
+function createServer(context: { bearerAuthenticated: boolean }): McpServer {
   const server = new McpServer(
     {
       name: "prism-mcp-server",
@@ -132,6 +134,10 @@ function createServer(): McpServer {
     registerGhSetBranchProtection(server);
   }
 
+  // Direct infrastructure tools, independent of model routing or legacy dispatch.
+  // Every handler requires this transport-derived Bearer proof before accessing credentials.
+  registerSupabaseTools(server, context);
+
   return server;
 }
 
@@ -143,7 +149,7 @@ app.post("/mcp", async (req: Request, res: Response) => {
   const start = Date.now();
 
   try {
-    const server = createServer();
+    const server = createServer({ bearerAuthenticated: isBearerAuthenticated(req) });
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined, // Stateless mode
     });

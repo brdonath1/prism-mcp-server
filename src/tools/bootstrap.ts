@@ -26,6 +26,7 @@ import { getEnvironmentLogs } from "../railway/client.js";
 import { checkStaleActive } from "../utils/stale-active-check.js";
 import { checkSynthesisObservationEvents, type ObservationCheckResult } from "../utils/synthesis-fallback-check.js";
 import { getExpectedToolSurface, POST_BOOT_TOOL_SEARCHES } from "../tool-registry.js";
+import { getSupabaseReadiness } from "../supabase/client.js";
 import { resolveDocPath, resolveDocPushPath, resolveRuleSourceDoc } from "../utils/doc-resolver.js";
 import { logger } from "../utils/logger.js";
 import { bootTestPathCache, templateCache } from "../utils/cache.js";
@@ -2234,7 +2235,7 @@ export function registerBootstrap(server: McpServer): void {
           // sources), so it conflated source-fetched with delivered bytes
           // (measured 99,797 vs the real 115,842). See the post-measurement block.
           files_fetched: filesFetched,
-          expected_tool_surface: getExpectedToolSurface(RAILWAY_ENABLED, CC_DISPATCH_ENABLED, !!GITHUB_PAT),  // D-83 (S44); github category added in brief-403; R17 (F-A2-9) adds the documentational `render` category (visualize:show_widget — client-side, never registered here) so the Rule 1 Tool Surface check can resolve the banner render channel
+          expected_tool_surface: getExpectedToolSurface(RAILWAY_ENABLED, CC_DISPATCH_ENABLED, !!GITHUB_PAT, getSupabaseReadiness().ready),
           post_boot_tool_searches: POST_BOOT_TOOL_SEARCHES,                                     // D-83 (S44)
           recommended_session_settings: recommendedSessionSettings,                             // brief-405 / D-191 — advisory model + thinking suggestion
           autonomous_work_loop: buildAutonomousWorkLoopPayload(),                                // PRISM Autonomous Work Loop v1 — additive post-boot queue autonomy contract

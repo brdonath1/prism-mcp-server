@@ -18,19 +18,20 @@ import {
 } from "../src/tool-registry.js";
 
 describe("D-83 — TOOL_REGISTRY shape", () => {
-  it("contains exactly 32 tools", () => {
-    expect(TOOL_REGISTRY).toHaveLength(32);
+  it("contains exactly 37 tools", () => {
+    expect(TOOL_REGISTRY).toHaveLength(37);
   });
 
-  it("categorizes 14 prism_core, 10 railway, 2 claude_code, 6 github", () => {
+  it("categorizes 14 prism_core, 10 railway, 2 claude_code, 6 github, 5 supabase", () => {
     const counts: Record<ToolCategory, number> = {
       prism_core: 0,
       railway: 0,
       claude_code: 0,
       github: 0,
+      supabase: 0,
     };
     for (const t of TOOL_REGISTRY) counts[t.category]++;
-    expect(counts).toEqual({ prism_core: 14, railway: 10, claude_code: 2, github: 6 });
+    expect(counts).toEqual({ prism_core: 14, railway: 10, claude_code: 2, github: 6, supabase: 5 });
   });
 
   it("has unique tool names", () => {
@@ -40,19 +41,26 @@ describe("D-83 — TOOL_REGISTRY shape", () => {
 });
 
 describe("D-83 — getExpectedToolSurface() feature-flag gating", () => {
-  it("returns all 32 tools when all flags enabled", () => {
-    const surface = getExpectedToolSurface(true, true, true);
+  it("returns all 37 tools when all flags enabled", () => {
+    const surface = getExpectedToolSurface(true, true, true, true);
     expect(surface.prism_core).toHaveLength(14);
     expect(surface.railway).toHaveLength(10);
     expect(surface.claude_code).toHaveLength(2);
     expect(surface.github).toHaveLength(6);
+    expect(surface.supabase).toHaveLength(5);
     const flat = [
       ...surface.prism_core,
       ...surface.railway,
       ...surface.claude_code,
       ...surface.github,
+      ...surface.supabase,
     ];
     expect(flat).toEqual(TOOL_REGISTRY.map((t) => t.name));
+  });
+
+  it("does not advertise Supabase until explicitly configured", () => {
+    expect(getExpectedToolSurface(true, true, true).supabase).toEqual([]);
+    expect(getExpectedToolSurface(true, true, true, true).supabase).toHaveLength(5);
   });
 
   it("excludes railway when RAILWAY_ENABLED=false", () => {
@@ -124,6 +132,11 @@ describe("D-83 — drift guard: src/index.ts registers every TOOL_REGISTRY entry
     gh_delete_tag: "registerGhDeleteTag",
     gh_get_branch_protection: "registerGhGetBranchProtection",
     gh_set_branch_protection: "registerGhSetBranchProtection",
+    supabase_status: "registerSupabaseTools",
+    supabase_management_request: "registerSupabaseTools",
+    supabase_project_request: "registerSupabaseTools",
+    supabase_execute_sql: "registerSupabaseTools",
+    supabase_apply_migration: "registerSupabaseTools",
   };
 
   const indexSource = readFileSync("src/index.ts", "utf-8");
@@ -133,7 +146,7 @@ describe("D-83 — drift guard: src/index.ts registers every TOOL_REGISTRY entry
     (toolName) => {
       const registerFn = REGISTER_FN_BY_TOOL[toolName];
       expect(registerFn, `No REGISTER_FN_BY_TOOL mapping for ${toolName} — update this test`).toBeDefined();
-      expect(indexSource).toContain(`${registerFn}(server)`);
+      expect(indexSource).toContain(toolName.startsWith("supabase_") ? `${registerFn}(server, context)` : `${registerFn}(server)`);
     },
   );
 
@@ -167,8 +180,8 @@ describe("D-83 — coverage guard: every tool has keyword overlap with POST_BOOT
     ).toEqual([]);
   });
 
-  it("POST_BOOT_TOOL_SEARCHES has exactly 3 queries (S43 empirical + brief-403 github)", () => {
-    expect(POST_BOOT_TOOL_SEARCHES).toHaveLength(3);
+  it("POST_BOOT_TOOL_SEARCHES has exactly 4 queries including direct Supabase", () => {
+    expect(POST_BOOT_TOOL_SEARCHES).toHaveLength(4);
   });
 
   it("every query has limit >= 15 (defeats relevance-ranking cap)", () => {
@@ -195,9 +208,9 @@ describe("D-83 — bootstrap response wiring (source-read)", () => {
     expect(bootstrapSource).toMatch(/import\s*\{[^}]*CC_DISPATCH_ENABLED[^}]*\}\s*from\s*["']\.\.\/config\.js["']/);
   });
 
-  it("response object includes expected_tool_surface field wired to getExpectedToolSurface(RAILWAY_ENABLED, CC_DISPATCH_ENABLED, !!GITHUB_PAT)", () => {
+  it("response object includes expected_tool_surface field wired to getExpectedToolSurface(RAILWAY_ENABLED, CC_DISPATCH_ENABLED, !!GITHUB_PAT, getSupabaseReadiness().ready)", () => {
     expect(bootstrapSource).toContain(
-      "expected_tool_surface: getExpectedToolSurface(RAILWAY_ENABLED, CC_DISPATCH_ENABLED, !!GITHUB_PAT)",
+      "expected_tool_surface: getExpectedToolSurface(RAILWAY_ENABLED, CC_DISPATCH_ENABLED, !!GITHUB_PAT, getSupabaseReadiness().ready)",
     );
   });
 

@@ -265,17 +265,20 @@ describe("brief-s205a R9 — KERNEL_SPLIT_DRIFT is rule-aware", () => {
 // ─── R17: render surface expectation ─────────────────────────────────────────
 
 describe("brief-s205a R17 — visualize:show_widget is a declared render surface", () => {
-  it("getExpectedToolSurface returns 5 categories, the fifth being render", () => {
-    const surface = getExpectedToolSurface(true, true, true);
+  it("getExpectedToolSurface returns 6 categories including Supabase and client-side render", () => {
+    const surface = getExpectedToolSurface(true, true, true, true);
     expect(Object.keys(surface).sort()).toEqual(
-      ["claude_code", "github", "prism_core", "railway", "render"],
+      ["claude_code", "github", "prism_core", "railway", "render", "supabase"],
     );
+    expect(surface.supabase).toHaveLength(5);
+    expect(surface.supabase).toContain("supabase_execute_sql");
     expect(surface.render).toEqual(["visualize:show_widget"]);
     expect(surface.render).toEqual([...RENDER_SURFACE_TOOLS]);
   });
 
   it("render is not feature-flag gated — it is client-side, so no server flag can observe it", () => {
     expect(getExpectedToolSurface(false, false, false).render).toEqual(["visualize:show_widget"]);
+    expect(getExpectedToolSurface(false, false, false).supabase).toEqual([]);
   });
 
   it("the boot payload carries the render category alongside core/railway/cc/gh", async () => {
