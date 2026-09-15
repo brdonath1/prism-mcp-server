@@ -1,4 +1,4 @@
-<!-- harness-kit: v1.0.1 owned — this file is written by apply-harness-kit.sh (brdonath1/prism-framework/_templates/harness-kit); hand edits are overwritten on the next apply -->
+<!-- harness-kit: v2.0.0 owned — this file is written by apply-harness-kit.sh (brdonath1/prism-framework/_templates/harness-kit); hand edits are overwritten on the next apply -->
 
 # Session handoffs — pickup protocol (applies to EVERY agent and human in this repo)
 
@@ -181,7 +181,7 @@ which application they are in or which model is running.
 
 | Phrase | Means | Claude Code | Codex app |
 |---|---|---|---|
-| **"Pick up with the latest handoff"** (also "pick up", "resume", "where were we") | §1 in full, then start the handoff's closing action | `.claude/skills/pickup-handoff/SKILL.md` (auto-triggered by the phrase; also `/pickup`). A `SessionStart` hook (`.claude/hooks/session-start-latest.sh`) prints `LATEST.md`, the newest handoff path, PRISM identity, git state and open PRs at every session start, so the pointer is in context before the phrase is even said | `AGENTS.md` § Operator phrases → §1, including the `main`-freshness reconcile in §1.3 |
+| **"Pick up with the latest handoff"** (also "pick up", "resume", "where were we") | §1 in full, then start the handoff's closing action | `.claude/skills/pickup-handoff/SKILL.md` (auto-triggered by the phrase; also `/pickup`). A `SessionStart` hook (`.claude/hooks/session-start-latest.sh`) prints `LATEST.md`, the newest handoff path, PRISM identity, git state and open PRs at every session start, so the pointer is in context before the phrase is even said | `AGENTS.md` § Operator phrases → §1, including the `main`-freshness reconcile in §1.3. The same `SessionStart` hook runs under Codex too, wired in `.codex/hooks.json`, once the two trust steps in §9 are done |
 | **"Finalize session"** (also "finalize", "wrap up", "end the session", "write the handoff") | §5 in full: dated handoff from `TEMPLATE.md` + `LATEST.md` in one commit, PR to `main`, merged when the required checks are green, harness-native state updated last | `.claude/skills/finalize-session/SKILL.md` (also `/finalize`) | `AGENTS.md` § Operator phrases → §5, then the Codex-native checkpoint |
 
 ## 9. Harness-native layers (they run *inside* the two phrases, never instead of them)
@@ -193,6 +193,15 @@ which application they are in or which model is running.
   `.prism/task-queue.md` is patched to match (AmeriSack D-12). Trigger-dispatched brief runs are not
   sessions under this contract: they follow the brief, and they do not write dated handoffs unless
   the brief says so.
+- **Codex hook trust.** The `SessionStart` entry in `.codex/hooks.json` only fires after two
+  one-time operator steps on each machine: the project must be trusted (open the repo in Codex and
+  accept the prompt, or add `[projects."<abs path>"]` + `trust_level = "trusted"` to
+  `~/.codex/config.toml`), and the hook definition itself must be trusted once via `/hooks` in a
+  Codex session in that repo. Until both are done the file sits inert and the phrases still work by
+  hand; the per-machine trust hash covers the entire hook **definition** in `.codex/hooks.json` —
+  command, timeout and statusMessage — not the script body, so edits to `session-start-latest.sh`
+  never need a re-trust while a change to any of those three fields does, and
+  `--dangerously-bypass-hook-trust` is never used.
 - **The Codex lane.** If `AGENTS.md` carries the `codex-lane-managed block`, "Finalize session" also
   runs that block's finalize hook before the final commit, writing the Codex sidecar under
   `.prism/codex/`. That block is owned by the framework's `modules/codex-lane-enrollment.md`, not by

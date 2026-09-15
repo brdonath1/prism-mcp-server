@@ -343,8 +343,8 @@ This repo is enrolled in the Trigger daemon (`brdonath1/trigger`) via the marker
 - Operator merges; Trigger fires `notify` ntfy event on merge
 - State recorded at `~/.trigger/state/prism-mcp-server.json` — the daemon's local state directory on the operator's machine, not a path inside any repo (migrated off the trigger repo's `state/` at the S151 cutover)
 
-<!-- BEGIN: harness-kit-managed block v1.0.1 — do not edit by hand; apply-harness-kit.sh replaces this span -->
-## Cross-harness continuity (Claude ⇄ Codex) — harness kit v1.0.1
+<!-- BEGIN: harness-kit-managed block v2.0.0 — do not edit by hand; apply-harness-kit.sh replaces this span -->
+## Cross-harness continuity (Claude ⇄ Codex) — harness kit v2.0.0
 
 This repository is co-developed by two harnesses: **Claude** (Claude Code, and the Cowork/PRISM
 sessions — this file) and **Codex** (the Codex app — `AGENTS.md`). Both follow one contract,
@@ -362,9 +362,10 @@ other harness until it is merged to `main` and named by the newest dated handoff
   `.claude/skills/finalize-session/SKILL.md`, also `/finalize`.
 - **The `SessionStart` hook** `.claude/hooks/session-start-latest.sh` (wired in
   `.claude/settings.json`) prints `LATEST.md`, the newest handoff path, the PRISM identity fields,
-  local git state and open PRs before the first message, so "Pick up…" never starts blind. Project-
-  specific checks go in `.claude/hooks/session-start-project.sh`, which the hook runs last and
-  never fails on; the kit-owned hook itself is overwritten on every apply.
+  local git state and open PRs before the first message, so "Pick up…" never starts blind. The same
+  script now also serves Codex, wired in `.codex/hooks.json` — so hook edits belong in
+  `.claude/hooks/session-start-project.sh`, which the hook runs last and never fails on, and never
+  in the kit-owned file, which is overwritten on every apply.
 - **Branches:** `claude/<session-label>-<slug>` (Codex uses `codex/…`). One PR per unit into `main`,
   merge commit, required checks green (`gh pr checks`). Never commit to `main`.
 - **End of every session:** a new dated handoff + `docs/handoffs/LATEST.md` in the same commit,

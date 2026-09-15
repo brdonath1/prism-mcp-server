@@ -1,0 +1,17 @@
+{
+  "description": "harness-kit v2.0.0 merge-managed: the SessionStart entry below is maintained by apply-harness-kit.sh (brdonath1/prism-framework/_templates/harness-kit); other hooks in this file are preserved",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$(git rev-parse --show-toplevel)/.claude/hooks/session-start-latest.sh\"",
+            "timeout": 30,
+            "statusMessage": "Loading the latest handoff"
+          }
+        ]
+      }
+    ]
+  }
+}
