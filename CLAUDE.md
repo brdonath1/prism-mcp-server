@@ -343,7 +343,7 @@ This repo is enrolled in the Trigger daemon (`brdonath1/trigger`) via the marker
 - Operator merges; Trigger fires `notify` ntfy event on merge
 - State recorded at `~/.trigger/state/prism-mcp-server.json` — the daemon's local state directory on the operator's machine, not a path inside any repo (migrated off the trigger repo's `state/` at the S151 cutover)
 
-<!-- BEGIN: harness-kit-managed block v3.0.1 — do not edit by hand; apply-harness-kit.sh replaces this span -->
+<!-- BEGIN: harness-kit-managed block v3.0.2 — do not edit by hand; apply-harness-kit.sh replaces this span -->
 ### Rule 0 — Spawn routing (HARD RULE; PRISM D-34)
 
 ⛔ **Every spawned unit — Agent/Task subagent, Workflow `agent()`, Trigger brief fan-out,
@@ -368,7 +368,7 @@ always exits 0; it fails OPEN (allows, one stderr note) only when its own toolin
 unreadable Workflow `scriptPath` is a verification failure and DENIES.
 Full map + hook contract: `reference/spawn-routing.md` (prism-framework).
 
-## Cross-harness continuity (Claude ⇄ Codex) — harness kit v3.0.1
+## Cross-harness continuity (Claude ⇄ Codex) — harness kit v3.0.2
 
 This repository is co-developed by two harnesses: **Claude** (Claude Code, and the Cowork/PRISM
 sessions — this file) and **Codex** (the Codex app — `AGENTS.md`). Both follow one contract,
@@ -392,6 +392,11 @@ other harness until it is merged to `main` and named by the newest dated handoff
   in the kit-owned file, which is overwritten on every apply.
 - **Branches:** `claude/<session-label>-<slug>` (Codex uses `codex/…`). One PR per unit into `main`,
   merge commit, required checks green (`gh pr checks`). Never commit to `main`.
+- **Where to work:** the main clone under `~/development/<slug>`; isolation worktrees live inside the
+  repo (`.claude/worktrees/`) and are removed at session end (the kit excludes `.claude/worktrees/`
+  via `.git/info/exclude` so `git add -A` never stages it); a directory under
+  `~/.codex/worktrees/` is a Codex app copy, never the project — if the SessionStart hook prints
+  `WRONG FOLDER`, reopen the project from the main clone.
 - **End of every session:** a new dated handoff + `docs/handoffs/LATEST.md` in the same commit,
   landed on `main` through a PR, **then** PRISM finalize. Leave no worktree for a merged branch and
   nothing local-only that the other harness would need.

@@ -1,4 +1,4 @@
-<!-- harness-kit: v3.0.1 owned — this file is written by apply-harness-kit.sh (brdonath1/prism-framework/_templates/harness-kit); hand edits are overwritten on the next apply -->
+<!-- harness-kit: v3.0.2 owned — this file is written by apply-harness-kit.sh (brdonath1/prism-framework/_templates/harness-kit); hand edits are overwritten on the next apply -->
 
 # Session handoffs — pickup protocol (applies to EVERY agent and human in this repo)
 
@@ -111,7 +111,10 @@ This project's areas — which directories are the active feature line, which ar
 CI guards each — are named in `CLAUDE.md` and `AGENTS.md`, not here; those two files are the area
 map and this contract governs how sessions hand the areas off. A directory that is a **linked
 worktree** of another clone says so in its area map, naming the main clone, because stash, refs,
-config and worktree registrations are shared with it.
+config and worktree registrations are shared with it. Both harnesses work in the main clone under
+`~/development/<slug>`. App-managed copies (the Codex app's `~/.codex/worktrees/<id>/…`) are off for
+this fleet and are never the project; short-lived isolation worktrees live inside the repo and are
+merged or removed before the session finalizes.
 
 `.prism/` is PRISM's own area: living documents written by the PRISM MCP server at boot and
 finalize. Do not hand-edit them outside a harness's finalize path.
