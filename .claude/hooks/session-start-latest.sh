@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# harness-kit: v3.0.0 owned — written by apply-harness-kit.sh (brdonath1/prism-framework/_templates/harness-kit); hand edits are overwritten on the next apply
+# harness-kit: v3.0.1 owned — written by apply-harness-kit.sh (brdonath1/prism-framework/_templates/harness-kit); hand edits are overwritten on the next apply
 # SessionStart hook — prints the cross-harness pointer (docs/handoffs/README.md §0–§1) so every
 # session in this repo starts with LATEST.md, the newest handoff, PRISM identity, git state and
 # open PRs already in context. ONE script, BOTH harnesses: Claude Code runs it from the
