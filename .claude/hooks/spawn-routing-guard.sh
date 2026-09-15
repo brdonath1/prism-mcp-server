@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# harness-kit: v3.0.0 owned — written by apply-harness-kit.sh (brdonath1/prism-framework/_templates/harness-kit); hand edits are overwritten on the next apply
+# harness-kit: v3.0.1 owned — written by apply-harness-kit.sh (brdonath1/prism-framework/_templates/harness-kit); hand edits are overwritten on the next apply
 # PreToolUse hook — Rule 0 spawn routing guard (D-34): every Task, Agent or Workflow
 # spawn must carry an explicit class-routed model pin (haiku|sonnet|opus|fable); the
 # host model is NEVER the inherited default. Denies any Task/Agent spawn with no
@@ -10,7 +10,7 @@
 # Machine-wide, no scope gate: no roster check, no .prism/ check — this fires
 # wherever it is wired (per-repo via harness-kit v3 at .claude/hooks/, and at user
 # scope as ~/.claude/hooks/prism-spawn-routing-guard.sh so it runs in EVERY Claude
-# Code session on this machine, identical bytes after 3.0.0 rendering).
+# Code session on this machine, identical bytes after 3.0.1 rendering).
 # See reference/spawn-routing.md and .prism/decisions/_INDEX.md D-34.
 #
 # Contract: Claude Code PreToolUse hook. Reads stdin JSON {tool_name, tool_input,

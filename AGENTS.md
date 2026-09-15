@@ -1,6 +1,6 @@
 # AGENTS.md — PRISM MCP Server
 
-<!-- BEGIN: harness-kit-managed block v3.0.0 — do not edit by hand; apply-harness-kit.sh replaces this span -->
+<!-- BEGIN: harness-kit-managed block v3.0.1 — do not edit by hand; apply-harness-kit.sh replaces this span -->
 ### Rule 0 — Spawn routing (HARD RULE; PRISM D-34)
 
 ⛔ **Every spawned unit carries an explicit class-routed model pin; the host model is NEVER
@@ -10,6 +10,18 @@ reviews/specs → `opus`; binding verdicts at gates ONLY → `fable`, and a Fabl
 those in-session, never by spawn. An unpinned spawn is a defect: stop and re-issue it pinned.
 Full map + hook contract: `reference/spawn-routing.md` (prism-framework).
 
+**Codex alias cross-walk (the same map on the Codex ladder):** mechanical / seeding /
+stat-gathering → `gpt-5.6-luna`/low or `gpt-5.6-terra`/low; review-verified builds →
+`gpt-5.6-terra`/medium (`gpt-5.6-sol` for the hardest); reviews / specs → `gpt-5.6-sol`/high;
+binding verdicts at gates → `gpt-6-astra`/high, which on Codex is also the worker tier for
+exceptionally difficult reasoning and substantial security/financial analysis; the host
+(astra/ultra) renders the verdict itself where delegation adds no independent judgment. Every
+Codex spawn supplies model and effort explicitly. For `collaboration.spawn_agent`, use
+`fork_turns="none"` or bounded history — a full-history fork inherits the parent and rejects the
+override, which is exactly the Rule 0 defect. A worker at `xhigh`/`max`/`ultra` needs a
+task-specific justification. Source of
+the ladder: `~/.codex/AGENTS.md` "Machine-wide Codex host and delegation policy — September 15, 2026".
+
 Codex has no Claude `Agent`/`Workflow` tool, so no hook can catch this on the Codex side —
 the rule binds you at authoring time instead. It governs **any brief, workflow script or
 instruction you write for a Claude session** (every spawn you specify names its model
@@ -18,7 +30,7 @@ correct for the unit, per the same map. A Claude session running a brief you wro
 its unpinned spawns DENIED by `.claude/hooks/spawn-routing-guard.sh` — an unpinned spawn in
 your brief becomes that session's blocked step, not a silent upgrade to the host model.
 
-## Operator phrases — harness kit v3.0.0 (the same two phrases Claude uses; docs/handoffs/README.md §8)
+## Operator phrases — harness kit v3.0.1 (the same two phrases Claude uses; docs/handoffs/README.md §8)
 
 This repository is co-developed by Codex (this file) and Claude (Claude Code and the Cowork/PRISM
 sessions, `CLAUDE.md`). Both follow one contract, `docs/handoffs/README.md`, and `main` is the only

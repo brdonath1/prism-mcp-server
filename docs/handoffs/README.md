@@ -1,4 +1,4 @@
-<!-- harness-kit: v3.0.0 owned — this file is written by apply-harness-kit.sh (brdonath1/prism-framework/_templates/harness-kit); hand edits are overwritten on the next apply -->
+<!-- harness-kit: v3.0.1 owned — this file is written by apply-harness-kit.sh (brdonath1/prism-framework/_templates/harness-kit); hand edits are overwritten on the next apply -->
 
 # Session handoffs — pickup protocol (applies to EVERY agent and human in this repo)
 
@@ -96,12 +96,22 @@ window is the one failure this protocol cannot repair after the fact.
   `still_referenced_branches`.
 - Never rewrite published history; never `reset --hard`, `checkout -- .`, `clean` or `stash` in a
   path you did not create.
+- Coordinate lockfiles, generated outputs, ports, dev servers, databases, queues, caches and
+  deployment targets before touching a checkout another session may use — worktrees do NOT isolate
+  those resources. Agree one owner or sequence the work, and report the conflict instead of taking
+  ownership.
+- `git -c <key>=<value>`, never `git config`, in any shared checkout — a persisted config change
+  breaks the other harness's session after yours.
+- Never remove, prune or clean a worktree that another harness's session may be mid-turn in — check
+  its continuity registry or last activity first.
 
 ## 3. Areas of the repo (so two harnesses do not collide)
 
 This project's areas — which directories are the active feature line, which are archival, and which
 CI guards each — are named in `CLAUDE.md` and `AGENTS.md`, not here; those two files are the area
-map and this contract governs how sessions hand the areas off.
+map and this contract governs how sessions hand the areas off. A directory that is a **linked
+worktree** of another clone says so in its area map, naming the main clone, because stash, refs,
+config and worktree registrations are shared with it.
 
 `.prism/` is PRISM's own area: living documents written by the PRISM MCP server at boot and
 finalize. Do not hand-edit them outside a harness's finalize path.
