@@ -343,4 +343,54 @@ This repo is enrolled in the Trigger daemon (`brdonath1/trigger`) via the marker
 - Operator merges; Trigger fires `notify` ntfy event on merge
 - State recorded at `~/.trigger/state/prism-mcp-server.json` — the daemon's local state directory on the operator's machine, not a path inside any repo (migrated off the trigger repo's `state/` at the S151 cutover)
 
+<!-- BEGIN: harness-kit-managed block v1.0.1 — do not edit by hand; apply-harness-kit.sh replaces this span -->
+## Cross-harness continuity (Claude ⇄ Codex) — harness kit v1.0.1
+
+This repository is co-developed by two harnesses: **Claude** (Claude Code, and the Cowork/PRISM
+sessions — this file) and **Codex** (the Codex app — `AGENTS.md`). Both follow one contract,
+**`docs/handoffs/README.md`**, and `main` is the only integration line. Nothing is "done" for the
+other harness until it is merged to `main` and named by the newest dated handoff.
+
+- **Start of every session:** `git fetch origin && git show origin/main:docs/handoffs/LATEST.md`,
+  then the newest handoff by git log (README §1). When `LATEST.md` says `handoff: none`,
+  `.prism/handoff.md` is the checkpoint. If your own checkpoint is behind `origin/main`, `main`
+  wins: branch from `origin/main` and treat the checkpoint's next action as possibly already done
+  until `LATEST.md` confirms it.
+- **The two operator phrases** (README §8): "Pick up with the latest handoff" (also "pick up",
+  "resume", "where were we") → `.claude/skills/pickup-handoff/SKILL.md`, also `/pickup`;
+  "Finalize session" (also "finalize", "wrap up", "end the session", "write the handoff") →
+  `.claude/skills/finalize-session/SKILL.md`, also `/finalize`.
+- **The `SessionStart` hook** `.claude/hooks/session-start-latest.sh` (wired in
+  `.claude/settings.json`) prints `LATEST.md`, the newest handoff path, the PRISM identity fields,
+  local git state and open PRs before the first message, so "Pick up…" never starts blind. Project-
+  specific checks go in `.claude/hooks/session-start-project.sh`, which the hook runs last and
+  never fails on; the kit-owned hook itself is overwritten on every apply.
+- **Branches:** `claude/<session-label>-<slug>` (Codex uses `codex/…`). One PR per unit into `main`,
+  merge commit, required checks green (`gh pr checks`). Never commit to `main`.
+- **End of every session:** a new dated handoff + `docs/handoffs/LATEST.md` in the same commit,
+  landed on `main` through a PR, **then** PRISM finalize. Leave no worktree for a merged branch and
+  nothing local-only that the other harness would need.
+- **Do not** edit Codex's own state (`~/.codex/`, any Codex-native registry or checkpoint) even on
+  the same machine, and do not delete a `codex/*` branch that `LATEST.md` lists under
+  `still_referenced_branches`.
+- **One active primary per area.** The operator pauses the other harness's scheduled automation
+  while this one is working.
+- **Trigger-dispatched brief runs are not sessions under this contract**: they follow the brief, not
+  the phrases, and write no dated handoff unless the brief says so.
+
+### PRISM in Claude Code
+
+- Identity comes from `.prism/project-identity.md` (committed mirror of the Project Knowledge note
+  "PRISM Project Identity") — never from the clone path, a chat title or prior conversation.
+- Call `prism_bootstrap(project_slug="prism-mcp-server", opening_message=…, client_model=…,
+  client_surface="claude_code")` only after the `LATEST.md` check; render `banner_text` inline
+  (there is no widget in Claude Code). Where PRISM's Next Steps and the newest dated handoff
+  disagree, the dated handoff wins and `.prism/task-queue.md` is patched to match (AmeriSack D-12).
+- One-time setup per machine, not per project (token from the vault, exported in the shell as
+  `PRISM_MCP_TOKEN`; never commit it, never paste it into a handoff):
+  `claude mcp add --scope user --transport http prism https://prism-mcp-server-production.up.railway.app/mcp --header "Authorization: Bearer $PRISM_MCP_TOKEN"`.
+  Without it the two skills run without PRISM and say so in their reports; the dated handoff is
+  complete on its own.
+<!-- END: harness-kit-managed block -->
+
 <!-- EOF: CLAUDE.md -->
