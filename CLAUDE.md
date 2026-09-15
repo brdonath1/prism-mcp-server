@@ -343,8 +343,29 @@ This repo is enrolled in the Trigger daemon (`brdonath1/trigger`) via the marker
 - Operator merges; Trigger fires `notify` ntfy event on merge
 - State recorded at `~/.trigger/state/prism-mcp-server.json` — the daemon's local state directory on the operator's machine, not a path inside any repo (migrated off the trigger repo's `state/` at the S151 cutover)
 
-<!-- BEGIN: harness-kit-managed block v2.0.0 — do not edit by hand; apply-harness-kit.sh replaces this span -->
-## Cross-harness continuity (Claude ⇄ Codex) — harness kit v2.0.0
+<!-- BEGIN: harness-kit-managed block v3.0.0 — do not edit by hand; apply-harness-kit.sh replaces this span -->
+### Rule 0 — Spawn routing (HARD RULE; PRISM D-34)
+
+⛔ **Every spawned unit — Agent/Task subagent, Workflow `agent()`, Trigger brief fan-out,
+review panel — carries an explicit class-routed `model:` pin; the host model is NEVER the
+inherited default, whatever hosts the session.** Map: mechanical/seeding/stat-gathering →
+`haiku` or `sonnet`; review-verified builds → `sonnet` (`opus` for the hardest);
+reviews/specs → `opus`; binding verdicts at gates ONLY → `fable`, and a Fable host renders
+those in-session, never by spawn. An unpinned spawn is a defect: stop and re-issue it
+pinned.
+
+This is enforced, not just written down: the kit installs `.claude/hooks/spawn-routing-guard.sh`
+and wires it in `.claude/settings.json` as a `PreToolUse` hook on `Task|Agent|Workflow`. It
+DENIES a Task/Agent spawn carrying no `model`, or a model outside `haiku|sonnet|opus|fable`
+(`subagent_type: "fork"` is exempt — a fork inherits by design), and a `Workflow` whose script
+holds an `agent()` call whose options object has no TOP-LEVEL `model:` key (a `model:` inside a
+string or a nested object does not count), naming the offending line. The deny text repeats the
+map, so a refused spawn tells you exactly how to re-issue it. The guard never edits anything and
+always exits 0; it fails OPEN (allows, one stderr note) only when its own tooling is missing — an
+unreadable Workflow `scriptPath` is a verification failure and DENIES.
+Full map + hook contract: `reference/spawn-routing.md` (prism-framework).
+
+## Cross-harness continuity (Claude ⇄ Codex) — harness kit v3.0.0
 
 This repository is co-developed by two harnesses: **Claude** (Claude Code, and the Cowork/PRISM
 sessions — this file) and **Codex** (the Codex app — `AGENTS.md`). Both follow one contract,

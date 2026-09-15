@@ -10,6 +10,18 @@
           }
         ]
       }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Task|Agent|Workflow",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/spawn-routing-guard.sh\"",
+            "timeout": 10
+          }
+        ]
+      }
     ]
   }
 }
