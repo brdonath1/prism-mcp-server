@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# harness-kit: v3.0.1 owned — written by apply-harness-kit.sh (brdonath1/prism-framework/_templates/harness-kit); hand edits are overwritten on the next apply
+# harness-kit: v3.0.2 owned — written by apply-harness-kit.sh (brdonath1/prism-framework/_templates/harness-kit); hand edits are overwritten on the next apply
 # SessionStart hook — prints the cross-harness pointer (docs/handoffs/README.md §0–§1) so every
 # session in this repo starts with LATEST.md, the newest handoff, PRISM identity, git state and
 # open PRs already in context. ONE script, BOTH harnesses: Claude Code runs it from the
@@ -20,6 +20,28 @@
 set -u
 cd "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}" 2>/dev/null || exit 0
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 0
+# Layer 3 — wrong-folder detection (bounded, read-only, never fails the exit-0 contract).
+# The Codex app's experimental worktrees feature (operator-owned; /experimental or
+# [features] worktrees in ~/.codex/config.toml) creates app-managed copies under
+# ~/.codex/worktrees/<id>/<Project Name>. That is not the project: docs/handoffs/README.md
+# § area map says every session works in the main clone under ~/development/<slug>. Detect
+# it here, not gate it — the kit only instructs and detects; the feature flag is Codex's.
+PHYS_CWD="$(pwd -P 2>/dev/null || pwd)"
+COMMON_DIR="$(git rev-parse --git-common-dir 2>/dev/null || true)"
+COMMON_DIR_ABS="$COMMON_DIR"
+if [ -n "$COMMON_DIR" ]; then
+  COMMON_DIR_ABS="$(cd "$COMMON_DIR" 2>/dev/null && pwd -P || true)"
+  [ -n "$COMMON_DIR_ABS" ] || COMMON_DIR_ABS="$COMMON_DIR"
+fi
+MAIN_CLONE="$(git worktree list --porcelain 2>/dev/null | sed -n '1s/^worktree //p')"
+[ -n "$MAIN_CLONE" ] || MAIN_CLONE="${COMMON_DIR_ABS%/.git}"
+HOME_P="$(cd "${HOME:-/nonexistent}" 2>/dev/null && pwd -P || printf '%s' "${HOME:-}")"
+case "$PHYS_CWD" in
+  "$HOME_P/.codex/worktrees/"*)
+    echo "!!! WRONG FOLDER — this session is running in a Codex app worktree: $PHYS_CWD"
+    echo "    The project is the main clone at ${MAIN_CLONE:-<unknown>} — stop, push any commits to their codex/* branch, and reopen it from ~/development/<slug>. Worktrees should be OFF in the Codex app (/experimental). See docs/handoffs/README.md § area map."
+    ;;
+esac
 tmo() { local s="$1"; shift; if command -v timeout >/dev/null 2>&1; then timeout "$s" "$@"; elif command -v gtimeout >/dev/null 2>&1; then gtimeout "$s" "$@"; elif command -v perl >/dev/null 2>&1; then perl -e 'my $t = shift @ARGV; my $g = fork; if (!defined $g) { exec { $ARGV[0] } @ARGV; exit 127 } if ($g == 0) { eval { setpgrp(0, 0) }; exec { $ARGV[0] } @ARGV; exit 127 } $SIG{ALRM} = sub { kill("TERM", -$g) or kill("TERM", $g); select(undef, undef, undef, 0.5); kill("KILL", -$g) or kill("KILL", $g); waitpid($g, 0); exit 124 }; alarm $t; waitpid($g, 0); my $w = $?; alarm 0; exit(($w & 127) ? 128 + ($w & 127) : ($w >> 8))' "$s" "$@"; else "$@"; fi; }
 tmo 12 git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=10 fetch origin --prune --quiet 2>/dev/null || echo "(git fetch failed or timed out — pointer below may be stale)"
 DEFAULT_BRANCH="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"

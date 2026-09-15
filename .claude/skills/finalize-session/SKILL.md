@@ -2,7 +2,7 @@
 name: finalize-session
 description: End the working session by writing the cross-harness handoff and leaving the repository pristine (Claude ⇄ Codex contract). Use when the operator says "Finalize session", "finalize", "wrap up", "end the session", "write the handoff", or when context is nearly exhausted.
 ---
-<!-- harness-kit: v3.0.1 owned — this file is written by apply-harness-kit.sh (brdonath1/prism-framework/_templates/harness-kit); hand edits are overwritten on the next apply -->
+<!-- harness-kit: v3.0.2 owned — this file is written by apply-harness-kit.sh (brdonath1/prism-framework/_templates/harness-kit); hand edits are overwritten on the next apply -->
 
 # Finalize session (Claude Code)
 

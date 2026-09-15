@@ -1,6 +1,6 @@
 # AGENTS.md — PRISM MCP Server
 
-<!-- BEGIN: harness-kit-managed block v3.0.1 — do not edit by hand; apply-harness-kit.sh replaces this span -->
+<!-- BEGIN: harness-kit-managed block v3.0.2 — do not edit by hand; apply-harness-kit.sh replaces this span -->
 ### Rule 0 — Spawn routing (HARD RULE; PRISM D-34)
 
 ⛔ **Every spawned unit carries an explicit class-routed model pin; the host model is NEVER
@@ -30,7 +30,7 @@ correct for the unit, per the same map. A Claude session running a brief you wro
 its unpinned spawns DENIED by `.claude/hooks/spawn-routing-guard.sh` — an unpinned spawn in
 your brief becomes that session's blocked step, not a silent upgrade to the host model.
 
-## Operator phrases — harness kit v3.0.1 (the same two phrases Claude uses; docs/handoffs/README.md §8)
+## Operator phrases — harness kit v3.0.2 (the same two phrases Claude uses; docs/handoffs/README.md §8)
 
 This repository is co-developed by Codex (this file) and Claude (Claude Code and the Cowork/PRISM
 sessions, `CLAUDE.md`). Both follow one contract, `docs/handoffs/README.md`, and `main` is the only
@@ -57,6 +57,15 @@ the need for them to say more.
   are, nothing is lost: "Pick up with the latest handoff" runs §1 by hand exactly as before; only
   the pre-loading is missing.
 - Branches: `codex/<session-label>-<slug>`, one PR per unit into `main`. Never commit to `main`.
+- **Where to work:** in the MAIN clone under `~/development/<slug>` (the folder named in
+  `.prism/project-identity.md` and your area map), never in an app-managed copy. The Codex app's
+  experimental worktrees feature (`/experimental`, `[features] worktrees` in `~/.codex/config.toml`)
+  stays OFF for this fleet; a directory under `~/.codex/worktrees/<id>/<Project Name>` is not the
+  project. If a session finds itself there: stop, push any commits to their `codex/*` branch, and
+  reopen the project from `~/development/<slug>`. Short-lived isolation for overlapping work is a
+  git worktree inside the repo (e.g. `.claude/worktrees/`), merged or removed before the session
+  finalizes (the kit excludes `.claude/worktrees/` via `.git/info/exclude` so `git add -A` never
+  stages it).
 - Record decisions in the handoff's §4; the next Claude session ledgers them into `.prism/decisions/`.
 - If this file also carries the `codex-lane-managed block`, "Finalize session" runs that block's
   finalize hook before the session's final commit.
