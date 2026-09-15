@@ -1,4 +1,4 @@
-<!-- harness-kit: v2.0.0 owned — this file is written by apply-harness-kit.sh (brdonath1/prism-framework/_templates/harness-kit); hand edits are overwritten on the next apply -->
+<!-- harness-kit: v3.0.0 owned — this file is written by apply-harness-kit.sh (brdonath1/prism-framework/_templates/harness-kit); hand edits are overwritten on the next apply -->
 
 # Session handoffs — pickup protocol (applies to EVERY agent and human in this repo)
 

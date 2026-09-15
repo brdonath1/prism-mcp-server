@@ -1,7 +1,24 @@
 # AGENTS.md — PRISM MCP Server
 
-<!-- BEGIN: harness-kit-managed block v2.0.0 — do not edit by hand; apply-harness-kit.sh replaces this span -->
-## Operator phrases — harness kit v2.0.0 (the same two phrases Claude uses; docs/handoffs/README.md §8)
+<!-- BEGIN: harness-kit-managed block v3.0.0 — do not edit by hand; apply-harness-kit.sh replaces this span -->
+### Rule 0 — Spawn routing (HARD RULE; PRISM D-34)
+
+⛔ **Every spawned unit carries an explicit class-routed model pin; the host model is NEVER
+the inherited default, whatever hosts the session.** Map: mechanical/seeding/stat-gathering →
+`haiku` or `sonnet`; review-verified builds → `sonnet` (`opus` for the hardest);
+reviews/specs → `opus`; binding verdicts at gates ONLY → `fable`, and a Fable host renders
+those in-session, never by spawn. An unpinned spawn is a defect: stop and re-issue it pinned.
+Full map + hook contract: `reference/spawn-routing.md` (prism-framework).
+
+Codex has no Claude `Agent`/`Workflow` tool, so no hook can catch this on the Codex side —
+the rule binds you at authoring time instead. It governs **any brief, workflow script or
+instruction you write for a Claude session** (every spawn you specify names its model
+alias), and **your own sub-agent selection**: pick the minimum model that is fast and still
+correct for the unit, per the same map. A Claude session running a brief you wrote will have
+its unpinned spawns DENIED by `.claude/hooks/spawn-routing-guard.sh` — an unpinned spawn in
+your brief becomes that session's blocked step, not a silent upgrade to the host model.
+
+## Operator phrases — harness kit v3.0.0 (the same two phrases Claude uses; docs/handoffs/README.md §8)
 
 This repository is co-developed by Codex (this file) and Claude (Claude Code and the Cowork/PRISM
 sessions, `CLAUDE.md`). Both follow one contract, `docs/handoffs/README.md`, and `main` is the only
