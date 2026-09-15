@@ -1,5 +1,5 @@
 <!--
-harness-kit: v1.0.1 owned — this file is written by apply-harness-kit.sh (brdonath1/prism-framework/_templates/harness-kit); hand edits are overwritten on the next apply
+harness-kit: v2.0.0 owned — this file is written by apply-harness-kit.sh (brdonath1/prism-framework/_templates/harness-kit); hand edits are overwritten on the next apply
 HOW TO USE THIS TEMPLATE (delete this comment block when filling it in)
 - This file is the ONLY context the next session will have, and that session may run in a
   different application (Claude Code, Cowork/PRISM, or the Codex app) on a different model.
