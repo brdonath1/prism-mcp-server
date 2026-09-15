@@ -1,0 +1,29 @@
+name: harness-contract
+# Cross-harness contract check (Claude Code ⇄ Codex). Deliberately NOT part of the harness kit
+# (the kit never touches CI). Self-contained: no cross-repo fetch, no secrets, ~10 s on ubuntu.
+# Verifies the shared surface both harnesses rely on is present and well-formed on every PR.
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Harness contract present and well-formed
+        shell: bash
+        run: |
+          set -u; fail=0
+          chk() { if eval "$2"; then echo "ok    $1"; else echo "FAIL  $1"; fail=1; fi; }
+          chk "CLAUDE.md carries the harness-kit managed block"  'grep -q "<!-- BEGIN: harness-kit-managed block" CLAUDE.md && grep -q "<!-- END: harness-kit-managed block -->" CLAUDE.md'
+          chk "AGENTS.md carries the harness-kit managed block"  'grep -q "<!-- BEGIN: harness-kit-managed block" AGENTS.md && grep -q "<!-- END: harness-kit-managed block -->" AGENTS.md'
+          chk "CLAUDE.md and AGENTS.md both carry Rule 0"         'grep -q "Rule 0" CLAUDE.md && grep -q "Rule 0" AGENTS.md'
+          chk "docs/handoffs contract files present"             'test -f docs/handoffs/README.md && test -f docs/handoffs/TEMPLATE.md && test -f docs/handoffs/LATEST.md'
+          chk "LATEST.md names an existing handoff or none"      'h=$(grep -oE "handoff-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{4}\.md" docs/handoffs/LATEST.md | head -1); if [ -n "$h" ]; then test -f "docs/handoffs/$h"; else grep -qi "handoff: none" docs/handoffs/LATEST.md; fi'
+          chk "kit hook scripts parse"                            'bash -n .claude/hooks/session-start-latest.sh && bash -n .claude/hooks/spawn-routing-guard.sh'
+          chk ".claude/settings.json is valid JSON with the guard" 'python3 -c "import json;d=json.load(open(\".claude/settings.json\"));import sys;sys.exit(0 if any(\"spawn-routing-guard\" in json.dumps(g) for g in d.get(\"hooks\",{}).get(\"PreToolUse\",[])) else 1)"'
+          chk ".codex/hooks.json is valid JSON"                   'python3 -c "import json;json.load(open(\".codex/hooks.json\"))"'
+          chk "identity file present"                             'test -f .prism/project-identity.md'
+          exit $fail

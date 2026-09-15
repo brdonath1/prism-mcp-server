@@ -415,4 +415,8 @@ other harness until it is merged to `main` and named by the newest dated handoff
   complete on its own.
 <!-- END: harness-kit-managed block -->
 
+## Linked worktrees (shared `.git`)
+
+This repository has a flat sibling directory that is a LINKED WORKTREE of this clone, not an independent repository: `~/development/prism-mcp-supabase-management` (branch `codex/supabase-management`). Stash, refs, config and worktree registrations are shared with this clone. Never `git checkout main` in a parked worktree; never remove or clean a worktree another harness session may be mid-turn in.
+
 <!-- EOF: CLAUDE.md -->
