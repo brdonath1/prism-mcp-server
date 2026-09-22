@@ -7,6 +7,19 @@ by `src/utils/banner.ts` (`BANNER_SPEC_VERSION`) plus the prism-framework
 templates; [docs/banner-spec.md](docs/banner-spec.md) is historical reference.
 Banner changes add an entry here.
 
+## [4.15.1] — 2026-09-22
+
+### Changed
+- Publish pending document updates, provenance archive and consumed-batch marker
+  together in one atomic commit instead of separate per-file publications.
+- Recompute the transaction on conflicts; failed plans publish no partial targets.
+
+### Fixed
+- Bind safe mutations to the HEAD captured before content reads. Reject a changed
+  or unknown revision rather than applying stale content to a newer tree.
+
+See [publication transactions](docs/publication-transactions.md) for scope and rollout.
+
 ## [4.15.0] — 2026-09-08
 
 ### Added

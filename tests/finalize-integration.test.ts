@@ -18,7 +18,7 @@ vi.mock("../src/github/client.js", () => ({
   fileExists: vi.fn(),
   createAtomicCommit: vi.fn(),
   getDefaultBranch: vi.fn(),
-  getHeadSha: vi.fn(),
+  getHeadSha: vi.fn().mockResolvedValue("snapshot-head"),
 }));
 
 // Mock the AI synthesis modules
@@ -53,9 +53,10 @@ import {
   getCommit,
   deleteFile,
   createAtomicCommit,
+  getHeadSha,
 } from "../src/github/client.js";
 import { synthesize } from "../src/ai/client.js";
-import { generateIntelligenceBrief } from "../src/ai/synthesize.js";
+import { generateIntelligenceBrief, generatePendingDocUpdates } from "../src/ai/synthesize.js";
 import { registerFinalize } from "../src/tools/finalize.js";
 
 const mockFetchFile = vi.mocked(fetchFile);
@@ -167,6 +168,7 @@ function parseResult(result: { content: Array<{ type: string; text: string }> })
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(getHeadSha).mockReset().mockResolvedValue("snapshot-head");
 });
 
 // ── Audit Phase ─────────────────────────────────────────────────────────────────
@@ -740,6 +742,22 @@ describe("prism_finalize commit phase null-safe HEAD comparison", () => {
 // ── Background Synthesis on Finalization (D-78, FINDING-5) ─────────────────────
 
 describe("prism_finalize background synthesis (D-78, FINDING-5)", () => {
+  it("retains a deferred legacy batch instead of automatically replacing it with synthesis", async () => {
+    setupHappyPathMocks();
+    mockGenerateIntelligenceBrief.mockResolvedValue({ success: true });
+    const docs = buildDocMap({
+      "pending-doc-updates.md": "# Pending\n## architecture.md\n### Proposed: Existing proposal\nLegacy text\n<!-- EOF: pending-doc-updates.md -->",
+    });
+    setupFetchFileMockFromDocMap(mockFetchFile, docs);
+    const result = await callFinalizeTool({ project_slug: "test-project", action: "commit",
+      session_number: 26, handoff_version: 31,
+      files: [{ path: "glossary.md", content: "# Glossary\nTerms\n<!-- EOF: glossary.md -->" }] });
+    expect(parseResult(result).all_succeeded).toBe(true);
+    await vi.waitFor(() => expect(mockGenerateIntelligenceBrief).toHaveBeenCalled());
+    expect(generatePendingDocUpdates).not.toHaveBeenCalled();
+    expect(mockCreateAtomicCommit.mock.calls.flatMap((call) => call[1]).some((file) => file.path.endsWith("pending-doc-updates.md"))).toBe(false);
+  });
+
   /** Helper: setup common mocks for a successful commit. */
   function setupHappyPathMocks(): void {
     mockFetchFile.mockResolvedValue({

@@ -28,12 +28,15 @@ import { ruleSourceCache, type RuleSourceCacheEntry } from "./cache.js";
  */
 export async function resolveDocPath(
   projectSlug: string,
-  docName: string
+  docName: string,
+  ref?: string,
 ): Promise<{ path: string; content: string; sha: string; legacy: boolean }> {
   const newPath = `${DOC_ROOT}/${docName}`;
 
   try {
-    const file = await fetchFile(projectSlug, newPath);
+    const file = ref === undefined
+      ? await fetchFile(projectSlug, newPath)
+      : await fetchFile(projectSlug, newPath, ref);
     return { path: newPath, content: file.content, sha: file.sha, legacy: false };
   } catch (error) {
     // SRV-44: only a genuine 404 ("Not found") justifies the legacy root
@@ -48,7 +51,9 @@ export async function resolveDocPath(
       throw error;
     }
     // Fall back to legacy root path (genuine .prism/ 404).
-    const file = await fetchFile(projectSlug, docName);
+    const file = ref === undefined
+      ? await fetchFile(projectSlug, docName)
+      : await fetchFile(projectSlug, docName, ref);
     logger.info("doc-resolver: using legacy path", { projectSlug, docName });
     return { path: docName, content: file.content, sha: file.sha, legacy: true };
   }

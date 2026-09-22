@@ -1580,7 +1580,7 @@ async function commitPhase(
   if (allSucceeded && !skipSynthesis) {
     if (SYNTHESIS_ENABLED) {
       try {
-        pduResult = await applyPendingDocUpdates(projectSlug, sessionNumber);
+        pduResult = await applyPendingDocUpdates(projectSlug, sessionNumber, signal);
         if (pduResult.applied.length > 0) {
           logger.info("PDU auto-apply complete", {
             projectSlug,
@@ -1654,7 +1654,9 @@ async function commitPhase(
       }
       return Promise.allSettled([
         generateIntelligenceBrief(projectSlug, sessionNumber, bundle),
-        generatePendingDocUpdates(projectSlug, sessionNumber, bundle),
+        pduResult && pduResult.errors.length > 0
+          ? Promise.resolve({ success: false, error: "Pending updates retained for reconciliation; automatic replacement skipped" })
+          : generatePendingDocUpdates(projectSlug, sessionNumber, bundle),
       ]);
     })()
       .then((results) => {

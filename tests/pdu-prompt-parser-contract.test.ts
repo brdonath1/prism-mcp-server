@@ -26,6 +26,8 @@ vi.mock("../src/github/client.js", () => ({
   fetchFile: vi.fn(),
   pushFile: vi.fn(),
   fileExists: vi.fn(),
+  getHeadSha: vi.fn(),
+  createAtomicCommit: vi.fn(),
 }));
 
 vi.mock("../src/utils/doc-resolver.js", () => ({
@@ -40,10 +42,12 @@ import {
   PDU_ARCHIVE_DOC,
 } from "../src/utils/apply-pdu.js";
 import { PENDING_DOC_UPDATES_PROMPT } from "../src/ai/prompts.js";
-import { pushFile } from "../src/github/client.js";
+import { pushFile, getHeadSha, createAtomicCommit } from "../src/github/client.js";
 import { resolveDocPath, resolveDocPushPath } from "../src/utils/doc-resolver.js";
 
 const mockPushFile = vi.mocked(pushFile);
+const mockGetHeadSha = vi.mocked(getHeadSha);
+const mockCreateAtomicCommit = vi.mocked(createAtomicCommit);
 const mockResolveDocPath = vi.mocked(resolveDocPath);
 const mockResolveDocPushPath = vi.mocked(resolveDocPushPath);
 
@@ -57,6 +61,7 @@ const FENCE = "```";
  * even see).
  */
 const CONFORMANT_PDU = [
+  "<!-- prism-pdu-transaction: v1 -->",
   "# Pending Doc Updates — test-project",
   "",
   "> Auto-generated proposals. Operator review required before applying via `prism_patch`.",
@@ -180,6 +185,8 @@ const GLOSSARY_DOC = `# Glossary — test-project
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockGetHeadSha.mockResolvedValue("snapshot-head");
+  mockCreateAtomicCommit.mockResolvedValue({ success: true, sha: "atomic-sha", files_committed: 5 });
 });
 
 describe("SRV-10 contract — prompt side elicits exactly what the parser consumes", () => {
@@ -299,33 +306,27 @@ describe("SRV-10 contract — round trip: the parser APPLIES a conformant batch"
     expect(result.archived).toBe(true);
     expect(result.cleared).toBe(true);
 
-    const archPush = mockPushFile.mock.calls.find((c) => c[1] === ".prism/architecture.md");
-    expect(archPush).toBeDefined();
-    const archContent = String(archPush![2]);
+    expect(mockPushFile).not.toHaveBeenCalled();
+    expect(mockCreateAtomicCommit).toHaveBeenCalledTimes(1);
+    const writes = mockCreateAtomicCommit.mock.calls[0][1] as Array<{ path: string; content: string }> ;
+    const archContent = writes.find((write) => write.path === ".prism/architecture.md")!.content;
     expect(archContent).toContain("prism-dispatch-state");
     expect(archContent).toContain("CS-1 draft and CS-2 brief route via messages_api");
     expect(archContent).toContain("Every GitHub write path checks the PushResult");
     expect(archContent).toContain("Boot-time observation codes: SYNTHESIS_FAILED,");
 
-    const glossaryPush = mockPushFile.mock.calls.find((c) => c[1] === ".prism/glossary.md");
-    expect(glossaryPush).toBeDefined();
-    const glossaryContent = String(glossaryPush![2]);
+    const glossaryContent = writes.find((write) => write.path === ".prism/glossary.md")!.content;
     expect(glossaryContent).toContain("| write-integrity gate |");
     expect(glossaryContent).toContain("| observation gate |");
     expect(glossaryContent).toContain("| draft bridge |");
 
-    const archivePush = mockPushFile.mock.calls.find((c) => c[1] === `.prism/${PDU_ARCHIVE_DOC}`);
-    expect(archivePush).toBeDefined();
-    const archiveContent = String(archivePush![2]);
+    const archiveContent = writes.find((write) => write.path === `.prism/${PDU_ARCHIVE_DOC}`)!.content;
     expect(archiveContent).toContain("### Applied");
     expect(archiveContent).toContain("- Document the dispatch-state repo split → architecture.md");
     expect(archiveContent).toContain("### Rejected / Skipped");
     expect(archiveContent).toContain("Re-tier: INS-311");
 
-    const pduClearPush = mockPushFile.mock.calls.find(
-      (c) => c[1] === ".prism/pending-doc-updates.md",
-    );
-    expect(pduClearPush).toBeDefined();
-    expect(String(pduClearPush![2])).toContain("7 applied, 3 rejected/skipped");
+    const pduClear = writes.find((write) => write.path === ".prism/pending-doc-updates.md")!.content;
+    expect(pduClear).toContain("7 applied, 3 rejected/skipped");
   });
 });

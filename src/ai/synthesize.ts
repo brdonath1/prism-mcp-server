@@ -686,6 +686,8 @@ export async function generatePendingDocUpdates(
     content = appendServedByFooter(content, result.provider, result.model, result.transport);
 
     // 6. Push
+    // Stamp eligibility in server code, never rely on the model to supply it.
+    content = `<!-- prism-pdu-transaction: v1 -->\n${content}`;
     const pushPath = await resolveDocPushPath(projectSlug, "pending-doc-updates.md");
     const pduPush = await pushFile(
       projectSlug,

@@ -2,8 +2,8 @@
  * brief-456 / W3-S2 (M-002) — push-failure propagation regression tests.
  *
  * SRV-02: applyPendingDocUpdates must not record proposals as applied (nor
- *         archive false provenance / clear the PDU) when the apply or clear
- *         push returns a result-shaped failure.
+ *         archive false provenance / clear the PDU) when its one atomic
+ *         commit returns a result-shaped failure.
  * SRV-15: generateIntelligenceBrief / generatePendingDocUpdates must surface
  *         a failed pushFile as a failed synthesis outcome and a failed
  *         tracker event — never "pushed" on an HTTP-failed push.
@@ -22,6 +22,8 @@ vi.mock("../src/github/client.js", () => ({
   fetchFiles: vi.fn(),
   pushFile: vi.fn(),
   fileExists: vi.fn(),
+  getHeadSha: vi.fn(),
+  createAtomicCommit: vi.fn(),
 }));
 
 vi.mock("../src/utils/doc-resolver.js", () => ({
@@ -54,7 +56,7 @@ import {
   generatePendingDocUpdates,
 } from "../src/ai/synthesize.js";
 import { synthesize } from "../src/ai/client.js";
-import { pushFile } from "../src/github/client.js";
+import { pushFile, getHeadSha, createAtomicCommit } from "../src/github/client.js";
 import {
   resolveDocPath,
   resolveDocPushPath,
@@ -65,6 +67,8 @@ import { INTELLIGENCE_BRIEF_SPEC_SECTIONS } from "../src/utils/intelligence-brie
 
 const mockSynthesize = vi.mocked(synthesize);
 const mockPushFile = vi.mocked(pushFile);
+const mockGetHeadSha = vi.mocked(getHeadSha);
+const mockCreateAtomicCommit = vi.mocked(createAtomicCommit);
 const mockResolveDocPath = vi.mocked(resolveDocPath);
 const mockResolveDocPushPath = vi.mocked(resolveDocPushPath);
 const mockResolveDocFiles = vi.mocked(resolveDocFiles);
@@ -80,7 +84,8 @@ const PUSH_FAILURE = {
 const PUSH_SUCCESS = { success: true as const, size: 100, sha: "pushed-sha" };
 
 /** PDU with two actionable architecture proposals (Apply + fenced block). */
-const TWO_PROPOSAL_PDU = `# Pending Doc Updates — test
+const TWO_PROPOSAL_PDU = `<!-- prism-pdu-transaction: v1 -->
+# Pending Doc Updates — test
 
 > Auto-generated proposals.
 > Last synthesized: S99 (04-26-26 12:00:00)
@@ -103,6 +108,7 @@ Routing is per-call-site.
 
 ## No Updates Needed
 
+
 <!-- EOF: pending-doc-updates.md -->
 `;
 
@@ -117,9 +123,11 @@ Existing content here.
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockGetHeadSha.mockResolvedValue("snapshot-head");
+  mockCreateAtomicCommit.mockResolvedValue({ success: true, sha: "atomic-sha", files_committed: 3 });
 });
 
-describe("SRV-02 — apply-pdu push failures are recorded as failures", () => {
+describe("SRV-02 — atomic PDU commit failures are recorded as failures", () => {
   function setupPduFetches(): void {
     mockResolveDocPath.mockImplementation(async (_slug: string, doc: string) => {
       if (doc === "pending-doc-updates.md") {
@@ -133,45 +141,47 @@ describe("SRV-02 — apply-pdu push failures are recorded as failures", () => {
     mockResolveDocPushPath.mockImplementation(async (_slug: string, doc: string) => `.prism/${doc}`);
   }
 
-  it("apply push {success:false} → proposals land in errors, nothing applied, PDU not archived/cleared", async () => {
+  it("atomic commit {success:false} → nothing is reported applied, archived, or cleared", async () => {
     setupPduFetches();
-    mockPushFile.mockImplementation(async (_repo: string, path: string) => {
-      if (path.includes("architecture.md")) return PUSH_FAILURE as never;
-      return PUSH_SUCCESS as never;
-    });
+    mockCreateAtomicCommit.mockResolvedValue({
+      success: false,
+      size: 0,
+      sha: "",
+      files_committed: 0,
+      error: "GitHub API forbidden — check PAT scopes.",
+    } as never);
 
     const result = await applyPendingDocUpdates("test-project", 100);
 
     expect(result.applied).toEqual([]);
-    expect(result.errors.length).toBe(2);
-    for (const err of result.errors) {
-      expect(err.error).toMatch(/push architecture\.md failed/);
-      expect(err.error).toMatch(/forbidden/);
-    }
     expect(result.archived).toBe(false);
     expect(result.cleared).toBe(false);
-    // The PDU file itself must never be overwritten on an errored run.
-    const pduWrites = mockPushFile.mock.calls.filter(([, path]) =>
-      String(path).includes("pending-doc-updates.md"),
-    );
-    expect(pduWrites).toEqual([]);
+    expect(result.errors).toEqual([{
+      title: "(atomic PDU commit)",
+      error: expect.stringMatching(/forbidden/i),
+    }]);
+    // The former sequential Contents API must not be used at all.
+    expect(mockPushFile).not.toHaveBeenCalled();
+    // safeMutation retries a failed commit once, never falling back to sequential writes.
+    expect(mockCreateAtomicCommit).toHaveBeenCalledTimes(2);
   });
 
-  it("clear push {success:false} → cleared stays false and the failure is visible in errors", async () => {
+  it("does not expose a partial target write when the single commit fails", async () => {
     setupPduFetches();
-    mockPushFile.mockImplementation(async (_repo: string, path: string) => {
-      if (path.includes("pending-doc-updates.md") && !path.includes("archive")) {
-        return PUSH_FAILURE as never;
-      }
-      return PUSH_SUCCESS as never;
-    });
+    mockCreateAtomicCommit.mockResolvedValue({
+      success: false,
+      size: 0,
+      sha: "",
+      files_committed: 0,
+      error: "409 conflict",
+    } as never);
 
     const result = await applyPendingDocUpdates("test-project", 100);
 
-    expect(result.applied.length).toBe(2);
-    expect(result.archived).toBe(true);
+    expect(result.applied).toEqual([]);
+    expect(result.archived).toBe(false);
     expect(result.cleared).toBe(false);
-    expect(result.errors.some((e) => e.title === "(clear pending-doc-updates.md)")).toBe(true);
+    expect(mockPushFile).not.toHaveBeenCalled();
   });
 });
 
@@ -186,7 +196,8 @@ body
 
 <!-- EOF: intelligence-brief.md -->`;
 
-  const PDU_OUTPUT = `# Pending Doc Updates — test
+  const PDU_OUTPUT = `<!-- prism-pdu-transaction: v1 -->
+# Pending Doc Updates — test
 
 > Last synthesized: S26 (06-11-26 09:00:00 AM CST)
 

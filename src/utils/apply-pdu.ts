@@ -17,11 +17,13 @@
  * synthesis input via the project's living docs, so nothing is lost.
  */
 
-import { pushFile } from "../github/client.js";
 import { applyPatch, validateIntegrity } from "./markdown-sections.js";
-import { resolveDocPath, resolveDocPushPath } from "./doc-resolver.js";
+import { resolveDocPath } from "./doc-resolver.js";
+import { safeMutation } from "./safe-mutation.js";
+import { DiagnosticsCollector } from "./diagnostics.js";
+import { DOC_ROOT } from "../config.js";
+import { createHash } from "node:crypto";
 import { sanitizeContent } from "./sanitize-content.js";
-import { logger } from "./logger.js";
 
 /** Files this utility knows how to apply proposals against. */
 const SUPPORTED_TARGETS = new Set(["architecture.md", "glossary.md", "insights.md"]);
@@ -64,6 +66,7 @@ export interface ApplyPduResult {
 
 /** Archive doc name for consumed PDU batches (brief-444 / D-240 Phase B). */
 export const PDU_ARCHIVE_DOC = "pending-doc-updates-archive.md";
+export const PDU_TRANSACTION_MARKER = "<!-- prism-pdu-transaction: v1 -->";
 
 const APPLY_INSTRUCTION_RE =
   /\*\*Apply via\s+`?prism_patch\s+(append|replace|prepend)`?\s+on\s+`([^`\n]+)`:\*\*/i;
@@ -312,6 +315,7 @@ export function buildClearedPdu(
   appliedAtSession: number,
   appliedAtDate: string,
   outcome?: { applied: number; rejected: number },
+  sourceDigest?: string,
 ): string {
   const summaryLine = outcome
     ? `Prior synthesis batch consumed at S${appliedAtSession} — ${outcome.applied} applied, ${outcome.rejected} rejected/skipped. Provenance: ${PDU_ARCHIVE_DOC}.`
@@ -324,7 +328,7 @@ export function buildClearedPdu(
 
 ## No Updates Needed
 
-${summaryLine}
+${summaryLine}${sourceDigest ? `\n> Source SHA-256: ${sourceDigest}` : ""}
 
 <!-- EOF: pending-doc-updates.md -->
 `;
@@ -422,311 +426,228 @@ function groupByTarget(proposals: PduProposal[]): Map<string, PduProposal[]> {
  * never throws. PDU-file-missing returns an all-empty result with
  * `cleared: false`.
  */
+function pduDigest(content: string): string {
+  return createHash("sha256").update(content, "utf8").digest("hex");
+}
+
+function archiveSource(entry: string, pdu: string, digest: string, snapshotSha: string): string {
+  return `${entry}\n\n> Source SHA-256: ${digest}\n> Source snapshot: ${snapshotSha}\n\n### Source pending-doc-updates.md (verbatim)\n\`\`\`\`markdown\n${pdu}\n\`\`\`\``;
+}
+
+class PduNoop extends Error {}
+
+class PduPlanError extends Error {
+  constructor(readonly outcome: ApplyPduResult) {
+    super("PDU batch cannot be atomically committed");
+  }
+}
+
+/**
+ * Apply and consume one PDU batch in a single atomic commit.
+ *
+ * The plan is rebuilt inside safeMutation after its HEAD snapshot, and again
+ * after a conflict. No target update is published unless its provenance
+ * archive entry and cleared source PDU are in that same commit.
+ */
 export async function applyPendingDocUpdates(
   projectSlug: string,
   sessionNumber: number,
+  signal?: AbortSignal,
 ): Promise<ApplyPduResult> {
-  const result: ApplyPduResult = {
-    applied: [],
-    skipped: [],
-    errors: [],
-    sanitized: [],
-    cleared: false,
-    archived: false,
-  };
+  const empty = (): ApplyPduResult => ({
+    applied: [], skipped: [], errors: [], sanitized: [], cleared: false, archived: false,
+  });
+  let planned: ApplyPduResult | undefined;
 
-  let pdu: { content: string; sha: string };
   try {
-    const resolved = await resolveDocPath(projectSlug, "pending-doc-updates.md");
-    pdu = { content: resolved.content, sha: resolved.sha };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (msg.includes("Not found")) {
-      logger.debug("apply-pdu: PDU file not found, nothing to apply", { projectSlug });
-      return result;
-    }
-    logger.warn("apply-pdu: PDU fetch failed", { projectSlug, error: msg });
-    result.errors.push({ title: "(fetch pending-doc-updates.md)", error: msg });
-    return result;
-  }
-
-  if (isPduEmpty(pdu.content)) {
-    logger.debug("apply-pdu: PDU file has no proposals", { projectSlug });
-    return result;
-  }
-
-  const proposals = parseProposals(pdu.content);
-  if (proposals.length === 0) {
-    logger.debug("apply-pdu: parser returned zero proposals", { projectSlug });
-    return result;
-  }
-
-  // Track unparsable proposals up-front so the summary captures them even if
-  // none of the actionable proposals land.
-  const actionable: PduProposal[] = [];
-  for (const p of proposals) {
-    if (p.operation === null) {
-      result.skipped.push({ title: p.title, reason: p.unparsedReason ?? "unparsable" });
-    } else {
-      actionable.push(p);
-    }
-  }
-
-  if (actionable.length === 0) {
-    // brief-444: all-unparsable batches no longer return early. They flow to
-    // the consume path below — archived as rejected with reasons, then
-    // cleared — so pending-doc-updates.md stops silently accreting stale
-    // proposals that can never apply.
-    logger.info("apply-pdu: no actionable proposals — consuming batch as rejected", {
-      projectSlug,
-      skipped: result.skipped.length,
-    });
-  }
-
-  const grouped = groupByTarget(actionable);
-
-  // Apply proposals one target file at a time. Fetch fresh content per file
-  // so any concurrent prism_patch the operator ran in the same session is
-  // respected by the rebuilt body.
-  for (const [targetFile, fileProposals] of grouped) {
-    let resolved;
-    try {
-      resolved = await resolveDocPath(projectSlug, targetFile);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.warn("apply-pdu: target file fetch failed", { projectSlug, targetFile, error: msg });
-      for (const p of fileProposals) {
-        result.errors.push({ title: p.title, error: `fetch ${targetFile} failed: ${msg}` });
-      }
-      continue;
-    }
-
-    let workingContent = resolved.content;
-    const successfulInThisFile: string[] = [];
-    for (const p of fileProposals) {
-      try {
-        // brief-460 / SRV-46: this is the UNATTENDED write channel —
-        // p.content is Opus-synthesized text applied during finalize with
-        // nobody watching. Run it through the same level/fence-aware KI-26
-        // sanitizer prism_patch uses: headers that could escape the target
-        // section's boundary (level <= the section's level) are neutralized,
-        // deeper sub-structure and fenced content survive. Glossary rows are
-        // sanitized at full depth — a table row legitimately contains no
-        // headers at any level. Mutations land in result.sanitized.
-        const recordSanitized = (lines: Array<{ line: number; header: string }>) => {
-          if (lines.length === 0) return;
-          result.sanitized.push({ title: p.title, lines });
-          logger.warn("apply-pdu: synthesized content sanitized (KI-26)", {
-            projectSlug,
-            targetFile,
-            title: p.title,
-            neutralized: lines.map((l) => l.header),
-          });
+    const mutation = await safeMutation({
+      repo: projectSlug,
+      commitMessage: `prism: S${sessionNumber} consume pending-doc-updates atomically`,
+      // Document paths are resolved inside the callback after safeMutation has
+      // snapshotted HEAD. This permits legacy paths and a missing first archive.
+      readPaths: [],
+      diagnostics: new DiagnosticsCollector(),
+      signal,
+      computeMutation: async (_files, snapshotSha) => {
+        const outcome = empty();
+        const abortPlan = () => {
+          if (signal?.aborted) {
+            throw new PduPlanError({
+              ...empty(),
+              errors: [{ title: "(atomic PDU commit)", error: "PDU publication aborted" }],
+            });
+          }
         };
-        if (p.operation === "glossary_row") {
-          const outcome = sanitizeContent(p.content!);
-          recordSanitized(outcome.neutralized);
-          workingContent = insertGlossaryRow(workingContent, outcome.text);
-        } else {
-          const levelMatch = p.section!.trim().match(/^(#{1,6})\s/);
-          const targetLevel = levelMatch ? levelMatch[1].length : 6;
-          const outcome = sanitizeContent(p.content!, { targetLevel });
-          recordSanitized(outcome.neutralized);
-          workingContent = applyPatch(
-            workingContent,
-            p.section!,
-            p.operation as "append" | "replace" | "prepend",
-            outcome.text,
-          );
+        abortPlan();
+        let pdu: { path: string; content: string };
+        try {
+          const resolved = await resolveDocPath(projectSlug, "pending-doc-updates.md", snapshotSha);
+          pdu = { path: resolved.path, content: resolved.content };
+          abortPlan();
+        } catch (err) {
+          if (err instanceof PduPlanError) throw err;
+          const msg = err instanceof Error ? err.message : String(err);
+          if (/Not found/i.test(msg)) throw new PduNoop();
+          outcome.errors.push({ title: "(fetch pending-doc-updates.md)", error: msg });
+          throw new PduPlanError(outcome);
         }
-        successfulInThisFile.push(p.title);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (/Section not found|missing its EOF sentinel/i.test(msg)) {
-          result.skipped.push({ title: p.title, reason: msg });
-        } else {
-          result.errors.push({ title: p.title, error: msg });
+
+        if (isPduEmpty(pdu.content)) throw new PduNoop();
+        // Old sequential PDU publications could have landed target appends
+        // before archive/clear failed. A nonempty unmarked source is therefore
+        // unsafe to replay automatically: preserve it for manual reconciliation.
+        if (!pdu.content.startsWith(`${PDU_TRANSACTION_MARKER}\n`)) {
+          outcome.errors.push({
+            title: "(legacy pending-doc-updates residue)",
+            error: "legacy ambiguous residue; manual reconciliation required",
+          });
+          throw new PduPlanError(outcome);
         }
-      }
-    }
+        const proposals = parseProposals(pdu.content);
+        if (proposals.length === 0) throw new PduNoop();
 
-    // Skip the push if every proposal for this file was skipped/errored —
-    // there's nothing to write.
-    if (successfulInThisFile.length === 0) continue;
-    if (workingContent === resolved.content) continue;
-
-    // brief-460 / SRV-46: integrity gate before the push — the sibling
-    // section-level writer (patch.ts) refuses to write a document that fails
-    // validateIntegrity; the unattended channel gets the same protection.
-    // Failures route to result.errors, so the batch stays un-consumed (PDU
-    // file left in place) for an operator-visible re-run.
-    const integrity = validateIntegrity(workingContent);
-    if (!integrity.valid) {
-      const issueSummary = integrity.issues
-        .filter((i) => i.type === "duplicate_header")
-        .map((i) => i.details)
-        .join("; ");
-      logger.warn("apply-pdu: post-apply integrity check failed — not pushing", {
-        projectSlug,
-        targetFile,
-        issues: issueSummary,
-      });
-      for (const title of successfulInThisFile) {
-        result.errors.push({
-          title,
-          error: `post-apply integrity check failed for ${targetFile}: ${issueSummary}`,
+        const appliedProvenance: Array<{ title: string; targetFile: string }> = [];
+        const rejectedProvenance: Array<{ title: string; targetFile: string; reason: string }> = [];
+        const recordSkipped = (proposal: PduProposal, reason: string) => {
+          outcome.skipped.push({ title: proposal.title, reason });
+          rejectedProvenance.push({ title: proposal.title, targetFile: proposal.targetFile, reason });
+        };
+        const actionable = proposals.filter((proposal) => {
+          if (proposal.operation !== null) return true;
+          recordSkipped(proposal, proposal.unparsedReason ?? "unparsable");
+          return false;
         });
-      }
-      continue;
-    }
+        const lastSynth = pdu.content.match(/^>\s*Last synthesized:.*$/m)?.[0]?.replace(/^>\s*Last synthesized:\s*/, "") ?? "unknown";
+        const digest = pduDigest(pdu.content);
+        let archive: { path: string; content: string | null };
+        try {
+          const resolved = await resolveDocPath(projectSlug, PDU_ARCHIVE_DOC, snapshotSha);
+          archive = { path: resolved.path, content: resolved.content };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (!/Not found/i.test(msg)) {
+            outcome.errors.push({ title: `(archive ${PDU_ARCHIVE_DOC})`, error: msg });
+            throw new PduPlanError(outcome);
+          }
+          archive = { path: `${DOC_ROOT}/${PDU_ARCHIVE_DOC}`, content: null };
+        }
+        const grouped = groupByTarget(actionable);
+        const writes: Array<{ path: string; content: string }> = [];
+        for (const [targetFile, fileProposals] of grouped) {
+          let resolved: { path: string; content: string };
+          try {
+            const target = await resolveDocPath(projectSlug, targetFile, snapshotSha);
+            resolved = { path: target.path, content: target.content };
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            for (const proposal of fileProposals) {
+              outcome.errors.push({ title: proposal.title, error: `fetch ${targetFile} failed: ${msg}` });
+            }
+            continue;
+          }
 
-    try {
-      const pushPath = await resolveDocPushPath(projectSlug, targetFile);
-      const applyPush = await pushFile(
-        projectSlug,
-        pushPath,
-        workingContent,
-        `prism: S${sessionNumber} apply pending-doc-updates → ${targetFile}`,
-      );
-      // pushFile reports HTTP failures as a result shape, not a throw —
-      // route them through the same error path as thrown failures so a
-      // failed apply is never recorded as applied (SRV-02). Mirrors the
-      // archive-push check below.
-      if (!applyPush.success) {
-        throw new Error(applyPush.error ?? "apply push failed");
-      }
-      result.applied.push(...successfulInThisFile);
-      logger.info("apply-pdu: applied proposals", {
-        projectSlug,
-        targetFile,
-        applied: successfulInThisFile.length,
-      });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.warn("apply-pdu: push failed", { projectSlug, targetFile, error: msg });
-      for (const title of successfulInThisFile) {
-        result.errors.push({ title, error: `push ${targetFile} failed: ${msg}` });
-      }
+          let content = resolved.content;
+          const appliedForFile: PduProposal[] = [];
+          for (const proposal of fileProposals) {
+            try {
+              const beforeProposal = content;
+              const recordSanitized = (lines: Array<{ line: number; header: string }>) => {
+                if (lines.length > 0) outcome.sanitized.push({ title: proposal.title, lines });
+              };
+              if (proposal.operation === "glossary_row") {
+                const sanitized = sanitizeContent(proposal.content!);
+                recordSanitized(sanitized.neutralized);
+                // A synthesized glossary term can repeat a row already present
+                // in the current HEAD. Treat that as a consumed no-op rather
+                // than adding a duplicate or leaving the batch unconsumed.
+                if (content.split("\n").some((line) => line.trim() === sanitized.text.trim())) {
+                  recordSkipped(proposal, "proposal produced no content change");
+                  continue;
+                }
+                content = insertGlossaryRow(content, sanitized.text);
+              } else {
+                const level = proposal.section!.trim().match(/^(#{1,6})\s/)?.[1].length ?? 6;
+                const sanitized = sanitizeContent(proposal.content!, { targetLevel: level });
+                recordSanitized(sanitized.neutralized);
+                content = applyPatch(content, proposal.section!, proposal.operation as "append" | "replace" | "prepend", sanitized.text);
+              }
+              if (content === beforeProposal) {
+                recordSkipped(proposal, "proposal produced no content change");
+              } else {
+                appliedForFile.push(proposal);
+              }
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              if (/Section not found|missing its EOF sentinel/i.test(msg)) {
+                recordSkipped(proposal, msg);
+              } else {
+                outcome.errors.push({ title: proposal.title, error: msg });
+              }
+            }
+          }
+
+          if (appliedForFile.length === 0 || content === resolved.content) continue;
+          const integrity = validateIntegrity(content);
+          if (!integrity.valid) {
+            const detail = integrity.issues.filter((issue) => issue.type === "duplicate_header").map((issue) => issue.details).join("; ");
+            for (const proposal of appliedForFile) {
+              outcome.errors.push({ title: proposal.title, error: `post-apply integrity check failed for ${targetFile}: ${detail}` });
+            }
+            continue;
+          }
+          writes.push({ path: resolved.path, content });
+          outcome.applied.push(...appliedForFile.map((proposal) => proposal.title));
+          appliedProvenance.push(...appliedForFile.map((proposal) => ({ title: proposal.title, targetFile: proposal.targetFile })));
+        }
+
+        // A PDU is consumed only if every planned transform was valid. Unlike
+        // the former sequential writer, an error cannot publish a subset.
+        if (outcome.errors.length > 0 || (outcome.applied.length === 0 && outcome.skipped.length === 0)) {
+          throw new PduPlanError(outcome);
+        }
+
+        const date = new Date().toISOString().split("T")[0];
+        const entry = archiveSource(buildPduArchiveEntry({
+          sessionNumber,
+          date,
+          synthesizedAt: lastSynth,
+          applied: appliedProvenance,
+          rejected: rejectedProvenance,
+        }), pdu.content, digest, snapshotSha);
+
+        writes.push({ path: archive.path, content: upsertPduArchive(archive.content, projectSlug, entry) });
+        writes.push({
+          path: pdu.path,
+          content: buildClearedPdu(projectSlug, lastSynth, sessionNumber, date, {
+            applied: outcome.applied.length,
+            rejected: outcome.skipped.length,
+          }, digest),
+        });
+        abortPlan();
+        outcome.archived = true;
+        outcome.cleared = true;
+        planned = outcome;
+        return { writes };
+      },
+    });
+
+    if (!mutation.ok) {
+      return { ...empty(), errors: [{ title: "(atomic PDU commit)", error: mutation.error }] };
     }
+    return planned ?? empty();
+  } catch (err) {
+    if (err instanceof PduNoop) return empty();
+    if (err instanceof PduPlanError) {
+      // A plan error occurs before the atomic commit. Do not report any
+      // earlier candidate target as applied when nothing was published.
+      return {
+        ...err.outcome,
+        applied: [],
+        archived: false,
+        cleared: false,
+      };
+    }
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ...empty(), errors: [{ title: "(apply pending-doc-updates)", error: msg }] };
   }
-
-  // brief-444 (PDU provenance): a batch is CONSUMED when processing finished
-  // without errors — whether proposals applied or every one was rejected/
-  // skipped. Consumed batches are archived to pending-doc-updates-archive.md
-  // with per-proposal provenance BEFORE the PDU file is cleared, so the file
-  // stops accreting stale proposals without erasing the record. Error runs
-  // leave the PDU in place (and unarchived) so the operator can re-run.
-  const consumed =
-    result.errors.length === 0 &&
-    (result.applied.length > 0 || result.skipped.length > 0);
-
-  if (consumed) {
-    const lastSynth = pdu.content.match(/^>\s*Last synthesized:.*$/m)?.[0]?.replace(/^>\s*Last synthesized:\s*/, "")
-      ?? "unknown";
-    const today = new Date().toISOString().split("T")[0];
-
-    // 1. Archive the consumed batch with applied/rejected provenance.
-    try {
-      const targetByTitle = new Map<string, string>();
-      for (const p of proposals) {
-        if (!targetByTitle.has(p.title)) targetByTitle.set(p.title, p.targetFile);
-      }
-      const entry = buildPduArchiveEntry({
-        sessionNumber,
-        date: today,
-        synthesizedAt: lastSynth,
-        applied: result.applied.map((title) => ({
-          title,
-          targetFile: targetByTitle.get(title) ?? "unknown",
-        })),
-        rejected: result.skipped.map((s) => ({
-          title: s.title,
-          targetFile: targetByTitle.get(s.title) ?? null,
-          reason: s.reason,
-        })),
-      });
-
-      let existingArchive: string | null = null;
-      try {
-        const resolved = await resolveDocPath(projectSlug, PDU_ARCHIVE_DOC);
-        existingArchive = resolved.content;
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        // "Not found" = first-time archive; anything else is operational and
-        // routes to the error path below (PDU stays in place, no clear).
-        if (!msg.includes("Not found")) throw err;
-      }
-
-      // Idempotency (brief-444 review): if a prior run archived this batch
-      // but failed on the subsequent PDU clear, the re-run would otherwise
-      // prepend the same batch a second time. The batch header carries the
-      // session + date, so its presence marks the batch as already archived
-      // — skip straight to the clear.
-      const batchHeader = `## Batch: consumed S${sessionNumber} (${today})`;
-      if (existingArchive?.includes(batchHeader)) {
-        result.archived = true;
-        logger.info("apply-pdu: batch already archived — skipping duplicate entry", {
-          projectSlug,
-          batchHeader,
-        });
-      } else {
-        const archiveContent = upsertPduArchive(existingArchive, projectSlug, entry);
-        const archivePushPath = await resolveDocPushPath(projectSlug, PDU_ARCHIVE_DOC);
-        const archivePush = await pushFile(
-          projectSlug,
-          archivePushPath,
-          archiveContent,
-          `prism: S${sessionNumber} archive consumed pending-doc-updates batch`,
-        );
-        if (!archivePush.success) {
-          throw new Error(archivePush.error ?? "archive push failed");
-        }
-        result.archived = true;
-        logger.info("apply-pdu: consumed batch archived", {
-          projectSlug,
-          applied: result.applied.length,
-          rejected: result.skipped.length,
-          path: archivePushPath,
-        });
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.warn("apply-pdu: archive push failed — leaving PDU in place", {
-        projectSlug,
-        error: msg,
-      });
-      result.errors.push({ title: `(archive ${PDU_ARCHIVE_DOC})`, error: msg });
-    }
-
-    // 2. Clear the PDU file — only after the archive landed (provenance
-    //    before erasure). An archive failure above leaves the batch intact
-    //    for a re-run, exactly like an apply error.
-    if (result.archived) {
-      try {
-        const cleared = buildClearedPdu(projectSlug, lastSynth, sessionNumber, today, {
-          applied: result.applied.length,
-          rejected: result.skipped.length,
-        });
-        const pushPath = await resolveDocPushPath(projectSlug, "pending-doc-updates.md");
-        const clearPush = await pushFile(
-          projectSlug,
-          pushPath,
-          cleared,
-          `prism: S${sessionNumber} clear pending-doc-updates after auto-apply`,
-        );
-        // Result-shaped HTTP failure must not report cleared:true — the PDU
-        // is still on disk and the next run must see it (SRV-02).
-        if (!clearPush.success) {
-          throw new Error(clearPush.error ?? "clear push failed");
-        }
-        result.cleared = true;
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        logger.warn("apply-pdu: PDU clear push failed", { projectSlug, error: msg });
-        result.errors.push({ title: "(clear pending-doc-updates.md)", error: msg });
-      }
-    }
-  }
-
-  return result;
 }

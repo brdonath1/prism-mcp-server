@@ -17,7 +17,7 @@
 process.env.GITHUB_PAT = process.env.GITHUB_PAT || "test-dummy-pat";
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { createAtomicCommit } from "../src/github/client.js";
+import { createAtomicCommit, isCommitReachable } from "../src/github/client.js";
 
 interface RecordedCall {
   url: string;
@@ -106,6 +106,49 @@ describe("S42 — createAtomicCommit URL routing", () => {
   afterEach(() => {
     globalThis.fetch = originalFetch;
     vi.restoreAllMocks();
+  });
+
+  it.each([["ahead", true], ["identical", true], ["behind", false], ["diverged", false]])(
+    "verifies attempted commit ancestry from GitHub compare status %s", async (status, reachable) => {
+      const ancestor = "a".repeat(40);
+      const head = "b".repeat(40);
+      globalThis.fetch = vi.fn(async (input) => {
+        expect(String(input)).toContain(`/compare/${ancestor}...${head}`);
+        return new Response(JSON.stringify({ status }), { status: 200 });
+      });
+      expect(await isCommitReachable("ancestry-repo", ancestor, head)).toBe(reachable);
+    },
+  );
+
+  it("refuses an unrecognized ancestry response", async () => {
+    globalThis.fetch = vi.fn(async () => new Response("{}", { status: 200 }));
+    await expect(isCommitReachable("ancestry-repo", "a".repeat(40), "b".repeat(40)))
+      .rejects.toThrow("Unrecognized commit ancestry response");
+  });
+
+  it("rejects a changed snapshot before creating any Git objects or updating the ref", async () => {
+    globalThis.fetch = buildHappyPathFetch(calls);
+    const result = await createAtomicCommit(
+      "stale-snapshot-repo", [{ path: "a.md", content: "stale" }],
+      "test: stale snapshot", [], undefined, "older-head",
+    );
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("409 conflict");
+    expect(calls.every((call) => call.method === "GET")).toBe(true);
+    expect(calls.some((call) => call.url.includes("/git/commits/"))).toBe(false);
+  });
+
+  it("uses the matching snapshot as commit parent without force-updating the ref", async () => {
+    globalThis.fetch = buildHappyPathFetch(calls);
+    const result = await createAtomicCommit(
+      "matching-snapshot-repo", [{ path: "a.md", content: "fresh" }],
+      "test: current snapshot", [], undefined, "head-sha",
+    );
+    expect(result.success).toBe(true);
+    const commit = calls.find((call) => call.method === "POST" && call.url.endsWith("/git/commits"));
+    expect(JSON.parse(commit!.body!).parents).toEqual(["head-sha"]);
+    const update = calls.find((call) => call.method === "PATCH");
+    expect(JSON.parse(update!.body!).force).not.toBe(true);
   });
 
   it("uses plural /git/refs/heads/{branch} for the step-5 PATCH", async () => {

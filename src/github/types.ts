@@ -66,6 +66,8 @@ export interface AtomicCommitResult {
   sha: string;
   files_committed: number;
   error?: string;
+  /** Created commit object on an uncertain ref-update failure; not proof it landed. */
+  attemptedCommitSha?: string;
 }
 
 /** GitHub commit list item */

@@ -237,6 +237,7 @@ describe("SRV-52 — 'Last synthesized' header is server-stamped", () => {
     expect(outcome.success).toBe(true);
     const pushedContent = String(mockPushFile.mock.calls[0][2]);
     expect(parseLastSynthesizedSession(pushedContent)).toBe(26);
+    expect(pushedContent).toContain("<!-- prism-pdu-transaction: v1 -->");
   });
 });
 
