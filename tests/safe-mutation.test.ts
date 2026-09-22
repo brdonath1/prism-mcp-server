@@ -26,6 +26,7 @@ vi.mock("../src/github/client.js", async (importOriginal) => {
     fetchFile: vi.fn(),
     createAtomicCommit: vi.fn(),
     getHeadSha: vi.fn(),
+    isCommitReachable: vi.fn(),
     getCommit: vi.fn(),
   };
 });
@@ -34,6 +35,7 @@ import {
   fetchFile,
   createAtomicCommit,
   getHeadSha,
+  isCommitReachable,
   getCommit,
 } from "../src/github/client.js";
 import { DiagnosticsCollector } from "../src/utils/diagnostics.js";
@@ -53,6 +55,38 @@ afterEach(() => {
 });
 
 describe("safeMutation — atomic commit success path", () => {
+  it("recognizes its accepted commit beneath a newer writer without reapplying", async () => {
+    mockGetHeadSha.mockResolvedValueOnce("before").mockResolvedValueOnce("newer-tip");
+    mockCreateAtomicCommit.mockResolvedValue({ success: false, sha: "", files_committed: 0,
+      attemptedCommitSha: "our-commit", error: "response lost" });
+    vi.mocked(isCommitReachable).mockResolvedValue(true);
+    mockFetchFile.mockResolvedValue({ content: "append-once", sha: gitBlobSha("append-once"), size: 11 });
+    const computeMutation = vi.fn(async (_files, snapshot) => {
+      expect(snapshot).toBe("before");
+      return { writes: [{ path: "a.md", content: "append-once" }] };
+    });
+    const result = await safeMutation({ repo: "test-repo", commitMessage: "append", readPaths: [],
+      computeMutation, diagnostics: new DiagnosticsCollector() });
+    expect(result).toEqual({ ok: true, commitSha: "our-commit", retried: false });
+    expect(isCommitReachable).toHaveBeenCalledWith("test-repo", "our-commit", "newer-tip");
+    expect(mockFetchFile).toHaveBeenCalledWith("test-repo", "a.md", "our-commit");
+    expect(computeMutation).toHaveBeenCalledTimes(1);
+    expect(mockCreateAtomicCommit).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry an uncertain accepted commit when ancestry cannot be verified", async () => {
+    mockGetHeadSha.mockResolvedValue("head");
+    mockCreateAtomicCommit.mockResolvedValue({ success: false, sha: "", files_committed: 0,
+      attemptedCommitSha: "possible-commit", error: "response lost" });
+    vi.mocked(isCommitReachable).mockRejectedValue(new Error("GitHub unavailable"));
+    const result = await safeMutation({ repo: "test-repo", commitMessage: "append", readPaths: [],
+      computeMutation: () => ({ writes: [{ path: "a.md", content: "once" }] }),
+      diagnostics: new DiagnosticsCollector() });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe("MUTATION_OUTCOME_UNKNOWN");
+    expect(mockCreateAtomicCommit).toHaveBeenCalledTimes(1);
+  });
+
   it("snapshots HEAD, reads files, calls computeMutation once, atomic-commits", async () => {
     mockGetHeadSha.mockResolvedValue("head-1");
     mockFetchFile.mockResolvedValue({
@@ -86,7 +120,7 @@ describe("safeMutation — atomic commit success path", () => {
     }
     expect(mockGetHeadSha).toHaveBeenCalledTimes(1);
     expect(mockFetchFile).toHaveBeenCalledTimes(1);
-    expect(mockFetchFile).toHaveBeenCalledWith("test-repo", "a.md");
+    expect(mockFetchFile).toHaveBeenCalledWith("test-repo", "a.md", "head-1");
     expect(computeMutation).toHaveBeenCalledTimes(1);
     expect(mockCreateAtomicCommit).toHaveBeenCalledTimes(1);
     expect(mockCreateAtomicCommit).toHaveBeenCalledWith(
@@ -95,6 +129,7 @@ describe("safeMutation — atomic commit success path", () => {
       "test: success path",
       [],
       undefined, // SRV-42: signal arg (undefined on the no-deadline path)
+      "head-1",
     );
     expect(diagnostics.list()).toHaveLength(0);
   });
@@ -170,6 +205,7 @@ describe("safeMutation — 409 conflict triggers re-read and recompute", () => {
       "test: retry on conflict",
       [],
       undefined, // SRV-42: signal arg (undefined on the no-deadline path)
+      "head-2",
     );
     // MUTATION_CONFLICT diagnostic emitted on the retry
     const codes = diagnostics.list().map((d) => d.code);
@@ -220,10 +256,7 @@ describe("safeMutation — retry budget exhaustion", () => {
 
 describe("safeMutation — null HEAD SHA refuses retry", () => {
   it("emits HEAD_SHA_UNKNOWN and returns ok:false when getHeadSha returns undefined pre-atomic", async () => {
-    // First snapshot returns undefined — primitive should NOT attempt the
-    // atomic commit's retry path, but it WILL still attempt the first commit.
-    // After the first commit fails, the post-failure HEAD check happens,
-    // and that's where HEAD_SHA_UNKNOWN fires (because pre-atomic was null).
+    // Unknown revision must prevent even the first read/compute/commit.
     mockGetHeadSha.mockResolvedValue(undefined);
     mockFetchFile.mockResolvedValue({ content: "v1", sha: "blob-1", size: 2 });
     mockCreateAtomicCommit.mockResolvedValue({
@@ -250,8 +283,9 @@ describe("safeMutation — null HEAD SHA refuses retry", () => {
     if (!result.ok) {
       expect(result.code).toBe("HEAD_SHA_UNKNOWN");
     }
-    // Critical: NO retry — only one createAtomicCommit call.
-    expect(mockCreateAtomicCommit).toHaveBeenCalledTimes(1);
+    expect(mockCreateAtomicCommit).not.toHaveBeenCalled();
+    expect(mockFetchFile).not.toHaveBeenCalled();
+    expect(computeMutation).not.toHaveBeenCalled();
     const unknownDiag = diagnostics.list().find(
       (d) => d.code === "HEAD_SHA_UNKNOWN",
     );
@@ -319,6 +353,7 @@ describe("safeMutation — delete support (createAtomicCommit pass-through)", ()
       "chore: prune",
       ["a.md", "b.md"],
       undefined, // SRV-42: signal arg (undefined on the no-deadline path)
+      "head-1",
     );
   });
 });
@@ -444,8 +479,12 @@ describe("S203 R25 (F-C1-9) — structural identity, not commit-message equality
       .mockResolvedValueOnce("head-before")
       .mockResolvedValueOnce("head-after")
       .mockResolvedValueOnce("head-after");
+    let verificationFailed = false;
     mockFetchFile.mockImplementation(async (_repo, _path, ref) => {
-      if (ref === "head-after") throw new Error("GitHub API 500: upstream blip");
+      if (ref === "head-after" && !verificationFailed) {
+        verificationFailed = true;
+        throw new Error("GitHub API 500: upstream blip");
+      }
       return { content: "v1", sha: "blob-1", size: 2 };
     });
     mockGetCommit.mockResolvedValue({

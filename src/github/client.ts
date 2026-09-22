@@ -937,8 +937,10 @@ export async function createAtomicCommit(
   message: string,
   deletes: string[] = [],
   signal?: AbortSignal,
+  expectedHeadSha?: string,
 ): Promise<AtomicCommitResult> {
   const start = Date.now();
+  let attemptedCommitSha: string | undefined;
   logger.debug("github.createAtomicCommit", { repo, fileCount: files.length, deleteCount: deletes.length });
 
   try {
@@ -970,6 +972,12 @@ export async function createAtomicCommit(
     }
     const refData = await refRes.json() as { object: { sha: string } };
     const headSha = refData.object.sha;
+
+    // Content prepared from an earlier revision must not be grafted onto a
+    // newer tree. A later race is rejected by the non-forced ref update.
+    if (expectedHeadSha !== undefined && headSha !== expectedHeadSha) {
+      throw new Error("409 conflict: HEAD changed since mutation snapshot");
+    }
 
     // 2. Get base tree from HEAD commit
     const commitUrl = `${GITHUB_API_BASE}/repos/${GITHUB_OWNER}/${repo}/git/commits/${headSha}`;
@@ -1027,6 +1035,7 @@ export async function createAtomicCommit(
       throw handleApiError(newCommitRes.status, await newCommitRes.text(), `createCommit ${repo}`);
     }
     const newCommitData = await newCommitRes.json() as { sha: string };
+    attemptedCommitSha = newCommitData.sha;
 
     // 5. Update HEAD ref.
     //    PATCH uses the PLURAL /git/refs/{ref} endpoint — distinct from the
@@ -1064,8 +1073,25 @@ export async function createAtomicCommit(
       sha: "",
       files_committed: 0,
       error: msg,
+      ...(attemptedCommitSha ? { attemptedCommitSha } : {}),
     };
   }
+}
+
+/** Verify that a possibly accepted commit belongs to the current branch history. */
+export async function isCommitReachable(repo: string, ancestor: string, head: string): Promise<boolean> {
+  assertValidRepo(repo, "isCommitReachable");
+  if (!/^[a-f0-9]{40}$/i.test(ancestor) || !/^[a-f0-9]{40}$/i.test(head)) {
+    throw new Error("Invalid commit SHA for ancestry verification");
+  }
+  if (ancestor === head) return true;
+  const url = `${GITHUB_API_BASE}/repos/${GITHUB_OWNER}/${repo}/compare/${ancestor}...${head}`;
+  const response = await fetchWithRetry(url, { headers: headers() });
+  if (!response.ok) throw handleApiError(response.status, await response.text(), `compare ${repo}`);
+  const comparison = await response.json() as { status?: string };
+  if (comparison.status === "ahead" || comparison.status === "identical") return true;
+  if (comparison.status === "behind" || comparison.status === "diverged") return false;
+  throw new Error("Unrecognized commit ancestry response");
 }
 
 /**

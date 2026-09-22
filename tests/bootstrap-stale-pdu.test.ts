@@ -17,6 +17,8 @@ vi.mock("../src/github/client.js", () => ({
   pushFile: vi.fn(),
   fileExists: vi.fn(),
   listRepos: vi.fn(),
+  getHeadSha: vi.fn(),
+  createAtomicCommit: vi.fn(),
 }));
 
 interface CapturedHandler {
@@ -57,7 +59,8 @@ const DECISIONS_CONTENT =
 const TEMPLATE_CONTENT =
   "# Template v2.16.0\nRules.\n<!-- EOF: core-template-mcp.md -->";
 
-const STRUCTURED_PDU = `# Pending Doc Updates — prism
+const STRUCTURED_PDU = `<!-- prism-pdu-transaction: v1 -->
+# Pending Doc Updates — prism
 
 > Auto-generated proposals.
 > Last synthesized: S97 (04-26-26 12:00:00)
@@ -76,6 +79,7 @@ The safeMutation primitive wraps atomic Git Trees commits.
 ## insights.md
 
 ## No Updates Needed
+
 
 <!-- EOF: pending-doc-updates.md -->
 `;
@@ -156,6 +160,7 @@ function makeFetchFileMock(pduContent: string | null): (
 async function setupBootstrap(pduContent: string | null): Promise<{
   handler: CapturedHandler;
   pushSpy: ReturnType<typeof vi.fn>;
+  atomicSpy: ReturnType<typeof vi.fn>;
 }> {
   vi.resetModules();
   vi.clearAllMocks();
@@ -166,6 +171,8 @@ async function setupBootstrap(pduContent: string | null): Promise<{
   const mockFetchFiles = vi.mocked(ghClient.fetchFiles);
   const mockFileExists = vi.mocked(ghClient.fileExists);
   const mockListRepos = vi.mocked(ghClient.listRepos);
+  const mockGetHeadSha = vi.mocked(ghClient.getHeadSha);
+  const mockCreateAtomicCommit = vi.mocked(ghClient.createAtomicCommit);
 
   mockFetchFile.mockImplementation(makeFetchFileMock(pduContent) as never);
   mockPushFile.mockResolvedValue({ success: true, sha: "pushed", size: 100 });
@@ -176,6 +183,8 @@ async function setupBootstrap(pduContent: string | null): Promise<{
   });
   mockFileExists.mockResolvedValue(false);
   mockListRepos.mockResolvedValue([]);
+  mockGetHeadSha.mockResolvedValue("snapshot-head");
+  mockCreateAtomicCommit.mockResolvedValue({ success: true, sha: "atomic-sha", files_committed: 3 });
 
   let captured: CapturedHandler | null = null;
   const mockServer = {
@@ -191,7 +200,7 @@ async function setupBootstrap(pduContent: string | null): Promise<{
   const { registerBootstrap } = await import("../src/tools/bootstrap.js");
   registerBootstrap(mockServer);
   if (!captured) throw new Error("prism_bootstrap handler was not registered");
-  return { handler: captured, pushSpy: mockPushFile };
+  return { handler: captured, pushSpy: mockPushFile, atomicSpy: mockCreateAtomicCommit };
 }
 
 beforeEach(() => {
@@ -200,7 +209,7 @@ beforeEach(() => {
 
 describe("brief-422: bootstrap stale-PDU safety net", () => {
   it("auto-applies a stale PDU (synthesized 3 sessions ago) and surfaces a warning", async () => {
-    const { handler, pushSpy } = await setupBootstrap(STRUCTURED_PDU);
+    const { handler, pushSpy, atomicSpy } = await setupBootstrap(STRUCTURED_PDU);
 
     const result = await handler({ project_slug: "prism" });
     expect(result.isError).toBeFalsy();
@@ -225,9 +234,16 @@ describe("brief-422: bootstrap stale-PDU safety net", () => {
     expect(parsed.pdu_applied_at_boot).toBeDefined();
     expect((parsed.pdu_applied_at_boot.applied as string[]).length).toBeGreaterThan(0);
 
-    // Architecture.md was pushed (the apply landed).
-    const archPush = pushSpy.mock.calls.find(c => c[1] === ".prism/architecture.md");
-    expect(archPush).toBeDefined();
+    // The target, archive, and cleared PDU were submitted together.
+    // Bootstrap writes its separate boot-test file; PDU itself does not use Contents API.
+    expect(pushSpy.mock.calls.some(([, path]) => String(path).includes("architecture.md"))).toBe(false);
+    expect(atomicSpy).toHaveBeenCalledTimes(1);
+    const writes = atomicSpy.mock.calls[0][1] as Array<{ path: string }> ;
+    expect(writes.map((write) => write.path)).toEqual(expect.arrayContaining([
+      ".prism/architecture.md",
+      ".prism/pending-doc-updates-archive.md",
+      ".prism/pending-doc-updates.md",
+    ]));
   });
 
   it("does NOT auto-apply when PDU is current (synthesized this session)", async () => {

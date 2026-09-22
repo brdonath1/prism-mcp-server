@@ -17,7 +17,7 @@ vi.mock("../src/github/client.js", () => ({
   fileExists: vi.fn(),
   createAtomicCommit: vi.fn(),
   getDefaultBranch: vi.fn(),
-  getHeadSha: vi.fn(),
+  getHeadSha: vi.fn().mockResolvedValue("snapshot-head"),
 }));
 
 vi.mock("../src/ai/client.js", () => ({

@@ -43,6 +43,7 @@ import {
   createAtomicCommit,
   getCommit,
   getHeadSha,
+  isCommitReachable,
 } from "../github/client.js";
 import type { FileResult } from "../github/types.js";
 import { logger } from "./logger.js";
@@ -72,10 +73,14 @@ export interface SafeMutationOpts {
    * Compute the mutation against fresh file contents. Re-runs on every retry
    * with re-read data, so any in-callback decision logic (dedup, applyPatch,
    * content rebuild) sees the latest state of the repo.
+   * Async callbacks may resolve optional/legacy paths after the HEAD snapshot.
+   * Callbacks must only read and prepare content: publication belongs here,
+   * and a retry may invoke the callback again. The captured HEAD is checked
+   * before committing so reads cannot be grafted onto an intervening revision.
    *
    * Return null/undefined `deletes` is treated identically to `[]`.
    */
-  computeMutation: (currentFiles: Map<string, FileResult>) => SafeMutationOutput;
+  computeMutation: (currentFiles: Map<string, FileResult>, snapshotSha: string) => SafeMutationOutput | Promise<SafeMutationOutput>;
   /** Diagnostic collector for surfacing primitive-level events. */
   diagnostics: DiagnosticsCollector;
   /** Number of retries on 409 conflict (default 1). */
@@ -99,6 +104,7 @@ export type SafeMutationResult =
 export type SafeMutationErrorCode =
   | "MUTATION_RETRY_EXHAUSTED"
   | "HEAD_SHA_UNKNOWN"
+  | "MUTATION_OUTCOME_UNKNOWN"
   | "DEADLINE_EXCEEDED";
 
 /**
@@ -109,10 +115,11 @@ export type SafeMutationErrorCode =
 async function readAll(
   repo: string,
   paths: string[],
+  ref: string,
 ): Promise<Map<string, FileResult>> {
   const results = await Promise.all(
     paths.map(async (path) => {
-      const result = await fetchFile(repo, path);
+      const result = await fetchFile(repo, path, ref);
       return { path, result };
     }),
   );
@@ -138,11 +145,18 @@ async function attemptMutation(
   mutation: SafeMutationOutput;
 }> {
   const headShaBefore = await getHeadSha(opts.repo);
+  if (!headShaBefore) {
+    return {
+      headShaBefore,
+      atomicResult: { success: false, sha: "", files_committed: 0, error: "HEAD snapshot unavailable" },
+      mutation: { writes: [] },
+    };
+  }
   const files =
     opts.readPaths.length > 0
-      ? await readAll(opts.repo, opts.readPaths)
+      ? await readAll(opts.repo, opts.readPaths, headShaBefore)
       : new Map<string, FileResult>();
-  const mutation = opts.computeMutation(files);
+  const mutation = await opts.computeMutation(files, headShaBefore);
   const writes = mutation.writes;
   const deletes = mutation.deletes ?? [];
   const atomicResult = await createAtomicCommit(
@@ -151,6 +165,7 @@ async function attemptMutation(
     opts.commitMessage,
     deletes,
     signal,
+    headShaBefore,
   );
   return { headShaBefore, atomicResult, mutation };
 }
@@ -264,6 +279,27 @@ async function runMutationLoop(
     // Atomic commit reported failure. Snapshot HEAD again to learn whether it
     // moved (concurrent writer OR our own lost-response commit).
     const headShaAfter = await getHeadSha(opts.repo);
+
+    // An accepted ref update may be followed by another writer before the
+    // lost response is reconciled. Verify our exact attempted commit in the
+    // branch ancestry, not only the current tip, before considering a retry.
+    if (atomicResult.attemptedCommitSha) {
+      try {
+        if (!headShaAfter) throw new Error("HEAD unavailable during outcome reconciliation");
+        if (await isCommitReachable(opts.repo, atomicResult.attemptedCommitSha, headShaAfter)) {
+          if (!(await landedContentMatches(opts.repo, atomicResult.attemptedCommitSha, mutation))) {
+            throw new Error("Attempted commit content could not be verified");
+          }
+          return { ok: true, commitSha: atomicResult.attemptedCommitSha, retried };
+        }
+      } catch (error) {
+        return {
+          ok: false,
+          code: "MUTATION_OUTCOME_UNKNOWN",
+          error: `Commit outcome uncertain; refusing blind retry: ${error instanceof Error ? error.message : String(error)}`,
+        };
+      }
+    }
 
     // SRV-41: landed-but-unreported detection. If HEAD moved, the "failed"
     // commit may have actually LANDED — createAtomicCommit's final ref PATCH
