@@ -14,6 +14,10 @@ process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "test-dummy-key
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { DiagnosticsCollector, type Diagnostic } from "../src/utils/diagnostics.js";
 
+vi.mock("../src/utils/published-checkpoint.js", () => ({
+  resolvePublishedCheckpoint: vi.fn(async () => ({ status: "native_fallback", reason: "pointer_missing", ref: "a".repeat(40), files_fetched: 0 })),
+}));
+
 // ── Part 1: DiagnosticsCollector unit tests ──────────────────────────────────
 
 describe("DiagnosticsCollector", () => {

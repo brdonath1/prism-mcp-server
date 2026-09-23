@@ -886,12 +886,12 @@ export async function getDefaultBranch(repo: string): Promise<string> {
  * HEAD-snapshot pattern when guarding against partial atomic-commit writes
  * (S40 C3).
  */
-export async function getHeadSha(repo: string): Promise<string | undefined> {
+export async function getHeadSha(repo: string, explicitBranch?: "main"): Promise<string | undefined> {
   try {
     // B.11: invalid repos return undefined — callers treat that as "can't
     // verify" by contract, and the mutation itself hits a visible guard.
     assertValidRepo(repo, `getHeadSha ${repo}`);
-    const branch = await getDefaultBranch(repo);
+    const branch = explicitBranch ?? await getDefaultBranch(repo);
     const refUrl = `${GITHUB_API_BASE}/repos/${GITHUB_OWNER}/${repo}/git/ref/heads/${branch}`;
     const refRes = await fetchWithRetry(refUrl, { headers: headers() });
     if (refRes.ok) {

@@ -17,7 +17,7 @@
 process.env.GITHUB_PAT = process.env.GITHUB_PAT || "test-dummy-pat";
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { createAtomicCommit, isCommitReachable } from "../src/github/client.js";
+import { createAtomicCommit, isCommitReachable, getHeadSha } from "../src/github/client.js";
 
 interface RecordedCall {
   url: string;
@@ -327,5 +327,17 @@ describe("S42 — createAtomicCommit URL routing", () => {
     // Repo name must appear in the error context — production logs filter on
     // `repo` attribute for this exact shape.
     expect(result.error).toContain("s42-test-repo-d");
+  });
+});
+
+
+describe("explicit main HEAD lookup", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it("does not consult default-branch metadata for an authority read", async () => {
+    const calls: RecordedCall[] = [];
+    vi.stubGlobal("fetch", buildHappyPathFetch(calls));
+    expect(await getHeadSha("explicit-main-test", "main")).toBe("head-sha");
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toContain("/git/ref/heads/main");
   });
 });

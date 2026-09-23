@@ -27,6 +27,9 @@ vi.mock("../src/github/client.js", () => {
   };
 });
 
+vi.mock("../src/utils/published-checkpoint.js", () => ({ resolvePublishedCheckpoint: vi.fn() }));
+import { resolvePublishedCheckpoint, type PublishedCheckpoint } from "../src/utils/published-checkpoint.js";
+
 import { fetchFile, fetchFiles, pushFile, fileExists } from "../src/github/client.js";
 import {
   BOOTSTRAP_OVERSIZE_ERROR_BYTES,
@@ -112,6 +115,7 @@ function setupMocks(opts: { decisionsIndex?: string; insights?: string } = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(resolvePublishedCheckpoint).mockResolvedValue({ status: "native_fallback", reason: "pointer_missing", ref: "a".repeat(40), files_fetched: 0 });
   registerBootstrap(mockServer);
   setupMocks();
 });
@@ -237,5 +241,36 @@ describe("M-012 FIDELITY GUARD — bootstrap round-trip is field-complete on the
     expect(parsed.standing_rules_tier_c_index).toBeUndefined();
     // ... and the payload still self-reports its true size.
     expect(parsed.response_bytes).toBe(parsed.bytes_delivered);
+  });
+});
+
+
+describe("published checkpoint bootstrap integration", () => {
+  it("delivers published authority while preserving native session metadata", async () => {
+    const checkpoint: PublishedCheckpoint = { status: "published", authority: "docs/handoffs", handoff_path: "docs/handoffs/handoff-2026-09-22-1807.md", handoff_content: "# Current project work", handoff_sha: "a".repeat(40), latest_path: "docs/handoffs/LATEST.md", latest_sha: "c".repeat(40), ref: "b".repeat(40), files_fetched: 2 };
+    vi.mocked(resolvePublishedCheckpoint).mockResolvedValue(checkpoint);
+    const response = await bootstrapHandler({ project_slug: "prism" });
+    const parsed = JSON.parse(response.content[0].text);
+    expect(parsed.published_checkpoint).toEqual(checkpoint);
+    expect(parsed.checkpoint_authority).toBe("published_repository_handoff");
+    expect(parsed.checkpoint_contract).toContain("takes precedence");
+    expect(parsed.handoff_version).toBe(33);
+    expect(parsed.session_count).toBe(28);
+    expect(parsed.response_bytes).toBe(parsed.bytes_delivered);
+  });
+
+  it("does not claim native authority when a published pointer cannot be verified", async () => {
+    vi.mocked(resolvePublishedCheckpoint).mockResolvedValue({ status: "unavailable", reason: "target_missing", ref: "a".repeat(40), detail: "missing", files_fetched: 1 });
+    const response = await bootstrapHandler({ project_slug: "prism" });
+    const parsed = JSON.parse(response.content[0].text);
+    expect(parsed.checkpoint_authority).toBe("unverified");
+    expect(parsed.diagnostics.some((d: {code: string}) => d.code === "PUBLISHED_CHECKPOINT_UNAVAILABLE")).toBe(true);
+  });
+
+  it("retains native authority for projects without a published handoff pointer", async () => {
+    const response = await bootstrapHandler({ project_slug: "prism" });
+    const parsed = JSON.parse(response.content[0].text);
+    expect(parsed.checkpoint_authority).toBe("native_compatibility_handoff");
+    expect(parsed.next_steps).toEqual(["Do thing A", "Do thing B"]);
   });
 });
