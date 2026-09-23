@@ -94,3 +94,55 @@ unchanged; older clients may ignore the additive fields. Removing duplicate
 writers or claiming fleet-wide handoff consolidation requires a separate rollout
 and observation of each consumer. No session is created, renamed, archived or
 reconfigured by this change.
+
+## Compatibility preparation (4.15.3)
+
+`prism_finalize action=prepare_checkpoint` derives a compact native handoff from
+an already-published canonical checkpoint. It is a read-only action: no backup,
+prune, synthesis, draft persistence, Git write or native lifecycle operation runs.
+It returns `path`, `content`, `source`, and `native_template_version`, with
+`writes_performed: false`, `finalized: false`, and `publication_required: true`.
+The output is a candidate; preparation does not publish it or complete a session.
+
+First publish the dated handoff and LATEST pointer together through the existing
+repository PR/checks contract. Reconcile the newest handoff by Git history, as
+required by the repository's pickup rules. Then provide:
+
+```json
+{
+  "project_slug": "example",
+  "action": "prepare_checkpoint",
+  "session_number": 4,
+  "handoff_version": 8,
+  "expected_published_handoff": {
+    "ref": "<full current main commit SHA>",
+    "path": "docs/handoffs/handoff-2026-09-23-0900.md",
+    "sha": "<full Git blob SHA for that dated handoff>"
+  }
+}
+```
+
+The server verifies main before and after reads, reads LATEST and its complete
+canonical target at that immutable commit, and requires the expected path/blob.
+It reads existing native handoff metadata at the same commit, preserves the
+native template version and file location (including historical root layouts),
+and refuses unavailable metadata. The candidate retains the native schema and
+explicitly points consumers to the complete canonical handoff. It does not copy,
+truncate, summarize or independently re-author its work-state narrative. Existing
+clients must follow that reference before acting; automatic client adoption is
+not established by the new action.
+
+The source argument is accepted only for preparation. Passing it to commit/full
+is rejected before any writes, so it cannot imply a source-guarded commit that
+the existing writer does not implement. Review the candidate and reverify its
+source and historical freshness immediately before the existing authorized
+publication workflow. A prepared candidate does not reserve a branch or prevent
+a later concurrent update. Re-prepare after main changes; an old response is not
+proof of present freshness. Preparation itself checks pointer/target agreement,
+not the historical ordering of every dated handoff. Existing hook-only write
+restrictions, PR requirements and other repository permissions still apply.
+
+Existing audit/draft/commit/full inputs and behavior remain compatible. This
+step removes the need to compose a second handoff narrative when the candidate
+is adopted; it does not yet consolidate publication transactions or establish
+fleet adoption, measured speed/cost savings, or full writer migration.

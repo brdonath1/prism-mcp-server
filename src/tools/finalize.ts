@@ -13,6 +13,7 @@ import {
   listCommits,
 } from "../github/client.js";
 import { safeMutation } from "../utils/safe-mutation.js";
+import { preparePublishedCheckpointProjection } from "../utils/published-checkpoint-projection.js";
 import { registerInflight } from "../utils/inflight-registry.js";
 import {
   LIVING_DOCUMENTS,
@@ -2316,12 +2317,12 @@ async function fullPhase(
 export function registerFinalize(server: McpServer): void {
   server.tool(
     "prism_finalize",
-    "PRISM finalization. Actions: audit (document inventory + drift), draft (AI-generated files; in compose mode returns validated draft_files + a review digest and persists them server-side), commit (backup + push + validate; use_draft_files: true commits the persisted draft so chat approves instead of regenerating), full (single call: audit + draft + commit). Phased commit (action=commit with operator-built files): handoff.md content MUST carry the handoff schema — '## Meta' (Handoff Version / Session Count / Template Version / Status), '## Critical Context' (>=1 numbered item), and a non-empty '## Where We Are' — validation rejects it otherwise, and recommendation injection + banner resumption read the same sections (HANDOFF_SCHEMA_MISSING diagnostic names any gap). Deadlines: action=audit is bounded at the ~50s MCP client ceiling and returns a structured FINALIZE_AUDIT_DEADLINE_EXCEEDED response rather than hanging; the INTERACTIVE action=draft race is bounded the same way, so a large-project draft that needs longer belongs on action=full. action=full is intended for the Trigger / Claude Code caller, which drives this server WITHOUT the ~60s client turn ceiling: its draft step runs as a background phase on the wider 180s (300s under SYNTHESIS_DRAFT_TRANSPORT=cc_subprocess) deadline, its internal audit carries a 120s anti-hang bound that degrades fail-closed (unverified docs are never recreated from a draft), and worst-case it can run several minutes. A chat client CAN call action=full - the action enum cannot prevent it - but that turn is bounded by the chat client's own ceiling, so the chat path should run the phased audit -> draft -> commit sequence instead. Every commit and full response also carries finalize_render_contract: the RENDER + FALLBACK + CONFIRM obligations for the returned banner, which are NOT to be memorized from boot.",
+    "PRISM finalization. Actions: prepare_checkpoint (read-only: derive a native compatibility handoff from an already-published, revision-pinned dated checkpoint; returns a candidate, never commits or finalizes), audit (document inventory + drift), draft (AI-generated files; in compose mode returns validated draft_files + a review digest and persists them server-side), commit (backup + push + validate; use_draft_files: true commits the persisted draft so chat approves instead of regenerating), full (single call: audit + draft + commit). Phased commit (action=commit with operator-built files): handoff.md content MUST carry the handoff schema — '## Meta' (Handoff Version / Session Count / Template Version / Status), '## Critical Context' (>=1 numbered item), and a non-empty '## Where We Are' — validation rejects it otherwise, and recommendation injection + banner resumption read the same sections (HANDOFF_SCHEMA_MISSING diagnostic names any gap). Deadlines: action=audit is bounded at the ~50s MCP client ceiling and returns a structured FINALIZE_AUDIT_DEADLINE_EXCEEDED response rather than hanging; the INTERACTIVE action=draft race is bounded the same way, so a large-project draft that needs longer belongs on action=full. action=full is intended for the Trigger / Claude Code caller, which drives this server WITHOUT the ~60s client turn ceiling: its draft step runs as a background phase on the wider 180s (300s under SYNTHESIS_DRAFT_TRANSPORT=cc_subprocess) deadline, its internal audit carries a 120s anti-hang bound that degrades fail-closed (unverified docs are never recreated from a draft), and worst-case it can run several minutes. A chat client CAN call action=full - the action enum cannot prevent it - but that turn is bounded by the chat client's own ceiling, so the chat path should run the phased audit -> draft -> commit sequence instead. Every commit and full response also carries finalize_render_contract: the RENDER + FALLBACK + CONFIRM obligations for the returned banner, which are NOT to be memorized from boot.",
     {
       project_slug: z.string().describe("Project repo name"),
-      action: z.enum(["audit", "draft", "commit", "full"]).describe("Finalization phase: 'audit' for document inventory, 'draft' for AI-generated file drafts, 'commit' to push final files, 'full' (single call: audit + draft + commit)"),
+      action: z.enum(["audit", "draft", "commit", "full", "prepare_checkpoint"]).describe("Finalization phase: 'prepare_checkpoint' for read-only compatibility preparation, 'audit' for document inventory, 'draft' for AI-generated file drafts, 'commit' to push final files, 'full' (single call: audit + draft + commit)"),
       session_number: z.number().describe("Current session number"),
-      handoff_version: z.number().optional().describe("New handoff version (commit phase only)"),
+      handoff_version: z.number().optional().describe("New handoff version (commit or prepare_checkpoint; required for preparation)"),
       files: z
         .array(
           z.object({
@@ -2350,14 +2351,45 @@ export function registerFinalize(server: McpServer): void {
         }).optional(),
         llm_usage: z.array(z.unknown()).optional(),
       }).optional().describe("Optional banner customization data (commit phase only)"),
+      expected_published_handoff: z.object({
+        ref: z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i),
+        path: z.string().regex(/^docs\/handoffs\/handoff-[A-Za-z0-9][A-Za-z0-9._-]*\.md$/),
+        sha: z.string().regex(/^[0-9a-f]{40}$/i),
+      }).optional().describe("Required for prepare_checkpoint only: reviewed current main commit, canonical handoff path and blob SHA. Publication and historical freshness checks remain the caller's responsibility."),
       handoff_content: z.string().optional().describe("Complete handoff.md content (full action only)"),
     },
-    async ({ project_slug, action, session_number, handoff_version, files, use_draft_files, skip_synthesis, banner_data, handoff_content }) => {
+    async ({ project_slug, action, session_number, handoff_version, files, use_draft_files, skip_synthesis, banner_data, handoff_content, expected_published_handoff }) => {
       const start = Date.now();
       const diagnostics = new DiagnosticsCollector();
       logger.info("prism_finalize", { project_slug, action, session_number });
 
       try {
+        if (expected_published_handoff && action !== "prepare_checkpoint") {
+          throw new Error("expected_published_handoff is accepted only by read-only prepare_checkpoint; it does not guard a commit.");
+        }
+        if (action === "prepare_checkpoint") {
+          if (!expected_published_handoff || handoff_version === undefined) {
+            throw new Error("prepare_checkpoint requires expected_published_handoff and handoff_version.");
+          }
+          if (files !== undefined || use_draft_files !== undefined || handoff_content !== undefined) {
+            throw new Error("prepare_checkpoint does not accept files, drafts or independently authored handoff content.");
+          }
+          const prepared = await preparePublishedCheckpointProjection(
+            project_slug, expected_published_handoff,
+            { sessionNumber: session_number, handoffVersion: handoff_version },
+          );
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify({
+              project: project_slug,
+              action,
+              ...prepared,
+              writes_performed: false,
+              finalized: false,
+              publication_required: true,
+              next_action: "Review the candidate against the complete canonical handoff. Reconcile historical freshness and reverify source before using the existing authorized publication path; preparation grants no write or lifecycle authorization.",
+            }) }],
+          };
+        }
         if (action === "audit") {
           const phaseStart = Date.now();
           // INS-360: the shared collector carries FINALIZE_AUDIT_UNVERIFIED_DOC
@@ -2838,8 +2870,10 @@ export function registerFinalize(server: McpServer): void {
                 error: message,
                 project: project_slug,
                 action,
-                partial_state_warning:
-                  "Finalize errored mid-turn. Doc commits are atomic, but pre-commit steps (handoff backup, history prune) may already have landed — verify the repo HEAD. A retry does not duplicate archived entries (SRV-47).",
+                ...(action === "prepare_checkpoint" || expected_published_handoff
+                  ? { writes_performed: false, finalized: false }
+                  : { partial_state_warning:
+                    "Finalize errored mid-turn. Doc commits are atomic, but pre-commit steps (handoff backup, history prune) may already have landed — verify the repo HEAD. A retry does not duplicate archived entries (SRV-47)." }),
                 ...(action === "commit" || action === "full"
                   ? {
                       ...assembleFinalizeErrorBannerFields(session_number, handoff_version ?? null),
