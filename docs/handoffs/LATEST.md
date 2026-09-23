@@ -1,4 +1,4 @@
-handoff: docs/handoffs/handoff-2026-09-22-checkpoint-preparation.md
+handoff: docs/handoffs/handoff-2026-09-22-2203.md
 agent: codex
 session_label: optimization codex-004
 main_sha_at_exit: 72151b7cea501dc1cad0765a168ecfa958dc04e0 (before publication)
