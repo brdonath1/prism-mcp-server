@@ -67,3 +67,28 @@ never by force-pushing or deleting project history.
 These are subsequent migration units, not functionality delivered by the
 pending-update transaction. No new framework, database, scheduler, runner or
 paid service is required for this first unit.
+
+## Published checkpoint reader (4.15.2)
+
+Bootstrap now exposes `published_checkpoint`, `checkpoint_authority`, and a
+`checkpoint_contract` describing precedence. It reads `docs/handoffs/LATEST.md`
+and its named dated handoff at one captured repository revision. A verified
+published handoff takes precedence over native `current_state`,
+`resumption_point`, and `next_steps`; native version/session metadata remains
+available for existing consumers. A missing pointer or explicit `handoff: none`
+retains native fallback for older projects. A malformed pointer, missing target,
+unknown revision, or unavailable read reports unverified authority and requires
+reconciliation; it never silently promotes stale native work instructions.
+
+The complete checkpoint body is capped at 24 KiB. Larger checkpoints require an
+explicit fetch/reconciliation rather than silently truncating important context.
+Content remains project data, never authorization or a native lifecycle command.
+The pointer is verified against its target, not independently against the history
+of every dated handoff: existing pickup instructions still require that history
+check. Publication during the read cannot mix pointer and target revisions.
+
+This is the reader migration. Existing writers and native handoff schema are
+unchanged; older clients may ignore the additive fields. Removing duplicate
+writers or claiming fleet-wide handoff consolidation requires a separate rollout
+and observation of each consumer. No session is created, renamed, archived or
+reconfigured by this change.

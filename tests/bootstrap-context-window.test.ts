@@ -192,10 +192,11 @@ describe("backward compatibility — params absent", () => {
     "recommended_session_settings", "autonomous_work_loop", "pdu_applied_at_boot",
     "warnings", "context_estimate", "response_bytes", "bytes_delivered",
     "diagnostics",
-    "context_window", // ← the only brief-s5 addition
+    "context_window", // brief-s5 addition
+    "published_checkpoint", "checkpoint_authority", "checkpoint_contract", // 4.15.2 additive reader contract
   ];
 
-  it("adds exactly one top-level key and, as of the 4.14.2 default, omits the legacy standing_rules_index", async () => {
+  it("preserves the explicit additive key contract and omits the legacy standing_rules_index", async () => {
     const r = await boot();
     expect(Object.keys(r).sort()).toEqual(EXPECTED_KEYS.sort());
   });

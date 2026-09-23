@@ -7,6 +7,11 @@ by `src/utils/banner.ts` (`BANNER_SPEC_VERSION`) plus the prism-framework
 templates; [docs/banner-spec.md](docs/banner-spec.md) is historical reference.
 Banner changes add an entry here.
 
+## [4.15.2] — 2026-09-22
+
+- Bootstrap exposes the published repository checkpoint alongside legacy native metadata, with explicit source precedence and conservative handling of broken pointers.
+- Pointer and handoff reads use one revision. Legacy projects without a pointer retain native fallback. Session creation, numbering and finalization writes are unchanged.
+
 ## [4.15.1] — 2026-09-22
 
 ### Changed
