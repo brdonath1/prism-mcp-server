@@ -79,8 +79,8 @@ export const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
  *  release is soak-gated on one post-S2b boot observation (see
  *  CLAUDE.md:96). */
 // 4.15.0 adds direct, Bearer-authenticated Supabase project administration.
-// 4.15.2 exposes revision-pinned published handoffs without changing native lifecycle.
-export const SERVER_VERSION = "4.15.2";
+// 4.15.3 adds read-only compatibility preparation from published checkpoints.
+export const SERVER_VERSION = "4.15.3";
 
 /** MCP client timeout is ~60s. All server-side operations must complete within 50s
  *  to leave 10s buffer for transport overhead. This constrains synthesis, draft,

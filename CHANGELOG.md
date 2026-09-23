@@ -1,5 +1,10 @@
 # Changelog — PRISM MCP Server
 
+## 4.15.3 — 2026-09-23
+
+- Added read-only `prism_finalize action=prepare_checkpoint`: derive a compact native compatibility handoff from an already-published dated checkpoint, preserving template metadata and native file layout. Require the expected main revision, path and blob, and reject source drift.
+- Preparation returns a candidate and source provenance without writes, synthesis, draft persistence or lifecycle actions. Existing publication authorization, PR/CI, historical freshness and finalizer behavior remain unchanged. Client adoption and guarded publication are separate migration steps.
+
 All notable changes to the PRISM MCP server, plus the banner-contract and
 framework-template history the server implements. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/). The banner contract is owned
