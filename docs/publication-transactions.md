@@ -72,11 +72,13 @@ paid service is required for this first unit.
 
 Bootstrap now exposes `published_checkpoint`, `checkpoint_authority`, and a
 `checkpoint_contract` describing precedence. It reads `docs/handoffs/LATEST.md`
-and its named dated handoff at one captured repository revision. A verified
+and its named dated handoff at one captured main-branch revision. A verified
 published handoff takes precedence over native `current_state`,
 `resumption_point`, and `next_steps`; native version/session metadata remains
 available for existing consumers. A missing pointer or explicit `handoff: none`
-retains native fallback for older projects. A malformed pointer, missing target,
+retains native compatibility fallback for older projects. The separately read native
+content is not snapshot-verified against the pointer revision; the response
+labels this `native_compatibility_handoff`. A malformed pointer, missing target,
 unknown revision, or unavailable read reports unverified authority and requires
 reconciliation; it never silently promotes stale native work instructions.
 

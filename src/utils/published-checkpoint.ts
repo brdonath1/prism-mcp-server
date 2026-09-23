@@ -1,6 +1,6 @@
 /**
  * Read the cross-harness published checkpoint without changing PRISM's native
- * handoff schema. The caller snapshots default-branch HEAD first, then this
+ * handoff schema. The caller snapshots main-branch HEAD first, then this
  * helper reads both the pointer and its target at that immutable commit.
  */
 
@@ -40,7 +40,7 @@ export type PublishedCheckpoint =
 
 export interface ReadPublishedCheckpointOptions {
   repo: string;
-  /** Immutable default-branch commit SHA obtained immediately before the reads. */
+  /** Immutable main-branch commit SHA obtained immediately before the reads. */
   ref: string;
   fetchFile: FetchFile;
   maxBytes?: number;
@@ -138,9 +138,9 @@ export async function readPublishedCheckpoint(
 export async function resolvePublishedCheckpoint(repo: string): Promise<PublishedCheckpoint> {
   let ref = "";
   try {
-    ref = await getHeadSha(repo) ?? "";
+    ref = await getHeadSha(repo, "main") ?? "";
     if (!ref) {
-      return { status: "unavailable", reason: "head_unavailable", ref, detail: "default branch HEAD could not be resolved", files_fetched: 0 };
+      return { status: "unavailable", reason: "head_unavailable", ref, detail: "main branch HEAD could not be resolved", files_fetched: 0 };
     }
     return await readPublishedCheckpoint({ repo, ref, fetchFile });
   } catch (error) {

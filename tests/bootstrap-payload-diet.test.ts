@@ -270,7 +270,7 @@ describe("published checkpoint bootstrap integration", () => {
   it("retains native authority for projects without a published handoff pointer", async () => {
     const response = await bootstrapHandler({ project_slug: "prism" });
     const parsed = JSON.parse(response.content[0].text);
-    expect(parsed.checkpoint_authority).toBe("native_handoff");
+    expect(parsed.checkpoint_authority).toBe("native_compatibility_handoff");
     expect(parsed.next_steps).toEqual(["Do thing A", "Do thing B"]);
   });
 });

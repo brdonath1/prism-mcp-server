@@ -3,7 +3,11 @@ import {
   PUBLISHED_CHECKPOINT_POINTER,
   parsePublishedHandoffPath,
   readPublishedCheckpoint,
+  resolvePublishedCheckpoint,
 } from "../src/utils/published-checkpoint.js";
+
+vi.mock("../src/github/client.js", () => ({ getHeadSha: vi.fn(), fetchFile: vi.fn() }));
+import { getHeadSha, fetchFile as githubFetchFile } from "../src/github/client.js";
 
 const REF = "a".repeat(40);
 const PATH = "docs/handoffs/handoff-2026-09-22-1200.md";
@@ -82,5 +86,24 @@ describe("strict authority selectors", () => {
     expect(parsePublishedHandoffPath('handoff: none — no dated handoff under this contract yet; the checkpoint is .prism/handoff.md until the first "Finalize session"').kind).toBe("none");
     expect(parsePublishedHandoffPath("handoff: none but read another source").kind).toBe("invalid");
     expect(parsePublishedHandoffPath("handoff:\nnone").kind).toBe("invalid");
+  });
+});
+
+
+describe("production checkpoint wrapper", () => {
+  it("requests main explicitly and pins both reads", async () => {
+    vi.mocked(getHeadSha).mockResolvedValue(REF);
+    vi.mocked(githubFetchFile).mockImplementation(async (_repo, path) => file(path === PUBLISHED_CHECKPOINT_POINTER ? POINTER : HANDOFF, "blob"));
+    const result = await resolvePublishedCheckpoint("project");
+    expect(result.status).toBe("published");
+    expect(getHeadSha).toHaveBeenLastCalledWith("project", "main");
+    expect(githubFetchFile).toHaveBeenCalledWith("project", PUBLISHED_CHECKPOINT_POINTER, REF);
+    expect(githubFetchFile).toHaveBeenCalledWith("project", PATH, REF);
+  });
+  it("refuses an unavailable main HEAD without fetching a pointer", async () => {
+    vi.mocked(getHeadSha).mockResolvedValue(undefined);
+    vi.mocked(githubFetchFile).mockClear();
+    await expect(resolvePublishedCheckpoint("project")).resolves.toMatchObject({status: "unavailable", reason: "head_unavailable"});
+    expect(githubFetchFile).not.toHaveBeenCalled();
   });
 });
