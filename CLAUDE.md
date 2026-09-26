@@ -343,7 +343,7 @@ This repo is enrolled in the Trigger daemon (`brdonath1/trigger`) via the marker
 - Operator merges; Trigger fires `notify` ntfy event on merge
 - State recorded at `~/.trigger/state/prism-mcp-server.json` — the daemon's local state directory on the operator's machine, not a path inside any repo (migrated off the trigger repo's `state/` at the S151 cutover)
 
-<!-- BEGIN: harness-kit-managed block v3.0.2 — do not edit by hand; apply-harness-kit.sh replaces this span -->
+<!-- BEGIN: harness-kit-managed block v3.0.5 — do not edit by hand; apply-harness-kit.sh replaces this span -->
 ### Rule 0 — Spawn routing (HARD RULE; PRISM D-34)
 
 ⛔ **Every spawned unit — Agent/Task subagent, Workflow `agent()`, Trigger brief fan-out,
@@ -368,7 +368,7 @@ always exits 0; it fails OPEN (allows, one stderr note) only when its own toolin
 unreadable Workflow `scriptPath` is a verification failure and DENIES.
 Full map + hook contract: `reference/spawn-routing.md` (prism-framework).
 
-## Cross-harness continuity (Claude ⇄ Codex) — harness kit v3.0.2
+## Cross-harness continuity (Claude ⇄ Codex) — harness kit v3.0.5
 
 This repository is co-developed by two harnesses: **Claude** (Claude Code, and the Cowork/PRISM
 sessions — this file) and **Codex** (the Codex app — `AGENTS.md`). Both follow one contract,
@@ -398,8 +398,14 @@ other harness until it is merged to `main` and named by the newest dated handoff
   `~/.codex/worktrees/` is a Codex app copy, never the project — if the SessionStart hook prints
   `WRONG FOLDER`, reopen the project from the main clone.
 - **End of every session:** a new dated handoff + `docs/handoffs/LATEST.md` in the same commit,
-  landed on `main` through a PR, **then** PRISM finalize. Leave no worktree for a merged branch and
-  nothing local-only that the other harness would need.
+  landed through the unit PR or one docs-only PR, **then** PRISM finalize. In an installed Claude
+  Desktop session, normal finalization creates exactly one verified, ready same-profile successor:
+  verify its account, inherited model/effort, saved service preference (Fast remains manual),
+  permissions and CURRENT state; acknowledge it; then set and read back the predecessor CLOSED and
+  archive it. `close-only` creates no successor. A CLOSED session accepts lifecycle recovery only;
+  transfer later product work to the ready successor. Preserve receipts and never duplicate a
+  successor. Leave no worktree for a merged branch and nothing local-only that the other harness
+  would need.
 - **Do not** edit Codex's own state (`~/.codex/`, any Codex-native registry or checkpoint) even on
   the same machine, and do not delete a `codex/*` branch that `LATEST.md` lists under
   `still_referenced_branches`.
@@ -416,10 +422,14 @@ other harness until it is merged to `main` and named by the newest dated handoff
   client_surface="claude_code")` only after the `LATEST.md` check; render `banner_text` inline
   (there is no widget in Claude Code). Where PRISM's Next Steps and the newest dated handoff
   disagree, the dated handoff wins and `.prism/task-queue.md` is patched to match (AmeriSack D-12).
-- One-time setup per machine, not per project (token from the vault, exported in the shell as
-  `PRISM_MCP_TOKEN`; never commit it, never paste it into a handoff):
+- PRISM tools come from the claude.ai **PRISMv2 MCP Server** connector, which Claude Desktop
+  delivers to every Code session under the same tool names (`prism_bootstrap`, `prism_finalize`, …).
+  Do not also add a user-scope `prism` server with `claude mcp add`: it duplicates every PRISM tool
+  in each session's startup context. Only a machine without that connector (terminal-only Claude
+  Code) adds it once, with the token from the vault exported as `PRISM_MCP_TOKEN` (never commit it,
+  never paste it into a handoff):
   `claude mcp add --scope user --transport http prism https://prism-mcp-server-production.up.railway.app/mcp --header "Authorization: Bearer $PRISM_MCP_TOKEN"`.
-  Without it the two skills run without PRISM and say so in their reports; the dated handoff is
+  Without either, the two skills run without PRISM and say so in their reports; the dated handoff is
   complete on its own.
 <!-- END: harness-kit-managed block -->
 

@@ -1,6 +1,6 @@
 # AGENTS.md — PRISM MCP Server
 
-<!-- BEGIN: harness-kit-managed block v3.0.2 — do not edit by hand; apply-harness-kit.sh replaces this span -->
+<!-- BEGIN: harness-kit-managed block v3.0.5 — do not edit by hand; apply-harness-kit.sh replaces this span -->
 ### Rule 0 — Spawn routing (HARD RULE; PRISM D-34)
 
 ⛔ **Every spawned unit carries an explicit class-routed model pin; the host model is NEVER
@@ -11,11 +11,11 @@ those in-session, never by spawn. An unpinned spawn is a defect: stop and re-iss
 Full map + hook contract: `reference/spawn-routing.md` (prism-framework).
 
 **Codex alias cross-walk (the same map on the Codex ladder):** mechanical / seeding /
-stat-gathering → `gpt-5.6-luna`/low or `gpt-5.6-terra`/low; review-verified builds →
-`gpt-5.6-terra`/medium (`gpt-5.6-sol` for the hardest); reviews / specs → `gpt-5.6-sol`/high;
+stat-gathering → `gpt-6-luna`/low or `gpt-5.6-terra`/low; review-verified builds →
+`gpt-5.6-terra`/medium (`gpt-6-sol` for the hardest); reviews / specs → `gpt-6-sol`/high;
 binding verdicts at gates → `gpt-6-astra`/high, which on Codex is also the worker tier for
-exceptionally difficult reasoning and substantial security/financial analysis; the host
-(astra/ultra) renders the verdict itself where delegation adds no independent judgment. Every
+exceptionally difficult reasoning and substantial security/financial analysis; the default host
+(astra/medium) renders the verdict itself where delegation adds no independent judgment. Every
 Codex spawn supplies model and effort explicitly. For `collaboration.spawn_agent`, use
 `fork_turns="none"` or bounded history — a full-history fork inherits the parent and rejects the
 override, which is exactly the Rule 0 defect. A worker at `xhigh`/`max`/`ultra` needs a
@@ -30,7 +30,7 @@ correct for the unit, per the same map. A Claude session running a brief you wro
 its unpinned spawns DENIED by `.claude/hooks/spawn-routing-guard.sh` — an unpinned spawn in
 your brief becomes that session's blocked step, not a silent upgrade to the host model.
 
-## Operator phrases — harness kit v3.0.2 (the same two phrases Claude uses; docs/handoffs/README.md §8)
+## Operator phrases — harness kit v3.0.5 (the same two phrases Claude uses; docs/handoffs/README.md §8)
 
 This repository is co-developed by Codex (this file) and Claude (Claude Code and the Cowork/PRISM
 sessions, `CLAUDE.md`). Both follow one contract, `docs/handoffs/README.md`, and `main` is the only
@@ -38,7 +38,8 @@ integration line. The operator's opening message outranks the handoff; the two p
 the need for them to say more.
 
 - **"Pick up with the latest handoff"** (also "pick up", "resume", "where were we"): run
-  `docs/handoffs/README.md` §1 in full — `git fetch origin`, read `origin/main:docs/handoffs/LATEST.md`
+  `docs/handoffs/README.md` §1 in full — reuse a fresh, successful same-startup discovery snapshot
+  only while its repository, full `HEAD`, porcelain-status and worktree-state digests still match; otherwise `git fetch origin`, read `origin/main:docs/handoffs/LATEST.md`
   and the newest dated handoff end to end (when `LATEST.md` says `handoff: none`, `.prism/handoff.md`
   is the checkpoint), reconcile against `origin/main`, the open PRs and your own checkpoint with the
   `main`-freshness test in §1.3 — then give a short opening report and start the handoff's closing

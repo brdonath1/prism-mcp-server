@@ -2,7 +2,7 @@
 name: pickup-handoff
 description: Resume work in this repository from the newest cross-harness handoff (Claude ⇄ Codex contract). Use when the operator says "Pick up with the latest handoff", "pick up", "resume", "where were we", "continue from the handoff", or at the start of any session in this repo before other work.
 ---
-<!-- harness-kit: v3.0.2 owned — this file is written by apply-harness-kit.sh (brdonath1/prism-framework/_templates/harness-kit); hand edits are overwritten on the next apply -->
+<!-- harness-kit: v3.0.5 owned — this file is written by apply-harness-kit.sh (brdonath1/prism-framework/_templates/harness-kit); hand edits are overwritten on the next apply -->
 
 # Pick up with the latest handoff (Claude Code)
 
