@@ -1,9 +1,9 @@
-<!-- harness-kit: v3.0.2 owned — this file is written by apply-harness-kit.sh (brdonath1/prism-framework/_templates/harness-kit); hand edits are overwritten on the next apply -->
+<!-- harness-kit: v3.0.5 owned — this file is written by apply-harness-kit.sh (brdonath1/prism-framework/_templates/harness-kit); hand edits are overwritten on the next apply -->
 
 # Session handoffs — pickup protocol (applies to EVERY agent and human in this repo)
 
 This file is the one continuity contract shared by every development harness that works on
-**PRISM MCP Server** — **Claude** (Claude Code, and the Cowork/PRISM sessions) and **Codex** (the
+**Prism Mcp Server** — **Claude** (Claude Code, and the Cowork/PRISM sessions) and **Codex** (the
 Codex app) — and by the operator. Each harness keeps its own native plumbing (PRISM's
 `.prism/handoff.md` for Claude; a Codex session's own checkpoint); that plumbing may add to this
 protocol but may never contradict it. `CLAUDE.md` (read by Claude) and `AGENTS.md` (read by Codex)
@@ -29,7 +29,13 @@ Read it from `origin/main`, not from your local checkout — your checkout may b
 
 ## 1. On session start
 
-1. Find the newest handoff — **by git history on `origin/main`, not by filename sort**:
+1. Find the newest handoff — **by git history on `origin/main`, not by filename sort**. A
+   successful `SessionStart` hook may already have printed a timestamped `startup discovery
+   snapshot`. Reuse that same-startup evidence for this first fetch and open-PR check only when
+   it says `fetch: refreshed`, `open_prs: observed`, and the repository path, full `HEAD`,
+   porcelain-status digest and worktree-state digest are still the displayed values. Otherwise — including a later turn, any state
+   change, a failed fetch, or unavailable PR discovery — run the commands below. Reuse never
+   replaces the git-history lookup or the reconciliation checks in step 3.
    ```bash
    git fetch origin
    git log origin/main --diff-filter=A --format='' --name-only -- 'docs/handoffs/handoff-*.md' | grep . | head -1
@@ -64,7 +70,8 @@ Read it from `origin/main`, not from your local checkout — your checkout may b
      every new branch from `origin/main`, treat your checkpoint's "next action" as *possibly already
      done*, and confirm it against `LATEST.md`'s `next_action` and `in_flight` fields before
      implementing anything. Never fast-forward a stale branch and implement on it.
-   - `gh pr list --state open` — an open PR touching your area is in-flight work. Do not duplicate
+   - `gh pr list --state open` — unless the valid same-startup snapshot above already supplied it,
+     an open PR touching your area is in-flight work. Do not duplicate
      it. Either take it over explicitly (comment on the PR saying so, then push to that branch) or
      pick a different unit.
    - `git status -sb`, `git worktree list`, `git ls-remote origin <branch named in the handoff>` —
@@ -75,6 +82,11 @@ Read it from `origin/main`, not from your local checkout — your checkout may b
 **One active primary per area at a time.** Before starting a session in one harness, the operator
 pauses the other harness's scheduled automation. Two primaries editing the same files in the same
 window is the one failure this protocol cannot repair after the fact.
+
+When one coherent release includes both an implementation change and its handoff instruction,
+land them together in one PR and use the normal focused check cycle once. The handoff may reuse
+only the valid same-startup discovery evidence described above; that convenience never adds a
+second gate or weakens the required reconciliation.
 
 ## 2. Branches, PRs and merging
 
@@ -145,7 +157,7 @@ other harness's sessions.**
    # <Title — what this session shipped or decided>
    Agent: claude | codex · Model: <model> · Session label: claude-S<N> | codex-<NNN>
    Supersedes: docs/handoffs/handoff-<previous>.md
-   Branch / HEAD: <branch> @ <sha> (remote SHA verified) · main at exit: <sha>
+   Branch / HEAD: <branch> @ <sha> (remote SHA verified) · main before publication: <last observed sha>
    Merged: PR #<n> → main @ <merge sha> | PARKED: <reason>
    ```
    Then: **Source and implementation** (what changed, where, invariants), **Release and
@@ -158,10 +170,24 @@ other harness's sessions.**
 4. End it with exactly one sentence of the form
    `Read docs/handoffs/<file>.md and <concrete next action>.` — never "continue the work".
 5. Commit and push it on the working branch ("completed" is not "pushed"), and get it onto `main` —
-   in the unit's PR, or in a docs-only PR immediately after that merge (§2).
+   in the unit's PR when that PR is still open, or in exactly one docs-only PR immediately after
+   that merge (§2). Never create duplicate publication PRs for one handoff. For an
+   open implementation PR, record the last actually observed main revision as
+   `main_sha_at_exit` with "before final publication", and list that PR/head under
+   `in_flight`; `merged` describes only already verified merges. The published
+   handoff is a source snapshot, not a prediction of its own future merge SHA.
+   Pickup reconciles it through §1.3 and the actual Git/PR state; it must not treat
+   the snapshot’s pending status as proof a now-merged unit remains unfinished.
 6. Update your harness-native state **last** (Claude/PRISM: `prism_finalize`; Codex: its own
-   checkpoint), pointing at the handoff you just wrote. Leave no worktree for a merged branch and no
-   local-only artifact the next session would need in order to resume.
+   checkpoint), pointing at the handoff you just wrote. For normal Claude Desktop finalization,
+   then create ONE fresh ready successor in the same verified profile; read back its account,
+   inherited model/effort, saved service preference (Fast stays manual), permissions and CURRENT
+   state, acknowledge it, then read back the predecessor CLOSED state and archive it. `close-only`
+   creates no successor. A CLOSED predecessor accepts lifecycle recovery only; subsequent product
+   work transfers to the ready successor. Preserve receipts, report pending lifecycle state
+   honestly, and never duplicate a successor. Codex finalization keeps its own checkpoint flow and
+   never creates a Claude successor. Leave no worktree for a merged branch and no local-only
+   artifact the next session would need in order to resume.
 
 ## 6. `LATEST.md` fields
 
@@ -169,7 +195,7 @@ other harness's sessions.**
 handoff: docs/handoffs/handoff-<YYYY-MM-DD-HHmm>.md | none
 agent: claude | codex | n/a
 session_label: claude-S<N> | codex-<NNN> | n/a
-main_sha_at_exit: <sha of origin/main when the handoff was written>
+main_sha_at_exit: <last observed origin/main sha before publication; legacy field name>
 work_branch: <branch> | none
 merged: PR #<n> @ <merge sha> | parked: <reason> | n/a
 next_action: <one sentence — the same sentence that closes the handoff>
@@ -177,7 +203,13 @@ in_flight: <open PRs / branches / external operations another session must not d
 still_referenced_branches: <branches a harness checkpoint still points at; do not delete> | none
 ```
 
-Nine fields, always all nine, always in this order.
+Nine fields, always all nine, always in this order. `main_sha_at_exit` is retained
+for compatibility but means the last observed main SHA at snapshot time, before
+this handoff is published. It is never a predicted merge SHA. `merged` contains
+only verified historical merges; a still-open final unit is named in `in_flight`
+with PR number, observed head SHA and `pending publication via this PR`. After
+landing, verify the final pushed head and merge through GitHub before native
+close-out and record that live evidence in the private closure receipt/banner.
 
 ## 7. Standing rules that survive every handoff (both harnesses)
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# harness-kit: v3.0.2 owned — written by apply-harness-kit.sh (brdonath1/prism-framework/_templates/harness-kit); hand edits are overwritten on the next apply
+# harness-kit: v3.0.5 owned — written by apply-harness-kit.sh (brdonath1/prism-framework/_templates/harness-kit); hand edits are overwritten on the next apply
 # SessionStart hook — prints the cross-harness pointer (docs/handoffs/README.md §0–§1) so every
 # session in this repo starts with LATEST.md, the newest handoff, PRISM identity, git state and
 # open PRs already in context. ONE script, BOTH harnesses: Claude Code runs it from the
@@ -43,10 +43,31 @@ case "$PHYS_CWD" in
     ;;
 esac
 tmo() { local s="$1"; shift; if command -v timeout >/dev/null 2>&1; then timeout "$s" "$@"; elif command -v gtimeout >/dev/null 2>&1; then gtimeout "$s" "$@"; elif command -v perl >/dev/null 2>&1; then perl -e 'my $t = shift @ARGV; my $g = fork; if (!defined $g) { exec { $ARGV[0] } @ARGV; exit 127 } if ($g == 0) { eval { setpgrp(0, 0) }; exec { $ARGV[0] } @ARGV; exit 127 } $SIG{ALRM} = sub { kill("TERM", -$g) or kill("TERM", $g); select(undef, undef, undef, 0.5); kill("KILL", -$g) or kill("KILL", $g); waitpid($g, 0); exit 124 }; alarm $t; waitpid($g, 0); my $w = $?; alarm 0; exit(($w & 127) ? 128 + ($w & 127) : ($w >> 8))' "$s" "$@"; else "$@"; fi; }
-tmo 12 git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=10 fetch origin --prune --quiet 2>/dev/null || echo "(git fetch failed or timed out — pointer below may be stale)"
+digest() { if command -v shasum >/dev/null 2>&1; then shasum -a 256 | awk '{print $1}'; elif command -v sha256sum >/dev/null 2>&1; then sha256sum | awk '{print $1}'; else cksum | awk '{print $1 ":" $2}'; fi; }
+FETCH_STATE="refreshed"
+if ! tmo 12 git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=10 fetch origin --prune --quiet 2>/dev/null; then
+  FETCH_STATE="failed or timed out — discovery below may be stale"
+  echo "(git fetch failed or timed out — pointer below may be stale)"
+fi
 DEFAULT_BRANCH="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
 DEFAULT_BRANCH="${DEFAULT_BRANCH#origin/}"
 [ -n "$DEFAULT_BRANCH" ] || DEFAULT_BRANCH="main"
+echo "=== startup discovery snapshot ==="
+echo "observed_at_utc: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+echo "repository: $(git rev-parse --show-toplevel 2>/dev/null)"
+echo "fetch: $FETCH_STATE"
+echo "branch: $(git rev-parse --abbrev-ref HEAD 2>/dev/null) · HEAD: $(git rev-parse HEAD 2>/dev/null) · origin/$DEFAULT_BRANCH SHA: $(git rev-parse --verify -q "origin/$DEFAULT_BRANCH" 2>/dev/null || printf '<unavailable>')"
+STATUS_PORCELAIN="$(git status --porcelain=v1 2>/dev/null || true)"
+STATUS_COUNT="$(printf '%s\n' "$STATUS_PORCELAIN" | sed '/^$/d' | wc -l | tr -d ' ')"
+STATUS_DIGEST="$(printf '%s' "$STATUS_PORCELAIN" | digest)"
+if [ "$STATUS_COUNT" = "0" ]; then
+  echo "status: clean · porcelain_sha256: $STATUS_DIGEST"
+else
+  echo "status: dirty ($STATUS_COUNT entries) · porcelain_sha256: $STATUS_DIGEST"
+fi
+WORKTREE_STATE="$(git worktree list --porcelain 2>/dev/null || true)"
+WORKTREE_COUNT="$(printf '%s\n' "$WORKTREE_STATE" | grep -c '^worktree ' || true)"
+echo "worktrees: $WORKTREE_COUNT · state_sha256: $(printf '%s' "$WORKTREE_STATE" | digest)"
 echo "=== docs/handoffs/LATEST.md @ origin/$DEFAULT_BRANCH ==="
 git show "origin/$DEFAULT_BRANCH:docs/handoffs/LATEST.md" 2>/dev/null || echo "(LATEST.md unavailable on origin/$DEFAULT_BRANCH)"
 echo "=== newest handoff by git log @ origin/$DEFAULT_BRANCH ==="
@@ -58,13 +79,15 @@ if [ -f .prism/project-identity.md ]; then
 else
   echo "(.prism/project-identity.md not present)"
 fi
-echo "=== local git state ==="
-echo "branch: $(git rev-parse --abbrev-ref HEAD 2>/dev/null) · HEAD: $(git rev-parse --short HEAD 2>/dev/null) · origin/$DEFAULT_BRANCH: $(git rev-parse --short "origin/$DEFAULT_BRANCH" 2>/dev/null)"
-git status -sb 2>/dev/null | head -1
-echo "worktrees: $(git worktree list 2>/dev/null | wc -l | tr -d ' ')"
+echo "=== startup discovery snapshot: open PRs ==="
 if command -v gh >/dev/null 2>&1; then
-  echo "=== open PRs ==="
-  tmo 8 gh pr list --state open --limit 15 --json number,title,headRefName --jq '.[] | "#\(.number) \(.headRefName) — \(.title)"' 2>/dev/null || echo "(gh unavailable or not logged in)"
+  if tmo 8 gh pr list --state open --limit 15 --json number,title,headRefName --jq '.[] | "#\(.number) \(.headRefName) — \(.title)"' 2>/dev/null; then
+    echo "open_prs: observed"
+  else
+    echo "open_prs: unavailable"
+  fi
+else
+  echo "open_prs: unavailable (gh absent)"
 fi
 if [ -f .claude/hooks/session-start-project.sh ]; then
   echo "=== project checks ==="

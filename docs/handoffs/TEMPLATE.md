@@ -1,5 +1,5 @@
 <!--
-harness-kit: v3.0.2 owned — this file is written by apply-harness-kit.sh (brdonath1/prism-framework/_templates/harness-kit); hand edits are overwritten on the next apply
+harness-kit: v3.0.5 owned — this file is written by apply-harness-kit.sh (brdonath1/prism-framework/_templates/harness-kit); hand edits are overwritten on the next apply
 HOW TO USE THIS TEMPLATE (delete this comment block when filling it in)
 - This file is the ONLY context the next session will have, and that session may run in a
   different application (Claude Code, Cowork/PRISM, or the Codex app) on a different model.
@@ -10,13 +10,23 @@ HOW TO USE THIS TEMPLATE (delete this comment block when filling it in)
 - Record failures, dead ends and things you were not able to verify — they save the next session
   more time than the successes do.
 - Update docs/handoffs/LATEST.md in the SAME commit (fields in docs/handoffs/README.md §6).
+- This is a source snapshot taken before its publication. Record only actual observed
+  SHAs and verified merges. An open final unit PR belongs in in_flight with its PR
+  number and observed implementation head, marked pending publication via this PR.
+  After landing, verify its final head/merge in the native close-out receipt; pickup
+  reconciles the snapshot against Git history. Never invent a future merge SHA.
+- For a Claude Desktop close-out, record private receipt references and observed
+  lifecycle state only: normal finalize has one ready same-profile CURRENT successor
+  acknowledged before the predecessor becomes CLOSED/archive; `close-only` has no
+  successor. A CLOSED predecessor may recover lifecycle only; product work belongs
+  in the ready successor. Never copy account or credential values into this handoff.
 - The last line of the file is exactly one sentence of the form
   "Read docs/handoffs/<this file>.md and <concrete next action>." — never "continue the work".
 -->
 # <Title — what this session shipped or decided, in one line>
 Agent: claude | codex · Model: <model and surface, e.g. "Claude Opus 5 (Claude Code, macOS)" or "GPT-6 Astra Ultra (Codex app)"> · Session label: claude-S<N> | codex-<NNN>
 Supersedes: docs/handoffs/handoff-<previous YYYY-MM-DD-HHmm>.md
-Branch / HEAD: <branch @ short-sha, remote SHA verified> | none open · main at exit: <full sha of origin/main when this file was written>
+Branch / HEAD: <branch @ short-sha, remote SHA verified> | none open · main before publication: <full sha of origin/main when this file was written>
 Merged: PR #<n> → main @ <merge sha> [, PR #<n> → …] | PARKED: <branch — reason> | none
 
 ## 0. Read this first
@@ -46,11 +56,14 @@ Merged: PR #<n> → main @ <merge sha> [, PR #<n> → …] | PARKED: <branch —
 For each: **D — <title>** · decision · reasoning · alternatives rejected · reversibility.
 (A Claude session logs these into the PRISM ledger with `prism_log_decision`; a Codex session records them here and the next Claude session ledgers them. Write "none" if none.)
 
-## 5. State of the world at exit
+## 5. State of the world at snapshot
 - Git: `origin/main` sha; open PRs (yours and others', with what each is); branches another harness's checkpoint still references (do not delete); worktrees left on purpose.
 - Environments: migration head; staging/production release IDs; credentials/tokens status by NAME only (exists / expired / unknown).
 - Other harness: what Codex (or Claude) must know to resume without conflict — e.g. "the Codex checkpoint <sha> is an ancestor of main; bootstrap from origin/main", "PRISM handoff v<N> points here".
 - Automations: which schedulers or dispatch daemons are paused or running.
+- Claude Desktop lifecycle: private receipt reference; successor state (or explicit
+  `close-only`); predecessor CLOSED/archive state; recovery needed, if any. For
+  Codex: `not applicable — Codex finalization creates no Claude successor`.
 
 ## 6. Continuation
 - **Next concrete action** — detailed enough to start cold: files to open first, commands to run, acceptance criteria, boundaries (what needs the operator's go).
