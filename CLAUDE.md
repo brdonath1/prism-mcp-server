@@ -52,7 +52,7 @@ The inventory above is the complete configured server surface; optional categori
 
 ## Technology Stack
 
-- **Runtime:** Node.js >= 18, TypeScript
+- **Runtime:** Node.js >= 22, TypeScript
 - **MCP SDK:** `@modelcontextprotocol/sdk` v1.28.x
 - **HTTP framework:** Express 5.x
 - **Transport:** MCP Streamable HTTP, **stateless mode** (`sessionIdGenerator: undefined`)

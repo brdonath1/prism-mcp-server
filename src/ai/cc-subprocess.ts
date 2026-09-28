@@ -33,9 +33,9 @@
  *
  * Legacy Sonnet 4.x uses Claude Code's `[1m]` suffix (e.g.
  * `claude-sonnet-4-6[1m]`) to select the 1M-context variant of the named
- * model. Sonnet 5 is natively 1M on supported Claude Code versions, so
- * `claude-sonnet-5` is the correct pin and `sonnet[1m]` adds no capability
- * when the `sonnet` alias resolves to Sonnet 5. The suffix is a Claude Code
+ * model. Sonnet 5.5 is natively 1M on supported Claude Code versions, so
+ * `claude-sonnet-5-5` is the correct pin and `sonnet[1m]` adds no capability
+ * when the `sonnet` alias resolves to Sonnet 5.5. The suffix is a Claude Code
  * routing signal — the binary itself parses `[1m]` and routes to the
  * extended-context variant where applicable, per code.claude.com/docs/en/model-config.
  * This is unrelated to and should not be confused with the API-side beta
@@ -47,7 +47,7 @@
  *    Claude Code v2.1.75, March 13, 2026).
  *  - Legacy Sonnet 4.6 does NOT auto-upgrade. Requesting 1M context on Sonnet
  *    requires the explicit `[1m]` suffix on the model identifier.
- *  - Sonnet 5 is natively 1M and supports max effort on first-party Anthropic
+ *  - Sonnet 5.5 is natively 1M and supports max effort on first-party Anthropic
  *    / Claude Code surfaces when the installed Claude Code version supports it.
  *  - Sonnet 1M on Max requires "extra usage" enabled per the operator's
  *    plan configuration and may not be available on all Max accounts. If
@@ -67,8 +67,8 @@
  *
  * Legacy Sonnet 4.6[1m] keeps the D-206 safety posture: adaptive thinking is
  * disabled on the Agent SDK OAuth path because that combination was unverified
- * and caused timeout risk. Explicit Sonnet 5 routing is the reviewed exception:
- * when the caller requests thinking and the model id is `claude-sonnet-5`, this
+ * and caused timeout risk. Explicit executional-tier routing is the reviewed exception:
+ * when the caller requests thinking and the model id is `claude-sonnet-5-5`, this
  * wrapper passes adaptive thinking and max effort through to the SDK. This
  * keeps current live Sonnet 4.6 PDU routing unchanged until an operator flips
  * the model env to Sonnet 5.
@@ -93,7 +93,7 @@ import type { SynthesisOutcome } from "./client.js";
  * copy here is the drift the pin audit flags. Semantics are unchanged: strip a
  * trailing `[1m]` long-context suffix, trim, compare case-insensitively.
  */
-function isExplicitSonnet5(model: string): boolean {
+function isExplicitExecutionalModel(model: string): boolean {
   return (
     model.trim().replace(/\[1m\]$/, "").toLowerCase() ===
     RECOMMENDATION_MODELS.executional.id.toLowerCase()
@@ -101,7 +101,7 @@ function isExplicitSonnet5(model: string): boolean {
 }
 
 export function ccSubprocessEffortForModel(model: string): "high" | "max" {
-  return isExplicitSonnet5(model) ? "max" : "high";
+  return isExplicitExecutionalModel(model) ? "max" : "high";
 }
 
 /**
@@ -143,10 +143,10 @@ export async function synthesizeViaCcSubprocess(
 
   const resolved = resolveSynthesisEffort();
   const effort = resolved.value ?? ccSubprocessEffortForModel(model);
-  const effectiveThinking = Boolean(thinking && isExplicitSonnet5(model));
+  const effectiveThinking = Boolean(thinking && isExplicitExecutionalModel(model));
 
   // Preserve the D-206 safety posture for legacy Sonnet 4.x routing while
-  // allowing the reviewed Sonnet 5 max-effort path to use adaptive thinking.
+  // allowing the reviewed executional max-effort path to use adaptive thinking.
   if (thinking && !effectiveThinking) {
     logger.warn("cc_subprocess: ignoring thinking=true — adaptive thinking is disabled on cc_subprocess path", { model });
   }

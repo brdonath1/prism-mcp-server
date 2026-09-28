@@ -14,6 +14,8 @@ describe("pricing — static list-price estimates", () => {
     expect(estimateCostUsd("z-ai/glm-5.2", 60_000, 3_000)).toBe(0.0801);
     // Sonnet 5 $3/$15.
     expect(estimateCostUsd("claude-sonnet-5", 100_000, 10_000)).toBe(0.45);
+    // Sonnet 5.5 $2/$10, and its exact prefix wins over Sonnet 5.
+    expect(estimateCostUsd("claude-sonnet-5-5", 100_000, 10_000)).toBe(0.3);
   });
 
   it("matches by model-id prefix so dated/suffixed variants price like their base", () => {

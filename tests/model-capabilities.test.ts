@@ -61,6 +61,7 @@ describe("MODEL_CAPABILITIES shape", () => {
 describe("resolveContextWindow — chat surface", () => {
   it.each([
     ["claude-opus-5", 1_000_000],
+    ["claude-sonnet-5-5", 1_000_000],
     ["claude-sonnet-5", 1_000_000],
     ["claude-opus-4-8", 500_000],
     ["claude-opus-4-7", 500_000],
@@ -100,7 +101,7 @@ describe("resolveContextWindow — chat surface", () => {
 // ─── claude_code column ──────────────────────────────────────────────
 
 describe("resolveContextWindow — claude_code surface (Max)", () => {
-  it.each(["claude-opus-5", "claude-sonnet-5", "claude-fable-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6"])(
+  it.each(["claude-opus-5", "claude-sonnet-5-5", "claude-sonnet-5", "claude-fable-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6"])(
     "%s resolves to 1M documented on Claude Code",
     (model) => {
       const r = resolveContextWindow(model, "claude_code", AT_SEED);
@@ -130,6 +131,7 @@ describe("resolveContextWindow — api surface", () => {
     ["claude-opus-4-8", 1_000_000],
     ["claude-opus-4-7", 1_000_000],
     ["claude-opus-4-6", 1_000_000],
+    ["claude-sonnet-5-5", 1_000_000],
     ["claude-sonnet-5", 1_000_000],
     ["claude-sonnet-4-6", 1_000_000],
     ["claude-fable-5", 1_000_000],
@@ -225,6 +227,7 @@ describe("normalizeModelKey", () => {
     ["Opus 4.8", "opus-4-8"],
     ["claude-opus-4-8[1m]", "opus-4-8"],
     ["  claude-sonnet-5  ", "sonnet-5"],
+    ["Claude Sonnet 5.5", "sonnet-5-5"],
     ["Mythos Preview", "mythos-preview"],
   ])("normalizes %s to %s", (input, expected) => {
     expect(normalizeModelKey(input)).toBe(expected);
@@ -238,6 +241,7 @@ describe("normalizeModelKey", () => {
   it("accepts the RECOMMENDATION_MODELS short codes the classifier already emits", () => {
     expect(resolveContextWindow("opus-4-8", "chat", AT_SEED).tokens).toBe(500_000);
     expect(resolveContextWindow("sonnet-5", "chat", AT_SEED).tokens).toBe(1_000_000);
+    expect(resolveContextWindow("sonnet-5-5", "chat", AT_SEED).tokens).toBe(1_000_000);
   });
 
   it.each([
