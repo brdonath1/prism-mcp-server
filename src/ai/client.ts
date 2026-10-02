@@ -186,8 +186,10 @@ export function resolveCallSiteTimeout(callSite: SynthesisCallSite): number {
  *   `SYNTHESIS_${CALLSITE_UPPER}_TRANSPORT` and
  *   `SYNTHESIS_${CALLSITE_UPPER}_MODEL` to optionally route through the
  *   Claude Code subprocess (OAuth path, env-selected model) instead of the
- *   direct Messages API. On cc_subprocess failure, falls back automatically to
- *   messages_api with the default model and logs `SYNTHESIS_TRANSPORT_FALLBACK`.
+ *   direct Messages API. On cc_subprocess failure the failure is returned and
+ *   `SYNTHESIS_METERED_FALLBACK_BLOCKED` is logged (default since 4.15.4). Only
+ *   when `SYNTHESIS_METERED_FALLBACK` is true/1/on does it fall back to
+ *   messages_api with the default model and log `SYNTHESIS_TRANSPORT_FALLBACK`.
  *   When not provided, behavior is unchanged (legacy callers).
  *
  * @param projectSlug Optional project slug tag (brief-419). When provided,
