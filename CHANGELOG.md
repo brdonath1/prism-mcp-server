@@ -1,5 +1,10 @@
 # Changelog — PRISM MCP Server
 
+## 4.15.4 — 2026-10-02
+
+- Gate the metered synthesis fallback behind `SYNTHESIS_METERED_FALLBACK` (default off). When a `cc_subprocess` synthesis call fails, the server no longer silently retries through the pay-per-token Anthropic Messages API: it logs one `SYNTHESIS_METERED_FALLBACK_BLOCKED` warn and returns the subprocess failure with its `error` and `error_code` intact. Accepts `true|1|on` (case-insensitive) to restore the old retry (`SYNTHESIS_TRANSPORT_FALLBACK`, transport `messages_api_fallback`); set it to `true` on Railway to roll back.
+- Unchanged: the direct `messages_api` transport, the provider (OpenRouter) fallback hop, `cc_dispatch`, model IDs and pricing. A blocked retry does not mark `fallback_used` and is not counted as a transport fallback by the boot observation check; the failed synthesis surfaces through the existing `SYNTHESIS_FAILED` path.
+
 ## 4.15.3 — 2026-09-23
 
 - Added read-only `prism_finalize action=prepare_checkpoint`: derive a compact native compatibility handoff from an already-published dated checkpoint, preserving template metadata and native file layout. Require the expected main revision, path and blob, and reject source drift.

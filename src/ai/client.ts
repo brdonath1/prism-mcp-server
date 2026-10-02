@@ -12,6 +12,7 @@ import {
   SYNTHESIS_TIMEOUT_MS,
   MCP_SAFE_TIMEOUT,
   resolveSynthesisEffort,
+  resolveSynthesisMeteredFallback,
   type SynthesisEffort,
 } from "../config.js";
 import {
@@ -412,6 +413,19 @@ async function synthesizeChain(
     );
     if (subprocessOutcome.success) {
       return { ...subprocessOutcome, transport: "cc_subprocess" };
+    }
+    if (!resolveSynthesisMeteredFallback()) {
+      // S212: zero-metered by default. No retry happened, so the chain keeps
+      // transport cc_subprocess and the fallback_* fields stay as an earlier
+      // provider hop left them. The failure outcome is returned intact.
+      logger.warn("SYNTHESIS_METERED_FALLBACK_BLOCKED — cc_subprocess failed, metered messages_api retry disabled (SYNTHESIS_METERED_FALLBACK)", {
+        callSite,
+        attempted_model: routing.model,
+        original_error: subprocessOutcome.error,
+        original_error_code: subprocessOutcome.error_code,
+        projectSlug,
+      });
+      return subprocessOutcome;
     }
     chain.fallback_used = true;
     // First failure wins: when a provider hop already set the reason, the

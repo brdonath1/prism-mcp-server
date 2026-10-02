@@ -53,6 +53,7 @@ const ENV_KEYS_TO_RESET = [
   "SYNTHESIS_DRAFT_MODEL",
   "SYNTHESIS_BRIEF_TRANSPORT",
   "SYNTHESIS_BRIEF_MODEL",
+  "SYNTHESIS_METERED_FALLBACK",
 ];
 
 beforeEach(() => {
@@ -121,6 +122,7 @@ describe("brief-419: synthesize() projectSlug plumbing", () => {
 
   it("includes projectSlug on the SYNTHESIS_TRANSPORT_FALLBACK warn log when subprocess fails", async () => {
     process.env.SYNTHESIS_PDU_TRANSPORT = "cc_subprocess";
+    process.env.SYNTHESIS_METERED_FALLBACK = "true";
     mockSubprocess.mockResolvedValueOnce({
       success: false,
       error: "subprocess crashed",
@@ -144,6 +146,7 @@ describe("brief-419: synthesize() projectSlug plumbing", () => {
 
   it("includes projectSlug on the success info log when fallback succeeds via messages_api", async () => {
     process.env.SYNTHESIS_PDU_TRANSPORT = "cc_subprocess";
+    process.env.SYNTHESIS_METERED_FALLBACK = "true";
     mockSubprocess.mockResolvedValueOnce({
       success: false,
       error: "subprocess crashed",

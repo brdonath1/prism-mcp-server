@@ -80,7 +80,8 @@ export const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
  *  CLAUDE.md:96). */
 // 4.15.0 adds direct, Bearer-authenticated Supabase project administration.
 // 4.15.3 adds read-only compatibility preparation from published checkpoints.
-export const SERVER_VERSION = "4.15.3";
+// 4.15.4 gates the metered synthesis fallback behind SYNTHESIS_METERED_FALLBACK (default off).
+export const SERVER_VERSION = "4.15.4";
 
 /** MCP client timeout is ~60s. All server-side operations must complete within 50s
  *  to leave 10s buffer for transport overhead. This constrains synthesis, draft,
@@ -383,6 +384,23 @@ export function resolveSynthesisEffort(
   const match = SYNTHESIS_EFFORT_VALUES.find((v) => v === trimmed);
   if (match) return { value: match, raw, invalid: false };
   return { value: null, raw, invalid: true };
+}
+
+/** Metered Messages API fallback for failed cc_subprocess synthesis
+ *  (SYNTHESIS_METERED_FALLBACK). DEFAULT OFF: live synthesis runs zero-metered
+ *  on cc_subprocess (Claude Max OAuth), so a cc_subprocess failure must not
+ *  silently retry through the pay-per-token Anthropic Messages API. Enabled
+ *  only when the trimmed, lower-cased value is `true`, `1` or `on`; unset,
+ *  empty or any other value keeps it disabled. Resolved at CALL time (same
+ *  pattern as resolveSynthesisEffort) so a Railway flip needs no code change.
+ *  Rollback to the old always-retry behavior: set to `true`. Gates only the
+ *  cc_subprocess -> messages_api_fallback hop; the direct messages_api
+ *  transport and the provider (OpenRouter) hop are unaffected. */
+export function resolveSynthesisMeteredFallback(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const v = env.SYNTHESIS_METERED_FALLBACK?.trim().toLowerCase();
+  return v === "true" || v === "1" || v === "on";
 }
 
 /** Max output tokens for synthesis calls. Bumped from 4096 → 8192 for Phase 3a:

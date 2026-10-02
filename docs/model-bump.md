@@ -153,7 +153,9 @@ knobs per call-site. The unset-env behavior, confirmed against source:
   `messages_api` with `modelOverride: undefined` (`:154`) — i.e. the registry
   default — and tags the result `messages_api_fallback` (`:158`). The env
   override is deliberately dropped on the retry because the override is what
-  failed.
+  failed. Since 4.15.4 this retry only happens when `SYNTHESIS_METERED_FALLBACK`
+  is `true`/`1`/`on` (default off: the subprocess failure is returned and a
+  `SYNTHESIS_METERED_FALLBACK_BLOCKED` warn is logged instead).
 
 So the test suite's suggestion is confirmed: **fully unset env for a
 call-site = `messages_api` transport + `SYNTHESIS_MODEL` (registry default
