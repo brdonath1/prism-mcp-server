@@ -12,6 +12,7 @@ import {
   SYNTHESIS_TIMEOUT_MS,
   MCP_SAFE_TIMEOUT,
   resolveSynthesisEffort,
+  resolveSynthesisMeteredFallback,
   type SynthesisEffort,
 } from "../config.js";
 import {
@@ -185,8 +186,10 @@ export function resolveCallSiteTimeout(callSite: SynthesisCallSite): number {
  *   `SYNTHESIS_${CALLSITE_UPPER}_TRANSPORT` and
  *   `SYNTHESIS_${CALLSITE_UPPER}_MODEL` to optionally route through the
  *   Claude Code subprocess (OAuth path, env-selected model) instead of the
- *   direct Messages API. On cc_subprocess failure, falls back automatically to
- *   messages_api with the default model and logs `SYNTHESIS_TRANSPORT_FALLBACK`.
+ *   direct Messages API. On cc_subprocess failure the failure is returned and
+ *   `SYNTHESIS_METERED_FALLBACK_BLOCKED` is logged (default since 4.15.4). Only
+ *   when `SYNTHESIS_METERED_FALLBACK` is true/1/on does it fall back to
+ *   messages_api with the default model and log `SYNTHESIS_TRANSPORT_FALLBACK`.
  *   When not provided, behavior is unchanged (legacy callers).
  *
  * @param projectSlug Optional project slug tag (brief-419). When provided,
@@ -412,6 +415,19 @@ async function synthesizeChain(
     );
     if (subprocessOutcome.success) {
       return { ...subprocessOutcome, transport: "cc_subprocess" };
+    }
+    if (!resolveSynthesisMeteredFallback()) {
+      // S212: zero-metered by default. No retry happened, so the chain keeps
+      // transport cc_subprocess and the fallback_* fields stay as an earlier
+      // provider hop left them. The failure outcome is returned intact.
+      logger.warn("SYNTHESIS_METERED_FALLBACK_BLOCKED — cc_subprocess failed, metered messages_api retry disabled (SYNTHESIS_METERED_FALLBACK)", {
+        callSite,
+        attempted_model: routing.model,
+        original_error: subprocessOutcome.error,
+        original_error_code: subprocessOutcome.error_code,
+        projectSlug,
+      });
+      return subprocessOutcome;
     }
     chain.fallback_used = true;
     // First failure wins: when a provider hop already set the reason, the

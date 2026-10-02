@@ -34,6 +34,8 @@ vi.mock("@anthropic-ai/sdk", () => {
 import { synthesize, resolveCallSiteRouting } from "../client.js";
 import { synthesizeViaCcSubprocess } from "../cc-subprocess.js";
 import { SYNTHESIS_MODEL_ID } from "../../models.js";
+import { resolveSynthesisMeteredFallback } from "../../config.js";
+import { logger } from "../../utils/logger.js";
 
 const mockSubprocess = vi.mocked(synthesizeViaCcSubprocess);
 
@@ -49,6 +51,7 @@ const ENV_KEYS_TO_RESET = [
   "LLM_ROUTING_ALLOWED_PROVIDERS",
   "LLM_ROUTING_SYNTHESIS_BRIEF_PROVIDER",
   "OPENAI_API_KEY",
+  "SYNTHESIS_METERED_FALLBACK",
 ];
 
 beforeEach(() => {
@@ -207,6 +210,7 @@ describe("synthesize() — per-call-site routing", () => {
   it("test 5: cc_subprocess failure → automatic fallback to messages_api with DEFAULT model", async () => {
     process.env.SYNTHESIS_PDU_TRANSPORT = "cc_subprocess";
     process.env.SYNTHESIS_PDU_MODEL = "claude-sonnet-5";
+    process.env.SYNTHESIS_METERED_FALLBACK = "true";
     mockSubprocess.mockResolvedValueOnce({
       success: false,
       error: "subprocess crashed",
@@ -338,6 +342,107 @@ describe("synthesize() — per-call-site routing", () => {
     expect(mockMessagesCreate).toHaveBeenCalledTimes(1);
     if (result.success) {
       expect(result.transport).toBe("messages_api");
+    }
+  });
+});
+
+describe("SYNTHESIS_METERED_FALLBACK gate (S212)", () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    warnSpy.mockRestore();
+  });
+  const warnMessages = () => warnSpy.mock.calls.map((c) => String(c[0]));
+
+  it("flag unset: cc_subprocess failure returns the failure, never calls the Messages API", async () => {
+    process.env.SYNTHESIS_PDU_TRANSPORT = "cc_subprocess";
+    process.env.SYNTHESIS_PDU_MODEL = "claude-sonnet-5";
+    mockSubprocess.mockResolvedValueOnce({
+      success: false,
+      error: "subprocess crashed",
+      error_code: "API_ERROR",
+    });
+
+    const result = await synthesize("sys", "user", undefined, undefined, undefined, true, "pdu", "proj-x");
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toBe("subprocess crashed");
+      expect(result.error_code).toBe("API_ERROR");
+    }
+    expect(mockMessagesCreate).not.toHaveBeenCalled();
+    const blocked = warnSpy.mock.calls.find((c) =>
+      String(c[0]).startsWith("SYNTHESIS_METERED_FALLBACK_BLOCKED"),
+    );
+    expect(blocked).toBeDefined();
+    expect(blocked![1]).toMatchObject({
+      callSite: "pdu",
+      attempted_model: "claude-sonnet-5",
+      original_error: "subprocess crashed",
+      original_error_code: "API_ERROR",
+      projectSlug: "proj-x",
+    });
+    expect(warnMessages().some((m) => m.startsWith("SYNTHESIS_TRANSPORT_FALLBACK"))).toBe(false);
+  });
+
+  it("flag unset: a cc_subprocess timeout keeps error_code TIMEOUT", async () => {
+    process.env.SYNTHESIS_PDU_TRANSPORT = "cc_subprocess";
+    mockSubprocess.mockResolvedValueOnce({
+      success: false,
+      error: "timed out",
+      error_code: "TIMEOUT",
+    });
+
+    const result = await synthesize("sys", "user", undefined, undefined, undefined, true, "pdu");
+
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error_code).toBe("TIMEOUT");
+    expect(mockMessagesCreate).not.toHaveBeenCalled();
+  });
+
+  it("flag true: today's fallback happens (default model, messages_api_fallback, TRANSPORT_FALLBACK warn)", async () => {
+    process.env.SYNTHESIS_PDU_TRANSPORT = "cc_subprocess";
+    process.env.SYNTHESIS_PDU_MODEL = "claude-sonnet-5";
+    process.env.SYNTHESIS_METERED_FALLBACK = "true";
+    mockSubprocess.mockResolvedValueOnce({
+      success: false,
+      error: "subprocess crashed",
+      error_code: "API_ERROR",
+    });
+
+    const result = await synthesize("sys", "user", undefined, undefined, undefined, true, "pdu");
+
+    expect(result.success).toBe(true);
+    expect(mockMessagesCreate).toHaveBeenCalledTimes(1);
+    expect(mockMessagesCreate.mock.calls[0][0].model).toBe(SYNTHESIS_MODEL_ID);
+    if (result.success) expect(result.transport).toBe("messages_api_fallback");
+    expect(warnMessages().some((m) => m.startsWith("SYNTHESIS_TRANSPORT_FALLBACK"))).toBe(true);
+    expect(warnMessages().some((m) => m.startsWith("SYNTHESIS_METERED_FALLBACK_BLOCKED"))).toBe(false);
+  });
+
+  it("direct messages_api transport is unaffected by the flag", async () => {
+    process.env.SYNTHESIS_PDU_TRANSPORT = "messages_api";
+
+    const result = await synthesize("sys", "user", undefined, undefined, undefined, true, "pdu");
+
+    expect(result.success).toBe(true);
+    expect(mockSubprocess).not.toHaveBeenCalled();
+    expect(mockMessagesCreate).toHaveBeenCalledTimes(1);
+    if (result.success) expect(result.transport).toBe("messages_api");
+  });
+
+  it("resolveSynthesisMeteredFallback accepts true/1/on case-insensitively with whitespace", () => {
+    for (const v of ["true", "TRUE", " True ", "1", " 1", "on", "ON", "  On\t"]) {
+      expect(resolveSynthesisMeteredFallback({ SYNTHESIS_METERED_FALLBACK: v }), v).toBe(true);
+    }
+  });
+
+  it("resolveSynthesisMeteredFallback rejects unset, empty, false, 0, off, yes", () => {
+    expect(resolveSynthesisMeteredFallback({})).toBe(false);
+    for (const v of ["", "  ", "false", "0", "off", "yes", "enabled"]) {
+      expect(resolveSynthesisMeteredFallback({ SYNTHESIS_METERED_FALLBACK: v }), v).toBe(false);
     }
   });
 });
