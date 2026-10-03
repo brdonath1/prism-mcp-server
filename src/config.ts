@@ -83,7 +83,8 @@ export const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
 // 4.15.4 gates the metered synthesis fallback behind SYNTHESIS_METERED_FALLBACK (default off).
 // 4.15.5 surfaces a blocked metered retry (SYNTHESIS_METERED_FALLBACK_BLOCKED) in the boot observation check.
 // 4.15.6 rewords the SYNTHESIS_METERED_FALLBACK_BLOCKED boot warning to "within the observation window" (S213 wave review).
-export const SERVER_VERSION = "4.15.6";
+// 4.15.7 extracts finalize/bridge.ts + finalize/draft.ts from finalize.ts (D-FINALIZE-SPLIT F1; verbatim move, no behavior change).
+export const SERVER_VERSION = "4.15.7";
 
 /** MCP client timeout is ~60s. All server-side operations must complete within 50s
  *  to leave 10s buffer for transport overhead. This constrains synthesis, draft,
