@@ -1,6 +1,6 @@
 # Changelog — PRISM MCP Server
 
-## Unreleased
+## 4.15.5 — 2026-10-02
 
 - Surface a blocked metered synthesis retry at boot. `prism_bootstrap` now reports `SYNTHESIS_METERED_FALLBACK_BLOCKED` (any call site: draft, brief or pdu) as its own warning with the call-site label and the `SYNTHESIS_METERED_FALLBACK=true` flag that would enable the retry, plus `metered_blocked_count` in the `SYNTHESIS_OBSERVATION_DETECTED` diagnostic. Observation only: no change to the gate or to synthesis behavior.
 - Added regression coverage for the `LLM_CALL` fields on a blocked attempt and for provider failure followed by subprocess failure with the flag off (no metered retry, failure surfaced).
