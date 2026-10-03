@@ -268,3 +268,21 @@ describe("checkSynthesisObservationEvents — boundary", () => {
     expect(checkSynthesisObservationEvents(logs, SLUG, NOW, LOOKBACK_MS).has_events).toBe(true);
   });
 });
+
+describe("checkSynthesisObservationEvents — SYNTHESIS_METERED_FALLBACK_BLOCKED", () => {
+  it("surfaces a blocked metered retry as its own kind and count", () => {
+    const logs: RailwayLog[] = [
+      makeLog({
+        message:
+          "SYNTHESIS_METERED_FALLBACK_BLOCKED — cc_subprocess failed, metered messages_api retry disabled (SYNTHESIS_METERED_FALLBACK)",
+        attributes: [PROJECT_TAG, { key: "callSite", value: "draft" }],
+      }),
+    ];
+    const result = checkSynthesisObservationEvents(logs, SLUG, NOW, LOOKBACK_MS);
+    expect(result.has_events).toBe(true);
+    expect(result.metered_blocked_count).toBe(1);
+    expect(result.synthesis_failed_count).toBe(0);
+    expect(result.fallback_count).toBe(0);
+    expect(result.events[0].kind).toBe("SYNTHESIS_METERED_FALLBACK_BLOCKED");
+  });
+});

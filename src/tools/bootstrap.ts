@@ -1611,6 +1611,33 @@ export function registerBootstrap(server: McpServer): void {
               `Background synthesis FAILED last finalize${suffix} — intelligence-brief / pending-doc-updates may be one session stale; check Railway logs for SYNTHESIS_FAILED (see INS-242).`,
             );
           }
+          // S213: a call whose metered messages_api retry was blocked by the
+          // SYNTHESIS_METERED_FALLBACK gate (draft, brief or pdu). The failure
+          // itself also logs SYNTHESIS_FAILED (brief/pdu) or DRAFT_FAILED, so
+          // this line names the cause and the flag that would enable the retry.
+          if (observation.metered_blocked_count > 0) {
+            const suffix =
+              observation.metered_blocked_count > 1
+                ? ` (× ${observation.metered_blocked_count})`
+                : "";
+            const BLOCKED_LABELS: Record<string, string> = {
+              draft: "CS-1 (draft)",
+              brief: "CS-2 (brief)",
+              pdu: "CS-3 (pdu)",
+            };
+            const blockedCounts = new Map<string, number>();
+            for (const ev of observation.events) {
+              if (ev.kind !== "SYNTHESIS_METERED_FALLBACK_BLOCKED") continue;
+              const label = BLOCKED_LABELS[ev.attributes.callSite ?? ""] ?? "call-site unlabeled";
+              blockedCounts.set(label, (blockedCounts.get(label) ?? 0) + 1);
+            }
+            const blockedParts = [...blockedCounts.entries()]
+              .map(([label, n]) => (n > 1 && blockedCounts.size > 1 ? `${label} × ${n}` : label))
+              .join(", ");
+            warnings.push(
+              `SYNTHESIS_METERED_FALLBACK_BLOCKED last finalize${suffix} — ${blockedParts} cc_subprocess failed and the metered messages_api retry was blocked; set SYNTHESIS_METERED_FALLBACK=true to enable the retry (see INS-242).`,
+            );
+          }
           if (observation.fallback_count > 0) {
             const suffix =
               observation.fallback_count > 1 ? ` (× ${observation.fallback_count})` : "";
@@ -1659,6 +1686,7 @@ export function registerBootstrap(server: McpServer): void {
             `Phase 3c-A observation events detected for ${resolvedSlug}`,
             {
               synthesis_failed_count: observation.synthesis_failed_count,
+              metered_blocked_count: observation.metered_blocked_count,
               fallback_count: observation.fallback_count,
               byte_warning_count: observation.byte_warning_count,
               preamble_warning_count: observation.preamble_warning_count,

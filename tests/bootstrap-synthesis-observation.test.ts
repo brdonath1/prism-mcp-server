@@ -462,6 +462,35 @@ describe("brief-456 (SRV-51/SRV-32): synthesis-failure surfacing + call-site lab
     expect(diag?.context?.synthesis_failed_count).toBe(1);
   });
 
+  it("surfaces a blocked metered retry (draft) with call-site label and the enabling flag", async () => {
+    const ts = new Date(Date.now() - 60_000).toISOString();
+    const { handler } = await setupBootstrap({
+      kind: "returns",
+      logs: [
+        {
+          message:
+            "SYNTHESIS_METERED_FALLBACK_BLOCKED — cc_subprocess failed, metered messages_api retry disabled (SYNTHESIS_METERED_FALLBACK)",
+          timestamp: ts,
+          severity: "warn",
+          attributes: [PROJECT_TAG, { key: "callSite", value: "draft" }],
+        },
+      ],
+    });
+    const result = await handler({ project_slug: "prism" });
+    const parsed = JSON.parse(result.content[0].text);
+
+    const warning = (parsed.warnings as string[]).find((w) =>
+      w.includes("SYNTHESIS_METERED_FALLBACK_BLOCKED"),
+    );
+    expect(warning).toBeDefined();
+    expect(warning).toContain("CS-1 (draft)");
+    expect(warning).toContain("SYNTHESIS_METERED_FALLBACK=true");
+    const diag = (
+      parsed.diagnostics as Array<{ code: string; context?: Record<string, unknown> }>
+    ).find((d) => d.code === "SYNTHESIS_OBSERVATION_DETECTED");
+    expect(diag?.context?.metered_blocked_count).toBe(1);
+  });
+
   it("fallback warning renders the actual call-site label (CS-2 for a brief fallback, not CS-3)", async () => {
     const ts = new Date(Date.now() - 60_000).toISOString();
     const { handler } = await setupBootstrap({
