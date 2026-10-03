@@ -82,7 +82,8 @@ export const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
 // 4.15.3 adds read-only compatibility preparation from published checkpoints.
 // 4.15.4 gates the metered synthesis fallback behind SYNTHESIS_METERED_FALLBACK (default off).
 // 4.15.5 surfaces a blocked metered retry (SYNTHESIS_METERED_FALLBACK_BLOCKED) in the boot observation check.
-export const SERVER_VERSION = "4.15.5";
+// 4.15.6 rewords the SYNTHESIS_METERED_FALLBACK_BLOCKED boot warning to "within the observation window" (S213 wave review).
+export const SERVER_VERSION = "4.15.6";
 
 /** MCP client timeout is ~60s. All server-side operations must complete within 50s
  *  to leave 10s buffer for transport overhead. This constrains synthesis, draft,

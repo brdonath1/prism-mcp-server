@@ -1635,7 +1635,7 @@ export function registerBootstrap(server: McpServer): void {
               .map(([label, n]) => (n > 1 && blockedCounts.size > 1 ? `${label} × ${n}` : label))
               .join(", ");
             warnings.push(
-              `SYNTHESIS_METERED_FALLBACK_BLOCKED last finalize${suffix} — ${blockedParts} cc_subprocess failed and the metered messages_api retry was blocked; set SYNTHESIS_METERED_FALLBACK=true to enable the retry (see INS-242).`,
+              `SYNTHESIS_METERED_FALLBACK_BLOCKED within the observation window${suffix} — ${blockedParts} cc_subprocess failed and the metered messages_api retry was blocked; set SYNTHESIS_METERED_FALLBACK=true to enable the retry (see INS-242).`,
             );
           }
           if (observation.fallback_count > 0) {

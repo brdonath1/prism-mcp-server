@@ -1,5 +1,10 @@
 # Changelog — PRISM MCP Server
 
+## 4.15.6 — 2026-10-02
+
+- Reword the `SYNTHESIS_METERED_FALLBACK_BLOCKED` boot warning to say the blocked attempt happened "within the observation window" instead of "last finalize", since the extractor scans a lookback window and an earlier blocked attempt can surface after a later successful finalize. Copy only; call-site label and flag hint unchanged.
+- Made the provider-failure-then-subprocess-failure test environment-clean: `SYNTHESIS_METERED_FALLBACK` is now cleared before and after each test in `client-openrouter.test.ts`, so a shell with the flag set no longer fails it.
+
 ## 4.15.5 — 2026-10-02
 
 - Surface a blocked metered synthesis retry at boot. `prism_bootstrap` now reports `SYNTHESIS_METERED_FALLBACK_BLOCKED` (any call site: draft, brief or pdu) as its own warning with the call-site label and the `SYNTHESIS_METERED_FALLBACK=true` flag that would enable the retry, plus `metered_blocked_count` in the `SYNTHESIS_OBSERVATION_DETECTED` diagnostic. Observation only: no change to the gate or to synthesis behavior.
