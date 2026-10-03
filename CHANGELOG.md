@@ -1,5 +1,9 @@
 # Changelog — PRISM MCP Server
 
+## 4.15.8 — 2026-10-03
+
+- Refactor, no behavior change (D-FINALIZE-SPLIT F2): `src/tools/finalize.ts` sheds the archive and lifecycle helpers into `src/tools/finalize/lifecycle.ts` (`SESSION_LOG_ARCHIVE_CONFIG`, `INSIGHTS_ARCHIVE_CONFIG`, `TASK_QUEUE_RECENTLY_COMPLETED_CAP`, `pruneRecentlyCompleted`, `updateArchitectureMetadata`). Bodies are byte-identical; `finalize.ts` re-exports every previously exported symbol (pinned by `tests/finalize-public-surface.test.ts`). The in-`commitPhase` archive block stays in place, so write ordering is unchanged.
+
 ## 4.15.7 — 2026-10-03
 
 - Refactor, no behavior change (D-FINALIZE-SPLIT F1): `src/tools/finalize.ts` sheds the draft and bridge seams into `src/tools/finalize/draft.ts` (draft timeout/deadline resolvers, `DRAFT_RELEVANT_DOCS`, `ARCHIVE_FILE_SUFFIX`, compose/summary/projection helpers, `FinalizeDraftState`, `draftPhase`) and `src/tools/finalize/bridge.ts` (`DraftBridgeResult`, `bridgeDraftSections` and its helpers). Function bodies are moved verbatim; `finalize.ts` re-exports every symbol it exported before, pinned by `tests/finalize-public-surface.test.ts`.
