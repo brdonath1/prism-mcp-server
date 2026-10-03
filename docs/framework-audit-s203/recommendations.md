@@ -1,6 +1,7 @@
 # Framework-wide audit S203 — recommendations (single-pass-implementable backlog)
 
 Disposition as of 2026-10-02 (PRISM S213): see disposition-2026-10-02-s213.md — 51 done, 8 partial, 6 kernel-blocked under D-295, 2 operator-env, 2 obsolete, 1 not done (R14).
+Session 214 update (2026-10-02): see the "Session 214 update" block in disposition-2026-10-02-s213.md.
 
 
 > **Contract (brief s203b Task 2):** every recommendation specifies `id · target repo · files · change
