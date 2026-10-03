@@ -4,6 +4,7 @@ process.env.GITHUB_PAT = process.env.GITHUB_PAT || "test-dummy-pat";
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "fs";
 import { MCP_SAFE_TIMEOUT } from "../src/config.js";
+import { readFinalizeSources } from "./helpers/finalize-sources.js";
 
 describe("Timeout architecture (C-3)", () => {
   it("MCP_SAFE_TIMEOUT is defined and equals 50000", () => {
@@ -16,7 +17,7 @@ describe("Timeout architecture (C-3)", () => {
   });
 
   it("no inline timeout exceeds 50000ms in finalize.ts (D-78: synthesis runs in background, no inline timeout)", () => {
-    const source = readFileSync("src/tools/finalize.ts", "utf-8");
+    const source = readFinalizeSources();
 
     // Should not contain old inline timeout values
     expect(source).not.toContain("90_000");
@@ -39,7 +40,7 @@ describe("Timeout architecture (C-3)", () => {
   });
 
   it("finalize.ts imports MCP_SAFE_TIMEOUT", () => {
-    const source = readFileSync("src/tools/finalize.ts", "utf-8");
+    const source = readFinalizeSources();
     expect(source).toContain("MCP_SAFE_TIMEOUT");
   });
 });
@@ -71,7 +72,7 @@ describe("Structured synthesis errors (H-4)", () => {
   });
 
   it("finalize.ts checks result.success instead of !result", () => {
-    const source = readFileSync("src/tools/finalize.ts", "utf-8");
+    const source = readFinalizeSources();
     // Should NOT check if (!result)
     expect(source).not.toMatch(/if\s*\(\s*!result\s*\)/);
     // Should check result.success

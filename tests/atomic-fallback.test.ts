@@ -3,16 +3,14 @@ process.env.GITHUB_PAT = process.env.GITHUB_PAT || "test-dummy-pat";
 
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "fs";
+import { readFinalizeSources, sliceBetween } from "./helpers/finalize-sources.js";
 
 describe("Atomic commit primitive architecture (S64 Phase 1 Brief 1.5)", () => {
-  const source = readFileSync("src/tools/finalize.ts", "utf-8");
+  const source = readFinalizeSources();
   const clientSource = readFileSync("src/github/client.ts", "utf-8");
 
   it("commitPhase delegates to safeMutation for atomic commit", () => {
-    const commitSection = source.slice(
-      source.indexOf("async function commitPhase"),
-      source.indexOf("// Synthesis after")
-    );
+    const commitSection = sliceBetween(source, "async function commitPhase", "// Synthesis after");
 
     // safeMutation is the atomic-commit primitive (S64 Phase 1 Brief 1.5).
     expect(commitSection).toContain("await safeMutation(");
@@ -22,10 +20,7 @@ describe("Atomic commit primitive architecture (S64 Phase 1 Brief 1.5)", () => {
   });
 
   it("commit failure adds warning derived from safeMutation error", () => {
-    const commitSection = source.slice(
-      source.indexOf("async function commitPhase"),
-      source.indexOf("// Synthesis after")
-    );
+    const commitSection = sliceBetween(source, "async function commitPhase", "// Synthesis after");
 
     // safeMutationResult is the new failure handle.
     expect(commitSection).toContain("safeMutationResult");
@@ -34,10 +29,7 @@ describe("Atomic commit primitive architecture (S64 Phase 1 Brief 1.5)", () => {
   });
 
   it("commit step does not call createAtomicCommit or getHeadSha directly", () => {
-    const commitSection = source.slice(
-      source.indexOf("async function commitPhase"),
-      source.indexOf("// Synthesis after")
-    );
+    const commitSection = sliceBetween(source, "async function commitPhase", "// Synthesis after");
 
     // Both primitives are encapsulated by safeMutation.
     expect(commitSection).not.toContain("createAtomicCommit");

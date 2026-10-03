@@ -24,7 +24,15 @@ vi.mock("../src/github/client.js", () => ({
 // Synthesis disabled — commit tests pass skip_synthesis anyway.
 vi.mock("../src/config.js", async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>;
-  return { ...actual, SYNTHESIS_ENABLED: false };
+  // D-FINALIZE-SPLIT F0: small deadlines so the deadline return sites of the
+  // R12 table below run in milliseconds. Every other test in this file
+  // resolves instantly against mocks, so 300ms never fires for them.
+  return {
+    ...actual,
+    SYNTHESIS_ENABLED: false,
+    FINALIZE_AUDIT_ACTION_DEADLINE_MS: 300,
+    FINALIZE_COMMIT_DEADLINE_MS: 300,
+  };
 });
 
 import {
@@ -280,6 +288,44 @@ describe("R12/R11 — every drivable commit/full return site carries banner + re
     {
       name: "full · happy path",
       args: { action: "full", session_number: 29, handoff_content: validHandoff(34, 29) },
+    },
+    // D-FINALIZE-SPLIT F0: the remaining return sites in the handler and in
+    // fullPhase (audit deadline, commit deadline, full commit deadline,
+    // mid-turn error catch).
+    {
+      name: "audit · deadline exceeded",
+      args: { action: "audit", session_number: 29 },
+      setup: () => {
+        mockFetchFile.mockImplementation(() => new Promise(() => {}));
+      },
+    },
+    {
+      name: "commit · deadline exceeded",
+      args: { action: "commit", session_number: 29, use_draft_files: true },
+      setup: () => {
+        mockCreateAtomicCommit.mockImplementation(() => new Promise(() => {}));
+      },
+    },
+    {
+      name: "full · commit deadline exceeded",
+      args: { action: "full", session_number: 29, handoff_content: validHandoff(34, 29) },
+      setup: () => {
+        mockCreateAtomicCommit.mockImplementation(() => new Promise(() => {}));
+      },
+    },
+    {
+      name: "commit · unexpected mid-turn throw (catch site)",
+      args: { action: "commit", session_number: 29, use_draft_files: true },
+      setup: () => {
+        mockFetchFile.mockImplementation(async (_repo: string, path: string) => {
+          if (path === FINALIZE_DRAFT_STATE_PATH) {
+            const content = JSON.stringify({ ...DRAFT_STATE, files: [null] });
+            return { content, sha: "draft-sha", size: content.length };
+          }
+          const content = validHandoff(33, 28);
+          return { content, sha: "cur", size: content.length };
+        });
+      },
     },
   ];
 

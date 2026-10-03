@@ -12,6 +12,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { readFileSync } from "fs";
 import { fetchFile, listRepos, GITHUB_REQUEST_TIMEOUT_MS } from "../src/github/client.js";
 import { GITHUB_RETRY_BUDGET_MS } from "../src/config.js";
+import { readFinalizeSources } from "./helpers/finalize-sources.js";
 
 // Shrink the test timeout so we don't wait 15s in CI.
 // We assert the error message pattern, not the actual elapsed time.
@@ -289,13 +290,13 @@ describe("S40 C1/C3 — finalize.ts HEAD-sha checks route through getHeadSha (wh
     // in src/github/client.ts, which routes through fetchWithRetry() and
     // therefore inherits the C1 timeout automatically. The finalize tool
     // must not fall back to a raw fetch() here.
-    const source = readFileSync("src/tools/finalize.ts", "utf-8");
+    const source = readFinalizeSources();
     const rawFetchMatches = source.match(/await fetch\(refUrl/g) ?? [];
     expect(rawFetchMatches.length).toBe(0);
   });
 
   it("finalize.ts routes HEAD-sha checks through safeMutation (S64 Phase 1 Brief 1.5)", () => {
-    const source = readFileSync("src/tools/finalize.ts", "utf-8");
+    const source = readFinalizeSources();
     // safeMutation owns the HEAD-snapshot machinery on behalf of finalize.ts.
     expect(source).toContain("safeMutation");
     // safeMutation itself uses getHeadSha, which routes through fetchWithRetry.
