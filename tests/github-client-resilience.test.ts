@@ -3,6 +3,7 @@ process.env.GITHUB_PAT = process.env.GITHUB_PAT || "test-dummy-pat";
 
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "fs";
+import { readFinalizeSources, sliceBetween } from "./helpers/finalize-sources.js";
 
 describe("GitHub client resilience patterns", () => {
   const source = readFileSync("src/github/client.ts", "utf-8");
@@ -74,13 +75,10 @@ describe("GitHub client resilience patterns", () => {
 });
 
 describe("Finalization response contract", () => {
-  const source = readFileSync("src/tools/finalize.ts", "utf-8");
+  const source = readFinalizeSources();
 
   it("commit phase always returns a results array", () => {
-    const commitSection = source.slice(
-      source.indexOf("async function commitPhase"),
-      source.indexOf("// Synthesis after") || source.length
-    );
+    const commitSection = sliceBetween(source, "async function commitPhase", "// Synthesis after");
 
     // Both atomic success and fallback paths must produce a results array
     const resultsAssignments = (commitSection.match(/results\s*=/g) || []).length;
@@ -89,10 +87,9 @@ describe("Finalization response contract", () => {
   });
 
   it("commit phase includes warnings in response", () => {
-    const commitSection = source.slice(
-      source.indexOf("async function commitPhase"),
-      source.length
-    );
+    const commitStart = source.indexOf("async function commitPhase");
+    expect(commitStart).toBeGreaterThan(-1);
+    const commitSection = source.slice(commitStart, source.length);
     // warnings array should be part of the return value
     expect(commitSection).toContain("warnings");
   });

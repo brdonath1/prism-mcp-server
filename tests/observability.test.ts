@@ -3,6 +3,7 @@ process.env.GITHUB_PAT = process.env.GITHUB_PAT || "test-dummy-pat";
 
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "fs";
+import { readFinalizeSources } from "./helpers/finalize-sources.js";
 
 describe("Request correlation ID (M-5)", () => {
   it("request logger generates UUID", () => {
@@ -41,7 +42,7 @@ describe("Partial failure flagging (H-3)", () => {
 
 describe("Safer atomic commit primitive (H-6 → S64 Phase 1 Brief 1.5)", () => {
   it("commit step delegates to safeMutation, which owns the HEAD comparison", () => {
-    const source = readFileSync("src/tools/finalize.ts", "utf-8");
+    const source = readFinalizeSources();
     expect(source).toContain("safeMutation");
     // The HEAD-comparison logic is no longer inline in finalize.ts —
     // safeMutation encapsulates it.
@@ -50,7 +51,7 @@ describe("Safer atomic commit primitive (H-6 → S64 Phase 1 Brief 1.5)", () => 
   });
 
   it("does NOT include a sequential pushFile fallback for the commit step", () => {
-    const source = readFileSync("src/tools/finalize.ts", "utf-8");
+    const source = readFinalizeSources();
     // Atomic-only by design (S62 audit Verdict C).
     expect(source).not.toContain("falling back to sequential pushFile");
     expect(source).not.toContain("Fell back to sequential file pushes");

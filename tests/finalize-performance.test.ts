@@ -3,11 +3,12 @@ process.env.GITHUB_PAT = process.env.GITHUB_PAT || "test-dummy-pat";
 
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "fs";
+import { readFinalizeSources, functionSection } from "./helpers/finalize-sources.js";
 
 describe("Draft timeout scaling", () => {
   it("calculates correct timeout capped at MCP_SAFE_TIMEOUT", () => {
     // Verify the draft timeout contract exists in source
-    const source = readFileSync("src/tools/finalize.ts", "utf-8");
+    const source = readFinalizeSources();
 
     // S41: Single env-configurable timeout (replaces S34b size-branching).
     expect(source).toContain("FINALIZE_DRAFT_TIMEOUT_MS");
@@ -25,14 +26,11 @@ describe("Draft timeout scaling", () => {
   });
 
   it("timeout variable is used in synthesize call, not a hardcoded value", () => {
-    const source = readFileSync("src/tools/finalize.ts", "utf-8");
+    const source = readFinalizeSources();
 
     // The synthesize call in draftPhase should use the variable, not a literal
     // Find the synthesize call in the draft context
-    const draftSection = source.slice(
-      source.indexOf("async function draftPhase"),
-      source.indexOf("async function commitPhase")
-    );
+    const draftSection = functionSection(source, "async function draftPhase");
 
     // Should call synthesize with draftTimeoutMs, not a hardcoded number
     expect(draftSection).toContain("draftTimeoutMs");
@@ -71,7 +69,7 @@ describe("Audit phase performance", () => {
 
 describe("Commit phase performance", () => {
   it("has timing instrumentation for each finalization phase", () => {
-    const source = readFileSync("src/tools/finalize.ts", "utf-8");
+    const source = readFinalizeSources();
 
     // Should log timing for audit, draft, and commit phases
     expect(source).toContain("audit timing");
@@ -79,14 +77,13 @@ describe("Commit phase performance", () => {
   });
 
   it("backup and prune are parallelized or sequential is intentional", () => {
-    const source = readFileSync("src/tools/finalize.ts", "utf-8");
+    const source = readFinalizeSources();
 
-    const commitSection = source.slice(
-      source.indexOf("async function commitPhase"),
-      source.indexOf("async function") > source.indexOf("async function commitPhase")
-        ? source.indexOf("async function", source.indexOf("async function commitPhase") + 1)
-        : source.length
-    );
+    const commitStart = source.indexOf("async function commitPhase");
+    expect(commitStart).toBeGreaterThan(-1);
+    const nextFn = source.indexOf("async function", commitStart + 1);
+    expect(nextFn).toBeGreaterThan(commitStart);
+    const commitSection = source.slice(commitStart, nextFn);
 
     // Backup and prune should either be wrapped in Promise.allSettled or clearly sequential
     // We check that the commit section has some form of parallel execution
