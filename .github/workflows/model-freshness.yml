@@ -18,7 +18,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
       # MODEL_BUMP_PAT (fine-grained PAT, this repo, contents + pull-requests
       # read/write) makes the bump PR fire pull_request workflows — PRs created

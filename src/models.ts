@@ -63,7 +63,7 @@
  * Fable 5 was removed from active defaults on 2026-06-25 after operator
  * availability evidence said it is unavailable for the foreseeable future.
  * Opus 4.8 is the current Claude fallback target for reasoning_heavy and
- * mixed. executional stays on Sonnet 5.
+ * mixed. executional stays on Sonnet 5.5.
  *
  * ── HOLD as of 2026-08-14 (S203 F-B9) ─────────────────────────────────────
  * Opus 5 is GA and MODEL_CAPABILITIES below documents its 1M chat window, so
@@ -79,7 +79,7 @@
 export const RECOMMENDATION_MODELS = {
   reasoning_heavy: { code: "opus-4-8", display: "Opus 4.8", id: "claude-opus-4-8" },
   mixed: { code: "opus-4-8", display: "Opus 4.8", id: "claude-opus-4-8" },
-  executional: { code: "sonnet-5", display: "Sonnet 5", id: "claude-sonnet-5" },
+  executional: { code: "sonnet-5-5", display: "Sonnet 5.5", id: "claude-sonnet-5-5" },
 } as const;
 
 /**
@@ -112,7 +112,7 @@ export const CC_DISPATCH_MODEL_ID = "claude-opus-4-8";
  *
  *   "claude-fable-5"      -> "Fable 5"
  *   "claude-opus-4-8"     -> "Opus 4.8"
- *   "claude-sonnet-5"      -> "Sonnet 5"
+ *   "claude-sonnet-5-5"    -> "Sonnet 5.5"
  *
  * Unparseable ids fall back to the id verbatim (still truthful, just unstyled).
  */
@@ -243,6 +243,10 @@ export const STALENESS_THRESHOLD_DAYS: Record<Provenance, number> = {
 const PAID_PLANS_REF =
   "https://support.claude.com/en/articles/8606394-how-large-is-the-context-window-on-paid-claude-plans";
 
+/** Sonnet 5.5 was released after the rest of this registry was verified. */
+const SONNET_5_5_AS_OF = "2026-09-28";
+const SONNET_5_5_REF = "https://platform.claude.com/docs/en/models/sonnet-5-5/overview";
+
 /** Max-plan Claude Code has no usage-credit step; the credit condition is a
  *  Pro-plan requirement. Attaching this to the cells it applies to (rather
  *  than to resolution logic) is the brief's Non-goal #2. */
@@ -318,6 +322,18 @@ export const MODEL_CAPABILITIES: Record<string, ModelCapability> = {
       plan_note: MAX_NO_CREDIT_STEP,
     },
     api: { tokens: 1_000_000, source: "documented", as_of: REGISTRY_AS_OF },
+  },
+  "sonnet-5-5": {
+    display: "Sonnet 5.5",
+    chat: { tokens: 1_000_000, source: "documented", as_of: SONNET_5_5_AS_OF, ref: PAID_PLANS_REF },
+    claude_code: {
+      tokens: 1_000_000,
+      source: "documented",
+      as_of: SONNET_5_5_AS_OF,
+      ref: PAID_PLANS_REF,
+      plan_note: MAX_NO_CREDIT_STEP,
+    },
+    api: { tokens: 1_000_000, source: "documented", as_of: SONNET_5_5_AS_OF, ref: SONNET_5_5_REF },
   },
   "sonnet-4-6": {
     display: "Sonnet 4.6",

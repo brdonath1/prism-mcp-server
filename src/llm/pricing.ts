@@ -70,6 +70,7 @@ interface ModelPrice {
  */
 const MODEL_PRICE_TABLE: Record<string, ModelPrice> = {
   "claude-opus-4-8": { input_per_mtok: 5, output_per_mtok: 25 },
+  "claude-sonnet-5-5": { input_per_mtok: 2, output_per_mtok: 10 },
   "claude-sonnet-5": { input_per_mtok: 3, output_per_mtok: 15 },
   "claude-haiku-4-5": { input_per_mtok: 1, output_per_mtok: 5 },
   "gpt-5.5": { input_per_mtok: 1.75, output_per_mtok: 15 },

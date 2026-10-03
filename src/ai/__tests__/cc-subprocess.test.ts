@@ -92,8 +92,8 @@ describe("synthesizeViaCcSubprocess — wrapper behavior", () => {
     expect(capturedQueryOptions?.effort).toBe("high");
   });
 
-  it("test 2a: forwards adaptive thinking and max effort for explicit Sonnet 5", async () => {
-    await synthesizeViaCcSubprocess("sys", "user", "claude-sonnet-5", undefined, undefined, true);
+  it("test 2a: forwards adaptive thinking and max effort for the executional model", async () => {
+    await synthesizeViaCcSubprocess("sys", "user", RECOMMENDATION_MODELS.executional.id, undefined, undefined, true);
 
     expect(capturedQueryOptions?.thinking).toEqual({ type: "adaptive" });
     expect(capturedQueryOptions?.effort).toBe("max");
@@ -129,9 +129,9 @@ describe("synthesizeViaCcSubprocess — wrapper behavior", () => {
     expect(capturedQueryOptions?.thinking).toBeUndefined();
   });
 
-  it("test 2d: SYNTHESIS_EFFORT overrides the per-model default for Sonnet 5 (queryOptions.effort + env)", async () => {
+  it("test 2d: SYNTHESIS_EFFORT overrides the per-model default for the executional model (queryOptions.effort + env)", async () => {
     vi.stubEnv("SYNTHESIS_EFFORT", "high");
-    await synthesizeViaCcSubprocess("sys", "user", "claude-sonnet-5");
+    await synthesizeViaCcSubprocess("sys", "user", RECOMMENDATION_MODELS.executional.id);
 
     expect(capturedQueryOptions?.effort).toBe("high");
     const env = capturedQueryOptions?.env as Record<string, string> | undefined;
@@ -140,7 +140,7 @@ describe("synthesizeViaCcSubprocess — wrapper behavior", () => {
 
   it("test 2e: an invalid SYNTHESIS_EFFORT falls back to the per-model default", async () => {
     vi.stubEnv("SYNTHESIS_EFFORT", "ultra");
-    await synthesizeViaCcSubprocess("sys", "user", "claude-sonnet-5");
+    await synthesizeViaCcSubprocess("sys", "user", RECOMMENDATION_MODELS.executional.id);
 
     expect(capturedQueryOptions?.effort).toBe("max");
     const env = capturedQueryOptions?.env as Record<string, string> | undefined;
@@ -157,10 +157,10 @@ describe("synthesizeViaCcSubprocess — wrapper behavior", () => {
   });
 
   it("test 2f: SYNTHESIS_EFFORT is matched case-insensitively", async () => {
-    // claude-sonnet-5 defaults to "max"; a case-varied override to "high"
+    // The executional model defaults to "max"; a case-varied override to "high"
     // proves the override applied rather than the per-model default.
     vi.stubEnv("SYNTHESIS_EFFORT", "High");
-    await synthesizeViaCcSubprocess("sys", "user", "claude-sonnet-5");
+    await synthesizeViaCcSubprocess("sys", "user", RECOMMENDATION_MODELS.executional.id);
 
     expect(capturedQueryOptions?.effort).toBe("high");
   });
@@ -276,6 +276,7 @@ describe("synthesizeViaCcSubprocess — wrapper behavior", () => {
     await synthesizeViaCcSubprocess("sys", "user", "claude-sonnet-4-6");
 
     expect(capturedQueryOptions?.tools).toEqual([]);
+    expect(capturedQueryOptions?.maxTurns).toBe(1);
   });
 
   it("scrubs ANTHROPIC_API_KEY from the spawned subprocess env", async () => {
