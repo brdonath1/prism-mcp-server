@@ -1,5 +1,9 @@
 # Changelog — PRISM MCP Server
 
+## 4.15.7 — 2026-10-03
+
+- Refactor, no behavior change (D-FINALIZE-SPLIT F1): `src/tools/finalize.ts` sheds the draft and bridge seams into `src/tools/finalize/draft.ts` (draft timeout/deadline resolvers, `DRAFT_RELEVANT_DOCS`, `ARCHIVE_FILE_SUFFIX`, compose/summary/projection helpers, `FinalizeDraftState`, `draftPhase`) and `src/tools/finalize/bridge.ts` (`DraftBridgeResult`, `bridgeDraftSections` and its helpers). Function bodies are moved verbatim; `finalize.ts` re-exports every symbol it exported before, pinned by `tests/finalize-public-surface.test.ts`.
+
 ## 4.15.6 — 2026-10-02
 
 - Reword the `SYNTHESIS_METERED_FALLBACK_BLOCKED` boot warning to say the blocked attempt happened "within the observation window" instead of "last finalize", since the extractor scans a lookback window and an earlier blocked attempt can surface after a later successful finalize. Copy only; call-site label and flag hint unchanged.

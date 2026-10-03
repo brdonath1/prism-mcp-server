@@ -10,7 +10,6 @@ import {
   fetchFile,
   pushFile,
   listDirectory,
-  listCommits,
 } from "../github/client.js";
 import { safeMutation } from "../utils/safe-mutation.js";
 import { preparePublishedCheckpointProjection } from "../utils/published-checkpoint-projection.js";
@@ -21,19 +20,14 @@ import {
   SYNTHESIS_ENABLED,
   FRAMEWORK_REPO,
   FINALIZE_COMMIT_DEADLINE_MS,
-  FINALIZE_DRAFT_TIMEOUT_MS,
-  FINALIZE_DRAFT_DEADLINE_MS,
-  FINALIZE_DRAFT_DEADLINE_CC_MS,
   FINALIZE_DRAFT_ACTION_DEADLINE_MS,
   FINALIZE_AUDIT_ACTION_DEADLINE_MS,
   FINALIZE_FULL_AUDIT_DEADLINE_MS,
-  CC_SUBPROCESS_SYNTHESIS_TIMEOUT_MS,
   DOC_ROOT,
   STANDING_RULES_WARNING_SIZE,
-  isWidgetChannelItem,
   resolveFinalizeBanner,
 } from "../config.js";
-import { detectSessionLogOrientation, splitForArchive, utf8ByteLength, type ArchiveConfig } from "../utils/archive.js";
+import { splitForArchive, utf8ByteLength, type ArchiveConfig } from "../utils/archive.js";
 
 /** Sentinel used to signal that the finalize-commit deadline fired (S40 C4). */
 const FINALIZE_COMMIT_DEADLINE_SENTINEL = Symbol("finalize.commit.deadline");
@@ -50,26 +44,6 @@ const FINALIZE_AUDIT_DEADLINE_SENTINEL = Symbol("finalize.audit.deadline");
  *  that shipped `finalization_banner_html: null` looked identical to one where
  *  the operator had switched the widget off. */
 const BANNER_RENDER_FAILED = "BANNER_RENDER_FAILED";
-
-/** Resolve the per-attempt timeout for draftPhase based on transport.
- *  cc_subprocess runs through the Agent SDK subprocess which has higher
- *  overhead; use the cc_subprocess-specific timeout for that transport,
- *  otherwise fall back to the standard FINALIZE_DRAFT_TIMEOUT_MS. */
-export function resolveDraftTimeout(transport: string | undefined): number {
-  return transport === "cc_subprocess"
-    ? CC_SUBPROCESS_SYNTHESIS_TIMEOUT_MS
-    : FINALIZE_DRAFT_TIMEOUT_MS;
-}
-
-/** Resolve the fullPhase draft-deadline race ceiling based on transport.
- *  cc_subprocess drafts run 130–240s (observed), so the standard 180s
- *  deadline would abort most runs. Use the wider cc_subprocess-specific
- *  deadline for that transport, otherwise the standard deadline. */
-export function resolveDraftDeadline(transport: string | undefined): number {
-  return transport === "cc_subprocess"
-    ? FINALIZE_DRAFT_DEADLINE_CC_MS
-    : FINALIZE_DRAFT_DEADLINE_MS;
-}
 
 /** Archive lifecycle configs (S40 FINDING-14). Applied during commitPhase
  *  before the atomic commit so live + archive changes land together. */
@@ -110,28 +84,11 @@ const INSIGHTS_ARCHIVE_CONFIG: ArchiveConfig = {
 /** Default cap for the `## Recently Completed` section in task-queue.md (brief-422 Piece 4). */
 export const TASK_QUEUE_RECENTLY_COMPLETED_CAP = 15;
 
-/** Suffix identifying archive files. Used to exclude archives from synthesis input. */
-export const ARCHIVE_FILE_SUFFIX = "-archive.md";
-
-/**
- * Documents included in the draft-phase synthesis input.
- *
- * Invariant: archives MUST NOT be synthesis input. They are cold storage.
- * Synthesis cost scales with input size (S40 FINDING-14) — adding archive
- * files here would regress the whole reason archiving exists.
- */
-export const DRAFT_RELEVANT_DOCS = LIVING_DOCUMENT_NAMES.filter(
-  d =>
-    d !== "architecture.md" &&
-    d !== "glossary.md" &&
-    d !== "intelligence-brief.md" &&
-    !d.endsWith(ARCHIVE_FILE_SUFFIX),
-);
-import { resolveDocPath, resolveDocFiles, resolveDocPushPath } from "../utils/doc-resolver.js";
+import { resolveDocPath, resolveDocPushPath } from "../utils/doc-resolver.js";
 import { guardPushPath } from "../utils/doc-guard.js";
 import { logger } from "../utils/logger.js";
 import { extractSection, parseNumberedList } from "../utils/summarizer.js";
-import { parseHandoffVersion, parseSessionCount, parseTemplateVersion } from "../validation/handoff.js";
+import { parseHandoffVersion, parseSessionCount } from "../validation/handoff.js";
 import { validateFile } from "../validation/index.js";
 import { assembleSynthesisBundle, generateIntelligenceBrief, generatePendingDocUpdates, type SynthesisBundle } from "../ai/synthesize.js";
 import {
@@ -157,6 +114,36 @@ import {
 } from "./finalize/banner.js";
 
 export { countLivingDocumentsUpdated };
+// D-FINALIZE-SPLIT F1: the draft + bridge seams now live in src/tools/finalize/.
+// Every symbol finalize.ts exported before is re-exported here (public surface
+// is pinned by tests/finalize-public-surface.test.ts).
+import { bridgeDraftSections, type DraftBridgeResult } from "./finalize/bridge.js";
+import {
+  ARCHIVE_FILE_SUFFIX,
+  DRAFT_RELEVANT_DOCS,
+  DRAFT_SUMMARY_MAX_BYTES,
+  buildDraftFilesProjection,
+  composeDraftFiles,
+  draftPhase,
+  resolveDraftDeadline,
+  resolveDraftSummary,
+  resolveDraftTimeout,
+  type ComposeDraftOutcome,
+  type FinalizeDraftState,
+} from "./finalize/draft.js";
+
+export {
+  ARCHIVE_FILE_SUFFIX,
+  DRAFT_RELEVANT_DOCS,
+  DRAFT_SUMMARY_MAX_BYTES,
+  bridgeDraftSections,
+  buildDraftFilesProjection,
+  composeDraftFiles,
+  resolveDraftDeadline,
+  resolveDraftSummary,
+  resolveDraftTimeout,
+};
+export type { ComposeDraftOutcome, DraftBridgeResult, FinalizeDraftState };
 import { applyPendingDocUpdates, type ApplyPduResult } from "../utils/apply-pdu.js";
 import { detectZwsHeaders } from "../utils/sanitize-content.js";
 import { findUnloggedIds } from "../utils/unlogged-ids.js";
@@ -167,507 +154,10 @@ import { parseExistingInsightIds } from "./log-insight.js";
 // src/utils/extract-json.ts (brief-s196c) so the openrouter quality gates can
 // use it without a module cycle; re-exported here for existing importers.
 export { extractJSON } from "../utils/extract-json.js";
-import { extractJSON } from "../utils/extract-json.js";
-import { FINALIZATION_DRAFT_PROMPT, buildFinalizationComposePrompt, buildFinalizationDraftMessage } from "../ai/prompts.js";
-import { boundSynthesisInput, buildSynthesisDocManifest, renderSynthesisInputManifest } from "../ai/input-budget.js";
-import { synthesize } from "../ai/client.js";
 import {
-  FINALIZE_COMPOSE_HANDOFF_MAX_BYTES,
   FINALIZE_DRAFT_STATE_PATH,
-  SYNTHESIS_MAX_OUTPUT_TOKENS,
-  resolveFinalizeComposeMode,
 } from "../config.js";
 
-/** brief-s202b T8: outcome of composing complete finalization files from a
- *  files-mode draft. `ok: false` carries the fallback reason for the
- *  FINALIZE_COMPOSE_FALLBACK warn (D-275 §4.5 pattern). */
-export interface ComposeDraftOutcome {
-  ok: boolean;
-  fallback_reason?: "validation_failed" | "compose_failed";
-  /** Per-file gate failures (validator errors + compose size contracts). */
-  gate_failures?: Array<{ path: string; errors: string[] }>;
-  /** Complete, validated files ready for commit (bare living-doc names). */
-  files?: Array<{ path: string; content: string }>;
-  /** Non-blocking validation warnings (e.g. HANDOFF_ITEM_OVERSIZE — T5). */
-  warnings?: Array<{ path: string; warnings: string[] }>;
-  /** Bridge report for the session-log / task-queue mutations. */
-  bridge?: DraftBridgeResult;
-}
-
-/**
- * Compose COMPLETE finalization files from a files-mode draft (brief-s202b
- * T8 / D-275 F-1) and run the quality gate.
- *
- * - handoff.md comes whole from the model's `handoff_md` key (full HANDOFF
- *   schema demanded by the prompt contract).
- * - session-log.md / task-queue.md are composed SERVER-SIDE by the
- *   production-tested fullPhase bridge (bridgeDraftSections) from the legacy
- *   contract keys — the model emits an entry + deltas, never whole copies of
- *   those docs.
- *
- * Quality gate = fallback trigger: every composed file must pass the same
- * validators that gate every finalize commit (validateFile → handoff schema,
- * EOF sentinel, anti-patterns), PLUS the T8 hard size contracts on the
- * handoff (file ≤ FINALIZE_COMPOSE_HANDOFF_MAX_BYTES; Critical Context ≤ 5
- * items). Per-item byte budget stays WARN-only (T5's explicit calibration).
- * Any gate failure → the caller returns the legacy 6-key draft response.
- *
- * Pure (no I/O) and exported for direct unit testing.
- */
-export function composeDraftFiles(
-  drafts: Record<string, unknown>,
-  current: { sessionLog?: string; taskQueue?: string },
-): ComposeDraftOutcome {
-  const handoffMd = drafts.handoff_md;
-  if (typeof handoffMd !== "string" || handoffMd.trim().length === 0) {
-    return {
-      ok: false,
-      fallback_reason: "validation_failed",
-      gate_failures: [{ path: "handoff.md", errors: ["draft is missing the handoff_md key (or it is empty)"] }],
-    };
-  }
-
-  let bridge: DraftBridgeResult;
-  try {
-    bridge = bridgeDraftSections(drafts, current);
-  } catch (err) {
-    return {
-      ok: false,
-      fallback_reason: "compose_failed",
-      gate_failures: [
-        { path: "session-log.md/task-queue.md", errors: [err instanceof Error ? err.message : String(err)] },
-      ],
-    };
-  }
-
-  const composedFiles: Array<{ path: string; content: string }> = [
-    { path: "handoff.md", content: handoffMd },
-    ...bridge.files,
-  ];
-
-  const encoder = new TextEncoder();
-  const gateFailures: Array<{ path: string; errors: string[] }> = [];
-  const gateWarnings: Array<{ path: string; warnings: string[] }> = [];
-  for (const file of composedFiles) {
-    const validation = validateFile(file.path, file.content);
-    const errors = [...validation.errors];
-    if (file.path === "handoff.md") {
-      const bytes = encoder.encode(file.content).length;
-      if (bytes > FINALIZE_COMPOSE_HANDOFF_MAX_BYTES) {
-        errors.push(
-          `composed handoff is ${bytes}B — over the ${FINALIZE_COMPOSE_HANDOFF_MAX_BYTES}B compose size contract`,
-        );
-      }
-      const items = parseNumberedList(extractSection(file.content, "Critical Context") ?? "");
-      // S208 widget_channel binding: the `widget_channel:` flag is a machine
-      // signal the boot kernel keys on, not one of the five substantive facts
-      // the cap exists to ration. Counting it forced a handoff at cap to give
-      // up a real item to report a broken render channel. Exempt it here (cap
-      // is effectively 5 + flag); scale.ts's condensation carries the mirror
-      // exemption so a later condensation pass cannot delete it either.
-      const substantiveItems = items.filter((item) => !isWidgetChannelItem(item));
-      if (substantiveItems.length > 5) {
-        errors.push(`composed handoff has ${substantiveItems.length} Critical Context items — the compose contract caps at 5`);
-      }
-    }
-    if (errors.length > 0) gateFailures.push({ path: file.path, errors });
-    if (validation.warnings.length > 0) gateWarnings.push({ path: file.path, warnings: validation.warnings });
-  }
-
-  if (gateFailures.length > 0) {
-    return { ok: false, fallback_reason: "validation_failed", gate_failures: gateFailures, bridge };
-  }
-  return { ok: true, files: composedFiles, warnings: gateWarnings, bridge };
-}
-
-/** brief-s202b T8: hard cap for the chat-review digest (1.5KB). */
-export const DRAFT_SUMMARY_MAX_BYTES = 1_536;
-
-/** Clamp the model's draft_summary to the 1.5KB contract; when the model
- *  omitted it, build a deterministic server-side digest so the review flow
- *  never dies on a missing optional key. */
-export function resolveDraftSummary(
-  drafts: Record<string, unknown>,
-  composedFiles: Array<{ path: string; content: string }>,
-): string {
-  const encoder = new TextEncoder();
-  const supplied = typeof drafts.draft_summary === "string" ? drafts.draft_summary.trim() : "";
-  if (supplied.length > 0) {
-    if (encoder.encode(supplied).length <= DRAFT_SUMMARY_MAX_BYTES) return supplied;
-    let keep = supplied.slice(0, DRAFT_SUMMARY_MAX_BYTES);
-    while (keep.length > 0 && encoder.encode(keep).length > DRAFT_SUMMARY_MAX_BYTES - 3) {
-      keep = keep.slice(0, -1);
-    }
-    return `${keep}…`;
-  }
-  const handoff = composedFiles.find(f => f.path === "handoff.md");
-  const entry = typeof drafts.session_log_entry === "string" ? drafts.session_log_entry : "";
-  const completed = Array.isArray(drafts.task_queue_completed) ? drafts.task_queue_completed.length : 0;
-  const added = Array.isArray(drafts.task_queue_new) ? drafts.task_queue_new.length : 0;
-  return [
-    `handoff.md composed (${handoff ? encoder.encode(handoff.content).length : 0}B)`,
-    `session-log entry: ${entry.split("\n")[0] ?? "(none)"}`,
-    `task-queue: ${completed} completed, ${added} added`,
-  ].join(" | ");
-}
-
-/** brief-s202b T8: reviewable projection of the composed files for the draft
- *  response. handoff.md ships FULL (it is wholly new each session, ≤10KB by
- *  contract); session-log/task-queue ship their DELTA (the entry / the task
- *  flips) — the full composed copies are persisted server-side and returning
- *  them would regress the response ~10-15K tokens against the very
- *  chat-context economics this feature exists for (INS-178). `full_bytes`
- *  always states the persisted file's true size. */
-export function buildDraftFilesProjection(
-  drafts: Record<string, unknown>,
-  composedFiles: Array<{ path: string; content: string }>,
-): Array<{ path: string; delivery: "full" | "delta"; content: string; full_bytes: number }> {
-  const encoder = new TextEncoder();
-  return composedFiles.map(file => {
-    const fullBytes = encoder.encode(file.content).length;
-    if (file.path === "handoff.md") {
-      return { path: file.path, delivery: "full" as const, content: file.content, full_bytes: fullBytes };
-    }
-    if (file.path === "session-log.md") {
-      const entry = typeof drafts.session_log_entry === "string" ? drafts.session_log_entry : "";
-      return { path: file.path, delivery: "delta" as const, content: entry, full_bytes: fullBytes };
-    }
-    const completed = Array.isArray(drafts.task_queue_completed)
-      ? drafts.task_queue_completed.filter((t): t is string => typeof t === "string")
-      : [];
-    const added = Array.isArray(drafts.task_queue_new)
-      ? drafts.task_queue_new.filter((t): t is string => typeof t === "string")
-      : [];
-    const delta = [...completed.map(t => `[x] ${t}`), ...added.map(t => `[+] ${t}`)].join("\n");
-    return { path: file.path, delivery: "delta" as const, content: delta, full_bytes: fullBytes };
-  });
-}
-
-/** brief-s202b T8: shape of the persisted `.prism/finalize-draft.json`
- *  artifact — the stateless-server bridge between action=draft and
- *  action=commit use_draft_files (same GitHub-persistence rationale as
- *  dispatch state, D-123). */
-export interface FinalizeDraftState {
-  version: 1;
-  project: string;
-  session_number: number;
-  handoff_version: number;
-  created_at: string;
-  files: Array<{ path: string; content: string }>;
-  draft_summary: string;
-}
-
-/**
- * Draft phase — use the configured synthesis model (SYNTHESIS_MODEL_ID, the
- * registry single-switch per D-254) to generate finalization file drafts.
- * Returns structured content for Claude to review before commit.
- *
- * brief-s202b T8 (F-1): in FINALIZE_COMPOSE_MODE=files (the default) the
- * CS-1 prompt additionally emits the COMPLETE handoff.md + a ≤1.5KB review
- * digest; the server composes session-log/task-queue via the fullPhase
- * bridge, validates EVERYTHING with the standard commit validators, persists
- * the validated set to `.prism/finalize-draft.json`, and returns
- * `draft_files` + `draft_summary` so chat approves instead of regenerating
- * (commit via `use_draft_files: true`). ANY gate failure transparently falls
- * back to the legacy 6-key response with a FINALIZE_COMPOSE_FALLBACK warn.
- * `options.composeMode` lets fullPhase pin legacy (it composes server-side
- * already and needs no persistence round-trip).
- */
-async function draftPhase(
-  projectSlug: string,
-  sessionNumber: number,
-  options: { composeMode?: "files" | "legacy"; diagnostics?: DiagnosticsCollector } = {},
-) {
-  const diagnostics = options.diagnostics ?? new DiagnosticsCollector();
-  const composeMode = options.composeMode ?? resolveFinalizeComposeMode();
-  if (!SYNTHESIS_ENABLED) {
-    return {
-      success: false,
-      error: "Draft generation requires ANTHROPIC_API_KEY — synthesis disabled on server.",
-      fallback: "Compose finalization files manually.",
-    };
-  }
-
-  // 1. Fetch only draft-relevant living documents (skip architecture.md and glossary.md —
-  //    they're large and irrelevant to session log / handoff / task queue drafting).
-  //    Archive files are also excluded — synthesis must never read cold storage (FINDING-14).
-  const docMap = await resolveDocFiles(projectSlug, [...DRAFT_RELEVANT_DOCS]);
-
-  // 2. Collect commit history for this session
-  const sessionCommits: string[] = [];
-  try {
-    const commits = await listCommits(projectSlug, { per_page: 50 });
-    for (const commit of commits) {
-      if (commit.message.startsWith("prism: finalize session")) break;
-      sessionCommits.push(commit.message);
-    }
-  } catch {
-    // Non-critical — drafts will be less informed but still useful
-  }
-
-  // 3. Bound the input (SRV-67), then build the prompt. draftPhase is the
-  //    designated CS-1 timeout backstop (src/ai/input-budget.ts) yet pre-brief-465
-  //    NEVER applied boundSynthesisInput — only the brief/PDU paths did. The
-  //    draft concatenates ~7 unbounded living docs (decisions/_INDEX.md +
-  //    insights.md can be tens of KB), so an unbounded assembly could exceed
-  //    SYNTHESIS_INPUT_MAX_TOKENS and run into the very timeout this backstop
-  //    exists to prevent. Measured through the SAME builder the model call uses,
-  //    so the bound is enforced on exactly the assembled prompt.
-  const bounded = boundSynthesisInput(docMap, (docs) =>
-    buildFinalizationDraftMessage(projectSlug, sessionNumber, docs, sessionCommits),
-  );
-
-  // brief-s202b T9b/T9d (D-278): per-doc size manifest prepended to the CS-1
-  // input (true sizes as the fact source) + one SYNTHESIS_INPUT_TRUNCATED
-  // info line/diagnostic per truncated doc.
-  const draftDocManifest = buildSynthesisDocManifest(docMap, bounded.docs);
-  for (const row of draftDocManifest) {
-    if (!row.truncated) continue;
-    logger.info("SYNTHESIS_INPUT_TRUNCATED", {
-      call_site: "synthesis_draft",
-      projectSlug,
-      sessionNumber,
-      path: row.path,
-      true_bytes: row.true_bytes,
-      included_bytes: row.included_bytes,
-    });
-    diagnostics.info(
-      "SYNTHESIS_INPUT_TRUNCATED",
-      `${row.path} trimmed for the draft synthesis input: ${row.included_bytes} of ${row.true_bytes} true bytes included — never cite the truncated size as the file's size`,
-      { call_site: "synthesis_draft", path: row.path, true_bytes: row.true_bytes, included_bytes: row.included_bytes },
-    );
-  }
-
-  const userMessage = `${renderSynthesisInputManifest(draftDocManifest)}\n\n${buildFinalizationDraftMessage(
-    projectSlug,
-    sessionNumber,
-    bounded.docs,
-    sessionCommits
-  )}`;
-  if (bounded.trimmed) {
-    logger.warn("SYNTHESIS_DRAFT_INPUT_TRIMMED — draft input exceeded the token ceiling and was priority-trimmed before the model call", {
-      projectSlug,
-      sessionNumber,
-      pre_trim_tokens: bounded.pre_trim_tokens,
-      post_trim_tokens: bounded.post_trim_tokens,
-      trimmed_docs: bounded.trimmed_docs,
-    });
-  }
-
-  // Calculate total doc size for timeout scaling
-  let totalDocBytes = 0;
-  for (const [, doc] of docMap) {
-    totalDocBytes += new TextEncoder().encode(doc.content).length;
-  }
-
-  // S41 — single env-configurable timeout. The prior size-branching was
-  // vestigial (both branches aimed under a 50s MCP_SAFE_TIMEOUT ceiling that
-  // no longer matches empirical client timeout behavior).
-  // Transport-aware: cc_subprocess runs through Agent SDK with higher
-  // overhead, so use CC_SUBPROCESS_SYNTHESIS_TIMEOUT_MS for that transport.
-  const draftTransport = process.env.SYNTHESIS_DRAFT_TRANSPORT;
-  const draftTimeoutMs = resolveDraftTimeout(draftTransport);
-
-  // brief-s202b T8: files-mode prompt carries the exact target Meta values so
-  // the composed handoff round-trips the commit-time HANDOFF_VERSION /
-  // SESSION mismatch cross-checks (SRV-59) instead of guessing.
-  const currentHandoffContent = docMap.get("handoff.md")?.content ?? null;
-  const targetHandoffVersion =
-    (currentHandoffContent ? parseHandoffVersion(currentHandoffContent) ?? 0 : 0) + 1;
-  const handoffTemplateVersion =
-    (currentHandoffContent ? parseTemplateVersion(currentHandoffContent) : null) ?? "unknown";
-  const systemPrompt =
-    composeMode === "files"
-      ? buildFinalizationComposePrompt({
-          targetHandoffVersion,
-          sessionNumber,
-          templateVersion: handoffTemplateVersion,
-        })
-      : FINALIZATION_DRAFT_PROMPT;
-  // files mode emits a complete ≤10KB handoff on top of the legacy keys —
-  // the legacy 4096 output budget would truncate it (stop_reason
-  // max_tokens → parse failure), so use the synthesis-wide 8192 ceiling.
-  const draftMaxTokens = composeMode === "files" ? SYNTHESIS_MAX_OUTPUT_TOKENS : 4096;
-
-  logger.info("Finalization draft: calling synthesis model", {
-    projectSlug,
-    sessionNumber,
-    docCount: docMap.size,
-    commitCount: sessionCommits.length,
-    totalDocKB: (totalDocBytes / 1024).toFixed(1),
-    timeoutMs: draftTimeoutMs,
-    composeMode, // brief-s202b T8
-  });
-
-  const result = await synthesize(
-    systemPrompt,
-    userMessage,
-    draftMaxTokens,
-    draftTimeoutMs,
-    0, // maxRetries — retry storms on draft are worse than fast failure (S41)
-    true, // thinking: true — Phase 3b CS-1 adaptive-thinking flag (D-159 successor)
-    "draft", // brief-420 Phase 5a: per-call-site routing (SYNTHESIS_DRAFT_* env vars)
-    projectSlug, // brief-420 Phase 5a: project tag for observation surfacing (brief-419)
-  );
-
-  if (!result.success) {
-    return {
-      success: false,
-      error: `Opus API call failed: ${result.error} (${result.error_code})`,
-      fallback: "Compose finalization files manually.",
-    };
-  }
-
-  // 4. Parse response — expect JSON (B.8: robust extraction).
-  //    S203 audit R22 (F-C1-3/F-C1-6): ONLY the parse is guarded here. The
-  //    compose/persist block below carries its own failure contract
-  //    (FINALIZE_COMPOSE_FALLBACK); folding it into this catch reported a
-  //    403 on the state push to the operator as "Could not parse structured
-  //    JSON" with success: true.
-  let drafts: unknown;
-  try {
-    drafts = extractJSON(result.content);
-  } catch (parseError) {
-    // A parse failure is a FAILED draft, not a successful one with a note:
-    // success: true made draftStatus "ok", suppressed DRAFT_FAILED, and let
-    // action=full commit handoff.md alone while dropping the model's output.
-    const parseMsg = parseError instanceof Error ? parseError.message : String(parseError);
-    logger.warn("finalize draft: could not parse structured JSON from the model response", {
-      projectSlug,
-      sessionNumber,
-      error: parseMsg,
-      contentBytes: result.content.length,
-    });
-    return {
-      success: false,
-      parse_failed: true as const,
-      error: `Could not parse structured JSON from the draft response: ${parseMsg}`,
-      // Response-shape contract (unchanged): the raw text always rides out so
-      // the operator can extract it by hand.
-      raw_content: result.content,
-      input_tokens: result.input_tokens,
-      output_tokens: result.output_tokens,
-      parse_warning: "Could not parse structured JSON — raw content included for manual extraction.",
-      fallback: "Extract the finalization sections from raw_content manually, or re-run action=draft.",
-    };
-  }
-
-  // brief-s202b T8: compose-offload path. Compose complete files, gate them
-  // with the standard commit validators, persist the validated set, and
-  // return the review projection. ANY failure below falls through to the
-  // legacy 6-key response with a FINALIZE_COMPOSE_FALLBACK warn — the
-  // D-275 §4.5 gate-as-fallback-trigger pattern.
-  if (composeMode === "files") {
-    try {
-      const compose = composeDraftFiles(drafts as Record<string, unknown>, {
-        sessionLog: docMap.get("session-log.md")?.content,
-        taskQueue: docMap.get("task-queue.md")?.content,
-      });
-      if (compose.ok && compose.files) {
-        for (const warn of compose.warnings ?? []) {
-          // T5 item-budget (and any other advisory validator output) —
-          // surfaced, never gating.
-          diagnostics.warn(
-            "HANDOFF_ITEM_OVERSIZE",
-            `${warn.path}: ${warn.warnings.join(" | ")}`,
-            { path: warn.path, warnings: warn.warnings },
-          );
-        }
-        const draftSummary = resolveDraftSummary(drafts as Record<string, unknown>, compose.files);
-        const draftState: FinalizeDraftState = {
-          version: 1,
-          project: projectSlug,
-          session_number: sessionNumber,
-          handoff_version: targetHandoffVersion,
-          created_at: new Date().toISOString(),
-          files: compose.files,
-          draft_summary: draftSummary,
-        };
-        const persist = await pushFile(
-          projectSlug,
-          FINALIZE_DRAFT_STATE_PATH,
-          JSON.stringify(draftState, null, 2),
-          `prism: finalize draft S${sessionNumber} compose artifact`,
-        );
-        if (persist.success) {
-          logger.info("finalize compose-offload draft persisted", {
-            projectSlug,
-            sessionNumber,
-            files: compose.files.map(f => f.path),
-            statePath: FINALIZE_DRAFT_STATE_PATH,
-          });
-          return {
-            success: true,
-            compose_mode: "files" as const,
-            drafts, // internal consumers (fullPhase recovery); the draft action strips this from its response
-            draft_files: buildDraftFilesProjection(drafts as Record<string, unknown>, compose.files),
-            draft_summary: draftSummary,
-            draft_bridge: compose.bridge
-              ? { bridged: compose.bridge.bridged, skipped: compose.bridge.skipped }
-              : null,
-            handoff_version: targetHandoffVersion,
-            input_tokens: result.input_tokens,
-            output_tokens: result.output_tokens,
-            review_instructions:
-              `Review draft_summary (and draft_files as needed). To approve, call prism_finalize action=commit with use_draft_files: true, session_number: ${sessionNumber}, handoff_version: ${targetHandoffVersion} — no files[] content needed. Override any single file by passing it in files[]; the server merges by path.`,
-          };
-        }
-        // Persisted-state write failed — the commit side cannot recover the
-        // files, so fall back to the legacy response (chat composes).
-        diagnostics.warn(
-          "FINALIZE_COMPOSE_FALLBACK",
-          `Composed draft validated but could not be persisted to ${FINALIZE_DRAFT_STATE_PATH} (${persist.error ?? "push failed"}) — returning the legacy 6-key draft response`,
-          { fallback_reason: "persist_failed", error: persist.error ?? "push failed" },
-        );
-        logger.warn("FINALIZE_COMPOSE_FALLBACK", {
-          projectSlug,
-          sessionNumber,
-          fallback_reason: "persist_failed",
-          error: persist.error ?? "push failed",
-        });
-      } else {
-        diagnostics.warn(
-          "FINALIZE_COMPOSE_FALLBACK",
-          `Composed draft failed the validation gate — returning the legacy 6-key draft response (${(compose.gate_failures ?? [])
-            .map(g => `${g.path}: ${g.errors.join("; ")}`)
-            .join(" | ")})`,
-          { fallback_reason: compose.fallback_reason ?? "validation_failed", gate_failures: compose.gate_failures },
-        );
-        logger.warn("FINALIZE_COMPOSE_FALLBACK", {
-          projectSlug,
-          sessionNumber,
-          fallback_reason: compose.fallback_reason ?? "validation_failed",
-          gate_failures: compose.gate_failures,
-        });
-      }
-    } catch (composeError) {
-      // A THROW out of compose/persist (transient GitHub failure, unexpected
-      // validator input) is reported as what it is — same fallback surface as
-      // the gate failures above, never as a parse failure (S203 audit R22).
-      const composeMsg =
-        composeError instanceof Error ? composeError.message : String(composeError);
-      diagnostics.warn(
-        "FINALIZE_COMPOSE_FALLBACK",
-        `Compose/persist threw before the draft could be offloaded (${composeMsg}) — returning the legacy 6-key draft response`,
-        { fallback_reason: "compose_threw", error: composeMsg },
-      );
-      logger.warn("FINALIZE_COMPOSE_FALLBACK", {
-        projectSlug,
-        sessionNumber,
-        fallback_reason: "compose_threw",
-        error: composeMsg,
-      });
-    }
-  }
-
-  return {
-    success: true,
-    drafts,
-    input_tokens: result.input_tokens,
-    output_tokens: result.output_tokens,
-    review_instructions: "Review each draft section. Edit as needed, then include in your commit files. These are drafts — you have full editorial control.",
-  };
-}
 
 /**
  * Prune `## Recently Completed` in task-queue.md to keep at most `maxEntries`
@@ -1736,205 +1226,6 @@ async function commitPhase(
  * Full phase — run audit + draft + commit atomically in a single tool call.
  * Enables Trigger-driven finalization without inter-call state management.
  */
-/**
- * brief-456 (SRV-19): result of bridging the FINALIZATION_DRAFT_PROMPT's
- * contract-shaped keys into real living-document mutations.
- */
-export interface DraftBridgeResult {
-  /** Translated doc mutations, ready for the commit files[] set. */
-  files: Array<{ path: string; content: string }>;
-  /** Contract keys that produced at least one mutation. */
-  bridged: string[];
-  /** Contract keys (or parts of them) that could not be bridged, with reasons. */
-  skipped: Array<{ key: string; reason: string }>;
-}
-
-const HANDOFF_DRAFT_KEYS = [
-  "handoff_where_we_are",
-  "handoff_next_steps",
-  "handoff_session_history",
-] as const;
-
-function escapeRegExp(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-/**
- * Insert a drafted `### Session N` entry into session-log.md, orientation-
- * aware (brief-456 / SRV-19): newest-first logs get the entry above the
- * first existing entry; newest-last logs get it above the EOF sentinel.
- * Orientation comes from archive.ts's shared heuristic — guessing wrong is
- * the INS-316 bug class.
- */
-function insertSessionLogEntry(sessionLog: string, entry: string): string {
-  const block = `${entry.trimEnd()}\n`;
-  if (detectSessionLogOrientation(sessionLog) === "top") {
-    const firstEntry = sessionLog.search(/^### Session \d+/m);
-    if (firstEntry !== -1) {
-      return `${sessionLog.slice(0, firstEntry)}${block}\n${sessionLog.slice(firstEntry)}`;
-    }
-  }
-  const eofMatch = sessionLog.match(/^<!--\s*EOF:.*-->\s*$/m);
-  if (eofMatch && eofMatch.index !== undefined) {
-    const head = sessionLog.slice(0, eofMatch.index).replace(/\s+$/, "");
-    const tail = sessionLog.slice(eofMatch.index);
-    return `${head}\n\n${block}\n${tail}`;
-  }
-  return `${sessionLog.trimEnd()}\n\n${block}`;
-}
-
-/** Flip the first open `- [ ]` line containing the task text to `- [x]`. */
-function markTaskCompleted(taskQueue: string, taskText: string): string | null {
-  const lines = taskQueue.split("\n");
-  for (let i = 0; i < lines.length; i++) {
-    if (lines[i].includes(taskText) && /^\s*-\s*\[ \]/.test(lines[i])) {
-      lines[i] = lines[i].replace("- [ ]", "- [x]");
-      return lines.join("\n");
-    }
-  }
-  return null;
-}
-
-/**
- * Append a `[Section] task text` item as `- [ ] task text` at the end of its
- * `## Section` body. Returns null when the prefix is missing or the section
- * does not exist — the caller surfaces it as skipped.
- */
-function appendTaskToSection(taskQueue: string, prefixedTask: string): string | null {
-  const m = prefixedTask.match(/^\[([^\]]+)\]\s*(.+)$/);
-  if (!m) return null;
-  const sectionRe = new RegExp(`^##\\s+${escapeRegExp(m[1].trim())}\\s*$`, "m");
-  const sectionMatch = taskQueue.match(sectionRe);
-  if (!sectionMatch || sectionMatch.index === undefined) return null;
-  const bodyStart = sectionMatch.index + sectionMatch[0].length;
-  const tail = taskQueue.slice(bodyStart);
-  const boundary = tail.search(/^##\s+\S|^<!--\s*EOF:/m);
-  const insertAt = boundary === -1 ? taskQueue.length : bodyStart + boundary;
-  const head = taskQueue.slice(0, insertAt).replace(/\s+$/, "");
-  const rest = taskQueue.slice(insertAt);
-  return `${head}\n- [ ] ${m[2].trim()}\n\n${rest}`;
-}
-
-/**
- * Translate the draft contract's section-shaped keys into real doc
- * mutations (brief-456 / SRV-19). Pure — exported for direct unit testing.
- *
- * - `session_log_entry` → orientation-aware insertion into session-log.md.
- * - `task_queue_completed` → `- [ ]` → `- [x]` on matching open task lines.
- * - `task_queue_new` → `[Up Next]`/`[Parking Lot]`-prefixed items appended
- *   to their target section.
- * - `handoff_*` keys are deliberately NOT translated: the full action
- *   requires operator-supplied handoff_content, which takes precedence
- *   (same rule as the existing draft `handoff.md` key skip).
- *
- * Anything unbridgeable lands in `skipped` with a reason — visible, never
- * silent (the caller turns these into DRAFT_KEY_SKIPPED diagnostics).
- */
-export function bridgeDraftSections(
-  drafts: Record<string, unknown>,
-  current: { sessionLog?: string; taskQueue?: string },
-): DraftBridgeResult {
-  const result: DraftBridgeResult = { files: [], bridged: [], skipped: [] };
-
-  for (const key of HANDOFF_DRAFT_KEYS) {
-    if (key in drafts) {
-      result.skipped.push({
-        key,
-        reason: "operator-supplied handoff.md takes precedence (handoff_content)",
-      });
-    }
-  }
-
-  const entry = drafts.session_log_entry;
-  if (typeof entry === "string" && entry.trim().length > 0) {
-    if (typeof current.sessionLog !== "string") {
-      result.skipped.push({
-        key: "session_log_entry",
-        reason: "session-log.md could not be fetched — entry not bridged",
-      });
-    } else {
-      result.files.push({
-        path: "session-log.md",
-        content: insertSessionLogEntry(current.sessionLog, entry),
-      });
-      result.bridged.push("session_log_entry");
-    }
-  }
-
-  const completed = Array.isArray(drafts.task_queue_completed)
-    ? drafts.task_queue_completed.filter((t): t is string => typeof t === "string")
-    : [];
-  const newTasks = Array.isArray(drafts.task_queue_new)
-    ? drafts.task_queue_new.filter((t): t is string => typeof t === "string")
-    : [];
-
-  if (completed.length > 0 || newTasks.length > 0) {
-    if (typeof current.taskQueue !== "string") {
-      if (completed.length > 0) {
-        result.skipped.push({
-          key: "task_queue_completed",
-          reason: "task-queue.md could not be fetched — completions not bridged",
-        });
-      }
-      if (newTasks.length > 0) {
-        result.skipped.push({
-          key: "task_queue_new",
-          reason: "task-queue.md could not be fetched — new tasks not bridged",
-        });
-      }
-    } else {
-      let taskQueueContent = current.taskQueue;
-      let mutated = false;
-
-      const unmatched: string[] = [];
-      for (const task of completed) {
-        const flipped = markTaskCompleted(taskQueueContent, task);
-        if (flipped === null) {
-          unmatched.push(task);
-        } else {
-          taskQueueContent = flipped;
-          mutated = true;
-        }
-      }
-      if (unmatched.length > 0) {
-        result.skipped.push({
-          key: "task_queue_completed",
-          reason: `no matching open task line for: ${unmatched.join("; ")}`,
-        });
-      }
-      if (completed.length > unmatched.length) {
-        result.bridged.push("task_queue_completed");
-      }
-
-      const unplaced: string[] = [];
-      for (const task of newTasks) {
-        const placed = appendTaskToSection(taskQueueContent, task);
-        if (placed === null) {
-          unplaced.push(task);
-        } else {
-          taskQueueContent = placed;
-          mutated = true;
-        }
-      }
-      if (unplaced.length > 0) {
-        result.skipped.push({
-          key: "task_queue_new",
-          reason: `no matching task-queue section (or missing [Section] prefix) for: ${unplaced.join("; ")}`,
-        });
-      }
-      if (newTasks.length > unplaced.length) {
-        result.bridged.push("task_queue_new");
-      }
-
-      if (mutated) {
-        result.files.push({ path: "task-queue.md", content: taskQueueContent });
-      }
-    }
-  }
-
-  return result;
-}
-
 async function fullPhase(
   projectSlug: string,
   sessionNumber: number,
