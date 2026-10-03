@@ -85,7 +85,8 @@ export const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
 // 4.15.6 rewords the SYNTHESIS_METERED_FALLBACK_BLOCKED boot warning to "within the observation window" (S213 wave review).
 // 4.15.7 extracts finalize/bridge.ts + finalize/draft.ts from finalize.ts (D-FINALIZE-SPLIT F1; verbatim move, no behavior change).
 // 4.15.8 extracts finalize/lifecycle.ts (archive configs, recently-completed prune, architecture metadata) from finalize.ts (D-FINALIZE-SPLIT F2; verbatim move, no behavior change).
-export const SERVER_VERSION = "4.15.8";
+// 4.15.9 extracts finalize/commit.ts (collectRegistryIdSets + commitPhase) from finalize.ts (D-FINALIZE-SPLIT F3; verbatim move, no behavior change).
+export const SERVER_VERSION = "4.15.9";
 
 /** MCP client timeout is ~60s. All server-side operations must complete within 50s
  *  to leave 10s buffer for transport overhead. This constrains synthesis, draft,

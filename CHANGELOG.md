@@ -1,5 +1,9 @@
 # Changelog — PRISM MCP Server
 
+## 4.15.9 — 2026-10-03
+
+- Refactor, no behavior change (D-FINALIZE-SPLIT F3): `src/tools/finalize.ts` sheds `collectRegistryIdSets` and `commitPhase` (the handoff/registry atomic writer, with the INS-360 recreate guard, SRV-48 validation-before-write ordering and SRV-42 abort signal) into `src/tools/finalize/commit.ts`. The 886-line body is byte-identical; the commit-deadline sentinel, `fullPhase` and the handler stay in `finalize.ts` and pass the same `AbortController` signal to `commitPhase`. Public surface unchanged.
+
 ## 4.15.8 — 2026-10-03
 
 - Refactor, no behavior change (D-FINALIZE-SPLIT F2): `src/tools/finalize.ts` sheds the archive and lifecycle helpers into `src/tools/finalize/lifecycle.ts` (`SESSION_LOG_ARCHIVE_CONFIG`, `INSIGHTS_ARCHIVE_CONFIG`, `TASK_QUEUE_RECENTLY_COMPLETED_CAP`, `pruneRecentlyCompleted`, `updateArchitectureMetadata`). Bodies are byte-identical; `finalize.ts` re-exports every previously exported symbol (pinned by `tests/finalize-public-surface.test.ts`). The in-`commitPhase` archive block stays in place, so write ordering is unchanged.
