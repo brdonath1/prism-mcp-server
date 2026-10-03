@@ -20,6 +20,7 @@ import type { RailwayLog, RailwayLogAttribute } from "../railway/types.js";
 export type ObservationEventKind =
   | "SYNTHESIS_FAILED"
   | "SYNTHESIS_TRANSPORT_FALLBACK"
+  | "SYNTHESIS_METERED_FALLBACK_BLOCKED"
   | "CS3_QUALITY_BYTE_COUNT_WARNING"
   | "CS3_QUALITY_PREAMBLE_WARNING";
 
@@ -36,6 +37,9 @@ export interface ObservationCheckResult {
   /** brief-456 (SRV-51): failed background synthesis runs (warn-level
    *  SYNTHESIS_FAILED emissions from src/ai/synthesize.ts). */
   synthesis_failed_count: number;
+  /** S213: synthesis attempts whose metered messages_api retry was blocked by
+   *  the SYNTHESIS_METERED_FALLBACK gate (src/ai/client.ts). Any call site. */
+  metered_blocked_count: number;
   fallback_count: number;
   byte_warning_count: number;
   preamble_warning_count: number;
@@ -45,6 +49,7 @@ const EMPTY_RESULT: ObservationCheckResult = {
   has_events: false,
   events: [],
   synthesis_failed_count: 0,
+  metered_blocked_count: 0,
   fallback_count: 0,
   byte_warning_count: 0,
   preamble_warning_count: 0,
@@ -53,6 +58,7 @@ const EMPTY_RESULT: ObservationCheckResult = {
 const KIND_TOKENS: Record<ObservationEventKind, string> = {
   SYNTHESIS_FAILED: "SYNTHESIS_FAILED",
   SYNTHESIS_TRANSPORT_FALLBACK: "SYNTHESIS_TRANSPORT_FALLBACK",
+  SYNTHESIS_METERED_FALLBACK_BLOCKED: "SYNTHESIS_METERED_FALLBACK_BLOCKED",
   CS3_QUALITY_BYTE_COUNT_WARNING: "CS3_QUALITY_BYTE_COUNT_WARNING",
   CS3_QUALITY_PREAMBLE_WARNING: "CS3_QUALITY_PREAMBLE_WARNING",
 };
@@ -136,6 +142,7 @@ export function checkSynthesisObservationEvents(
   const buckets: Record<ObservationEventKind, ObservationEvent[]> = {
     SYNTHESIS_FAILED: [],
     SYNTHESIS_TRANSPORT_FALLBACK: [],
+    SYNTHESIS_METERED_FALLBACK_BLOCKED: [],
     CS3_QUALITY_BYTE_COUNT_WARNING: [],
     CS3_QUALITY_PREAMBLE_WARNING: [],
   };
@@ -167,23 +174,30 @@ export function checkSynthesisObservationEvents(
 
   buckets.SYNTHESIS_FAILED.sort(sortDesc);
   buckets.SYNTHESIS_TRANSPORT_FALLBACK.sort(sortDesc);
+  buckets.SYNTHESIS_METERED_FALLBACK_BLOCKED.sort(sortDesc);
   buckets.CS3_QUALITY_BYTE_COUNT_WARNING.sort(sortDesc);
   buckets.CS3_QUALITY_PREAMBLE_WARNING.sort(sortDesc);
 
   const events: ObservationEvent[] = [
     ...buckets.SYNTHESIS_FAILED,
     ...buckets.SYNTHESIS_TRANSPORT_FALLBACK,
+    ...buckets.SYNTHESIS_METERED_FALLBACK_BLOCKED,
     ...buckets.CS3_QUALITY_BYTE_COUNT_WARNING,
     ...buckets.CS3_QUALITY_PREAMBLE_WARNING,
   ];
 
   const synthesis_failed_count = buckets.SYNTHESIS_FAILED.length;
+  const metered_blocked_count = buckets.SYNTHESIS_METERED_FALLBACK_BLOCKED.length;
   const fallback_count = buckets.SYNTHESIS_TRANSPORT_FALLBACK.length;
   const byte_warning_count = buckets.CS3_QUALITY_BYTE_COUNT_WARNING.length;
   const preamble_warning_count = buckets.CS3_QUALITY_PREAMBLE_WARNING.length;
 
   if (
-    synthesis_failed_count + fallback_count + byte_warning_count + preamble_warning_count ===
+    synthesis_failed_count +
+      metered_blocked_count +
+      fallback_count +
+      byte_warning_count +
+      preamble_warning_count ===
     0
   ) {
     return cloneEmpty();
@@ -193,6 +207,7 @@ export function checkSynthesisObservationEvents(
     has_events: true,
     events,
     synthesis_failed_count,
+    metered_blocked_count,
     fallback_count,
     byte_warning_count,
     preamble_warning_count,
@@ -204,6 +219,7 @@ function cloneEmpty(): ObservationCheckResult {
     has_events: EMPTY_RESULT.has_events,
     events: [],
     synthesis_failed_count: EMPTY_RESULT.synthesis_failed_count,
+    metered_blocked_count: EMPTY_RESULT.metered_blocked_count,
     fallback_count: EMPTY_RESULT.fallback_count,
     byte_warning_count: EMPTY_RESULT.byte_warning_count,
     preamble_warning_count: EMPTY_RESULT.preamble_warning_count,

@@ -387,6 +387,37 @@ describe("SYNTHESIS_METERED_FALLBACK gate (S212)", () => {
     expect(warnMessages().some((m) => m.startsWith("SYNTHESIS_TRANSPORT_FALLBACK"))).toBe(false);
   });
 
+  it("flag unset: the blocked attempt emits one LLM_CALL with the subprocess route and no fallback", async () => {
+    const infoSpy = vi.spyOn(logger, "info").mockImplementation(() => {});
+    try {
+      process.env.SYNTHESIS_PDU_TRANSPORT = "cc_subprocess";
+      process.env.SYNTHESIS_PDU_MODEL = "claude-sonnet-5";
+      mockSubprocess.mockResolvedValueOnce({
+        success: false,
+        error: "subprocess crashed",
+        error_code: "API_ERROR",
+      });
+
+      await synthesize("sys", "user", undefined, undefined, undefined, true, "pdu", "proj-x");
+
+      const llmCalls = infoSpy.mock.calls.filter((c) => c[0] === "LLM_CALL");
+      expect(llmCalls).toHaveLength(1);
+      expect(llmCalls[0][1]).toMatchObject({
+        call_site: "synthesis_pdu",
+        provider: "anthropic",
+        model: "claude-sonnet-5",
+        transport: "cc_subprocess",
+        success: false,
+        fallback_used: false,
+        fallback_reason: null,
+        output_tokens: 0,
+        projectSlug: "proj-x",
+      });
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+
   it("flag unset: a cc_subprocess timeout keeps error_code TIMEOUT", async () => {
     process.env.SYNTHESIS_PDU_TRANSPORT = "cc_subprocess";
     mockSubprocess.mockResolvedValueOnce({

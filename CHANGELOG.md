@@ -1,5 +1,10 @@
 # Changelog — PRISM MCP Server
 
+## Unreleased
+
+- Surface a blocked metered synthesis retry at boot. `prism_bootstrap` now reports `SYNTHESIS_METERED_FALLBACK_BLOCKED` (any call site: draft, brief or pdu) as its own warning with the call-site label and the `SYNTHESIS_METERED_FALLBACK=true` flag that would enable the retry, plus `metered_blocked_count` in the `SYNTHESIS_OBSERVATION_DETECTED` diagnostic. Observation only: no change to the gate or to synthesis behavior.
+- Added regression coverage for the `LLM_CALL` fields on a blocked attempt and for provider failure followed by subprocess failure with the flag off (no metered retry, failure surfaced).
+
 ## 4.15.4 — 2026-10-02
 
 - Gate the metered synthesis fallback behind `SYNTHESIS_METERED_FALLBACK` (default off). When a `cc_subprocess` synthesis call fails, the server no longer silently retries through the pay-per-token Anthropic Messages API: it logs one `SYNTHESIS_METERED_FALLBACK_BLOCKED` warn and returns the subprocess failure with its `error` and `error_code` intact. Accepts `true|1|on` (case-insensitive) to restore the old retry (`SYNTHESIS_TRANSPORT_FALLBACK`, transport `messages_api_fallback`); set it to `true` on Railway to roll back.

@@ -295,6 +295,47 @@ describe("synthesize() — openrouter mechanical-tier leg", () => {
     });
   });
 
+  it("flag off: provider failure then subprocess failure surfaces the failure with no metered retry", async () => {
+    stagePduOnOpenrouter();
+    process.env.SYNTHESIS_PDU_TRANSPORT = "cc_subprocess";
+    process.env.SYNTHESIS_PDU_MODEL = "claude-sonnet-5";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: "down" }), { status: 503 })),
+    );
+    mockSubprocess.mockResolvedValueOnce({
+      success: false,
+      error: "subprocess crashed",
+      error_code: "API_ERROR",
+    });
+
+    const result = await synthesize("sys", "user", 8192, 10_000, 0, false, "pdu", "prism");
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toBe("subprocess crashed");
+      expect(result.error_code).toBe("API_ERROR");
+    }
+    expect(mockSubprocess).toHaveBeenCalledTimes(1);
+    expect(mockMessagesCreate).not.toHaveBeenCalled();
+    const logs = capturedLogs(stdoutSpy);
+    expect(
+      logs.some((entry) => String(entry.msg).startsWith("SYNTHESIS_TRANSPORT_FALLBACK")),
+    ).toBe(false);
+    expect(
+      logs.filter((entry) => String(entry.msg).startsWith("SYNTHESIS_METERED_FALLBACK_BLOCKED")),
+    ).toHaveLength(1);
+    const llmCalls = logs.filter((entry) => entry.msg === "LLM_CALL");
+    expect(llmCalls).toHaveLength(1);
+    expect(llmCalls[0]).toMatchObject({
+      provider: "anthropic",
+      transport: "cc_subprocess",
+      success: false,
+      fallback_used: true,
+      fallback_reason: "provider_error",
+    });
+  });
+
   it("emits an LLM_CALL line with chars/3.5-labeled estimates when every hop fails", async () => {
     stagePduOnOpenrouter();
     const fetchMock = vi.fn().mockResolvedValue(
