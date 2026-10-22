@@ -52,7 +52,7 @@ The inventory above is the complete configured server surface; optional categori
 
 ## Technology Stack
 
-- **Runtime:** Node.js >= 18, TypeScript
+- **Runtime:** Node 22.23.3 pinned in `mise.toml` (`.node-version`, `packageManager` npm 10.9.9 and the digest-pinned Dockerfile agree; `engines.node` is documentation), TypeScript. Runtime pins and the verification gate: section below.
 - **MCP SDK:** `@modelcontextprotocol/sdk` v1.28.x
 - **HTTP framework:** Express 5.x
 - **Transport:** MCP Streamable HTTP, **stateless mode** (`sessionIdGenerator: undefined`)
@@ -62,6 +62,12 @@ The inventory above is the complete configured server surface; optional categori
 - **GitHub API client:** Plain `fetch` (Node.js 18+ built-in) — no Octokit
 - **Hosting:** Railway (persistent Node.js service)
 - **Package manager:** npm
+
+## Runtime pins and verification gate (2026-10-21)
+
+- Node comes from `mise.toml`: `mise trust && mise install` once per clone. CI reads `.node-version` (`node-version-file`) and the Dockerfile base `node:22.23.3-slim` is pinned by digest to the same version production runs. Never install a runtime, a global package or a version manager; a missing command means the repo is wrong, fix `mise.toml`, not the host. One lockfile, `package-lock.json`, installed with `npm ci`.
+- Before any commit: `scripts/check.sh` green (npm ci, lint, typecheck, npm audit advisory, build, vitest, exactly the CI `build-and-test` job; the commit-gate hook refuses a commit without a fresh `.claude/check-ok`). Before any PR: the same, plus the CI run id in the PR body once green.
+- Never change CI, pins or the lockfile to make a failing local run pass; find the host dependency and fix it in the repo. Details and run ids: `docs/CONTEXT.md`.
 
 ## GitHub Configuration
 
