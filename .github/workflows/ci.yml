@@ -108,8 +108,11 @@ jobs:
             echo "no build-affecting files in this PR — heavy steps skipped; contexts report success by design (SRV-38)"
           fi
 
+      # Checkout and the CLAUDE.md lint run on every PR, docs-only included; the heavy steps stay behind the gate.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        if: steps.gate.outputs.run == 'true'
+
+      - name: CLAUDE.md budget and rot lint
+        run: bash scripts/claude-md-lint.sh --budget 3072 CLAUDE.md
 
       # Node comes from the repo's pin file (mise.toml = .node-version = packageManager), the version the
       # Dockerfile builds with; never a floating major or a matrix of majors production does not run.
