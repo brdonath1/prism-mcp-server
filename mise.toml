@@ -1,0 +1,13 @@
+# mise.toml - runtime pins for this repository (committed). Once per clone: mise trust && mise install.
+# .node-version and package.json packageManager hold the same values; scripts/repo-quarantine.sh --strict
+# (claude-environment-hygiene) fails when they disagree. CI reads the same file through setup-node
+# (node-version-file), so CI, the Docker image and local sessions run one Node.
+# Evidence (2026-10-21): Railway production deployment c56f305d of main c892850 (2026-10-02) was built from
+# the Dockerfile with node:22-slim resolved to NODE_VERSION 22.23.3; the Dockerfile now pins that tag by digest.
+
+[tools]
+node = "22.23.3"
+
+[settings]
+# Fail if a tool is missing instead of silently falling back to whatever is on PATH.
+not_found_auto_install = false

@@ -12,7 +12,7 @@ name: CI
 # The SAME whitelist is applied in two layers — keep them IN SYNC:
 #   1. push (main): native `paths:` filter below.
 #   2. pull_request: NO native paths filter. Branch protection requires
-#      the contexts `build-and-test (18)` / `build-and-test (20)` on
+#      the context `build-and-test` on
 #      every PR; a paths-filtered workflow that never fires leaves them
 #      "Expected" forever and the PR is permanently unmergeable
 #      (SRV-38 — docs-only PRs were born dead). The workflow therefore
@@ -43,6 +43,8 @@ on:
       - 'scripts/**'
       - 'package.json'
       - 'package-lock.json'
+      - '.node-version'
+      - 'mise.toml'
       - 'tsconfig.json'
       - 'biome.jsonc'
       - 'vitest.config.ts'
@@ -62,9 +64,8 @@ permissions:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        node-version: [18, 20]
+    # Full runs take 2-3 minutes (run records, Oct 2026); the default is 360.
+    timeout-minutes: 15
 
     steps:
       - name: Gate — did any build-affecting file change?
@@ -96,7 +97,7 @@ jobs:
           run=false
           while IFS= read -r f; do
             case "$f" in
-              src/*|tests/*|scripts/*|package.json|package-lock.json|tsconfig.json|biome.jsonc|vitest.config.ts|Dockerfile|railway.json|.github/workflows/ci.yml)
+              src/*|tests/*|scripts/*|package.json|package-lock.json|.node-version|mise.toml|tsconfig.json|biome.jsonc|vitest.config.ts|Dockerfile|railway.json|.github/workflows/ci.yml)
                 run=true
                 echo "build-affecting: $f"
                 ;;
@@ -107,40 +108,23 @@ jobs:
             echo "no build-affecting files in this PR — heavy steps skipped; contexts report success by design (SRV-38)"
           fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         if: steps.gate.outputs.run == 'true'
 
-      - name: Setup Node.js ${{ matrix.node-version }}
+      # Node comes from the repo's pin file (mise.toml = .node-version = packageManager), the version the
+      # Dockerfile builds with; never a floating major or a matrix of majors production does not run.
+      - name: Setup Node.js (.node-version)
         if: steps.gate.outputs.run == 'true'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: ${{ matrix.node-version }}
+          node-version-file: .node-version
           cache: npm
 
-      - name: Install dependencies
+      # The same steps a local session runs before committing (scripts/check.sh): npm ci (lockfile must
+      # not change), lint, typecheck, npm audit (advisory), build, vitest with the placeholder env below.
+      - name: Check (scripts/check.sh)
         if: steps.gate.outputs.run == 'true'
-        run: npm ci
-
-      - name: Lint
-        if: steps.gate.outputs.run == 'true'
-        run: npm run lint
-
-      - name: Type check
-        if: steps.gate.outputs.run == 'true'
-        run: npm run typecheck
-
-      - name: Security audit
-        if: steps.gate.outputs.run == 'true'
-        run: npm audit --audit-level=high
-        continue-on-error: true
-
-      - name: Build
-        if: steps.gate.outputs.run == 'true'
-        run: npm run build
-
-      - name: Test
-        if: steps.gate.outputs.run == 'true'
-        run: npm test
+        run: bash scripts/check.sh
         env:
           GITHUB_PAT: test-pat-not-real
           GITHUB_OWNER: test-owner
