@@ -1,25 +1,33 @@
 # PRISM MCP Server - context (stable)
 
-Update only when something here becomes untrue. Full project instructions and tool catalogue: [../CLAUDE.md](../CLAUDE.md). Continuity records: [handoffs/](handoffs/), [model-bump.md](model-bump.md).
+Update only when something here becomes untrue. Live state: [handoffs/CURRENT.md](handoffs/CURRENT.md); cross-harness pointer: [handoffs/LATEST.md](handoffs/LATEST.md). Decisions: [decisions/](decisions/README.md). The pre-2026-10-21 CLAUDE.md verbatim (env-var table, validation rules, protocols): [history/claude-md-2026-10-21.md](history/claude-md-2026-10-21.md).
 
 ## What it is
-Remote MCP server (TypeScript, Express 5, `@modelcontextprotocol/sdk`, stateless Streamable HTTP) that performs the GitHub-backed session-continuity operations of the PRISM framework plus Railway, Claude Code dispatch, GitHub and Supabase tools for Brian's projects. Owner brdonath1; version in `package.json`.
+Remote MCP server (Streamable HTTP, stateless) doing the GitHub work for PRISM, Brian's session-continuity framework: it reads, validates and writes the ten living documents in each project repo's `.prism/`, synthesizes briefs, tracks decisions, and fronts Railway, GitHub, Supabase and Claude Code dispatch. Server v4.15.9; 37 MCP tools: 14 PRISM, 10 Railway, 2 Claude Code, 6 GitHub, 5 Supabase (optional groups need credentials). `tests/brief-466-docs-version.test.ts` guards these facts.
 
-## Runtime and commands
-Node 22.23.3 from `mise.toml` (`mise trust && mise install`; `.node-version` and `packageManager` npm@10.9.9 agree; the Dockerfile base `node:22.23.3-slim` is digest-pinned to the same version). One lockfile, `package-lock.json`.
+## Architecture
+TypeScript on Node 22.23.3 (`mise.toml`, `.node-version`, npm 10.9.9; `engines.node` >=18 is documentation), Express 5, `@modelcontextprotocol/sdk`, Zod, plain `fetch` for GitHub. `src/index.ts` app and transport; `src/config.ts` env (`src/ai/`, `src/llm/` read their own); `src/ai/` synthesis (Anthropic default from `src/models.ts`); `src/llm/` route resolver, which can authorize live provider synthesis only when `LLM_ROUTING_ENABLED=true`, `LLM_ROUTING_DRY_RUN=false`, the provider is allowed and keyed, logs sanitized `LLM_ROUTE_OBSERVATION` lines and falls back to Anthropic; `cc_dispatch` remains Claude Code OAuth execution. Also `src/github/`, `src/railway/`, `src/supabase/`, `src/claude-code/` (Agent SDK dispatch), `src/tools/`, `src/middleware/` (Bearer auth, IP allowlist), `src/validation/`, `tests/` (vitest). Limits: ~25K-token responses, under 30 s, no server state.
+
+## Environments
+- Production: Railway, `prism-mcp-server-production.up.railway.app/mcp`; `main` auto-deploys with builder DOCKERFILE (the service setting; `railway.json` still says NIXPACKS); base `node:22.23.3-slim` by digest. Required env `GITHUB_PAT`, `MCP_AUTH_TOKEN` (`AUTH_REQUIRE_BEARER=true`); Supabase credentials force Bearer auth service-wide; the rest is optional (history file, `docs/supabase-management.md`, `docs/model-bump.md`). Secrets only in Railway env.
+- Local: `mise trust && mise install` once per clone; `.env.example`; `npm run dev` on PORT 3000.
+
+## Run and test
 ```
 npm ci
-npm run lint | typecheck | build | test     # biome, tsc, tsc, vitest
-scripts/check.sh                            # exactly the CI build-and-test job, on the pinned Node
-npm start                                   # node dist/index.js; env per CLAUDE.md "Environment Variables"
+npm run dev | lint | typecheck | build | test
+scripts/check.sh     # exactly the CI build-and-test job on the pinned Node; stamps the commit gate
 ```
-
-## CI
-`.github/workflows/ci.yml`: job `build-and-test` runs `scripts/check.sh` on the pinned Node; on pull requests a gate step skips the heavy steps when no build-affecting file changed (whitelist kept in sync in two places inside ci.yml) and still reports success. Required checks on `main`: `build-and-test` and `contract` (`harness-contract.yml`). Baseline run on the pins: pending.
-`model-freshness.yml` (Mondays 09:00 UTC) diffs `src/models.ts` against the Anthropic Models API with the `ANTHROPIC_API_KEY` repository secret and opens a bump PR; it has failed every week since 2026-08-24 with HTTP 401 (the secret is invalid), so no bump PR has been opened since then.
+CI (`ci.yml`): one `build-and-test` job on the pin file runs `scripts/check.sh` for build-affecting paths (gate-step whitelist; docs-only PRs pass through) and lints CLAUDE.md on every PR; `harness-contract.yml` `contract` checks the managed-block markers, handoff files, hooks and identity. Both are the required checks (renamed from the 18/20 matrix with PR #159, 2026-10-21). `model-freshness.yml` has failed with HTTP 401 since 2026-08-24: the `ANTHROPIC_API_KEY` secret needs rotation.
 
 ## Deploy and roll back
-Railway project `prism-mcp-server`, service `prism-mcp-server`, environment `production`; builder DOCKERFILE (the service setting; `railway.json` still names NIXPACKS and is not what runs). A merge to `main` deploys (deployment c56f305d followed the 2026-10-02 merge). Roll back by redeploying the previous Railway deployment. The Dockerfile runs `npm install`, `npm run build` and `npm prune --omit=dev` as a non-root user.
+Merge to `main` (merge commit, branch deleted) deploys on Railway; roll back by redeploying the previous deployment or a revert PR. Verify the runtime version and release commit before claiming a capability is live. The Dockerfile still runs `npm install` (follow-up).
 
 ## Conventions
-PRs to `main` only, one per unit; Claude branches `claude/<slug>` in `.claude/worktrees/<slug>`; Codex owns `AGENTS.md`, `.codex/`, `.agents/`. Tier C (CI, docs, tests, tooling) merges on green; deploy mechanics, credentials and production data are Tier A. Renaming a required check needs a separately authorized branch-protection change.
+- Branches `claude/<slug>` or `codex/...`; one PR per unit; required checks green; never commit to main. Commit prefixes `prism:|fix:|docs:|chore:|audit:|test:`. Trigger briefs live in `.prism/briefs/queue/` (`briefs` branch) and end in a PR. Decision IDs (D-N) are logged only by the claude.ai session.
+- Do not edit AGENTS.md, `.codex/` or `.prism/` living documents from Claude.
+
+## Gotchas
+- `~/development/prism-mcp-supabase-management` is a linked worktree of this clone (shared refs): never `git checkout main` there or remove it.
+- The repository stays archived by decision; it was unarchived on 2026-10-21 only to land PR #159 and the CLAUDE.md PR.
+- Where Claude memory contradicts docs/decisions, decisions win.

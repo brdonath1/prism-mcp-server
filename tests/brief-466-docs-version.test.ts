@@ -12,7 +12,8 @@ import { TOOL_REGISTRY, type ToolCategory } from "../src/tool-registry.js";
  * Each test fails if a documented claim drifts from code truth again.
  */
 
-const claudeMd = readFileSync("CLAUDE.md", "utf-8");
+// 2026-10-21 (docs/decisions/0001): the architecture facts moved from CLAUDE.md (now a 3 KB rules file) to docs/CONTEXT.md.
+const contextMd = readFileSync("docs/CONTEXT.md", "utf-8");
 
 describe("SRV-90 — SERVER_VERSION discipline", () => {
   function parseSemver(v: string): [number, number, number] {
@@ -38,8 +39,8 @@ describe("SRV-90 — SERVER_VERSION discipline", () => {
     expect(lock.packages?.[""]?.version).toBe(SERVER_VERSION);
   });
 
-  it("CLAUDE.md architecture banner cites the current SERVER_VERSION", () => {
-    expect(claudeMd).toContain(`v${SERVER_VERSION}`);
+  it("docs/CONTEXT.md cites the current SERVER_VERSION", () => {
+    expect(contextMd).toContain(`v${SERVER_VERSION}`);
   });
 });
 
@@ -54,7 +55,7 @@ describe("SRV-88 — banner-spec.md version matches code", () => {
   });
 });
 
-describe("SRV-92 — CLAUDE.md tool inventory matches TOOL_REGISTRY", () => {
+describe("SRV-92 — docs/CONTEXT.md tool inventory matches TOOL_REGISTRY", () => {
   const counts = TOOL_REGISTRY.reduce<Record<ToolCategory, number>>(
     (acc, t) => ({ ...acc, [t.category]: (acc[t.category] ?? 0) + 1 }),
     {} as Record<ToolCategory, number>,
@@ -62,33 +63,33 @@ describe("SRV-92 — CLAUDE.md tool inventory matches TOOL_REGISTRY", () => {
   const total = TOOL_REGISTRY.length;
 
   it("total tool count is stated correctly", () => {
-    expect(total).toBe(37); // tripwire: changing the surface must update CLAUDE.md
-    expect(claudeMd).toContain(`${total} MCP tools`);
+    expect(total).toBe(37); // tripwire: changing the surface must update docs/CONTEXT.md
+    expect(contextMd).toContain(`${total} MCP tools`);
   });
 
   it("per-category counts are stated correctly", () => {
-    expect(claudeMd).toContain(`${counts.prism_core} PRISM`);
-    expect(claudeMd).toContain(`${counts.railway} Railway`);
-    expect(claudeMd).toContain(`${counts.claude_code} Claude Code`);
-    expect(claudeMd).toContain(`${counts.github} GitHub`);
-    expect(claudeMd).toContain(`${counts.supabase} Supabase`);
+    expect(contextMd).toContain(`${counts.prism_core} PRISM`);
+    expect(contextMd).toContain(`${counts.railway} Railway`);
+    expect(contextMd).toContain(`${counts.claude_code} Claude Code`);
+    expect(contextMd).toContain(`${counts.github} GitHub`);
+    expect(contextMd).toContain(`${counts.supabase} Supabase`);
   });
 });
 
-describe("SRV-93 — CLAUDE.md brief paths match .prism/trigger.yaml", () => {
+describe("SRV-93 — docs/CONTEXT.md brief paths match .prism/trigger.yaml", () => {
   it("cites .prism/briefs/queue/ and no longer points at the non-existent docs/briefs/", () => {
     const trigger = readFileSync(".prism/trigger.yaml", "utf-8");
     expect(trigger).toContain("brief_dir: .prism/briefs/queue/");
-    expect(claudeMd).toContain(".prism/briefs/queue/");
-    expect(claudeMd).not.toContain("docs/briefs/");
+    expect(contextMd).toContain(".prism/briefs/queue/");
+    expect(contextMd).not.toContain("docs/briefs/");
   });
 });
 
-describe("SRV-94 — CLAUDE.md defers model identity to the registry", () => {
+describe("SRV-94 — docs/CONTEXT.md defers model identity to the registry", () => {
   it("does not hardcode a synthesis model name or an 'opus' default", () => {
-    expect(claudeMd).toContain("src/models.ts");
-    expect(claudeMd).not.toContain("Opus 4.8 for intelligence");
-    expect(claudeMd).not.toMatch(/default:\s*`opus`/);
+    expect(contextMd).toContain("src/models.ts");
+    expect(contextMd).not.toContain("Opus 4.8 for intelligence");
+    expect(contextMd).not.toMatch(/default:\s*`opus`/);
   });
 });
 
@@ -116,10 +117,10 @@ describe("SRV-95 — .env.example documents synthesis env vars", () => {
 describe("SRV-119 — LLM routing docs describe live synthesis activation", () => {
   const modelBump = readFileSync("docs/model-bump.md", "utf-8");
 
-  it("CLAUDE.md documents sanitized live synthesis routing and cc_dispatch boundary", () => {
-    expect(claudeMd).toContain("LLM_ROUTE_OBSERVATION");
-    expect(claudeMd).toContain("can authorize live provider synthesis");
-    expect(claudeMd).toContain("`cc_dispatch` remains Claude Code OAuth execution");
+  it("docs/CONTEXT.md documents sanitized live synthesis routing and cc_dispatch boundary", () => {
+    expect(contextMd).toContain("LLM_ROUTE_OBSERVATION");
+    expect(contextMd).toContain("can authorize live provider synthesis");
+    expect(contextMd).toContain("`cc_dispatch` remains Claude Code OAuth execution");
   });
 
   it("model-bump docs distinguish model bumps from multi-provider routing activation", () => {

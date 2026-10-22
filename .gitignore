@@ -7,6 +7,7 @@ scripts/*
 !scripts/check-model-freshness.mjs
 !scripts/measure-boot-payload.mjs
 !scripts/check.sh
+!scripts/claude-md-lint.sh
 
 # Dispatch state lives in the brdonath1/prism-dispatch-state repo (D-123 /
 # SRV-117), never in this repo — keep stray local records untracked.
