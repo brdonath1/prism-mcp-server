@@ -10,6 +10,7 @@ TypeScript on Node 22.23.3 (`mise.toml`, `.node-version`, npm 10.9.9; `engines.n
 
 ## Environments
 - Production: Railway, `prism-mcp-server-production.up.railway.app/mcp`; `main` auto-deploys with builder DOCKERFILE (the service setting; `railway.json` still says NIXPACKS); base `node:22.23.3-slim` by digest. Required env `GITHUB_PAT`, `MCP_AUTH_TOKEN` (`AUTH_REQUIRE_BEARER=true`); Supabase credentials force Bearer auth service-wide; the rest is optional (history file, `docs/supabase-management.md`, `docs/model-bump.md`). Secrets only in Railway env.
+- Settings and secrets: Doppler `prism-mcp/prd_prism_mcp`, loaded at start by `scripts/doppler-run.mjs` (decision 0003); Railway holds only `DOPPLER_TOKEN` after the cut-over.
 - Local: `mise trust && mise install` once per clone; `.env.example`; `npm run dev` on PORT 3000.
 
 ## Run and test
