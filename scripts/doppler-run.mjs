@@ -36,8 +36,7 @@ export class DopplerUnavailable extends Error {}
 const retryable = (status) => status === 429 || status >= 500;
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // Railway injects RAILWAY_* (service, project, environment, domains, git, volume ...), which always win. Operator-
-// supplied API tokens share the prefix but are not injected, so Doppler must be able to provide them (the watchdog
-// reads RAILWAY_API_TOKEN).
+// supplied API tokens share the prefix but are not injected, so Doppler must be able to provide them.
 const OPERATOR_RAILWAY = new Set(["RAILWAY_API_TOKEN", "RAILWAY_TOKEN"]);
 const platformOwned = (name) => name === "PORT" || (name.startsWith("RAILWAY_") && !OPERATOR_RAILWAY.has(name));
 const signalCode = (signal) => 128 + (constants.signals[signal] ?? 0);
@@ -166,8 +165,8 @@ export async function run(argv, { env = process.env, fetchImpl = fetch, sleep = 
 
 /* v8 ignore next 10 -- direct execution only */
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  // NODE_OPTIONS=--dns-result-order=ipv4first now arrives from Doppler for the child only; datacenter transport
-  // needs it (docs/CONTEXT.md), so the wrapper's own Doppler request sets it too.
+  // Resolve api.doppler.com IPv4-first: some Railway egress paths fail on IPv6 (seen in the Mac Studio scanner fleet),
+  // and the wrapper's own request runs before any NODE_OPTIONS from Doppler could apply.
   setDefaultResultOrder("ipv4first");
   run(process.argv.slice(2)).then(
     (code) => process.exit(code),

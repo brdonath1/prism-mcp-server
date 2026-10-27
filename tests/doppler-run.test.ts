@@ -258,3 +258,24 @@ describe("run", () => {
     error.mockRestore();
   });
 });
+
+describe("real process (no mocks)", () => {
+  it("off Railway without a token passes the environment through and returns the child's exit code", async () => {
+    const { spawnSync } = await import("node:child_process");
+    const env = { PATH: process.env.PATH ?? "", PROBE: "kept" } as NodeJS.ProcessEnv;
+    const result = spawnSync(process.execPath, ["scripts/doppler-run.mjs", process.execPath, "-e",
+      "process.stdout.write(process.env.PROBE ?? 'missing'); process.exit(3)"], { env, encoding: "utf8" });
+    expect(result.stdout).toBe("kept");
+    expect(result.status).toBe(3);
+  });
+
+  it("on Railway without a token refuses to start the child", async () => {
+    const { spawnSync } = await import("node:child_process");
+    const env = { PATH: process.env.PATH ?? "", RAILWAY_ENVIRONMENT_NAME: "production" } as NodeJS.ProcessEnv;
+    const result = spawnSync(process.execPath, ["scripts/doppler-run.mjs", process.execPath, "-e", "process.stdout.write('ran')"],
+      { env, encoding: "utf8" });
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("DOPPLER_TOKEN is not set on this Railway service; not starting");
+  });
+});
